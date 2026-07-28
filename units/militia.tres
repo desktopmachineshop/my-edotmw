@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"militia"
+display_name = "Militia"
+civ = &"neutral"
+squad_size = 40
+health = 80.0
+damage = 8.0
+move_speed = 3.5
+attack_range = 1.2
+attack_interval = 1.2
+formation_shape = "line"
+morale = 90.0
+rout_threshold = 30.0
+mesh_primitive = "capsule"
+mesh_color = Color(0.6, 0.6, 0.65, 1)
+build_time = 8.0
+cost = 40

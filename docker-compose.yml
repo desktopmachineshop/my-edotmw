@@ -1,0 +1,38 @@
+# Project name pinned so `docker compose -p edotmw down` (justfile) is
+# always scoped to this project and can never touch unrelated
+# containers (D-014 teardown requirement).
+name: edotmw
+
+services:
+  server:
+    build: .
+    # NOT YET RUNNABLE: server.tscn doesn't exist until M1 (see
+    # justfile `run-server`). Command below is the intended shape.
+    command: ["--path", ".", "server.tscn"]
+    volumes:
+      - .:/work
+      - ./.godot-container:/work/.godot
+    ports:
+      - "4433:4433/udp"
+    restart: "no"
+    mem_limit: 2g
+    cpus: 4
+
+  bots:
+    build: .
+    command: ["--script", "bot_client.gd"]
+    volumes:
+      - .:/work
+      - ./.godot-container:/work/.godot
+    restart: "no"
+    mem_limit: 1g
+    cpus: 2
+
+  test:
+    build: .
+    command: ["-s", "res://addons/gut/gut_cmdln.gd", "-gdir=res://tests", "-gexit"]
+    volumes:
+      - .:/work
+      - ./.godot-container:/work/.godot
+    restart: "no"
+    mem_limit: 1g

@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"archers"
+display_name = "Archers"
+civ = &"neutral"
+squad_size = 32
+health = 55.0
+damage = 12.0
+move_speed = 3.2
+attack_range = 8.0
+attack_interval = 1.5
+formation_shape = "loose"
+morale = 70.0
+rout_threshold = 35.0
+mesh_primitive = "capsule"
+mesh_color = Color(0.55, 0.45, 0.25, 1)
+build_time = 10.0
+cost = 55

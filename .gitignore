@@ -1,0 +1,17 @@
+# Portable toolchain (Godot, just) — fetched by bootstrap, never committed
+tools/
+
+# Godot import cache
+.godot/
+.godot-container/
+
+# Test/load-test output, replays, terrain previews
+artifacts/
+
+# Godot editor mono/build cruft
+.mono/
+mono_crash.*.json
+
+# OS cruft
+Thumbs.db
+.DS_Store

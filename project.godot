@@ -1,0 +1,18 @@
+; Engine configuration file.
+; See D-001 in game_design_decisions.md — Godot version is pinned in
+; .godot-version and must match what the container/native tooling fetch.
+
+config_version=5
+
+[application]
+
+config/name="my-edotmw"
+config/features=PackedStringArray("4.7")
+run/main_scene=""
+
+[physics]
+
+common/physics_ticks_per_second=10
+; Simulation tick rate is Open (Q9 in game_design_decisions.md) — 10 Hz
+; is a starting assumption used in the M0/M1 budget math, not a final
+; decision. Revisit alongside Q9.
