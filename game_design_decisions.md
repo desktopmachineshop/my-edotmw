@@ -456,6 +456,37 @@ can resolve GUT's and the project's own global `class_name`s (`UnitDef`,
 mind for any other headless recipe (`run-server`, `gen-terrain-preview`)
 implemented in M1.
 
+**Post-M0 review 2026-07-28.** A review pass over the M0 deliverables
+found and fixed four real defects, all of which would have surfaced as
+confusing failures during M1:
+
+1. `bootstrap` only printed instructions, so the stated exit criterion
+   ("fresh clone + bootstrap + `just test-unit` works") did not actually
+   hold — and could not, since a fresh clone has no `just` to run
+   `just bootstrap` with. Resolved by adding `bootstrap.ps1` (fetches
+   pinned `just` into `tools/`) and making `just bootstrap` really fetch
+   portable Godot for the native runtime.
+2. Recipes invoked each other as a bare `just`, which is never on PATH
+   (it lives in `tools/`). Broke `default` and every step of
+   `test-load`. Now `{{just_executable()}}` — **and it must be quoted**:
+   unquoted, bash eats the Windows path's backslashes and the command
+   silently becomes `C:Usersdmaso...`. Worth remembering for any future
+   recipe that interpolates a path on Windows.
+3. `test-load` ran the bots in the foreground and only then slept, so
+   `DURATION` measured nothing. Bots now run in the background for the
+   requested duration, and teardown is trapped on `EXIT INT TERM` so an
+   interrupted load test cannot leave containers running.
+4. Nothing exercised the `.tres` files or `primitive_unit.gd` — the
+   suite would have stayed green with a completely broken unit roster,
+   despite D-010 being the premise the project rests on. `test_unit_defs.gd`
+   now loads and schema-checks every `.tres` in `/units/` and asserts a
+   squad renders as exactly one `MultiMesh` child (D-009). Verified to
+   fail correctly by introducing a deliberately malformed unit.
+
+Also noted, deliberately left as-is: `just nuke` deletes `tools/`
+including the running `just` binary. That is correct behavior for
+D-014's teardown guarantee; it's now documented rather than surprising.
+
 ---
 
 ### D-016 · 2026-07-28 · Accepted

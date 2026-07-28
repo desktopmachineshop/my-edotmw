@@ -84,9 +84,26 @@ justfile                 The full command vocabulary for local dev,
                         than reconstructing godot/steamcmd invocations.
 bot_client.gd            Headless load-test bot — connects like a real
                         client, drives scripted behavior for testing at
-                        scale.
+                        scale. Runs N *virtual* clients in one process,
+                        not N processes (memory budget — see D-018).
 game_design_decisions.md The living design doc. Read before deciding,
                         update after deciding.
+bootstrap.ps1            Fresh-clone entry point. Fetches `just` into
+                        tools/ so the recipes below can run at all.
+                        Nothing is installed system-wide.
+/tests/*.gd              GUT tests, run headless by `just test-unit`.
+                        test_unit_defs.gd guards D-009 and D-010 —
+                        every .tres in /units/ is loaded and schema-
+                        checked, so a malformed unit fails the suite.
+Dockerfile               Pinned Godot headless image (D-001/D-014).
+docker-compose.yml       server / bots / test services. Teardown-scoped:
+                        pinned project name, --rm, no restart policy,
+                        no named state volumes.
+.godot-version           The pinned Godot version. Both the container
+                        build and `just bootstrap` read this — bump it
+                        here, not in either of them.
+/tools/                  Gitignored. Portable `just` and (native runtime
+                        only) portable Godot. `just nuke` deletes it.
 ```
 
 ## Mesh pipeline — respect the tiers
@@ -106,14 +123,32 @@ requirement at 10,000+ cell map sizes, not a style choice).
 
 ## Testing — use the justfile, and use it before claiming something works
 
-- `just run-server` / `just run-client` — manual dev loop
-- `just run-bots N` — spawn N headless load-test bots against a running
-  server
-- `just test-unit` — GUT unit tests, headless
+`just` lives in `tools/` and is **not on PATH** — invoke it as
+`./tools/just.exe <recipe>`. On a fresh clone run `./bootstrap.ps1`
+first. Recipes call each other via `{{just_executable()}}` for the same
+reason; a bare `just` inside a recipe will not resolve.
+
+Lifecycle:
+
+- `just doctor` — preflight: runtime prerequisites actually met?
+- `just up` / `just down` / `just status`
+- `just nuke` — full teardown back to pure source. **Deletes `tools/`,
+  including the `just` you ran it with** — that's intentional; re-run
+  `./bootstrap.ps1` to come back.
+
+Dev loop and tests:
+
+- `just run-server` / `just run-client` — manual dev loop *(M1)*
+- `just run-bots N` — N virtual load-test bots in one process
+- `just test-unit` — GUT unit tests, headless *(green: 7 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
-  DURATION seconds, then greps logs for warnings/desyncs
-- `just gen-terrain-preview` — fast terrain-gen iteration loop without
-  launching the full game
+  DURATION seconds, then scans logs for warnings/desyncs. Tears down via
+  trap on success, failure, and Ctrl-C. *(gated on `run-server`, so M1)*
+- `just gen-terrain-preview` — fast terrain-gen iteration loop *(M1)*
+
+Recipes marked *(M1)* depend on scenes that don't exist yet and exit
+non-zero with a clear message. That's deliberate — never make one
+silently succeed to get a green run.
 
 **Before reporting a change as done, run the relevant test recipe.**
 Given the project's performance targets (40,000 soldiers / ~1,000

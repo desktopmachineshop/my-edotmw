@@ -1,0 +1,112 @@
+extends GutTest
+
+## Guards the two decisions most likely to be violated silently later:
+##
+##  - D-010: units are data (`/units/*.tres` against the UnitDef schema),
+##    not hardcoded script subclasses. If a .tres stops parsing or drifts
+##    from the schema, that breaks the "editable by Claude Code without
+##    the Godot GUI" premise the whole project rests on — so every .tres
+##    in /units/ is loaded and schema-checked here, not just a sample.
+##  - D-009: a squad renders as ONE MultiMesh, never one Node per
+##    soldier. Asserted structurally (child count) rather than by
+##    profiling, so a well-meaning refactor to per-soldier nodes fails
+##    the suite instead of quietly costing 40,000 nodes at full scale.
+
+const UNITS_DIR := "res://units"
+
+const VALID_FORMATIONS := ["line", "column", "wedge", "loose"]
+const VALID_PRIMITIVES := ["capsule", "box", "cylinder", "hull"]
+
+
+func _unit_def_paths() -> Array:
+	var paths := []
+	var dir := DirAccess.open(UNITS_DIR)
+	assert_not_null(dir, "Expected %s to exist and be readable" % UNITS_DIR)
+	if dir == null:
+		return paths
+	for file_name in dir.get_files():
+		# Godot reports imported resources with a .remap suffix in some
+		# contexts; normalise so this works headless and exported alike.
+		var normalised := file_name.trim_suffix(".remap")
+		if normalised.ends_with(".tres"):
+			paths.append("%s/%s" % [UNITS_DIR, normalised])
+	return paths
+
+
+func test_units_dir_is_not_empty() -> void:
+	var paths := _unit_def_paths()
+	assert_gt(paths.size(), 0, "No .tres unit definitions found in %s" % UNITS_DIR)
+
+
+func test_every_unit_def_loads_and_matches_schema() -> void:
+	for path in _unit_def_paths():
+		var res = load(path)
+		assert_not_null(res, "Failed to load %s" % path)
+		if res == null:
+			continue
+
+		assert_is(res, UnitDef, "%s did not load as a UnitDef" % path)
+		if not (res is UnitDef):
+			continue
+
+		var def: UnitDef = res
+		assert_ne(String(def.id), "", "%s has an empty id" % path)
+		assert_gt(def.squad_size, 0, "%s has a non-positive squad_size" % path)
+		assert_gt(def.health, 0.0, "%s has non-positive health" % path)
+		assert_has(VALID_FORMATIONS, def.formation_shape,
+			"%s has formation_shape '%s' outside the UnitDef enum" % [path, def.formation_shape])
+		assert_has(VALID_PRIMITIVES, def.mesh_primitive,
+			"%s has mesh_primitive '%s' outside the UnitDef enum" % [path, def.mesh_primitive])
+		# A squad that starts already below its own rout threshold would
+		# rout on spawn once D-019's morale system lands in M2.
+		assert_lt(def.rout_threshold, def.morale,
+			"%s has rout_threshold >= morale, so it would rout on spawn" % path)
+
+
+func test_unit_def_ids_are_unique() -> void:
+	var seen := {}
+	for path in _unit_def_paths():
+		var def = load(path)
+		if def is UnitDef:
+			var key := String(def.id)
+			assert_false(seen.has(key),
+				"Duplicate UnitDef id '%s' in %s (also in %s)" % [key, path, seen.get(key, "")])
+			seen[key] = path
+
+
+func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
+	var def := load("res://units/militia.tres") as UnitDef
+	assert_not_null(def, "militia.tres should load as a UnitDef")
+	if def == null:
+		return
+
+	var unit := PrimitiveUnit.new()
+	autofree(unit)
+	unit.rebuild(def)
+
+	assert_eq(unit.get_child_count(), 1,
+		"A squad should add exactly one MultiMeshInstance3D child (D-009), not one node per soldier")
+
+	var mmi := unit.get_child(0) as MultiMeshInstance3D
+	assert_not_null(mmi, "PrimitiveUnit's child should be a MultiMeshInstance3D")
+	if mmi == null:
+		return
+
+	assert_not_null(mmi.multimesh, "MultiMeshInstance3D should have a MultiMesh")
+	assert_eq(mmi.multimesh.instance_count, def.squad_size,
+		"MultiMesh instance_count should match the UnitDef's squad_size")
+	assert_not_null(mmi.multimesh.mesh, "MultiMesh should have a generated primitive mesh")
+
+
+func test_rebuild_is_idempotent_and_tracks_squad_size() -> void:
+	var def := load("res://units/archers.tres") as UnitDef
+	var unit := PrimitiveUnit.new()
+	autofree(unit)
+
+	unit.rebuild(def)
+	unit.rebuild(def)
+
+	assert_eq(unit.get_child_count(), 1,
+		"Rebuilding should reuse the existing MultiMeshInstance3D, not stack up children")
+	var mmi := unit.get_child(0) as MultiMeshInstance3D
+	assert_eq(mmi.multimesh.instance_count, def.squad_size)
