@@ -1,0 +1,60 @@
+extends RefCounted
+class_name CosmeticOffset
+
+## Client-only visual offsets for individual soldiers (D-006 clause 2).
+##
+## ## Why this is a separate file
+##
+## D-006 permits cosmetic per-soldier motion — idle sway, footfall bob,
+## breathing — precisely because it is ONE-WAY: the render path may read
+## it, and the simulation may never read it back. Keeping it in its own
+## class rather than as a Formation method makes that boundary structural
+## instead of a comment someone can miss. Nothing in the sim, the
+## replicator, or Formation imports this file, and a test asserts that
+## authoritative transforms are unaffected by it.
+##
+## If simulation ever needs to consult one of these values, that is not a
+## small refactor — it means soldiers have acquired their own state and
+## D-006's revisit trigger has fired.
+##
+## These offsets are also why the formation restamping on casualties
+## (clause 3) doesn't have to look robotic: the authoritative slot snaps,
+## and the render layer is free to ease toward it.
+
+## Small horizontal sway, cycling per soldier. Pure in (slot, time) so it
+## is stable across frames rather than jittering randomly, but it is NOT
+## required to match between machines — nothing depends on it agreeing.
+static func idle_sway(slot: int, time: float, amplitude: float = 0.04) -> Vector3:
+	var phase := float(slot) * 0.7391
+	return Vector3(
+		sin(time * 1.3 + phase) * amplitude,
+		0.0,
+		cos(time * 1.1 + phase) * amplitude
+	)
+
+
+## Vertical bob suggesting footfalls while moving. `speed` scales both
+## rate and amplitude so a stationary squad stops bobbing.
+static func footfall_bob(slot: int, time: float, speed: float, amplitude: float = 0.03) -> float:
+	if speed <= 0.001:
+		return 0.0
+	var phase := float(slot) * 2.399
+	return absf(sin(time * (4.0 + speed) + phase)) * amplitude * minf(speed, 1.0)
+
+
+## Apply cosmetic offsets to an authoritative transform, returning a new
+## one. The input is never mutated — the caller keeps the authoritative
+## value and renders the returned one.
+static func decorate(authoritative: Transform3D, slot: int, time: float, speed: float) -> Transform3D:
+	var decorated := authoritative
+	decorated.origin += idle_sway(slot, time)
+	decorated.origin.y += footfall_bob(slot, time, speed)
+	return decorated
+
+
+## Convenience for the render path: decorate a whole squad at once.
+static func decorate_all(transforms: Array[Transform3D], time: float, speed: float) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	for slot in range(transforms.size()):
+		out.append(decorate(transforms[slot], slot, time, speed))
+	return out

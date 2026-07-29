@@ -20,6 +20,286 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-023 · 2026-07-29 · Accepted
+**Decision:** The authoritative simulation is driven by an **explicit
+fixed-timestep accumulator owned by the sim**, not by Godot's
+`_physics_process`. `physics/common/physics_ticks_per_second` in
+`project.godot` is left at 10 only so the engine's own stepping doesn't
+run wildly out of proportion to the sim; nothing reads it as the tick
+rate. D-020 remains the single source of truth for 10 Hz.
+
+**Rationale:** Three reasons, in order of weight. (1) D-009 keeps
+simulation state in packed arrays outside the scene tree, so binding the
+sim to a scene-tree callback is a coupling the design explicitly does not
+need. (2) It makes the sim tickable without a `SceneTree` at all — unit
+tests and replay playback drive `tick()` directly in a loop, which is
+what lets the M1 suite test the simulation rather than only its parts.
+(3) It keeps tick rate a property of the simulation (D-020) rather than a
+project setting, so changing it can't happen by editing an engine config
+field and silently invalidating D-018's budget math.
+
+**Rejected alternatives:** `_physics_process` as the driver (rejected —
+couples sim to the scene tree and to an engine setting, and makes
+headless replay/test stepping awkward); `_process` with variable delta
+(rejected outright — a variable-rate authoritative sim is not
+reproducible, which breaks replays under D-016).
+
+**Consequences:** The server node calls into the sim from `_process` with
+an accumulator, consuming whole ticks and carrying the remainder. Tests
+call `tick()` directly. `project.godot`'s physics tick setting is now
+decorative with respect to the sim — noted in that file so nobody
+"fixes" it into load-bearing status.
+
+**Revisit trigger:** None currently.
+
+---
+
+### D-022 · 2026-07-29 · Accepted
+**Decision:** M1's exit criteria, written down. D-015 named the milestone
+ladder but deferred per-milestone exit criteria to "the 2026-07-28
+planning session," which is not in the repo — so "M1 complete" was not a
+checkable claim. These are derived from the already-accepted decisions
+rather than newly invented, and each criterion names the decision it
+discharges.
+
+M1 ("movement + netcode proof") is complete when all of the following
+hold and `just test-unit` is green:
+
+1. **Torus is a type, not a convention** (D-008). A wrap-aware hex
+   coordinate type exists; neighbor, distance, and interpolation all go
+   through it. GUT tests cover seam-crossing cases explicitly — D-008
+   requires this from M1 onward.
+2. **Flow-field pathfinding** (D-007) computes a field per squad
+   destination over the torus, CPU-side only, and a squad on the far side
+   of a seam takes the short way around.
+3. **Curve-based sync** (D-003) with all three properties demonstrated by
+   test, not by inspection: an idle object costs zero bandwidth; curves
+   are clipped to a visibility horizon so a client cannot read an enemy's
+   future path (intent leakage); re-pathing goes through a budgeted
+   scheduler rather than naive immediate replication.
+4. **Derived soldier positions** (D-006) — a pure formation function
+   drives `PrimitiveUnit`'s MultiMesh, with tests proving purity (same
+   inputs → same outputs, no carried state) and deterministic casualty
+   restamp.
+5. **10 Hz authoritative sim** (D-020, D-009) with squad state in packed
+   arrays outside the scene tree, and per-squad update cost measurable —
+   D-012 requires the cost be measurable and swappable from M1 even
+   though LOD isn't built until M5.
+6. **Replay capture** (D-016): the curve log lands in `artifacts/` in a
+   replayable format.
+7. **Every M1-gated recipe is real**: `run-server`, `run-client`,
+   `test-load`, `gen-terrain-preview` no longer exit with "NOT
+   IMPLEMENTED UNTIL M1", and `just test-load N DURATION` runs clean.
+
+**Explicitly NOT in M1** (so scope creep is visible if it happens):
+combat resolution of any kind (Q7, M2), fog of war (D-004, M2), economy
+or production, terrain generation beyond what `gen-terrain-preview`
+needs to exercise chunking (D-017), and any LOD (D-012, M5).
+
+**Rationale:** The project's workflow depends on decisions being written
+down (CLAUDE.md). An unwritten definition of done for the milestone that
+proves the whole architecture is the highest-leverage instance of that
+gap. Writing the criteria as discharges of existing decisions also
+surfaces whether the decisions actually cover M1 — they do, with no gaps
+found while deriving this.
+
+**Rejected alternatives:** Treating M1 as done when "movement works
+visually" (rejected — that would pass without the three D-003 properties,
+which are the entire point of the netcode proof). Reconstructing the
+original planning session's criteria (rejected — not recoverable from the
+repo; deriving from accepted decisions is both possible and more
+authoritative).
+
+**Consequences:** `CLAUDE.md`'s pointer to "M1's exit criteria in
+`game_design_decisions.md` section 2" was wrong — section 2 is Open
+Questions. Updated to point here.
+
+**Revisit trigger:** If M2/M3 turn out to need something M1 was assumed
+to have proven, add it here rather than quietly widening the milestone.
+
+**M1 complete 2026-07-29.** All seven criteria met; `just test-unit` is
+green at 127 tests / 10 scripts, and `just test-load 4 12` runs clean end
+to end. Criterion by criterion:
+
+1. `torus_space.gd` — wrap enforced by every method normalising its own
+   inputs, so a call site that forgets to wrap cannot get a different
+   answer than one that remembers. Seam cases are tested exhaustively
+   (every cell pair for distance symmetry and the wrapped bound).
+2. `flow_field.gd` — BFS from the destination through
+   `TorusSpace.neighbor_index`, one field per destination shared by all
+   squads heading there. Verified as exactly the analytic wrapped hex
+   distance at every cell, which is the check a non-wrapping expansion
+   fails.
+3. `state_curve.gd` + `curve_replicator.gd` — all three D-003 properties
+   proven by test: 500 idle objects cost literally zero bytes; a client
+   decoding the raw wire bytes cannot recover an enemy position 10s
+   ahead; a 1,000-squad simultaneous re-path stays inside the byte
+   budget and drains without starvation.
+4. `formation.gd` — all-static, no instance state. Purity is tested by
+   evaluation order, by time-travel (sample late, then early, then late
+   again), and by two independent evaluators standing in for client and
+   server. Cosmetic offsets live in a separate file (`cosmetic_offset.gd`)
+   so clause 2's one-way boundary is structural rather than a comment.
+5. `squad_sim.gd` — packed arrays, no Nodes, explicit 10 Hz tick
+   (D-023). **Measured 2.14 µs per squad-update** at 48 squads against
+   D-020's ~50 µs budget — about 4% of budget, which is direct evidence
+   for D-021's judgement that GDScript would fit.
+6. `replay_log.gd` — the curve log, byte-identical to the wire format.
+   `just replay-info` reads a real load-test replay back and
+   reconstructs all 48 squads.
+7. All recipes real; `run-client`, `gen-terrain-preview` and
+   `replay-info` added.
+
+**Defects found and fixed while building M1**, recorded because each was
+silent rather than loud:
+
+- `StateCurve.clipped()` dropped the keyframe sitting exactly on the
+  window start — the common case, since the sim emits keyframes on the
+  same tick boundary the replicator clips at.
+- `just test-load` reported "clean" for a run in which every bot exited
+  non-zero. Grepping for the absence of bad news cannot distinguish
+  "nothing went wrong" from "nothing happened"; it now also checks exit
+  status and an explicit verdict.
+- `docker compose` `depends_on: server` under `run --rm` left a running
+  server container behind after every bot run — a stray-container leak
+  directly against D-014.
+- `NetProtocol.decode_welcome` appended to `out["squads"]`, and
+  `PackedInt32Array` is a value type in GDScript, so it appended to a
+  copy. Clients silently believed they owned no squads.
+- Terrain noise was sampled at ~1 feature per cell, producing per-cell
+  static that still passed every aggregate check (plausible water
+  fraction, plausible biome spread) while having no landmasses at all.
+- Bot teardown ran twice (once from the run loop, once from
+  `_finalize`), calling `peer_disconnect_now` on a peer whose host was
+  already destroyed. Three ERROR lines per successful run.
+- The container lacked `libfontconfig1`, so Godot logged ten fontconfig
+  ERRORs on every invocation. Harmless individually, but a log where
+  routine ERRORs are normal is a log where a real one goes unnoticed —
+  and `test-load`'s scan reads exactly those logs. Both logs are now
+  clean at zero ERROR lines on a passing run, which is what makes the
+  scan worth anything.
+
+**Deliberately still open, not silently assumed:** fog of war (D-004's
+reveal semantics), combat (Q7), casualties (M1 has no combat, so
+`alive` is only ever the full squad size), and per-squad selection in
+the client (M3 UI work). Replication uses reliable ENet delivery
+throughout; unreliable-with-resend is a refinement M4 can measure.
+
+---
+
+### D-021 · 2026-07-29 · Accepted
+**Decision:** **No C# in the shipping build.** GDScript for all gameplay
+and simulation code. Where profiling shows a specific kernel exceeding
+budget, the escape hatch is **GDExtension (C++/Rust) scoped to that
+kernel** — not a project-wide .NET conversion. This narrows D-009's
+looser "C# only where profiling shows a specific need" clause; see the
+note appended to D-009.
+
+**Rationale:** Q6 framed this as a question about export matrix and
+platform support. For this project it largely isn't: shipping is Steam
+desktop (D-015 → M7), Godot's .NET builds export to Windows/Linux/macOS,
+and there is no web target — the usual platform argument against C# does
+not apply here. Dedicated servers (Q3, open) are Linux either way. The
+decision therefore rests on toolchain cost and reversibility.
+
+*Toolchain cost is permanent.* The current image is debian-slim plus one
+Godot zip. .NET means the Mono/.NET Godot artifact, the .NET SDK in the
+image, a NuGet restore, and a compile step gating `test-unit` on top of
+the headless-import step D-015 already requires. That is paid on every
+container operation from M1 onward, against D-014's explicit premise of
+a small footprint and clean teardown.
+
+*Reversibility is asymmetric.* Deciding no now and reversing at M4 costs
+the container/export rework — which is the same work whether done now or
+then, since existing GDScript keeps working alongside a later `.csproj`.
+Deciding yes now pays the toolchain tax continuously across M1–M3 for a
+bottleneck that is speculative.
+
+*D-006's confirmation is what makes this tenable.* The strongest argument
+for C# is that D-009's packed-array-outside-the-scene-tree design is
+ergonomic in C# (structs, spans, generics) and ugly in GDScript (parallel
+`PackedFloat32Array`s with hand-rolled index math). That argument was
+substantially weakened on 2026-07-28: because soldier positions are
+derived rather than stored, the hot data set is ~1,000 squads of state,
+not ~40,000 soldiers — a 40x reduction. Manual index math over a thousand
+entities is unpleasant but tractable. **Had D-006 been rejected, this
+entry would likely have gone the other way.**
+
+**Rejected alternatives:** C# permitted project-wide from the start
+(rejected — continuous cost for speculative benefit; the hiring-pool and
+static-typing arguments are real but don't outweigh it at this stage).
+Leaving D-009's vague "C# if profiling shows a need" as the answer
+(rejected — that phrasing can't be acted on when sizing the container or
+export matrix, which is precisely why Q6 demanded a yes/no). GPU compute
+shader as the general escape hatch for the flow-field solver (rejected as
+*unsafe*: the authoritative server is headless and, depending on Q3, may
+be CPU-only in a cloud VM — GPU acceleration is available to the client
+renderer, not to the server-side solver).
+
+**Explicitly not a reason:** .NET GC pauses. At D-020's 100 ms tick,
+gen0 collections are noise and a gen2 pause is poolable. Recorded here so
+the argument doesn't get re-raised as though it were load-bearing.
+
+**Consequences:** Container and export stay single-toolchain. D-009's C#
+clause is narrowed (note appended there); `CLAUDE.md`'s Conventions
+section updated to match. Accept the ergonomic cost of parallel packed
+arrays in GDScript for D-009's simulation state. Note that GDExtension is
+deferred cost, not free: it brings its own native build matrix
+(`.dll`/`.so`/`.dylib` per target), so the escape hatch should be reached
+for once, deliberately, on measured evidence.
+
+**Revisit trigger:** M4 profiling identifies a kernel exceeding budget
+that GDScript-level optimization cannot close. The flow-field solver
+(D-007) under D-003's invalidation-storm conditions is the prime
+candidate — a wrap-aware pass over 10,000+ cells (Q8) recomputed for many
+squads at once. Reverse to GDExtension for that kernel first; revisit
+project-wide C# only if several kernels qualify.
+
+---
+
+### D-020 · 2026-07-28 · Accepted, per-LOD variation Open
+**Decision:** Server simulation tick rate is **10 Hz** (100 ms). This is
+the rate at which authoritative game state advances. It is explicitly
+*not* the same number as either the curve keyframe emission rate (D-003)
+or the flow-field recompute rate (D-007), both of which are lower and
+independently tunable.
+
+**Rationale:** 10 Hz was already load-bearing in D-018's accepted math
+("1,000 squads at a 10 Hz tick is 10,000 squad-updates/second") while
+remaining formally undecided — this entry closes that gap rather than
+introducing a new number. The rate is defensible on its own terms: at
+full scale it leaves ~50 µs per squad-update to consume half of one core,
+which is a workable GDScript budget under D-009's packed-array design.
+
+Crucially, D-003 decouples tick rate from *visual* smoothness. Under
+snapshot replication 10 Hz would look choppy; under curve-based sync
+clients interpolate continuously along a received curve, so tick rate
+governs decision and combat-resolution latency, not motion fidelity. The
+cost that remains is up to 100 ms of command quantization on top of
+network RTT — well inside genre norms, where classic lockstep RTS
+deliberately ran 200–500 ms command latency.
+
+**Rejected alternatives:** 20–30 Hz (rejected — doubles or triples the
+squad-update budget for latency the genre doesn't need and that D-003
+already hides visually); 5 Hz (rejected — halves the cost but pushes
+worst-case command quantization to 200 ms and coarsens combat resolution
+to 200 ms rounds, which starts to constrain Q7's design space).
+
+**Consequences:** Per-squad update cost should be measured against a
+100 ms tick budget from M1 onward, per D-012's "keep it measurable and
+swappable." Combat resolution (Q7) has a 100 ms minimum round
+granularity. Do not conflate this number with network send rate — an
+idle squad still costs zero bandwidth per D-003 regardless of tick rate,
+and that property must survive M1's implementation.
+
+**Revisit trigger:** M1/M4 profiling showing squad-update cost exceeding
+the 100 ms budget at D-018's counts — per D-018's own revisit trigger,
+tick rate is the dial to consider before the architecture. Whether the
+tick rate itself varies by LOD tier remains **open** and is deferred to
+M5 with the rest of D-012.
+
+---
+
 ### D-018 · 2026-07-28 · Accepted
 **Decision:** Full-scale target is 20 players × 2,000 individual soldiers
 each (40,000 soldiers total), organized into ~50 squads/player (~1,000
@@ -80,7 +360,7 @@ provisional call.
 
 ---
 
-### D-006 · 2026-07-28 · Provisional — highest priority to confirm, blocks M1
+### D-006 · 2026-07-28 · Accepted (confirmed 2026-07-28 — see confirmation block below)
 **Decision:** Individual soldier positions are a pure client-side
 function of (squad curve, formation shape, slot index, terrain sample)
 and are never networked. Only squads are networked entities. Combat
@@ -107,6 +387,48 @@ M1's exit criteria assume it.
 require server-authoritative per-soldier positions — e.g., for precise
 morale/rout triggers based on individual soldier deaths in specific
 formation slots — revisit before M2.
+
+**Confirmed 2026-07-28.** Promoted Provisional → Accepted, with the scope
+sharpened. The original entry bundled two separable claims: that soldier
+positions are never *networked* (a bandwidth claim) and that they are
+never *server-authoritative state* (a simulation-cost claim). Only the
+first is load-bearing, and it does not depend on the second — if a
+soldier's position is a pure function of replicated squad state, the
+server may compute it whenever combat needs it and still send nothing.
+Server and client agree by construction rather than by synchronization.
+
+Three clauses, now binding:
+
+1. **Purity.** A soldier's position is a pure function of (squad curve,
+   formation shape, slot index, terrain sample). No per-soldier
+   integration state — no velocity, no accumulated offset, no history
+   carried across ticks.
+2. **Cosmetic offsets are one-way.** Client-side visual offsets (idle
+   sway, footfall jitter, terrain settling) are permitted and are never
+   read back by simulation. This is where visual life comes from without
+   touching the keystone.
+3. **Casualty slot reassignment is deterministic**, derived from the
+   ordered death-event log — which is already replicated as sparse
+   reliable events, so reassignment stays inside the purity boundary.
+   The formation restamps; soldiers do not walk to fill a dead man's
+   slot.
+
+**Corrected revisit trigger** (replaces the original above, which was
+miswritten): the trigger is *not* "combat needs server-authoritative
+per-soldier positions" — under clause 1 that is free. The trigger is
+**emergent per-soldier movement**: local avoidance, collision push-back,
+soldiers physically jostling, neighbors pathing into a vacated slot. Any
+of those gives a soldier its own integration state and breaks clause 1,
+at which point the only options are networking ~40,000 entities or
+accepting divergence. Revisit before M2 if the combat model wants one.
+
+**Consequence for Q7.** This constrains the still-open combat model
+rather than waiting on it. Q7 must resolve to something expressible
+within clause 1: squad-level stochastic resolution satisfies it
+trivially; deterministic per-soldier resolution satisfies it only if
+resolution *reads* derived positions without perturbing them; per-soldier
+resolution that physically moves soldiers as a result of combat does not
+satisfy it and trips the corrected trigger above.
 
 ---
 
@@ -280,6 +602,15 @@ squad count, not soldier count, turns out to be the bottleneck).
 **Revisit trigger:** If profiling shows packed-array simulation state is
 itself the bottleneck (unlikely before M4).
 
+**Narrowed 2026-07-29 by D-021.** The "C# only where profiling shows a
+specific need" clause above is superseded: C# is **not** permitted in the
+shipping build at all. The escape hatch for a kernel that exceeds budget
+is GDExtension (C++/Rust) scoped to that kernel. The rest of this entry —
+GDScript at squad granularity, `MultiMesh` rendering, packed arrays
+outside the scene tree — stands unchanged. See D-021 for the reasoning,
+including why D-006's confirmation is what makes GDScript tenable for the
+packed-array design.
+
 ---
 
 ### D-010 · 2026-07-28 · Accepted
@@ -301,6 +632,15 @@ writing new unit classes. Squad size (~40 soldiers per D-018) is a
 needed later.
 
 **Revisit trigger:** None currently.
+
+**Schema log** (this entry requires schema changes be recorded here, not
+just in code):
+
+- **2026-07-29, M1 — added `formation_spacing: float = 1.0`.** Formation
+  geometry (D-006/D-019) needs a per-unit centre-to-centre spacing;
+  cavalry and skirmishers do not occupy the footprint of line infantry.
+  Existing `.tres` files pick up the default, so this is backward
+  compatible.
 
 ---
 
@@ -539,24 +879,35 @@ and now live as decisions above.
   ~50 squads/player, ~40 soldiers/squad)
 - ~~Q2 — What is the Rome Total War half of the hybrid?~~ → D-019
   (formations & morale/routing only, no campaign layer)
+- ~~Q9 — Simulation tick rate?~~ → D-020 (10 Hz; per-LOD-tier variation
+  still open, deferred to M5 with D-012)
+- ~~Q6 — C# in the shipping build?~~ → D-021 (no; GDExtension per-kernel
+  is the escape hatch, and D-009's C# clause is narrowed accordingly)
 
 **Blocking M1:**
-- **D-006 confirmation** — the derived-soldier-positions keystone is
-  still Provisional. Confirm or reject before M1's flow-field/curve-sync
-  proof is built (see D-006 above).
-- **Q6 — C# in the shipping build?** Affects export matrix and platform
-  support. GDScript is the default per `CLAUDE.md`; need a yes/no on
-  whether C# is permitted at all, not just "if profiling shows a need."
+- ~~D-006 confirmation~~ → confirmed 2026-07-28. The
+  derived-soldier-positions keystone is Accepted, scoped by the purity /
+  one-way-cosmetic-offset / deterministic-reassignment clauses in D-006's
+  confirmation block. No longer blocks M1.
+- ~~Q6 — C# in the shipping build?~~ → D-021 (no). Note for the record
+  that the premise of this question — that it turns on export matrix and
+  platform support — did not survive examination; it turned on toolchain
+  cost and reversibility instead. **Nothing now blocks M1 on the
+  decision side.**
 
 **Blocking M2:**
 - **Q7 — Combat model:** deterministic per-soldier resolution vs.
   stochastic squad-level rolls. Directly interacts with D-006 and D-012:
   squad-level rolls make LOD and D-006 easy, per-soldier resolution makes
   both hard. Now also needs to define formation-break and morale/rout
-  thresholds per D-019.
-- **Q9 — Simulation tick rate**, and whether it varies by LOD tier
-  (relevant once D-012 is implemented at M5, but the tick rate itself is
-  needed by M1).
+  thresholds per D-019. **As of D-006's confirmation this is constrained,
+  not merely interacting:** any answer must be expressible within D-006's
+  purity clause — see "Consequence for Q7" there. The *shape* of the
+  answer (squad-level rolls vs. per-soldier resolution) is worth calling
+  early even though the thresholds themselves can wait for M2.
+- ~~Q9 — Simulation tick rate~~ → D-020 (10 Hz). The remainder — whether
+  the tick rate **varies by LOD tier** — is still open and deferred to
+  M5 with D-012, so it no longer blocks M2.
 - **Fog reveal/conceal semantics** — see D-004's open Provisional item.
 
 **Blocking M4/M5:**

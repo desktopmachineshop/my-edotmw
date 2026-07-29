@@ -6,8 +6,6 @@ name: edotmw
 services:
   server:
     build: .
-    # NOT YET RUNNABLE: server.tscn doesn't exist until M1 (see
-    # justfile `run-server`). Command below is the intended shape.
     command: ["--path", ".", "server.tscn"]
     volumes:
       - .:/work
@@ -21,6 +19,17 @@ services:
   bots:
     build: .
     command: ["--script", "bot_client.gd"]
+    environment:
+      # Inside the compose network the server is reachable by service
+      # name, not on localhost. bot_client.gd reads this as its default
+      # address so `just test-load` works without passing --address.
+      EDOTMW_SERVER_ADDRESS: server
+    # Deliberately NO depends_on: server. `docker compose run --rm bots`
+    # removes the bots container but NOT dependencies it started, so
+    # depends_on leaked a running server behind every bot run — exactly
+    # the stray-container problem D-014 exists to prevent. The server is
+    # brought up explicitly by `just up` instead, which also makes
+    # "is the server actually up?" a question run-bots can answer.
     volumes:
       - .:/work
       - ./.godot-container:/work/.godot

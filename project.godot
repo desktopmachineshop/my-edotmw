@@ -13,6 +13,11 @@ run/main_scene=""
 [physics]
 
 common/physics_ticks_per_second=10
-; Simulation tick rate is Open (Q9 in game_design_decisions.md) — 10 Hz
-; is a starting assumption used in the M0/M1 budget math, not a final
-; decision. Revisit alongside Q9.
+; 10 Hz simulation tick is DECIDED — see D-020 in game_design_decisions.md.
+; Per-LOD-tier variation remains open (deferred to M5 with D-012).
+;
+; Open implementation choice for M1: whether the authoritative sim is
+; actually driven by _physics_process. D-009 keeps sim state in packed
+; arrays outside the scene tree, so it need not be — this setting matching
+; the sim rate is convenient, not required. Decide deliberately when the
+; server loop is written; don't let the coupling happen by accident.

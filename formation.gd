@@ -1,0 +1,211 @@
+extends RefCounted
+class_name Formation
+
+## Derived soldier positions (D-006) — the keystone that keeps networking
+## and simulation cost at ~1,000 squads instead of ~40,000 soldiers.
+##
+## ## The rule this file exists to enforce
+##
+## Every function here is STATIC and PURE. A soldier's position is a
+## function of (squad curve, formation shape, slot index, terrain sample)
+## and nothing else. There is no per-soldier velocity, no accumulated
+## offset, no history carried between ticks, and deliberately no instance
+## state of any kind — the class is static so there is nowhere to put any.
+##
+## That is not a stylistic preference. It is what makes server and client
+## agree without the server sending a single soldier position: both sides
+## evaluate the same function over the same replicated squad state and get
+## the same answer by construction (D-006's confirmation block).
+##
+## ## What is forbidden here
+##
+## Local avoidance, collision push-back, soldiers jostling, and neighbours
+## walking into a dead man's slot all give a soldier its own integration
+## state and break the purity clause. If one of those is ever wanted, it
+## is a D-006 revisit, not a patch to this file.
+##
+## Casualties restamp: the formation is computed for `alive` soldiers, so
+## losing one re-derives everyone's slot. Soldiers do not walk to fill the
+## gap (D-006 clause 3).
+##
+## Cosmetic per-soldier motion lives in cosmetic_offset.gd, is applied
+## only on the render path, and is never read back here (clause 2).
+
+# Ranks deep for each shape. Line is wide and shallow; column is narrow
+# and deep. Both are Total War-ish rather than physically surveyed.
+const LINE_RANKS := 3
+const COLUMN_FILES := 4
+
+# Facing derivation looks this far along the curve to find travel
+# direction. Small enough to track turns, large enough to survive
+# float noise on a 10 Hz tick (D-020).
+const HEADING_EPSILON := 0.05
+
+# Fallback facing for a squad that has never moved. Arbitrary but fixed —
+# it must be deterministic, because client and server both derive it.
+const DEFAULT_HEADING := Vector2(0.0, 1.0)
+
+
+## Offset of one slot within the formation, in formation-local space:
+## +x is right, +y is forward. Units are multiples of `spacing`.
+##
+## Pure in (shape, slot, alive, spacing). Note `alive` is an input: that
+## is the casualty restamp.
+static func slot_offset(shape: String, slot: int, alive: int, spacing: float) -> Vector2:
+	if alive <= 0:
+		return Vector2.ZERO
+	var index := clampi(slot, 0, alive - 1)
+
+	match shape:
+		"line":
+			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
+		"column":
+			return _grid_offset(index, alive, COLUMN_FILES, spacing)
+		"wedge":
+			return _wedge_offset(index, spacing)
+		"loose":
+			return _loose_offset(index, alive, spacing)
+		_:
+			push_error("Unknown formation_shape '%s' — falling back to line" % shape)
+			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
+
+
+static func _files_for_ranks(alive: int, ranks: int) -> int:
+	return maxi(1, ceili(float(alive) / float(maxi(ranks, 1))))
+
+
+static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> Vector2:
+	var rank := index / files
+	var file := index % files
+
+	# Centre each rank independently so a partially filled back rank sits
+	# in the middle rather than hanging off one edge.
+	var in_this_rank := mini(files, alive - rank * files)
+	var centre := float(in_this_rank - 1) * 0.5
+
+	return Vector2((float(file) - centre) * spacing, -float(rank) * spacing)
+
+
+static func _wedge_offset(index: int, spacing: float) -> Vector2:
+	# Triangular: row r holds r+1 soldiers, point facing forward.
+	var row := 0
+	var consumed := 0
+	while consumed + row + 1 <= index:
+		consumed += row + 1
+		row += 1
+	var position_in_row := index - consumed
+	var centre := float(row) * 0.5
+	return Vector2((float(position_in_row) - centre) * spacing, -float(row) * spacing)
+
+
+static func _loose_offset(index: int, alive: int, spacing: float) -> Vector2:
+	# Skirmish order: a grid, spread wider, with a deterministic scatter.
+	#
+	# The scatter is hashed from the slot index, NOT drawn from an RNG.
+	# An RNG would either need seeding state (breaking purity) or would
+	# desync client from server. Same index always yields the same offset,
+	# on every machine, forever.
+	var base := _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing * 1.8)
+	var jitter := Vector2(_hash_unit(index * 2 + 1), _hash_unit(index * 2 + 2))
+	return base + jitter * spacing * 0.6
+
+
+## Deterministic hash of an integer to [-0.5, 0.5]. Integer ops only, so
+## it produces identical results on every platform — a float-based hash
+## would risk client/server divergence.
+static func _hash_unit(n: int) -> float:
+	var h := (n * 2654435761) & 0xFFFFFFFF
+	h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+	h = (h ^ (h >> 16)) & 0xFFFFFFFF
+	return float(h & 0xFFFF) / 65535.0 - 0.5
+
+
+## Squad facing at `time`, in continuous axial space.
+##
+## Derived entirely from the curve: forward difference while moving,
+## backward difference just after stopping, and failing both, a scan back
+## through the keyframes for the last real displacement. A stopped squad
+## therefore keeps the facing it arrived with WITHOUT anyone storing it.
+static func heading(curve: StateCurve, time: float) -> Vector2:
+	if curve == null or curve.is_empty():
+		return DEFAULT_HEADING
+
+	var here := curve.sample_axial(time)
+
+	var forward := curve.sample_axial(time + HEADING_EPSILON) - here
+	if forward.length_squared() > 1e-8:
+		return forward.normalized()
+
+	var backward := here - curve.sample_axial(time - HEADING_EPSILON)
+	if backward.length_squared() > 1e-8:
+		return backward.normalized()
+
+	# Stationary at `time`: find the most recent segment that moved.
+	for i in range(curve.key_count() - 1, 0, -1):
+		var d := curve.point_at(i) - curve.point_at(i - 1)
+		if d.length_squared() > 1e-8:
+			return d.normalized()
+
+	return DEFAULT_HEADING
+
+
+## World transform for a single soldier.
+##
+## `terrain_height` is the terrain sample from D-006's input tuple. The
+## caller supplies it because sampling needs the soldier's XZ, which this
+## function computes — see soldier_transforms() for the assembled form.
+static func soldier_transform(
+	curve: StateCurve,
+	time: float,
+	slot: int,
+	alive: int,
+	shape: String,
+	spacing: float,
+	space: TorusSpace,
+	terrain_height: float = 0.0
+) -> Transform3D:
+	var centre := curve.sample_world(time, space)
+	var dir := heading(curve, time)
+
+	# Rotate the formation to face travel direction. The axial->world map
+	# is linear, so converting the axial heading gives the world heading.
+	var world_dir := space.axial_offset_to_world(dir)
+	var angle := atan2(world_dir.x, world_dir.z)
+
+	var local := slot_offset(shape, slot, alive, spacing)
+	# Formation-local +y is forward, which is +z after rotation.
+	var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+
+	var basis := Basis(Vector3.UP, angle)
+	var origin := centre + offset
+	origin.y = terrain_height
+	return Transform3D(basis, origin)
+
+
+## All slot transforms for a squad, ready for PrimitiveUnit's MultiMesh.
+##
+## `terrain_sampler` is an optional Callable taking (x: float, z: float)
+## and returning a height. It must itself be pure — it is part of D-006's
+## input tuple, so a stateful sampler would break the purity clause just
+## as surely as storing velocity here would.
+static func soldier_transforms(
+	curve: StateCurve,
+	time: float,
+	alive: int,
+	shape: String,
+	spacing: float,
+	space: TorusSpace,
+	terrain_sampler := Callable()
+) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	if curve == null or alive <= 0:
+		return out
+
+	for slot in range(alive):
+		var t := soldier_transform(curve, time, slot, alive, shape, spacing, space, 0.0)
+		if terrain_sampler.is_valid():
+			var origin := t.origin
+			origin.y = terrain_sampler.call(origin.x, origin.z)
+			t.origin = origin
+		out.append(t)
+	return out
