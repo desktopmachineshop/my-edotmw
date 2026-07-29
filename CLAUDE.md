@@ -7,19 +7,41 @@ this file is the condensed "ground rules" version.
 
 ## Current status
 
-**M0 (skeleton) complete**, as of 2026-07-28. `just test-unit` runs GUT
-headless through the `docker` runtime and passes; `just nuke` verified
-to fully tear down containers/images/`tools/`/`.godot` caches back to
-pure source. Nothing below is aspirational in structure anymore — the
-directories and files this document names exist — but gameplay itself
-hasn't started (that's M1). See `game_design_decisions.md` section 2 for
-what's still genuinely undecided, and D-006 in particular, which is
-provisional and blocks M1.
+**M1 (movement + netcode proof) complete**, as of 2026-07-29. All seven
+exit criteria in **D-022** are met. `just test-unit` is green at 127
+tests across 10 scripts; `just test-load 4 12` runs 4 bots against the
+server end to end and reports a clean verdict. Every justfile recipe is
+real — there are no remaining "NOT IMPLEMENTED UNTIL M1" stubs.
 
-M1 needs, in order: (1) confirm or reject D-006 (derived soldier
-positions — the netcode budget hinges on this), (2) answer Q6 (C# in
-shipping build), (3) build the actual movement/curve-sync/flow-field
-loop against M1's exit criteria in `game_design_decisions.md` section 2.
+The headline measurement: **2.14 µs per squad-update** at 48 squads,
+against D-020's ~50 µs budget. That is the number D-018's full-scale
+target and D-021's no-C# call both depend on, so re-measure it (via
+`just test-load`, which prints it) whenever the simulation changes shape.
+
+Next is **M2**: combat + fog of war. Both are blocked on decisions, not
+code — Q7 (combat model) and D-004's reveal/conceal semantics. See
+`game_design_decisions.md` section 2.
+
+D-006 (derived soldier positions) is Accepted and implemented in
+`formation.gd`. Its three binding clauses are load-bearing for
+everything built so far: soldier position is a **pure function** of
+(squad curve, formation shape, slot index, terrain sample) with no
+per-soldier integration state; client-side cosmetic offsets are
+**one-way** and never read back by simulation; casualty slot
+reassignment is **deterministic** (the formation restamps — soldiers
+don't walk into a vacated slot). Emergent per-soldier movement of any
+kind — local avoidance, collision push-back, jostling — is out of bounds
+and is the explicit revisit trigger.
+
+`Formation` is an all-static class on purpose: there is nowhere to put
+per-soldier state, so the purity clause is enforced rather than merely
+documented. Cosmetic motion lives in its own file (`cosmetic_offset.gd`)
+for the same reason — the one-way boundary is structural.
+
+Q7's *shape* (squad-level rolls vs. per-soldier resolution) is worth
+settling before M2 starts. D-006 constrains it — any answer must be
+expressible within the purity clause — and D-020 gives it a 100 ms
+minimum round granularity.
 
 ## What this project is
 
@@ -48,6 +70,12 @@ just implemented.
   object isn't changing, it costs zero bandwidth. This is also the
   mechanism fog of war uses to gate what a client receives — don't build
   a separate fog-of-war data-hiding system, extend this one.
+- **10 Hz simulation tick** (D-020). That is the rate authoritative state
+  advances — it is *not* the curve keyframe emission rate or the
+  flow-field recompute rate, both of which are lower and tuned
+  separately. Don't collapse these into one number: an idle squad must
+  still cost zero bandwidth regardless of tick rate. Per-squad update
+  cost is budgeted against a 100 ms tick.
 - **Squads, not individual units, are the atomic simulation unit** for
   movement and production. Pathfinding, networking, and unit production
   all operate at squad granularity. Don't reintroduce per-unit
@@ -72,29 +100,77 @@ just implemented.
 ## Project layout
 
 ```
+--- simulation core (all pure/headless, no scene tree) ---
+torus_space.gd           THE wrap-aware hex grid (D-008). Every distance,
+                        neighbour and world conversion goes through it.
+                        Each method normalises its own inputs, so
+                        forgetting to wrap cannot produce a wrong answer.
+flow_field.gd            Per-destination flow field (D-007). One field
+                        serves every squad heading there — that sharing
+                        is the scaling claim, so don't make it per-squad.
+state_curve.gd           Keyframed state curves (D-003). Stores points in
+                        CONTINUOUS UNWRAPPED axial space; read the header
+                        comment before touching it, or seam crossings
+                        break in a way that looks like a netcode bug.
+curve_replicator.gd      Per-client gating, horizon clipping and the
+                        budgeted invalidation scheduler (D-003/D-004).
+formation.gd             Derived soldier positions (D-006). All-static
+                        and pure — no instance state, by construction.
+cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
+                        must never read it back (D-006 clause 2).
+squad_sim.gd             The authoritative 10 Hz sim (D-020) over packed
+                        arrays (D-009). Ticked by an explicit
+                        accumulator, never _physics_process (D-023).
+terrain_gen.gd           Periodic (seam-continuous) terrain noise.
+terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
+replay_log.gd            Replays ARE the curve log (D-016), byte-
+                        identical to the wire format.
+
+--- networking ---
+net_protocol.gd          The one definition of the wire protocol, shared
+                        by server, client and bots so they can't drift.
+client_state.gd          Everything a client knows, with no rendering
+                        attached. The GUI client and the load-test bots
+                        both run THIS — so test-load exercises the real
+                        client path, and the client's logic is testable
+                        headless even though the client itself isn't.
+server.gd / server.tscn  Headless authoritative server (D-002).
+client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
+bot_client.gd            Headless load-test bot. Runs N *virtual*
+                        clients in one process, not N processes (memory
+                        budget — see D-018).
+
+--- data ---
 /units/*.tres          Unit definitions (UnitDef resources) — the MVP
                         roster lives here. Add new units by adding a
                         .tres file, not by writing new unit classes.
 unit_def.gd             UnitDef schema — extend fields here when a new
-                        unit needs a stat that doesn't exist yet.
+                        unit needs a stat that doesn't exist yet, and
+                        record the change in D-010's schema log.
+unit_roster.gd          Loads /units in a stable order. Server, client
+                        and tests all discover units through this.
+/maps/*.tres            MapConfig resources (torus dimensions, squads
+                        per player). Height must be even — D-008.
+map_config.gd           MapConfig schema.
 primitive_unit.gd       Tier-1 mesh generation (capsule/box/cylinder/
                         hull primitives) — see "Mesh pipeline" below.
+
+--- tooling ---
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
-bot_client.gd            Headless load-test bot — connects like a real
-                        client, drives scripted behavior for testing at
-                        scale. Runs N *virtual* clients in one process,
-                        not N processes (memory budget — see D-018).
+terrain_preview.gd       Headless terrain preview + chunk profiling.
+replay_info.gd           Reads a replay back and reconstructs state.
 game_design_decisions.md The living design doc. Read before deciding,
                         update after deciding.
 bootstrap.ps1            Fresh-clone entry point. Fetches `just` into
                         tools/ so the recipes below can run at all.
                         Nothing is installed system-wide.
 /tests/*.gd              GUT tests, run headless by `just test-unit`.
-                        test_unit_defs.gd guards D-009 and D-010 —
-                        every .tres in /units/ is loaded and schema-
-                        checked, so a malformed unit fails the suite.
+                        Each file names the decisions it guards in its
+                        header — they exist to make silent architectural
+                        drift fail loudly, so read that header before
+                        changing what a test asserts.
 Dockerfile               Pinned Godot headless image (D-001/D-014).
 docker-compose.yml       server / bots / test services. Teardown-scoped:
                         pinned project name, --rm, no restart policy,
@@ -128,6 +204,10 @@ requirement at 10,000+ cell map sizes, not a style choice).
 first. Recipes call each other via `{{just_executable()}}` for the same
 reason; a bare `just` inside a recipe will not resolve.
 
+**Run recipes from a bash shell (Git Bash), not PowerShell.** From
+PowerShell, `just` resolves `sh` to WSL's bash and dies with
+`execvpe(/bin/bash) failed` before any recipe body runs.
+
 Lifecycle:
 
 - `just doctor` — preflight: runtime prerequisites actually met?
@@ -138,17 +218,28 @@ Lifecycle:
 
 Dev loop and tests:
 
-- `just run-server` / `just run-client` — manual dev loop *(M1)*
-- `just run-bots N` — N virtual load-test bots in one process
-- `just test-unit` — GUT unit tests, headless *(green: 7 tests)*
+- `just run-server` — headless authoritative server
+- `just run-client [ADDRESS] [PORT]` — GUI client. **Native only**; needs
+  a GPU (D-014), so it ignores `EDOTMW_RUNTIME` and says so if portable
+  Godot is missing. WASD pans, wheel zooms, right-click orders.
+- `just run-bots N [DURATION]` — N virtual load-test bots in one process.
+  Requires a server to already be up (`just up`) — it deliberately does
+  not start one, because a `run --rm` dependency leaks a container.
+- `just test-unit` — GUT unit tests, headless *(green: 127 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
-  DURATION seconds, then scans logs for warnings/desyncs. Tears down via
-  trap on success, failure, and Ctrl-C. *(gated on `run-server`, so M1)*
-- `just gen-terrain-preview` — fast terrain-gen iteration loop *(M1)*
+  DURATION seconds. Checks the bots' exit status, an explicit VERDICT
+  line, AND the log scan. Tears down via trap on success, failure, and
+  Ctrl-C. Prints the per-squad update cost — the number to watch.
+- `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
+  plus chunking cost. Vary CHUNK_SIZE to settle D-017 with data.
+- `just replay-info [FILE]` — read a replay back and reconstruct state.
 
-Recipes marked *(M1)* depend on scenes that don't exist yet and exit
-non-zero with a clear message. That's deliberate — never make one
-silently succeed to get a green run.
+Every recipe listed is real and verified; none are stubs.
+
+**Any new headless recipe must depend on `_import`.** Godot resolves
+global `class_name`s from the import cache, and without it a script
+fails to parse with a misleading "Identifier not declared in the current
+scope". This bit M1 exactly where D-015 predicted it would.
 
 **Before reporting a change as done, run the relevant test recipe.**
 Given the project's performance targets (40,000 soldiers / ~1,000
@@ -156,10 +247,20 @@ squads, 20 players), "it compiles" is not the same as "it holds up at
 scale" — use `test-load` for anything touching netcode, pathfinding, or
 simulation cost.
 
+**A green run is not the same as a run that happened.** `test-load` once
+reported "clean" while every bot had exited non-zero, because it only
+grepped for words that didn't appear. When adding a check, make it
+assert that the thing *did* happen, not merely that nothing complained —
+and verify the check can actually fail before trusting it.
+
 ## Conventions
 
-- GDScript preferred for gameplay logic; C# acceptable for
-  performance-critical simulation code if profiling shows a need.
+- **GDScript only — no C# in the shipping build** (D-021). This is a
+  yes/no answer, not a preference: don't add a `.csproj`, don't reach for
+  the .NET Godot artifact, don't assume the .NET SDK is available in the
+  container. If a specific kernel is measured to exceed budget, the
+  escape hatch is **GDExtension (C++/Rust) scoped to that kernel** — and
+  only on M4 profiling evidence, not on suspicion.
 - Godot headless mode (`--headless`) for anything scriptable — server,
   bots, tests, terrain preview generation. Don't assume the editor GUI
   is available.

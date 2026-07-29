@@ -1,0 +1,213 @@
+extends GutTest
+
+## Guards D-007 (flow field per destination, not per-unit A*) and the
+## part of D-008 that bites hardest in pathfinding: a squad must take the
+## short way across a seam.
+##
+## The failure this is written against is subtle — a flow field built on
+## a non-wrapping grid still produces perfectly valid-looking paths. It
+## just routes squads the long way around the map. So the seam tests
+## assert path LENGTH against the wrapped distance, which is the only
+## thing that distinguishes the two.
+
+const W := 16
+const H := 12
+
+
+func _space() -> TorusSpace:
+	return TorusSpace.new(W, H, 1.0)
+
+
+func _field(dest: Vector2i, passable := PackedByteArray()) -> FlowField:
+	var f := FlowField.new()
+	f.build(_space(), dest, passable)
+	return f
+
+
+# --- basic correctness -----------------------------------------------
+
+func test_destination_has_zero_distance_and_no_direction() -> void:
+	var t := _space()
+	var dest := Vector2i(5, 5)
+	var f := _field(dest)
+	assert_eq(f.distance_at(t.index(dest)), 0)
+	assert_eq(f.direction_at(t.index(dest)), FlowField.NO_DIRECTION,
+		"The destination itself should have no onward direction")
+
+
+func test_every_cell_is_reachable_on_an_open_map() -> void:
+	var t := _space()
+	var f := _field(Vector2i(3, 7))
+	for i in range(t.cell_count()):
+		assert_true(f.is_reachable(i), "Cell %d should be reachable on an open torus" % i)
+
+
+func test_field_distance_matches_torus_distance_everywhere() -> void:
+	# On an open map with uniform cost, the BFS distance must equal the
+	# analytic wrapped hex distance. This is the strongest single check
+	# that the expansion is wrap-aware: any non-wrapping expansion
+	# produces larger distances near the seams.
+	var t := _space()
+	var dest := Vector2i(2, 2)
+	var f := _field(dest)
+	for i in range(t.cell_count()):
+		var expected := t.distance(t.from_index(i), dest)
+		assert_eq(f.distance_at(i), expected,
+			"Field distance at %s should match torus distance %d" % [t.from_index(i), expected])
+
+
+func test_following_the_field_strictly_decreases_distance() -> void:
+	var t := _space()
+	var f := _field(Vector2i(9, 4))
+	for i in range(t.cell_count()):
+		if i == f.destination:
+			continue
+		var next := f.step_from(i)
+		assert_eq(f.distance_at(next), f.distance_at(i) - 1,
+			"Stepping from cell %d should reduce distance by exactly 1" % i)
+
+
+func test_path_terminates_at_the_destination_from_every_cell() -> void:
+	var t := _space()
+	var dest := Vector2i(11, 8)
+	var f := _field(dest)
+	for i in range(t.cell_count()):
+		var path := f.path_from(i)
+		assert_gt(path.size(), 0, "Path from %d should not be empty" % i)
+		assert_eq(path[path.size() - 1], t.index(dest),
+			"Path from cell %d should end at the destination" % i)
+		assert_eq(path.size() - 1, t.distance(t.from_index(i), dest),
+			"Path from cell %d should be exactly the wrapped distance long" % i)
+
+
+# --- the seam --------------------------------------------------------
+
+func test_path_across_the_horizontal_seam_takes_the_short_way() -> void:
+	var t := _space()
+	# Destination one step east of the seam, squad one step west of it.
+	var dest := Vector2i(0, 6)
+	var start := Vector2i(W - 1, 6)
+	var f := _field(dest)
+
+	assert_eq(f.distance_at(t.index(start)), 1,
+		"Across the seam should be one step, not %d" % (W - 1))
+	var path := f.path_from(t.index(start))
+	assert_eq(path.size(), 2, "Path across the seam should be start + destination only")
+
+
+func test_path_across_the_vertical_seam_takes_the_short_way() -> void:
+	var t := _space()
+	var dest := Vector2i(7, 0)
+	var start := Vector2i(7, H - 1)
+	var f := _field(dest)
+
+	assert_eq(f.distance_at(t.index(start)), 1,
+		"Across the vertical seam should be one step")
+	assert_eq(f.path_from(t.index(start)).size(), 2)
+
+
+func test_longest_path_respects_the_wrapped_bound() -> void:
+	# A non-wrapping field would produce paths up to W+H long. A wrapped
+	# one cannot exceed roughly half that.
+	var t := _space()
+	var f := _field(Vector2i(0, 0))
+	var bound := (W / 2) + (H / 2)
+	for i in range(t.cell_count()):
+		assert_lte(f.distance_at(i), bound,
+			"Distance at cell %s exceeds the wrapped bound %d — field is not wrap-aware" % [t.from_index(i), bound])
+
+
+# --- obstacles -------------------------------------------------------
+
+func _all_passable(t: TorusSpace) -> PackedByteArray:
+	var p := PackedByteArray()
+	p.resize(t.cell_count())
+	p.fill(1)
+	return p
+
+
+func test_impassable_cells_are_unreachable_and_routed_around() -> void:
+	var t := _space()
+	var passable := _all_passable(t)
+
+	# Wall off column 8 entirely, except leave the torus's other side open
+	# — so the field must route around the long way rather than through.
+	for r in range(H):
+		passable[t.index(Vector2i(8, r))] = 0
+
+	var f := _field(Vector2i(10, 5), passable)
+
+	for r in range(H):
+		assert_false(f.is_reachable(t.index(Vector2i(8, r))),
+			"Walled cell (8,%d) should be unreachable" % r)
+
+	# A cell just west of the wall must still be reachable, by going the
+	# other way around the torus.
+	var west_of_wall := t.index(Vector2i(7, 5))
+	assert_true(f.is_reachable(west_of_wall),
+		"A cell west of a full-height wall should still reach the destination around the torus")
+	# Direct route would be 3 steps; around the torus is much further.
+	assert_gt(f.distance_at(west_of_wall), 3,
+		"Routing around the wall should cost more than the blocked direct path")
+
+
+func test_fully_enclosed_destination_yields_no_reachable_cells() -> void:
+	var t := _space()
+	var passable := _all_passable(t)
+	var dest := Vector2i(4, 4)
+
+	for n in t.neighbors(dest):
+		passable[t.index(n)] = 0
+
+	var f := _field(dest, passable)
+	assert_eq(f.distance_at(t.index(dest)), 0, "The destination itself is still trivially reachable")
+	assert_false(f.is_reachable(t.index(Vector2i(0, 0))),
+		"A walled-in destination should leave the rest of the map unreachable")
+
+
+func test_impassable_destination_produces_an_empty_field_not_a_crash() -> void:
+	var t := _space()
+	var passable := _all_passable(t)
+	var dest := Vector2i(6, 6)
+	passable[t.index(dest)] = 0
+
+	var f := _field(dest, passable)
+	assert_false(f.is_reachable(t.index(Vector2i(0, 0))),
+		"An impassable destination should yield a fully unreachable field")
+	assert_eq(f.path_from(t.index(Vector2i(0, 0))).size(), 0,
+		"path_from should return empty rather than looping when unreachable")
+
+
+func test_unreachable_cell_stalls_in_place_rather_than_walking_off() -> void:
+	var t := _space()
+	var passable := _all_passable(t)
+	var dest := Vector2i(4, 4)
+	for n in t.neighbors(dest):
+		passable[t.index(n)] = 0
+
+	var f := _field(dest, passable)
+	var stranded := t.index(Vector2i(0, 0))
+	assert_eq(f.step_from(stranded), stranded,
+		"Stepping from an unreachable cell should stall in place, not move somewhere arbitrary")
+
+
+# --- D-007's actual claim --------------------------------------------
+
+func test_one_field_serves_many_squads() -> void:
+	# D-007's scaling claim is that cost is per DESTINATION, not per
+	# squad. Asserted structurally: many start cells, one build, and
+	# every one of them gets a correct path out of the same field.
+	var t := _space()
+	var dest := Vector2i(1, 1)
+	var f := _field(dest)
+
+	var starts := [
+		Vector2i(15, 11), Vector2i(0, 0), Vector2i(8, 6),
+		Vector2i(15, 0), Vector2i(0, 11), Vector2i(4, 9),
+	]
+	for s in starts:
+		var path := f.path_from(t.index(s))
+		assert_eq(path[path.size() - 1], t.index(dest),
+			"Squad starting at %s should reach the shared destination" % s)
+		assert_eq(path.size() - 1, t.distance(s, dest),
+			"Squad starting at %s should take the wrapped-shortest path" % s)
