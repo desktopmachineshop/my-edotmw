@@ -1,0 +1,19 @@
+# Line endings.
+#
+# The dev machine has core.autocrlf=true, so without these rules a fresh
+# Windows clone checks shell scripts out with CRLF. A CRLF in a shebang
+# makes the Linux kernel look for an interpreter literally named
+# "/bin/sh\r" and fail with "no such file or directory" — an error that
+# points at the file rather than at the line ending, and so costs an hour.
+#
+# This repo promises that a fresh clone works (./bootstrap.ps1 -> just ->
+# test-unit), and gui_entrypoint.sh is COPYed into the container image and
+# executed there. That promise is only true if these stay LF.
+*.sh text eol=lf
+
+# Not executed as a script, but keeping it LF stops CRLF leaking into RUN
+# commands that get baked into the image.
+Dockerfile text eol=lf
+
+# Read by `just`, whose recipe bodies are handed to bash.
+justfile text eol=lf
