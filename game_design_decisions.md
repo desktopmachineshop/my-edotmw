@@ -1279,6 +1279,17 @@ just in code):
   per unit. All five are additive with defaults; existing `.tres` files
   pick them up unchanged.
 
+- **2026-07-30, M3 — added `armour_class: String = "infantry"` and
+  `bonus_vs: Dictionary = {}`.** D-032's counters. `armour_class` is what
+  a unit *is* for targeting; `bonus_vs` maps an opponent's armour class
+  to a damage multiplier, so the counter table is data and adding a
+  counter never means editing `combat.gd`. A missing entry means 1.0, so
+  a generalist unit needs no special-casing and both existing `.tres`
+  files stayed valid. Shipped alongside two new units — `spearmen.tres`
+  and `cavalry.tres` — completing D-015's 3-4 unit cut line with a real
+  triangle: spears counter cavalry, cavalry counter missile, missile
+  counters infantry.
+
 ---
 
 ### D-011 · 2026-07-28 · Accepted
@@ -1612,7 +1623,13 @@ and now live as decisions above.
   carries an open item.
 
 **Raised by M2's review, 2026-07-30 — logged rather than fixed:**
-- **Simultaneous vs. sequential combat resolution.** `Combat.resolve()`
+- ~~**Simultaneous vs. sequential combat resolution.**~~ → **resolved
+  2026-07-30 (M3): the round is now simultaneous.** Every attack reads
+  strength and rout state from a snapshot taken at the start of the
+  round, so squad id no longer decides mirror engagements. Two tests
+  guard it, and perturbing the change back to live state makes them fail
+  by exactly one soldier (13 vs 12) — the first-strike advantage, made
+  visible. Original finding follows, kept for the trail. `Combat.resolve()`
   iterates attackers in squad-id order and applies damage immediately, so
   a lower-id squad kills part of its enemy *before* that enemy fires, and
   the enemy then attacks at reduced strength. It is deterministic, so

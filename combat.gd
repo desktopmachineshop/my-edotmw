@@ -70,9 +70,29 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 
 	_recover_morale_and_check_rally(sim, dt)
 
+	# The round is SIMULTANEOUS (D-024 amendment). Every attack this tick
+	# reads strength and rout state as they stood at the start of the
+	# round, not as they stand part-way through it.
+	#
+	# This used to read live state, which made the round sequential in
+	# squad-id order: squad 0 killed part of squad 5, and squad 5 then
+	# answered at reduced strength. It was deterministic, so replays were
+	# fine — but it was not neutral. Identical unit types share an
+	# attack_interval and both start at _last_attack_tick = -1, so they
+	# fire on the same ticks indefinitely and the bias never averages out.
+	# Squads are spawned in join order, so player 1 systematically won
+	# mirror engagements. Reading the snapshot removes id order from the
+	# outcome entirely.
+	#
+	# Taken AFTER the rally pass so a squad that rallies this tick can act
+	# this tick; `before_routed` above is the pre-rally state, which is
+	# what the event diff needs.
+	var round_alive := sim.alive_snapshot()
+	var round_routed := sim.routed_snapshot()
+
 	var buckets := _build_buckets(sim)
 	for attacker in range(sim.squad_count()):
-		if sim.alive_of(attacker) <= 0 or sim.is_routed(attacker):
+		if round_alive[attacker] <= 0 or round_routed[attacker] == 1:
 			continue
 		var attacker_def := sim.def_of(attacker)
 		if attacker_def == null:
@@ -81,7 +101,7 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 		if target == -1:
 			continue
 		if _should_attack(sim, attacker, tick, attacker_def):
-			_resolve_attack(sim, attacker, target, tick)
+			_resolve_attack(sim, attacker, target, tick, round_alive[attacker])
 
 	return _diff(sim, before_alive, before_routed)
 
@@ -191,7 +211,11 @@ func _should_attack(sim: SquadSim, squad: int, tick: int, attacker_def: UnitDef)
 	return true
 
 
-func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int) -> void:
+## `attacker_strength` is the attacker's strength at the START of the
+## round, passed in rather than read live — that is what makes the round
+## simultaneous. See resolve()'s comment for why id order used to decide
+## mirror matchups.
+func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int, attacker_strength: int) -> void:
 	var attacker_def := sim.def_of(attacker)
 	var defender_def := sim.def_of(defender)
 	if attacker_def == null or defender_def == null:
@@ -203,7 +227,11 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int) -> 
 	var roll := _roll_unit(sim.combat_seed, tick, attacker)
 	var variance := clampf(attacker_def.damage_variance, 0.0, 1.0)
 	var multiplier := (1.0 - variance) + 2.0 * variance * roll
-	var total_damage := attacker_def.damage * float(sim.alive_of(attacker)) * multiplier
+	# Counter multiplier from data, not from a match statement here
+	# (D-032). A missing entry is 1.0, so a generalist unit needs no
+	# special-casing and adding a counter never means touching this file.
+	var counter := float(attacker_def.bonus_vs.get(defender_def.armour_class, 1.0))
+	var total_damage := attacker_def.damage * float(attacker_strength) * multiplier * counter
 
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.

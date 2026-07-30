@@ -101,6 +101,131 @@ func _combat_wire_bytes(events: Array) -> int:
 	return NetProtocol.encode_squad_combat(0, events).size()
 
 
+## Two squads that are identical in every respect, for the simultaneity
+## test. `damage_variance` is zero deliberately: the stochastic roll is a
+## function of squad id, so with variance the two would legitimately deal
+## different damage and the test could not tell an unfair resolution ORDER
+## apart from an ordinary unlucky roll. Morale loss is zero so neither
+## routs and walks away mid-test — this is about ordering, not morale.
+func _mirror_def() -> UnitDef:
+	var d := _attacker_def()
+	d.id = &"combat_test_mirror"
+	d.health = 20.0
+	d.morale_loss_per_casualty = 0.0
+	d.damage_variance = 0.0
+	return d
+
+
+# --- simultaneous resolution (D-024 amendment, D-027 criterion 14) -----
+
+func test_mirror_matchup_is_symmetric_not_won_by_the_lower_squad_id() -> void:
+	# Combat used to resolve in squad-id order against live state, so the
+	# lower id struck first at full strength and its enemy answered
+	# weakened. Identical unit types share an attack_interval and both
+	# start at _last_attack_tick = -1, so they fire on the same ticks
+	# forever and the bias never averages out — player 1 would
+	# systematically win mirror engagements.
+	var sim := _sim()
+	var def := _mirror_def()
+	var first := sim.add_squad(def, 1, Vector2i(5, 5))
+	var second := sim.add_squad(def, 2, Vector2i(6, 5))  # adjacent: in range
+
+	for _i in range(5):
+		sim.tick()
+
+	# Both halves matter: a fight that never started, or one that ended in
+	# mutual annihilation, would satisfy the equality below while proving
+	# nothing about resolution order.
+	assert_lt(sim.alive_of(first), def.squad_size, "Setup: the two squads must actually be fighting")
+	assert_gt(sim.alive_of(first), 0, "Setup: the fight must still be in progress, not over")
+
+	assert_eq(sim.alive_of(first), sim.alive_of(second),
+		"Two identical squads must take identical losses — squad id must not confer a first strike")
+
+
+func test_simultaneity_does_not_depend_on_which_side_has_the_lower_id() -> void:
+	# The same engagement with the owners swapped must produce the same
+	# outcome. If resolution order still leaked into the result, swapping
+	# which player owns the lower id would change who wins.
+	var sim := _sim()
+	var def := _mirror_def()
+	var a := sim.add_squad(def, 2, Vector2i(5, 5))  # player 2 now holds the LOWER id
+	var b := sim.add_squad(def, 1, Vector2i(6, 5))
+
+	for _i in range(5):
+		sim.tick()
+
+	assert_eq(sim.alive_of(a), sim.alive_of(b),
+		"Swapping which player owns the lower squad id must not change the outcome")
+
+
+# --- counters (D-032, D-027 criterion 13) ------------------------------
+
+## Runs one engagement and returns the defender's surviving strength.
+## Same setup both times apart from the attacker's counter table, so the
+## difference in outcome is attributable to the counter and nothing else.
+func _survivors_after_engagement(bonus: Dictionary) -> int:
+	var sim := _sim()
+
+	var attacker_def := _attacker_def()
+	attacker_def.damage_variance = 0.0
+	attacker_def.bonus_vs = bonus
+
+	var defender_def := _defender_def()
+	defender_def.armour_class = "infantry"
+	defender_def.damage = 0.0  # doesn't hit back; this is about one direction
+	defender_def.morale_loss_per_casualty = 0.0  # and doesn't rout away
+
+	sim.add_squad(attacker_def, 1, Vector2i(5, 5))
+	var defender := sim.add_squad(defender_def, 2, Vector2i(6, 5))
+
+	for _i in range(3):
+		sim.tick()
+	return sim.alive_of(defender)
+
+
+func test_counter_multiplier_changes_the_outcome() -> void:
+	var without_bonus := _survivors_after_engagement({})
+	var with_bonus := _survivors_after_engagement({"infantry": 2.0})
+
+	# The mechanism has to be visible in casualties, not merely present in
+	# the data. A counter system nothing verifies is decoration.
+	assert_lt(with_bonus, without_bonus,
+		"A unit with a bonus against the defender's armour class must kill more of it")
+
+
+func test_a_bonus_against_a_different_class_does_nothing() -> void:
+	# Guards the lookup itself: a bonus keyed to a class the defender is
+	# NOT would silently apply if the code ignored the key.
+	assert_eq(_survivors_after_engagement({"cavalry": 2.0}), _survivors_after_engagement({}),
+		"A bonus against cavalry must not apply to an infantry defender")
+
+
+func test_shipped_roster_has_a_real_counter_triangle() -> void:
+	# D-015's cut line asks for 3-4 unit types; four types with no
+	# counters between them would meet the letter of it and none of the
+	# point. This checks the shipped .tres data, not a fixture.
+	var by_id := {}
+	for def in UnitRoster.load_all():
+		by_id[String(def.id)] = def
+
+	for expected in ["militia", "archers", "spearmen", "cavalry"]:
+		assert_true(by_id.has(expected), "The roster should ship a '%s' unit" % expected)
+
+	assert_eq(by_id["archers"].armour_class, "missile")
+	assert_eq(by_id["cavalry"].armour_class, "cavalry")
+	assert_eq(by_id["spearmen"].armour_class, "infantry")
+
+	# The triangle: spears beat cavalry, cavalry beat missile, missile
+	# beats infantry.
+	assert_gt(float(by_id["spearmen"].bonus_vs.get("cavalry", 1.0)), 1.0,
+		"Spearmen should counter cavalry")
+	assert_gt(float(by_id["cavalry"].bonus_vs.get("missile", 1.0)), 1.0,
+		"Cavalry should counter missile troops")
+	assert_gt(float(by_id["archers"].bonus_vs.get("infantry", 1.0)), 1.0,
+		"Archers should counter infantry")
+
+
 # --- engagement range (D-024) ------------------------------------------
 
 func test_engagement_in_range_produces_casualties() -> void:

@@ -61,6 +61,19 @@ class_name UnitDef
 # Primitive-tier mesh generation (D-011, see primitive_unit.gd). Tiers 2
 # (modular/parametric) and 3 (Blender/glTF final-fidelity) are
 # unscheduled — don't add fields for them speculatively.
+# Counters (D-032, a D-024 amendment). Schema addition 2026-07-30 (M3,
+# recorded against D-010): D-015's cut line asks for 3-4 unit types, and
+# four types distinguished only by flat stats give none of the
+# rock-paper-scissors the genre runs on.
+#
+# `armour_class` is what this unit IS for targeting purposes;
+# `bonus_vs` maps an opponent's armour_class to a damage multiplier, so
+# the counter table is data rather than a match statement in combat.gd.
+# A missing entry means 1.0 — a unit with no bonuses is simply a
+# generalist, not a special case.
+@export_enum("infantry", "cavalry", "missile") var armour_class: String = "infantry"
+@export var bonus_vs: Dictionary = {}
+
 @export_enum("capsule", "box", "cylinder", "hull") var mesh_primitive: String = "capsule"
 @export var mesh_color: Color = Color.WHITE
 
