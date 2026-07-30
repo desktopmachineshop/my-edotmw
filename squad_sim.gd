@@ -90,6 +90,11 @@ var _routed := PackedByteArray()  # 0/1 — not bool, to stay a packed array
 var _damage_accum := PackedFloat32Array()  # fractional casualties carried
 var _last_attack_tick := PackedInt32Array()  # -1 = never attacked
 
+# Stance (D-034). 1 means the squad is attack-moving and should halt the
+# moment it finds something to fight; 0 means an ordinary move, which
+# walks on through a fight. Per-squad, like everything else here.
+var _attack_move := PackedByteArray()
+
 ## Casualty/rout events produced by the most recent tick's combat
 ## resolution — empty whenever nothing changed (D-026 criterion 3).
 ## server.gd reads this once per tick, right after calling tick(), and
@@ -162,6 +167,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_routed.append(0)
 	_damage_accum.append(0.0)
 	_last_attack_tick.append(-1)
+	_attack_move.append(0)
 
 	var curve := StateCurve.new()
 	curve.append_cell(time, at, space)
@@ -333,7 +339,35 @@ func set_alive(squad: int, alive: int) -> void:
 func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
+	_attack_move[squad] = 0
 	_apply_move_order(squad, destination)
+
+
+## Advance, but halt on contact (D-034). Combat clears the stance when it
+## halts the squad, so the order is spent once it has done its job rather
+## than sticking around to re-halt the squad every tick it stays engaged.
+func order_attack_move(squad: int, destination: Vector2i) -> void:
+	if is_routed(squad):
+		return
+	_apply_move_order(squad, destination)
+	_attack_move[squad] = 1
+
+
+func is_attack_moving(squad: int) -> bool:
+	return _attack_move[squad] == 1
+
+
+## Halt where the squad actually is (D-034).
+##
+## "Here" is resolved from the authoritative cell rather than from
+## anything the client sent, because a client's view lags replication by
+## up to a tick (D-002) — taking its word for a position would let a stop
+## order teleport a squad backwards.
+func stop(squad: int) -> void:
+	if is_routed(squad):
+		return
+	_attack_move[squad] = 0
+	_apply_move_order(squad, space.from_index(_cell[squad]))
 
 
 ## The move Combat issues when a squad routs. Bypasses the routed check

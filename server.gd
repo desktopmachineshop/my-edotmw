@@ -371,33 +371,60 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 		match opcode:
 			NetProtocol.C2S_ORDER_MOVE:
 				_handle_order_move(peer, data)
+			NetProtocol.C2S_ORDER_STOP:
+				_handle_order_stop(peer, data)
+			NetProtocol.C2S_ORDER_ATTACK_MOVE:
+				_handle_order_attack_move(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
 
-func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+## Shared validation for every squad order (D-002, D-034). Returns the
+## squad id, or -1 if the order must be dropped.
+##
+## Factored out rather than repeated per handler: the checks ARE the
+## authority, and three copies is how one of them eventually loses one.
+## A client may only order squads it owns, only squads that exist, and
+## only while a match is actually running (D-033) — none of which is
+## trusted from the client, because the client is not trusted.
+func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
 	var record = _clients.get(peer, null)
 	if record == null:
-		return
-	var order := NetProtocol.decode_order_move(data)
-	var squad := int(order["squad"])
-	var destination := int(order["destination"])
-
-	# Authoritative server (D-002): a client may only order its own
-	# squads, and only to a cell that exists. Both are enforced here
-	# rather than trusted, because the client is not trusted.
-	# Orders mean nothing outside a running match (D-033): not while the
-	# lobby is still filling, and not after someone has won.
+		return -1
 	if not _match.is_running():
-		return
-
+		return -1
 	if not (record["squads"] as Array).has(squad):
 		push_error("server: player %d tried to order squad %d it does not own" % [record["player"], squad])
-		return
+		return -1
 	if squad < 0 or squad >= _sim.squad_count():
-		return
+		return -1
+	return squad
 
-	_sim.order_move(squad, _sim.space.from_index(destination))
+
+func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_move(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	# from_index normalises, so a nonsense destination wraps into the map
+	# rather than going out of bounds (D-008).
+	_sim.order_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+func _handle_order_attack_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_attack_move(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+func _handle_order_stop(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_stop(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.stop(squad)
 
 
 func _spawn_squads_for(player: int) -> Array:

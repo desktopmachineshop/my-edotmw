@@ -391,3 +391,21 @@ func encode_order(squad: int, destination: Vector2i) -> PackedByteArray:
 	if space == null or not owns(squad):
 		return PackedByteArray()
 	return NetProtocol.encode_order_move(squad, space.index(destination))
+
+
+## Advance but halt on contact (D-034). Same ownership guard as above —
+## the server enforces it too, but sending a knowingly invalid order is
+## just noise on the wire.
+func encode_attack_move(squad: int, destination: Vector2i) -> PackedByteArray:
+	if space == null or not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_attack_move(squad, space.index(destination))
+
+
+## Halt where the squad stands. Carries no destination: where "here" is
+## belongs to the server, since this client's view of the position lags
+## replication by up to a tick.
+func encode_stop(squad: int) -> PackedByteArray:
+	if not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_stop(squad)

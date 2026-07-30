@@ -100,6 +100,15 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 		var target := _find_target(sim, buckets, attacker, attacker_def)
 		if target == -1:
 			continue
+
+		# Attack-move halts on contact (D-034). This is the one place that
+		# knows contact has happened, so it is where the stance is spent —
+		# sim.stop() clears the flag, so a squad that stays engaged is not
+		# re-halted every tick and does not rebuild its curve every tick
+		# for no change (D-003's zero-cost-when-idle).
+		if sim.is_attack_moving(attacker):
+			sim.stop(attacker)
+
 		if _should_attack(sim, attacker, tick, attacker_def):
 			_resolve_attack(sim, attacker, target, tick, round_alive[attacker])
 

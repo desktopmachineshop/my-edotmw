@@ -24,6 +24,8 @@ const S2C_SQUAD_CONCEAL := 6
 
 # Client -> server
 const C2S_ORDER_MOVE := 10
+const C2S_ORDER_STOP := 11
+const C2S_ORDER_ATTACK_MOVE := 12
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -96,6 +98,47 @@ static func encode_order_move(squad: int, destination_index: int) -> PackedByteA
 
 
 static func decode_order_move(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "destination": buf.get_u32()}
+
+
+## STOP: halt where you stand (D-034). Carries no destination — the
+## server decides that "here" means the squad's current cell, because the
+## client's idea of where a squad is lags replication by up to a tick and
+## is not authoritative (D-002).
+static func encode_order_stop(squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_STOP)
+	buf.put_u32(squad)
+	return buf.data_array
+
+
+static func decode_order_stop(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32()}
+
+
+## ATTACK_MOVE: advance, but stop on contact (D-034).
+##
+## Squads already engage anything that comes into range, so this is not
+## "move and also fight" — that is what a plain move already does. The
+## difference is what happens on contact: an attack-moving squad halts
+## and fights where it stands, while a moving squad walks on through and
+## keeps taking hits from behind. That distinction is the whole reason
+## the order exists.
+static func encode_order_attack_move(squad: int, destination_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_ATTACK_MOVE)
+	buf.put_u32(squad)
+	buf.put_u32(destination_index)
+	return buf.data_array
+
+
+static func decode_order_attack_move(data: PackedByteArray) -> Dictionary:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = data
 	buf.get_u8()
