@@ -520,6 +520,37 @@ func recompute_vision_now() -> void:
 	vision.rebuild(self)
 
 
+## How many of `player`'s squads still have soldiers in them.
+##
+## Elimination (D-033) reads this rather than keeping a parallel "is this
+## player still alive" flag, so "defeated" has exactly one definition and
+## cannot drift out of step with the simulation.
+func living_squad_count(player: int) -> int:
+	var n := 0
+	for i in range(_cell.size()):
+		if _owner[i] == player and _alive[i] > 0:
+			n += 1
+	return n
+
+
+## Wipe out everything `player` owns, returning the casualty events that
+## describes. Used when a player disconnects (D-033) — an abandoned army
+## does not get to keep standing on the field.
+##
+## Returns Combat's own {id, alive, routed} shape deliberately, so the
+## server broadcasts this through the existing casualty path rather than
+## inventing a second message. Clients already know how to apply it, and
+## the composition hash stays in agreement for free.
+func eliminate_player(player: int) -> Array:
+	var events := []
+	for i in range(_cell.size()):
+		if _owner[i] == player and _alive[i] > 0:
+			_alive[i] = 0
+			_routed[i] = 0
+			events.append({"id": i, "alive": 0, "routed": false})
+	return events
+
+
 ## Squad ids visible to `player` (D-025, closing D-022's "known stub").
 ## Always the player's own squads, plus any other squad sitting in a cell
 ## the player's vision field currently covers — a single O(1) lookup per

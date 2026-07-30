@@ -47,6 +47,15 @@ var _config: MapConfig
 var _sim: SquadSim
 var _replay: ReplayLog
 
+var _match: MatchState
+
+## Casualty/rout events produced OUTSIDE a tick — currently only a
+## disconnecting player's army being wiped (D-033). They cannot simply be
+## appended to `_sim.last_combat_events`, because the next tick overwrites
+## that; they wait here until the next `_replicate()` sends them.
+var _pending_events: Array = []
+var _reported_match_end := false
+
 var _accumulator := 0.0
 var _port := DEFAULT_PORT
 var _run_seconds := -1.0  # negative = run until stopped
@@ -76,6 +85,13 @@ func _ready() -> void:
 
 	var space := _config.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
+
+	# Match lifecycle (D-033). Defaults to 1 so the single-client
+	# development flows (`run-client`, `test-client`) behave exactly as
+	# they did before matches existed: the match starts on the first join
+	# and the victory rule never fires with fewer than two players.
+	_match = MatchState.new()
+	_match.players_expected = maxi(1, int(args.get("players", 1)))
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
 	# (D-024) — MapConfig has no dedicated seed field, so this derives one
@@ -138,6 +154,7 @@ func _process(delta: float) -> void:
 		_accumulator -= step
 		guard += 1
 		_sim.tick()
+		_advance_match()
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
@@ -276,8 +293,11 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# a leak, and self-correcting within one tick.
 	_clients[peer]["visible"] = _dict_from_ids(_sim.visible_to(player))
 
-	print("server: player %d joined with %d squads (%d connected)" % [
-		player, squads.size(), _clients.size()])
+	if _match.add_player(player):
+		print("server: MATCH_START — %s" % _match.describe())
+
+	print("server: player %d joined with %d squads (%d connected) — match %s" % [
+		player, squads.size(), _clients.size(), _match.describe()])
 
 
 func _send_squad_info(peer: ENetPacketPeer, player: int) -> void:
@@ -324,8 +344,19 @@ func _all_squad_ids() -> Array:
 func _on_disconnect(peer: ENetPacketPeer) -> void:
 	var record = _clients.get(peer, null)
 	if record != null:
-		_sim.replicator.forget_client(int(record["player"]))
-		print("server: player %d left (%d connected)" % [record["player"], _clients.size() - 1])
+		var player := int(record["player"])
+		_sim.replicator.forget_client(player)
+
+		# An abandoned army does not get to keep standing on the field
+		# (D-033). Wiping it is the *cause* of defeat; MatchState's
+		# ordinary "no living squads" rule notices the effect on the next
+		# tick, so "defeated" keeps exactly one definition. The wipe comes
+		# back as casualty events, which replicate through the path
+		# clients already understand.
+		_match.mark_disconnected(player)
+		_pending_events.append_array(_sim.eliminate_player(player))
+
+		print("server: player %d left (%d connected)" % [player, _clients.size() - 1])
 	_clients.erase(peer)
 	if _clients.is_empty() and _sim != null and _sim.squad_count() > 0:
 		_print_summary("last client left")
@@ -355,6 +386,11 @@ func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	# Authoritative server (D-002): a client may only order its own
 	# squads, and only to a cell that exists. Both are enforced here
 	# rather than trusted, because the client is not trusted.
+	# Orders mean nothing outside a running match (D-033): not while the
+	# lobby is still filling, and not after someone has won.
+	if not _match.is_running():
+		return
+
 	if not (record["squads"] as Array).has(squad):
 		push_error("server: player %d tried to order squad %d it does not own" % [record["player"], squad])
 		return
@@ -429,9 +465,31 @@ func _pick_unit_def() -> UnitDef:
 ##    time it checks itself (D-026 criterion 3) — unchanged from M2's
 ##    combat-only shape, just now sharing `visible` with the fog gate
 ##    rather than a stub that returned everything.
+## Drive the match rules once per tick and announce what they decide
+## (D-033).
+##
+## The announcements are structured markers, not prose — `just test-load`
+## scans for exactly these, and the justfile's own comment records why
+## scanning for scary words instead once failed a good run by matching its
+## own success line.
+func _advance_match() -> void:
+	for player in _match.update(_sim):
+		print("server: MATCH_ELIMINATED player=%d" % player)
+	if _match.is_finished() and not _reported_match_end:
+		_reported_match_end = true
+		print("server: MATCH_OVER winner=%d" % _match.winner)
+
+
 func _replicate() -> void:
 	var send_hash := _sim.tick_count % STATE_HASH_EVERY_TICKS == 0
+
+	# This tick's combat, plus anything produced outside a tick (a
+	# disconnecting player's army being wiped). Merged rather than sent
+	# separately so a client applies both in one message and the
+	# composition hash that follows is already current.
 	var combat_events := _sim.last_combat_events
+	if not _pending_events.is_empty():
+		combat_events = combat_events + _pending_events
 
 	for peer in _clients:
 		var record = _clients[peer]
@@ -493,6 +551,9 @@ func _replicate() -> void:
 			peer.send(0,
 				NetProtocol.encode_state_hash(_sim.tick_count, _sim.composition_hash(visible)),
 				ENetPacketPeer.FLAG_RELIABLE)
+
+	# Delivered to every client above, so they are no longer pending.
+	_pending_events.clear()
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:
