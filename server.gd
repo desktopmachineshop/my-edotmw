@@ -21,6 +21,16 @@ const CHANNELS := 2
 
 const DEFAULT_MAP := "res://maps/default.tres"
 
+## Ticks the server will run in one frame to catch up before giving up and
+## discarding the backlog. Bounded so a stalled server cannot enter a
+## death spiral of ever-growing catch-up work.
+const MAX_CATCHUP_TICKS := 10
+
+## How often the server publishes its composition hash for clients to
+## check themselves against. Every tick would be wasteful; this is often
+## enough that a desync is caught within a second.
+const STATE_HASH_EVERY_TICKS := 10
+
 var _host: ENetConnection
 var _clients := {}  # ENetPacketPeer -> { "player": int, "squads": Array[int] }
 var _next_player := 1
@@ -34,6 +44,8 @@ var _port := DEFAULT_PORT
 var _run_seconds := -1.0  # negative = run until stopped
 var _status_every_ticks := 100
 var _shutting_down := false
+var _ticks_dropped := 0
+var _reported_drop := false
 
 
 func _ready() -> void:
@@ -107,7 +119,7 @@ func _process(delta: float) -> void:
 	var step := 1.0 / SquadSim.TICK_HZ
 	_accumulator += delta
 	var guard := 0
-	while _accumulator >= step and guard < 10:
+	while _accumulator >= step and guard < MAX_CATCHUP_TICKS:
 		_accumulator -= step
 		guard += 1
 		_sim.tick()
@@ -115,6 +127,19 @@ func _process(delta: float) -> void:
 
 		if _sim.tick_count % _status_every_ticks == 0:
 			_print_status()
+
+	# If the backlog still exceeds a tick, the catch-up bound just threw
+	# simulation time away. Dropping ticks is the right call — the
+	# alternative is a death spiral — but doing it silently means a server
+	# falling behind looks identical to one keeping up. Count it, and say
+	# so once rather than every frame.
+	if _accumulator >= step:
+		var dropped := int(_accumulator / step)
+		_ticks_dropped += dropped
+		_accumulator -= float(dropped) * step
+		if not _reported_drop:
+			_reported_drop = true
+			push_error("server: dropped %d simulation tick(s) catching up — the sim is falling behind wall-clock (total is in the final summary)" % dropped)
 
 	if _run_seconds > 0.0 and _sim.time >= _run_seconds:
 		print("server: reached %.1fs, stopping" % _run_seconds)
@@ -132,10 +157,10 @@ func _process(delta: float) -> void:
 func _print_summary(reason: String) -> void:
 	if _sim == null:
 		return
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d us/squad=%.2f" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
-		_sim.fields_built, _sim.curves_rebuilt,
+		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
 		_sim.mean_usec_per_squad_update(),
 	])
 
@@ -182,8 +207,34 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads),
 		ENetPacketPeer.FLAG_RELIABLE)
 
+	# Composition for everything each client can see, not just what it
+	# owns — clients derive soldiers for other players' squads too, and
+	# without composition they would have to guess.
+	#
+	# Broadcast rather than sent only to the joiner: this player's squads
+	# have just come into existence, and every ALREADY-connected client can
+	# see them. Sending only to the newcomer leaves everyone else receiving
+	# curves for squads they were never told about — which is exactly what
+	# the desync check caught the first time it ran.
+	_broadcast_squad_info()
+
 	print("server: player %d joined with %d squads (%d connected)" % [
 		player, squads.size(), _clients.size()])
+
+
+func _send_squad_info(peer: ENetPacketPeer, player: int) -> void:
+	var entries := _sim.squad_info_entries(_sim.visible_to(player))
+	if entries.is_empty():
+		return
+	peer.send(0, NetProtocol.encode_squad_info(entries), ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Tell every connected client about a composition change. M1 never calls
+## this — nothing changes a squad's strength until combat lands in M2 —
+## but the path exists so casualties do not arrive as a protocol gap.
+func _broadcast_squad_info() -> void:
+	for peer in _clients:
+		_send_squad_info(peer, int(_clients[peer]["player"]))
 
 
 func _on_disconnect(peer: ENetPacketPeer) -> void:
@@ -247,13 +298,23 @@ func _pick_unit_def() -> UnitDef:
 
 
 func _replicate() -> void:
+	var send_hash := _sim.tick_count % STATE_HASH_EVERY_TICKS == 0
+
 	for peer in _clients:
 		var record = _clients[peer]
 		var player := int(record["player"])
-		var packets := _sim.replicator.collect_for_client(
-			player, _sim.time, _sim.visible_to(player))
+		var visible := _sim.visible_to(player)
+
+		var packets := _sim.replicator.collect_for_client(player, _sim.time, visible)
 		for packet in packets:
 			peer.send(0, NetProtocol.encode_curve(packet["bytes"]), ENetPacketPeer.FLAG_RELIABLE)
+
+		# Hashed over this client's visible set, so it stays correct once
+		# fog of war makes that set differ per client (D-004, M2).
+		if send_hash:
+			peer.send(0,
+				NetProtocol.encode_state_hash(_sim.tick_count, _sim.composition_hash(visible)),
+				ENetPacketPeer.FLAG_RELIABLE)
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:

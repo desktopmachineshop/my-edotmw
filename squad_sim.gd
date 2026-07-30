@@ -44,6 +44,7 @@ var _owner := PackedInt32Array()
 var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
 var _spacing := PackedFloat32Array()
+var _def_id: Array[StringName] = []
 var _curves: Array[StateCurve] = []
 
 # Flow fields are per DESTINATION and shared by every squad heading there
@@ -55,6 +56,8 @@ var last_tick_usec: int = 0
 var total_tick_usec: int = 0
 var fields_built: int = 0
 var curves_rebuilt: int = 0
+
+var _validated := false
 
 # Terrain passability. Empty means fully open, which is M1's case —
 # terrain generation is explicitly out of M1's scope (D-022).
@@ -88,6 +91,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_speed.append(_cells_per_second(def))
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
+	_def_id.append(def.id)
 
 	var curve := StateCurve.new()
 	curve.append_cell(time, at, space)
@@ -125,6 +129,56 @@ func owner_of(squad: int) -> int:
 
 func curve_of(squad: int) -> StateCurve:
 	return _curves[squad]
+
+
+func def_id_of(squad: int) -> StringName:
+	return _def_id[squad]
+
+
+## What each squad IS, for the server to tell clients (D-006's inputs are
+## a protocol obligation — see NetProtocol.encode_squad_info).
+func squad_info_entries(squad_ids: Array) -> Array:
+	var out := []
+	for id in squad_ids:
+		if id < 0 or id >= _cell.size():
+			continue
+		out.append({"id": id, "def_id": String(_def_id[id]), "alive": _alive[id]})
+	return out
+
+
+## The same composition, hashed, for clients to check themselves against.
+func composition_hash(squad_ids: Array) -> int:
+	var entries := []
+	for id in squad_ids:
+		if id < 0 or id >= _cell.size():
+			continue
+		entries.append({
+			"id": id,
+			"alive": _alive[id],
+			"shape": _shape[id],
+			"spacing": _spacing[id],
+		})
+	return NetProtocol.composition_hash(entries)
+
+
+## Configuration sanity. Returns "" if valid, else the reason.
+##
+## The lookahead/horizon relationship was previously stated only in a
+## comment. If the replicator's horizon is raised past the sim's lookahead
+## — an entirely natural thing to try while tuning — clients run out of
+## curve between updates and squads stutter, with nothing anywhere saying
+## why. An invariant worth writing down is worth enforcing.
+func validate() -> String:
+	if replicator == null:
+		return "SquadSim needs a CurveReplicator"
+	if curve_lookahead_seconds <= replicator.horizon_seconds:
+		return "curve_lookahead_seconds (%.2f) must exceed the replicator's horizon_seconds (%.2f), or clients run out of curve between updates" % [
+			curve_lookahead_seconds, replicator.horizon_seconds]
+	return ""
+
+
+func is_valid() -> bool:
+	return validate() == ""
 
 
 func is_idle(squad: int) -> bool:
@@ -197,6 +251,15 @@ func _log_curve(squad: int, curve: StateCurve) -> void:
 
 ## Advance one 10 Hz tick.
 func tick() -> void:
+	# Checked once rather than at construction, because callers legitimately
+	# tune horizon and lookahead after wiring the two together. One bool
+	# test per tick is a fair price for the invariant never going unnoticed.
+	if not _validated:
+		_validated = true
+		var invalid := validate()
+		if invalid != "":
+			push_error("SquadSim: %s" % invalid)
+
 	var started := Time.get_ticks_usec()
 
 	time += 1.0 / TICK_HZ
