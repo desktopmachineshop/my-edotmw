@@ -174,6 +174,7 @@ func _process(delta: float) -> void:
 
 	_refresh_squads()
 	_update_hud()
+	_update_minimap()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -358,6 +359,14 @@ func _build_terrain() -> void:
 				instance.material_override = material
 				tile.add_child(instance)
 			_terrain_root.add_child(tile)
+
+	# Minimap base: one pixel per cell, painted from the same biome
+	# classification the mesh used (D-037), so the small picture and the
+	# big one cannot disagree about where the water is.
+	_minimap_base = Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
+	for y in range(space.height):
+		for x in range(space.width):
+			_minimap_base.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
@@ -644,6 +653,15 @@ var _control_groups := {}
 var _hud_status: Label = null
 var _hud_selection: Label = null
 
+## Minimap (D-027 criterion 5). Wrap-awareness is free here in a way it
+## is nowhere else in this project: the minimap IS the whole torus, so a
+## cell maps to a pixel directly and there is no seam to handle.
+const MINIMAP_INTERVAL := 0.25
+var _minimap_rect: TextureRect = null
+var _minimap_base: Image = null
+var _minimap_texture: ImageTexture = null
+var _minimap_updated_at := -1.0
+
 
 ## client.tscn is a bare Node3D, so every node is built in code — the HUD
 ## included. A CanvasLayer puts it in screen space above the 3D view.
@@ -674,6 +692,16 @@ func _build_hud() -> void:
 	_selection_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_selection_rect)
 
+	_minimap_rect = TextureRect.new()
+	_minimap_rect.position = Vector2(12.0, 96.0)
+	_minimap_rect.size = Vector2(256.0, 128.0)
+	_minimap_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	# Nearest-neighbour: one cell is one pixel, and smoothing it would
+	# blur the squad dots into the terrain they sit on.
+	_minimap_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_minimap_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(_minimap_rect)
+
 
 func _update_hud() -> void:
 	if _hud_status == null:
@@ -691,6 +719,45 @@ func _update_hud() -> void:
 		strength += _state.alive_of(squad)
 	var kind: String = String(_state.composition.get(_selected[0], {}).get("def_id", "?"))
 	_hud_selection.text = "%d selected · %s · %d soldiers" % [_selected.size(), kind, strength]
+
+
+## Repaint the minimap a few times a second rather than every frame:
+## it is a whole-image copy plus a dot per known squad, which is cheap but
+## not free, and nothing on it moves fast enough at 10 Hz (D-020) to need
+## more.
+func _update_minimap() -> void:
+	if _minimap_base == null or _minimap_rect == null:
+		return
+	if _minimap_updated_at >= 0.0 and _now - _minimap_updated_at < MINIMAP_INTERVAL:
+		return
+	_minimap_updated_at = _now
+
+	var image: Image = _minimap_base.duplicate()
+	for squad in _state.curves:
+		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
+		# Ghosts are last-known information, so they are drawn dimmer —
+		# the same distinction the 3D view makes by fading them (D-025).
+		if _state.is_ghost(squad):
+			colour = colour.darkened(0.45)
+		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
+
+	if _minimap_texture == null:
+		_minimap_texture = ImageTexture.create_from_image(image)
+		_minimap_rect.texture = _minimap_texture
+	else:
+		_minimap_texture.update(image)
+
+
+## A 2x2 blob rather than a single pixel, so a squad is visible at one
+## pixel per cell. Wrapped with posmod because a blob on the right edge
+## belongs on the left one — the torus tax, cheap for once.
+func _plot_minimap(image: Image, cell: Vector2i, colour: Color) -> void:
+	for dy in range(2):
+		for dx in range(2):
+			image.set_pixel(
+				posmod(cell.x + dx, image.get_width()),
+				posmod(cell.y + dy, image.get_height()),
+				colour)
 
 
 func _unhandled_input(event: InputEvent) -> void:
