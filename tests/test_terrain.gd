@@ -138,12 +138,20 @@ func test_neighbouring_cells_are_usually_similar() -> void:
 
 	# Compare against the delta between far-apart cells, which should be
 	# much larger if the field is spatially coherent.
+	#
+	# A QUARTER of the map away, not half. This used to sample half a map
+	# away, which stopped being "far" the moment terrain became
+	# quadrant-symmetric (D-036): with axis_repeats=2 the cell half a map
+	# away is the *same sample point*, so far_delta measured exactly 0.0
+	# and the test failed against a perfectly good generator. A quarter map
+	# is the furthest two cells can actually be in noise terms once the
+	# field repeats twice per axis.
 	var far_delta := 0.0
 	var far_samples := 0
 	for q in range(0, W, 2):
 		for r in range(0, H, 2):
 			far_delta += absf(terrain.elevation_at(space, Vector2i(q, r))
-				- terrain.elevation_at(space, Vector2i((q + W / 2) % W, (r + H / 2) % H)))
+				- terrain.elevation_at(space, Vector2i((q + W / 4) % W, (r + H / 4) % H)))
 			far_samples += 1
 	far_delta /= float(far_samples)
 

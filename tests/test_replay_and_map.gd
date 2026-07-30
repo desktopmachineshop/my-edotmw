@@ -70,6 +70,42 @@ func test_map_config_delegates_geometry_to_torus_space() -> void:
 
 # --- replay format ----------------------------------------------------
 
+## Guards the SIGTERM data-loss defect: `docker compose stop` sends
+## SIGTERM, Godot headless does not run `_exit_tree` for it (server.gd's
+## own comment above `_print_summary` documents this), so `ReplayLog.
+## close()` never runs on a real server shutdown. Before this test
+## existed, every record sat in FileAccess's internal write buffer until
+## close() flushed it — meaning a killed server's replay lost whatever
+## hadn't been explicitly flushed, and because SQUAD_INFO/SQUAD_COMBAT
+## records are written strictly after the curve records describing a
+## squad's march (see the M2 addendum on this class), the LOST tail was
+## exactly the composition and casualty history D-026 criterion 11 needs.
+##
+## Proven here by reading the file through a SECOND, independent
+## FileAccess handle while the writer is still open — never closed — so
+## if `_write_record` only buffered and never flushed, this second handle
+## would see zero bytes.
+func test_records_are_flushed_without_waiting_for_close() -> void:
+	var space := _space()
+	var log := ReplayLog.new()
+	assert_eq(log.open_for_write(REPLAY_PATH, 10.0, space), OK)
+
+	var curve := StateCurve.new()
+	curve.append_cell(0.0, Vector2i(1, 1), space)
+	log.record(0.0, 1, 1, curve)
+
+	var reader := FileAccess.open(REPLAY_PATH, FileAccess.READ)
+	assert_not_null(reader, "Should be able to open the replay for reading while the writer is still open")
+	var size_while_still_open := reader.get_length() if reader != null else 0
+	if reader != null:
+		reader.close()
+
+	assert_gt(size_while_still_open, ReplayLog.HEADER_BYTES,
+		"A record written before close() should already be on disk — ReplayLog must flush every record, not just on close()")
+
+	log.close()
+
+
 func test_replay_roundtrips_curves() -> void:
 	var space := _space()
 	var log := ReplayLog.new()

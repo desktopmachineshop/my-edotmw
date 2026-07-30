@@ -32,7 +32,15 @@ const MAX_CATCHUP_TICKS := 10
 const STATE_HASH_EVERY_TICKS := 10
 
 var _host: ENetConnection
-var _clients := {}  # ENetPacketPeer -> { "player": int, "squads": Array[int] }
+# ENetPacketPeer -> { "player": int, "squads": Array[int],
+# "visible": Dictionary[int, bool] }. "visible" is this client's
+# reveal/conceal baseline — the squad ids it was visible to as of the
+# last tick this server diffed against (D-025 part 2/3) — kept here,
+# per-client, rather than in SquadSim: the simulation has no notion of
+# "client", only of players and their vision, and per-client delivery
+# bookkeeping belongs with the other per-client state (CurveReplicator's
+# own delivery records live the same way, keyed by player id).
+var _clients := {}
 var _next_player := 1
 
 var _config: MapConfig
@@ -68,6 +76,13 @@ func _ready() -> void:
 
 	var space := _config.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
+
+	# Combat's RNG must be seeded from map configuration, never wall-clock
+	# (D-024) — MapConfig has no dedicated seed field, so this derives one
+	# deterministically from fields it already has. Same map, same seed,
+	# every run: that is what lets a replay reproduce the exact battle
+	# that happened rather than a different one (D-016).
+	_sim.combat_seed = NetProtocol.seed_from(String(_config.id), _config.width, _config.height)
 
 	_replay = ReplayLog.new()
 	# Replays are the curve log (D-016), written from M1 onward.
@@ -157,22 +172,42 @@ func _process(delta: float) -> void:
 func _print_summary(reason: String) -> void:
 	if _sim == null:
 		return
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f" % [
+	# us/squad is meaningless without its squad count (CLAUDE.md) — always
+	# printed alongside it, never bare. Vision and combat are broken out as
+	# their own components of that same figure (D-026 criterion 10, D-012)
+	# rather than folded into one number, so a reviewer can see which phase
+	# a budget overrun would come from.
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (vision=%.3f combat=%.3f) vision_rebuilds=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
 		_sim.mean_usec_per_squad_update(),
+		_sim.mean_vision_usec_per_squad_update(),
+		_sim.mean_combat_usec_per_squad_update(),
+		_sim.vision_rebuilds,
 	])
+
+	# A distinct, structured marker — not a substring of the line above —
+	# for `just test-load` to compare against the bots' collectively-known
+	# squad count (D-026 criterion 6's load half: fog must be shown gating
+	# a real multi-client run, not just a test fixture). Squad count is
+	# fixed once spawned (casualties zero a squad's `alive`, they never
+	# remove the row — D-024), so this is stable for the whole run and safe
+	# to read from any point in the log, including the periodic status
+	# line below.
+	print("server: FOG_TOTAL_SQUADS=%d" % _sim.squad_count())
 
 
 func _print_status() -> void:
 	# Deliberately avoids the words this project's log scanners look for
 	# (`just test-load` greps for warning/desync), so routine status can
 	# never be mistaken for a fault.
-	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f" % [
+	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f (vision=%.3f combat=%.3f)" % [
 		_sim.tick_count, _sim.time, _sim.squad_count(), _clients.size(),
 		_sim.replicator.bytes_sent_total, _sim.fields_built,
 		_sim.mean_usec_per_squad_update(),
+		_sim.mean_vision_usec_per_squad_update(),
+		_sim.mean_combat_usec_per_squad_update(),
 	])
 
 
@@ -202,7 +237,16 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	_next_player += 1
 
 	var squads := _spawn_squads_for(player)
-	_clients[peer] = {"player": player, "squads": squads}
+	_clients[peer] = {"player": player, "squads": squads, "visible": {}}
+
+	# The new player's own squads need a vision stamp before anything asks
+	# visible_to() about them — own squads are always visible regardless
+	# (SquadSim.visible_to's owner check), but without this the joiner
+	# would see nothing OF OTHERS until the next scheduled tick-driven
+	# rebuild (vision_recompute_every_ticks), which reads as "fog is broken
+	# for one tick after joining" rather than a real gap. A join is rare
+	# enough that paying a full rebuild here is not a real cost concern.
+	_sim.recompute_vision_now()
 
 	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads),
 		ENetPacketPeer.FLAG_RELIABLE)
@@ -213,10 +257,24 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	#
 	# Broadcast rather than sent only to the joiner: this player's squads
 	# have just come into existence, and every ALREADY-connected client can
-	# see them. Sending only to the newcomer leaves everyone else receiving
-	# curves for squads they were never told about — which is exactly what
-	# the desync check caught the first time it ran.
+	# see them (if in vision). Sending only to the newcomer leaves everyone
+	# else receiving curves for squads they were never told about — which
+	# is exactly what the desync check caught the first time it ran.
 	_broadcast_squad_info()
+
+	# Seed ONLY the new client's reveal/conceal baseline (D-025 parts 2/3)
+	# to what it was just told is visible, so its first _replicate() tick
+	# reports genuinely new reveals rather than re-announcing everything
+	# _broadcast_squad_info just sent. Deliberately not touched for
+	# already-connected peers here: their baseline is owned exclusively by
+	# _replicate()'s own diff, and this join's recompute_vision_now() call
+	# could in principle shift an existing client's coverage slightly.
+	# Bypassing the diff to "silently" update their baseline would skip
+	# the reveal/conceal messages that shift is supposed to produce; at
+	# worst, leaving it alone means their next tick re-announces a squad
+	# that only just became visible via this broadcast — redundant, never
+	# a leak, and self-correcting within one tick.
+	_clients[peer]["visible"] = _dict_from_ids(_sim.visible_to(player))
 
 	print("server: player %d joined with %d squads (%d connected)" % [
 		player, squads.size(), _clients.size()])
@@ -229,12 +287,38 @@ func _send_squad_info(peer: ENetPacketPeer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_squad_info(entries), ENetPacketPeer.FLAG_RELIABLE)
 
 
-## Tell every connected client about a composition change. M1 never calls
-## this — nothing changes a squad's strength until combat lands in M2 —
-## but the path exists so casualties do not arrive as a protocol gap.
+## Turn an Array of squad ids into a Dictionary(id -> true) — the shape
+## both the reveal/conceal diff and CurveReplicator's own visible-set
+## lookup want, and cheaper to test membership in than scanning an Array
+## per squad per client per tick.
+func _dict_from_ids(ids: Array) -> Dictionary:
+	var out := {}
+	for id in ids:
+		out[int(id)] = true
+	return out
+
+
+## Tell every connected client about a composition change. Also logs the
+## FULL, unfiltered composition to the replay (not any one client's
+## visible_to() subset) — the replay is deliberately unclipped ground
+## truth, "what fog hid from every client" (D-026 criterion 11), and this
+## is what lets replay-info report a final strength for a squad that
+## never fought and so never appears in a SQUAD_COMBAT event.
 func _broadcast_squad_info() -> void:
 	for peer in _clients:
 		_send_squad_info(peer, int(_clients[peer]["player"]))
+
+	if _replay != null and _replay.is_open():
+		var entries := _sim.squad_info_entries(_all_squad_ids())
+		if not entries.is_empty():
+			_replay.record_squad_info(_sim.time, NetProtocol.encode_squad_info(entries))
+
+
+func _all_squad_ids() -> Array:
+	var ids := []
+	for i in range(_sim.squad_count()):
+		ids.append(i)
+	return ids
 
 
 func _on_disconnect(peer: ENetPacketPeer) -> void:
@@ -283,13 +367,39 @@ func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 func _spawn_squads_for(player: int) -> Array:
 	var def := _pick_unit_def()
 	var ids := []
-	# Spread players around the torus so they don't spawn on top of each
-	# other. Deterministic in `player`, so a replay reproduces spawns.
-	var lane := (player * 7) % _config.height
+
+	# Spawn points come from the map now, not from a formula here (D-036).
+	# The old version computed lanes from `player * 7` and `player * 5 + i
+	# * 2`, which had two problems: the constants were invisible to anyone
+	# balancing a map, and client.gd had duplicated the whole formula to
+	# *guess* where a neighbour spawned, with a comment noting the guess
+	# would go stale if this ever changed. Deriving spawns from
+	# MapConfig.spawn_points() makes them data, and makes them provably
+	# fair — every point is the same offset into a quadrant, and the
+	# quadrants are bit-identical terrain (D-036).
+	var points := _config.spawn_points()
+
+	# Players are numbered from 1, spawn points from 0. Wrapping rather
+	# than refusing keeps an extra connection working on a full map: the
+	# player cap belongs to the match lifecycle (D-033), which is not built
+	# yet, so sharing a start is a better failure than crashing.
+	var origin: Vector2i = points[(player - 1) % points.size()]
+
 	for i in range(_config.squads_per_player):
-		var cell := Vector2i((player * 5 + i * 2) % _config.width, (lane + i) % _config.height)
-		ids.append(_sim.add_squad(def, player, cell))
+		ids.append(_sim.add_squad(def, player, _starting_cell(origin, i)))
 	return ids
+
+
+## Where a player's i-th starting squad stands, relative to its spawn.
+##
+## Compact so an army starts together rather than smeared across its
+## quadrant, and a pure function of (origin, index) so replays reproduce
+## the opening position exactly (D-016). add_squad normalises through
+## TorusSpace, so a spawn near a seam wraps rather than going out of
+## bounds (D-008).
+func _starting_cell(origin: Vector2i, index: int) -> Vector2i:
+	const PER_ROW := 4
+	return origin + Vector2i(index % PER_ROW, index / PER_ROW)
 
 
 func _pick_unit_def() -> UnitDef:
@@ -297,20 +407,88 @@ func _pick_unit_def() -> UnitDef:
 	return UnitRoster.first()
 
 
+## Per-client message order within a tick is load-bearing (D-025, D-026
+## criterion 7/8): revealed squads' composition -> conceal events ->
+## curves -> combat events -> state hash. ENet channel 0 is reliable and
+## ordered, so this ordering holds on the wire exactly as sent.
+##
+##  - Reveal composition must precede curves: a client cannot derive
+##    soldiers for a squad it was never described (D-006's protocol
+##    obligation), so if a squad's first curve for this client arrived
+##    before its SQUAD_INFO, the client would have a curve for a squad it
+##    knows nothing about (squads_awaiting_composition() would flag it,
+##    correctly, as a gap — reveal ordering is what keeps that count at
+##    zero on a healthy run).
+##  - Conceal must be explicit and precede the state hash: without it a
+##    client cannot tell "out of vision" from "late update", and the
+##    server's hash (over visible_to(player)) would compare a different
+##    set than the client's own composition_hash() (over live squads only)
+##    the instant a squad is hidden — D-026 criterion 8.
+##  - Combat events stay gated by the SAME visible set the curves use and
+##    sent before the hash, so a client's composition is current by the
+##    time it checks itself (D-026 criterion 3) — unchanged from M2's
+##    combat-only shape, just now sharing `visible` with the fog gate
+##    rather than a stub that returned everything.
 func _replicate() -> void:
 	var send_hash := _sim.tick_count % STATE_HASH_EVERY_TICKS == 0
+	var combat_events := _sim.last_combat_events
 
 	for peer in _clients:
 		var record = _clients[peer]
 		var player := int(record["player"])
 		var visible := _sim.visible_to(player)
+		var visible_set := _dict_from_ids(visible)
+		var previous_visible: Dictionary = record.get("visible", {})
+
+		# Reveal (D-025 part 2): composition for anything newly visible.
+		# The curve resend itself needs no extra work here — CurveReplicator
+		# already resends a curve, clipped to [now, now + horizon] like any
+		# other, the moment an id it wasn't tracking for this client
+		# reappears in `visible` (see collect_for_client's own comment).
+		var revealed_ids := []
+		for id in visible_set:
+			if not previous_visible.has(id):
+				revealed_ids.append(id)
+		if not revealed_ids.is_empty():
+			var reveal_entries := _sim.squad_info_entries(revealed_ids)
+			if not reveal_entries.is_empty():
+				peer.send(0, NetProtocol.encode_squad_info(reveal_entries),
+					ENetPacketPeer.FLAG_RELIABLE)
+
+		# Conceal (D-025 part 3): anything that WAS visible last tick and
+		# is not anymore, as an explicit event rather than silence.
+		var concealed_ids := []
+		for id in previous_visible:
+			if not visible_set.has(id):
+				concealed_ids.append(id)
+		if not concealed_ids.is_empty():
+			peer.send(0, NetProtocol.encode_squad_conceal(_sim.tick_count, concealed_ids),
+				ENetPacketPeer.FLAG_RELIABLE)
+
+		record["visible"] = visible_set
 
 		var packets := _sim.replicator.collect_for_client(player, _sim.time, visible)
 		for packet in packets:
 			peer.send(0, NetProtocol.encode_curve(packet["bytes"]), ENetPacketPeer.FLAG_RELIABLE)
 
-		# Hashed over this client's visible set, so it stays correct once
-		# fog of war makes that set differ per client (D-004, M2).
+		# Casualty/rout events (D-024), gated by the same visible set the
+		# curves use. Sent reliably, before the hash, so a client's
+		# composition is current by the time it checks itself (D-026
+		# criterion 3), and skipped ENTIRELY when nothing in this client's
+		# visible set changed — a quiet tick costs zero bytes here, same as
+		# an idle squad costs zero curve bytes (D-003).
+		if not combat_events.is_empty():
+			var visible_events := []
+			for event in combat_events:
+				if visible_set.has(int(event["id"])):
+					visible_events.append(event)
+			if not visible_events.is_empty():
+				peer.send(0, NetProtocol.encode_squad_combat(_sim.tick_count, visible_events),
+					ENetPacketPeer.FLAG_RELIABLE)
+
+		# Hashed over this client's visible set, so client and server
+		# always compare the same set even though it now differs per
+		# client (D-004/D-025). Last, per the ordering above.
 		if send_hash:
 			peer.send(0,
 				NetProtocol.encode_state_hash(_sim.tick_count, _sim.composition_hash(visible)),

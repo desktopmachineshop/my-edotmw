@@ -33,6 +33,40 @@ var space: TorusSpace
 var replicator: CurveReplicator
 var replay: ReplayLog = null
 
+## The combat resolver (D-024), owned here and driven once per tick. Split
+## into its own file/class because it is a distinct concern from movement,
+## not because it needs any state of its own — Combat is stateless and
+## reads/writes squad state through this SquadSim.
+var combat: Combat
+
+## The vision field (D-025), owned here and rebuilt every
+## `vision_recompute_every_ticks` ticks. Split into its own file for the
+## same reason Combat is: a distinct concern from movement, driven through
+## this SquadSim rather than carrying any state of its own beyond the
+## coverage it stamps.
+var vision: Vision
+
+## How often (in ticks) the vision field recomputes (D-025 part 1).
+## Deliberately decoupled from the 10 Hz sim tick (D-020) rather than
+## rebuilt every tick: a squad covers at most a fraction of a cell in one
+## tick at plausible roster speeds, which is small relative to a vision
+## radius of several cells, so recomputing every tick would pay the full
+## O(squads * radius^2) stamp cost repeatedly for a field that barely
+## moved. Default 3 (~300 ms at 10 Hz): the staleness this introduces is
+## bounded by how far a squad can move in 300 ms, which stays well under
+## one cell for the roster's speeds against a multi-cell vision radius —
+## negligible next to the 3x cut in rebuild cost. Tune down for a smaller,
+## faster-moving roster; tune up if profiling shows the rebuild itself is
+## the bottleneck.
+var vision_recompute_every_ticks: int = 3
+
+## Seeds every stochastic combat roll (D-024, D-016). Must come from map
+## configuration, never from wall-clock time — server.gd sets this via
+## NetProtocol.seed_from() before the sim starts ticking. Defaults to a
+## fixed, non-zero value (rather than 0) so a SquadSim built without a
+## server (tests, tools) still gets deterministic, reproducible combat.
+var combat_seed: int = 1
+
 var time: float = 0.0
 var tick_count: int = 0
 
@@ -45,7 +79,23 @@ var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
 var _spacing := PackedFloat32Array()
 var _def_id: Array[StringName] = []
+var _defs: Array[UnitDef] = []
 var _curves: Array[StateCurve] = []
+
+# --- combat state (D-024, D-019) — per-SQUAD, not per-soldier, which is
+# exactly what D-006 clause 1 permits (it forbids per-soldier integration
+# state, not squad state; squads already carry position and destination).
+var _morale := PackedFloat32Array()
+var _routed := PackedByteArray()  # 0/1 — not bool, to stay a packed array
+var _damage_accum := PackedFloat32Array()  # fractional casualties carried
+var _last_attack_tick := PackedInt32Array()  # -1 = never attacked
+
+## Casualty/rout events produced by the most recent tick's combat
+## resolution — empty whenever nothing changed (D-026 criterion 3).
+## server.gd reads this once per tick, right after calling tick(), and
+## broadcasts it (filtered per client by visible_to()) before the state
+## hash for that tick.
+var last_combat_events: Array = []
 
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
@@ -56,6 +106,18 @@ var last_tick_usec: int = 0
 var total_tick_usec: int = 0
 var fields_built: int = 0
 var curves_rebuilt: int = 0
+var vision_rebuilds: int = 0
+
+## Vision and combat as identifiable COMPONENTS of last_tick_usec/
+## total_tick_usec (D-026 criterion 10, D-020, D-012) — same accounting
+## style, just scoped to the one phase each measures rather than the whole
+## tick. `total_tick_usec` already includes both; these do not double the
+## cost, they name a slice of it so a run can report "vision costs this
+## much, combat costs this much" instead of only the tick's grand total.
+var last_vision_usec: int = 0
+var total_vision_usec: int = 0
+var last_combat_usec: int = 0
+var total_combat_usec: int = 0
 
 var _validated := false
 
@@ -67,6 +129,8 @@ var _passable := PackedByteArray()
 func _init(p_space: TorusSpace = null, p_replicator: CurveReplicator = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
 	replicator = p_replicator if p_replicator != null else CurveReplicator.new()
+	combat = Combat.new()
+	vision = Vision.new()
 
 
 func squad_count() -> int:
@@ -92,6 +156,12 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
 	_def_id.append(def.id)
+	_defs.append(def)
+
+	_morale.append(def.morale)
+	_routed.append(0)
+	_damage_accum.append(0.0)
+	_last_attack_tick.append(-1)
 
 	var curve := StateCurve.new()
 	curve.append_cell(time, at, space)
@@ -133,6 +203,67 @@ func curve_of(squad: int) -> StateCurve:
 
 func def_id_of(squad: int) -> StringName:
 	return _def_id[squad]
+
+
+## The actual UnitDef this squad was spawned from. Combat reads stats
+## through this rather than UnitRoster.by_id(def_id_of(...)) — the roster
+## does a directory scan and reload per call, which is fine for the rare
+## SQUAD_INFO resolve but would reintroduce an O(n) cost per squad per
+## tick into the one file this milestone is explicitly trying to keep
+## cheap. Storing the reference the caller already handed add_squad() is
+## free by comparison.
+func def_of(squad: int) -> UnitDef:
+	return _defs[squad]
+
+
+## Cell index (not coordinate) — the allocation-free form Combat's bucket
+## map is built from, same rationale as TorusSpace's own index-space hot
+## path.
+func cell_index_of(squad: int) -> int:
+	return _cell[squad]
+
+
+func morale_of(squad: int) -> float:
+	return _morale[squad]
+
+
+func set_morale(squad: int, value: float) -> void:
+	_morale[squad] = value
+
+
+func is_routed(squad: int) -> bool:
+	return _routed[squad] == 1
+
+
+func set_routed(squad: int, value: bool) -> void:
+	_routed[squad] = 1 if value else 0
+
+
+func damage_accum_of(squad: int) -> float:
+	return _damage_accum[squad]
+
+
+func set_damage_accum(squad: int, value: float) -> void:
+	_damage_accum[squad] = value
+
+
+func last_attack_tick_of(squad: int) -> int:
+	return _last_attack_tick[squad]
+
+
+func set_last_attack_tick(squad: int, value: int) -> void:
+	_last_attack_tick[squad] = value
+
+
+## Snapshots for Combat's before/after diff (see Combat._diff). Duplicated
+## rather than referenced so mutating the live arrays during resolution
+## can never retroactively change what "before" meant.
+func alive_snapshot() -> PackedInt32Array:
+	return _alive.duplicate()
+
+
+func routed_snapshot() -> PackedByteArray:
+	return _routed.duplicate()
 
 
 ## What each squad IS, for the server to tell clients (D-006's inputs are
@@ -192,10 +323,29 @@ func set_alive(squad: int, alive: int) -> void:
 	_alive[squad] = maxi(0, alive)
 
 
-## Issue a move order. This is the invalidation event D-003 warns about:
-## ordering many squads at once re-paths many curves in one tick, which is
-## exactly what the replicator's budget exists to absorb.
+## Issue a player move order. This is the invalidation event D-003 warns
+## about: ordering many squads at once re-paths many curves in one tick,
+## which is exactly what the replicator's budget exists to absorb.
+##
+## A routed squad ignores this (D-024, D-019): it is fleeing under its own
+## steam and does not take player orders again until it rallies. That is
+## enforced here, structurally, rather than left to callers to remember.
 func order_move(squad: int, destination: Vector2i) -> void:
+	if is_routed(squad):
+		return
+	_apply_move_order(squad, destination)
+
+
+## The move Combat issues when a squad routs. Bypasses the routed check
+## that order_move enforces — that check exists specifically to block
+## PLAYER orders, and fleeing away from the enemy is exactly what a
+## routed squad is supposed to do, so it goes through the sim directly
+## rather than through the player-facing entry point.
+func force_move(squad: int, destination: Vector2i) -> void:
+	_apply_move_order(squad, destination)
+
+
+func _apply_move_order(squad: int, destination: Vector2i) -> void:
 	var dest_index := space.index(destination)
 	if _destination[squad] == dest_index:
 		return
@@ -249,6 +399,17 @@ func _log_curve(squad: int, curve: StateCurve) -> void:
 		replay.record(time, squad, replicator.version_of(squad), curve)
 
 
+## Log this tick's casualty/rout events to the replay, if any — same
+## rationale as _log_curve, and using NetProtocol's own encoder so the
+## replay never describes a message shape the wire itself doesn't use
+## (D-016, D-026 criterion 11). Skipped entirely when nothing changed, so
+## an uneventful tick costs nothing in the replay either.
+func _log_combat_events(events: Array) -> void:
+	if replay == null or events.is_empty():
+		return
+	replay.record_combat(time, NetProtocol.encode_squad_combat(tick_count, events))
+
+
 ## Advance one 10 Hz tick.
 func tick() -> void:
 	# Checked once rather than at construction, because callers legitimately
@@ -282,6 +443,30 @@ func tick() -> void:
 		if time >= curve.end_time() - (1.0 / TICK_HZ):
 			_rebuild_curve(squad)
 
+	# Vision (D-025) recomputes against THIS tick's freshly-derived
+	# positions, at its own slower cadence — see
+	# vision_recompute_every_ticks. Always stamped on the very first tick
+	# so visible_to() is never answering from an empty field for a sim
+	# that has ticked at least once.
+	if tick_count == 1 or tick_count % vision_recompute_every_ticks == 0:
+		var vision_started := Time.get_ticks_usec()
+		vision.rebuild(self)
+		last_vision_usec = Time.get_ticks_usec() - vision_started
+		total_vision_usec += last_vision_usec
+		vision_rebuilds += 1
+
+	# Combat resolves against THIS tick's freshly-derived positions
+	# (D-024), one round per 10 Hz tick (D-020's 100 ms minimum round
+	# granularity). Casualties/rout events are sparse by construction —
+	# empty whenever nothing changed (D-026 criterion 3) — so logging and
+	# replication both skip the empty case rather than sending nothing
+	# dressed up as a message.
+	var combat_started := Time.get_ticks_usec()
+	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
+	last_combat_usec = Time.get_ticks_usec() - combat_started
+	total_combat_usec += last_combat_usec
+	_log_combat_events(last_combat_events)
+
 	last_tick_usec = Time.get_ticks_usec() - started
 	total_tick_usec += last_tick_usec
 
@@ -299,6 +484,26 @@ func mean_usec_per_squad_update() -> float:
 	return float(total_tick_usec) / float(tick_count * _cell.size())
 
 
+## Vision's own slice of mean_usec_per_squad_update (D-026 criterion 10) —
+## same divisor (tick_count * squad_count), same "no squads means an honest
+## zero, not a fixed-overhead spike" reasoning, just scoped to the vision
+## rebuild phase so it's identifiable as a component rather than folded
+## into the tick's grand total.
+func mean_vision_usec_per_squad_update() -> float:
+	if _cell.is_empty() or tick_count <= 0:
+		return 0.0
+	return float(total_vision_usec) / float(tick_count * _cell.size())
+
+
+## Combat's own slice of mean_usec_per_squad_update (D-026 criterion 10) —
+## see mean_vision_usec_per_squad_update's comment; same reasoning, scoped
+## to Combat.resolve() instead of Vision.rebuild().
+func mean_combat_usec_per_squad_update() -> float:
+	if _cell.is_empty() or tick_count <= 0:
+		return 0.0
+	return float(total_combat_usec) / float(tick_count * _cell.size())
+
+
 ## Soldier transforms for a squad, derived not stored (D-006).
 func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]:
 	var sample_at := time if at_time < 0.0 else at_time
@@ -307,12 +512,23 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 	)
 
 
-## Squad ids visible to a player. M1 has no fog of war yet (D-004 is an
-## M2 milestone), so this is "everything" — but the seam exists here, in
-## the shape the replicator already expects, so M2 changes this function
-## rather than the replication path.
-func visible_to(_player: int) -> Array:
+## Force an immediate vision rebuild, bypassing
+## `vision_recompute_every_ticks`. Tests use this to get a deterministic,
+## up-to-date field right after moving squads around, rather than ticking
+## an arbitrary number of times and hoping the schedule has caught up.
+func recompute_vision_now() -> void:
+	vision.rebuild(self)
+
+
+## Squad ids visible to `player` (D-025, closing D-022's "known stub").
+## Always the player's own squads, plus any other squad sitting in a cell
+## the player's vision field currently covers — a single O(1) lookup per
+## squad into `vision`'s per-player coverage (Vision.is_visible), never a
+## per-pair distance test. Fog of war is exactly this gate on top of
+## D-003/D-004: no second data-hiding mechanism exists anywhere.
+func visible_to(player: int) -> Array:
 	var ids := []
 	for i in range(_cell.size()):
-		ids.append(i)
+		if _owner[i] == player or vision.is_visible(player, _cell[i]):
+			ids.append(i)
 	return ids

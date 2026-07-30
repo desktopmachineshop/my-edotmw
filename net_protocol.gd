@@ -19,6 +19,8 @@ const S2C_WELCOME := 1
 const S2C_CURVE := 2
 const S2C_SQUAD_INFO := 3
 const S2C_STATE_HASH := 4
+const S2C_SQUAD_COMBAT := 5
+const S2C_SQUAD_CONCEAL := 6
 
 # Client -> server
 const C2S_ORDER_MOVE := 10
@@ -163,6 +165,77 @@ static func decode_state_hash(data: PackedByteArray) -> Dictionary:
 	return {"tick": buf.get_u32(), "hash": buf.get_u32()}
 
 
+## SQUAD_COMBAT: casualty/rout events for the tick they happened on
+## (D-024, D-026 criterion 3).
+##
+## This is the ONLY place a squad's `alive` changes after it spawns, and
+## it is sent exclusively when at least one squad in the message actually
+## changed — a tick with no deaths and no routing produces no message at
+## all, not a message with an empty list, so it is genuinely zero bytes
+## rather than merely a small constant. `ReplayLog` logs this exact
+## encoding too (D-016): there is one definition of this wire shape, used
+## by the server, the client, and the replay alike.
+static func encode_squad_combat(tick: int, events: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_SQUAD_COMBAT)
+	buf.put_u32(tick)
+	buf.put_u32(events.size())
+	for event in events:
+		buf.put_u32(int(event["id"]))
+		buf.put_u32(int(event["alive"]))
+		buf.put_u8(1 if bool(event["routed"]) else 0)
+	return buf.data_array
+
+
+static func decode_squad_combat(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var tick := buf.get_u32()
+	var count := buf.get_u32()
+	var events := []
+	for i in range(count):
+		var id := buf.get_u32()
+		var alive := buf.get_u32()
+		var routed := buf.get_u8() != 0
+		events.append({"id": id, "alive": alive, "routed": routed})
+	return {"tick": tick, "events": events}
+
+
+## SQUAD_CONCEAL: a squad (or squads) leaving this client's vision this
+## tick (D-025 part 3, D-026 criterion 7).
+##
+## This is the explicit event D-025 insists on rather than leaving conceal
+## as an inference from silence. Without it a client cannot tell "this
+## squad just left my vision" apart from "its curve update is merely late"
+## — and worse, the server's STATE_HASH would then be computed over a
+## different set than the client's own composition_hash(), which is
+## exactly the "check that cries wolf" failure composition_hash's header
+## warns about (D-026 criterion 8). The client's response is to keep the
+## squad's last-known curve and composition as a stale, explicitly flagged
+## ghost (ClientState._ghosts) rather than discarding or silently ageing it.
+static func encode_squad_conceal(tick: int, squad_ids: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_SQUAD_CONCEAL)
+	buf.put_u32(tick)
+	buf.put_u32(squad_ids.size())
+	for id in squad_ids:
+		buf.put_u32(int(id))
+	return buf.data_array
+
+
+static func decode_squad_conceal(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var tick := buf.get_u32()
+	var count := buf.get_u32()
+	var squad_ids := []
+	for i in range(count):
+		squad_ids.append(buf.get_u32())
+	return {"tick": tick, "squad_ids": squad_ids}
+
+
 ## Hash of squad COMPOSITION — id, strength, formation shape and spacing —
 ## over the squads a given client should know about.
 ##
@@ -219,3 +292,18 @@ static func _hash_string(h: int, text: String) -> int:
 
 static func opcode_of(data: PackedByteArray) -> int:
 	return -1 if data.is_empty() else data[0]
+
+
+## Deterministic seed derivation for anything that needs a map-derived
+## seed rather than a wall-clock one — Combat (D-024) is the current
+## user, via server.gd. Not part of the wire protocol, but kept here to
+## reuse the same FNV mixing the composition hash already does rather
+## than inventing a second hash for the same purpose. Same inputs always
+## produce the same seed, which is what lets a replay reproduce the exact
+## battle that happened (D-016) rather than a different one seeded from
+## whatever moment the server happened to start.
+static func seed_from(text: String, a: int, b: int) -> int:
+	var h := _hash_string(FNV_OFFSET_BASIS, text)
+	h = _hash_int(h, a)
+	h = _hash_int(h, b)
+	return h

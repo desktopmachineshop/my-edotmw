@@ -203,3 +203,118 @@ func test_unnormalized_input_gives_the_same_answer_as_normalized() -> void:
 	assert_eq(t.to_world(raw), t.to_world(wrapped))
 	for dir in range(6):
 		assert_eq(t.neighbor(raw, dir), t.neighbor(wrapped, dir))
+
+
+# --- disk_offsets() — the cached table that replaced per-candidate
+# distance() calls in Vision._stamp_squad and Combat._find_target -------
+#
+# The property under test: for any origin and any integer radius, the set
+# of cell indices reached by { index(origin + offset) : offset in
+# disk_offsets(radius) } must be EXACTLY { idx : distance(origin,
+# from_index(idx)) <= radius }, the brute-force definition disk_offsets()
+# is replacing. This is the thing D-022's standing rule cares about most:
+# a faster wrong answer would silently change what's visible or
+# targetable.
+
+func _brute_force_disk(t: TorusSpace, origin: Vector2i, radius: int) -> Dictionary:
+	var expected := {}
+	for i in range(t.cell_count()):
+		var cell := t.from_index(i)
+		if t.distance(origin, cell) <= radius:
+			expected[i] = true
+	return expected
+
+
+func _disk_via_offsets(t: TorusSpace, origin: Vector2i, radius: int) -> Dictionary:
+	var actual := {}
+	for offset in TorusSpace.disk_offsets(radius):
+		actual[t.index(origin + offset)] = true
+	return actual
+
+
+func test_disk_offsets_agrees_with_brute_force_distance_at_several_radii() -> void:
+	var t := _space()
+	var origins := [Vector2i(0, 0), Vector2i(5, 5), Vector2i(W - 1, 0), Vector2i(0, H - 1), Vector2i(W - 1, H - 1)]
+	var radii := [0, 1, 2, 3, 5]
+
+	for origin in origins:
+		for radius in radii:
+			var expected := _brute_force_disk(t, origin, radius)
+			var actual := _disk_via_offsets(t, origin, radius)
+			assert_eq(actual.keys().size(), expected.keys().size(),
+				"disk_offsets(%d) from %s: cell count should match brute force" % [radius, origin])
+			for idx in expected:
+				assert_true(actual.has(idx),
+					"disk_offsets(%d) from %s: missing cell %s (brute-force distance %d)" %
+						[radius, origin, t.from_index(idx), t.distance(origin, t.from_index(idx))])
+			for idx in actual:
+				assert_true(expected.has(idx),
+					"disk_offsets(%d) from %s: extra cell %s not within brute-force distance" %
+						[radius, origin, t.from_index(idx)])
+
+
+func test_disk_offsets_agrees_with_brute_force_at_a_radius_large_relative_to_the_map() -> void:
+	# W=16, H=12: half-width is 8, half-height is 6. A radius bigger than
+	# BOTH exercises the "same wrapped cell reachable via more than one
+	# (dq, dr) offset" case combat.gd's header calls out as harmless — the
+	# whole point of this test is proving it really is harmless: the
+	# deduped SET disk_offsets() produces (via index() collapsing
+	# duplicate offsets to the same cell) must still exactly equal the
+	# brute-force disk, not merely be a superset of it.
+	var t := _space()
+	var radius := 10
+	assert_gt(radius, W / 2, "Setup: radius must exceed half the map width to exercise wrap doubling")
+	assert_gt(radius, H / 2, "Setup: radius must exceed half the map height to exercise wrap doubling")
+
+	for origin in [Vector2i(0, 0), Vector2i(3, 7), Vector2i(W - 1, H - 1)]:
+		var expected := _brute_force_disk(t, origin, radius)
+		var actual := _disk_via_offsets(t, origin, radius)
+		assert_eq(actual.keys().size(), expected.keys().size(),
+			"disk_offsets(%d) from %s should match brute force even with wrap doubling" % [radius, origin])
+		for idx in expected:
+			assert_true(actual.has(idx), "missing cell %s at radius %d from %s" % [t.from_index(idx), radius, origin])
+		for idx in actual:
+			assert_true(expected.has(idx), "extra cell %s at radius %d from %s" % [t.from_index(idx), radius, origin])
+
+	# At this radius, on this map, the disk necessarily covers every cell
+	# on the torus (the map is smaller than the disk) — a degenerate but
+	# valid confirmation that "the whole map" is handled correctly too.
+	var expected_all := _brute_force_disk(t, Vector2i(0, 0), radius)
+	assert_eq(expected_all.keys().size(), t.cell_count(),
+		"Setup: at this radius the brute-force disk should cover the whole %dx%d map" % [W, H])
+
+
+func test_disk_offsets_radius_zero_is_just_the_origin() -> void:
+	assert_eq(TorusSpace.disk_offsets(0), [Vector2i.ZERO])
+
+
+func test_disk_offsets_negative_radius_is_empty() -> void:
+	assert_eq(TorusSpace.disk_offsets(-1), [])
+	assert_eq(TorusSpace.disk_offsets(-5), [])
+
+
+func test_disk_offsets_cell_count_matches_the_hex_disk_formula() -> void:
+	# A hex disk of radius r has 1 + 3*r*(r+1) cells — the standard
+	# identity, independent of this file's implementation.
+	for radius in range(0, 8):
+		var expected_count := 1 + 3 * radius * (radius + 1)
+		assert_eq(TorusSpace.disk_offsets(radius).size(), expected_count,
+			"disk_offsets(%d) should have %d offsets" % [radius, expected_count])
+
+
+func test_hex_length_agrees_with_distance_for_unwrapped_offsets() -> void:
+	# hex_length() is the pure local-offset formula distance() reduces to
+	# once delta() has picked the shortest representative. Away from any
+	# seam (well inside half the map in both axes) they must agree exactly
+	# — this is the property Combat._find_target's ranking shortcut
+	# depends on.
+	var t := _space()
+	var origin := Vector2i(6, 5)
+	for dq in range(-3, 4):
+		for dr in range(-3, 4):
+			var offset := Vector2i(dq, dr)
+			if TorusSpace.hex_length(offset) > 3:
+				continue
+			var target := origin + offset
+			assert_eq(t.distance(origin, target), TorusSpace.hex_length(offset),
+				"hex_length(%s) should equal distance() away from any seam" % offset)

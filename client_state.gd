@@ -27,7 +27,33 @@ var curves := {}
 # squad id -> { "def_id": String, "alive": int, "shape": String,
 # "spacing": float }. Told to us by the server, never guessed — see
 # NetProtocol.encode_squad_info for why guessing was a real bug.
+#
+# LIVE squads only (D-025 part 3, D-026 criterion 8). A concealed squad is
+# moved OUT of this dict and into `_ghosts`, not flagged in place — so
+# every accessor that reads `composition` (composition_hash() above all)
+# excludes ghosts by construction, not by remembering to check a flag.
+# See `_ghosts` below.
 var composition := {}
+
+# squad id -> stale ghost entry: { "def_id", "alive", "shape", "spacing",
+# "routed", "concealed_tick" }. Populated by SQUAD_CONCEAL
+# (_handle_squad_conceal), cleared by the next SQUAD_INFO for that id
+# (_handle_squad_info) — re-reveal replaces a ghost wholesale (D-025 part
+# 3), never merges into it.
+#
+# Kept structurally separate from `composition` rather than a bit on the
+# same dict, because the failure this guards against is specific: the
+# server computes STATE_HASH over what a client can currently SEE, and a
+# client that folded ghosts back into its own hash would be hashing a
+# strictly larger set on every tick a squad is hidden. That would desync
+# on a perfectly healthy system, constantly — the exact "a check that
+# cries wolf gets muted" failure mode `NetProtocol.composition_hash`'s
+# header comment was written to avoid. A stale ghost's `alive` also goes
+# out of date while hidden (casualty events are visibility-gated too, so a
+# squad fighting off-screen from this client keeps losing soldiers this
+# client never hears about) — that staleness is correct and intended; it
+# is what "last-known information" means. Re-reveal is what refreshes it.
+var _ghosts := {}
 
 ## Terrain height sampler, taking (x, z) and returning a world Y.
 ##
@@ -55,6 +81,35 @@ var state_hash_checks: int = 0
 var desync_count: int = 0
 var last_desync := ""
 
+# --- M2 observation counters (D-026 criterion 9) ---------------------
+#
+# Additive only — nothing above this reads them, so they cannot change any
+# existing behaviour. They exist because the load test's verdict must
+# prove combat and fog were actually EXERCISED by a running system, not
+# merely that the code paths compile: a run in which nobody died proves
+# nothing about combat, and a run in which nothing was ever hidden proves
+# nothing about fog (see bot_client.gd's _verdict_ok()).
+
+## Total soldiers this client has seen subtracted from any squad's `alive`
+## via SQUAD_COMBAT (D-024) — not a count of events, a count of soldiers,
+## so a single lopsided battle counts for more than a single skirmish.
+var casualties_applied: int = 0
+
+## How many times a squad has moved from `composition` into `_ghosts` here
+## (SQUAD_CONCEAL processed). One per squad per conceal, not per tick.
+var conceal_events: int = 0
+
+## How many times a squad that WAS a ghost has been re-revealed (SQUAD_INFO
+## arriving for an id `_ghosts` currently holds). Deliberately does not
+## count a squad's very first-ever SQUAD_INFO (never having been a ghost is
+## not a reveal in D-025's sense) — see _handle_squad_info.
+var reveal_events: int = 0
+
+## The largest number of ghosts held simultaneously at any point in this
+## client's lifetime — a high-water mark, not a running total, since
+## `_ghosts.size()` itself already answers "how many right now".
+var ghosts_peak: int = 0
+
 
 func handle_packet(data: PackedByteArray) -> void:
 	match NetProtocol.opcode_of(data):
@@ -64,6 +119,10 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_curve(data)
 		NetProtocol.S2C_SQUAD_INFO:
 			_handle_squad_info(data)
+		NetProtocol.S2C_SQUAD_COMBAT:
+			_handle_squad_combat(data)
+		NetProtocol.S2C_SQUAD_CONCEAL:
+			_handle_squad_conceal(data)
 		NetProtocol.S2C_STATE_HASH:
 			_handle_state_hash(data)
 		_:
@@ -94,12 +153,118 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 		if def == null:
 			push_error("ClientState: server referenced unknown UnitDef '%s'" % def_id)
 			continue
-		composition[int(entry["id"])] = {
+		var id := int(entry["id"])
+		# A reveal specifically means "this id was a ghost a moment ago" — a
+		# squad's very first SQUAD_INFO (never concealed) is not a reveal in
+		# D-025's sense, so this must be checked BEFORE _ghosts.erase(id)
+		# below, and only counted when it was actually true.
+		if _ghosts.has(id):
+			reveal_events += 1
+		composition[id] = {
 			"def_id": def_id,
 			"alive": int(entry["alive"]),
 			"shape": def.formation_shape,
 			"spacing": def.formation_spacing,
 		}
+		# A squad this is describing is live, full stop — whether this is
+		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
+		# replaces a ghost wholesale (D-025 part 3): the stale entry above
+		# is simply gone, never merged with what just arrived.
+		_ghosts.erase(id)
+
+
+## SQUAD_COMBAT (D-024): the server's only channel for changing `alive`
+## after spawn. Applied straight into `composition`, which is exactly what
+## composition_hash() reads — so a client that received this stays in
+## agreement with the server's next STATE_HASH, and one that missed it
+## (or a resend after packet loss) would visibly desync instead.
+func _handle_squad_combat(data: PackedByteArray) -> void:
+	var decoded := NetProtocol.decode_squad_combat(data)
+	for event in (decoded["events"] as Array):
+		var id := int(event["id"])
+		if not composition.has(id):
+			# A casualty event for a squad this client was never described
+			# is a protocol gap, not a thing to silently guess at — the
+			# same "supplying identical inputs is a protocol obligation"
+			# point D-006's 2026-07-29 note makes about SQUAD_INFO.
+			push_error("ClientState: casualty event for unknown squad %d" % id)
+			continue
+		var previous_alive := int(composition[id]["alive"])
+		var new_alive := int(event["alive"])
+		# Counted in soldiers, not events, and only the decrease — a squad
+		# cannot un-die, so `alive` only ever falls here, but staying
+		# defensive costs nothing and this is exactly the number the load
+		# test's verdict needs to prove combat did more than resolve to a
+		# no-op (D-026 criterion 9).
+		if new_alive < previous_alive:
+			casualties_applied += previous_alive - new_alive
+		composition[id]["alive"] = new_alive
+		composition[id]["routed"] = bool(event["routed"])
+
+
+## SQUAD_CONCEAL (D-025 part 3): explicit notice that a squad left this
+## client's vision this tick. The squad's current composition moves
+## wholesale from `composition` into `_ghosts` — not copied, not flagged
+## in place — so every live accessor (composition_hash, alive_of,
+## squads_awaiting_composition, ...) stops seeing it in the same tick this
+## is processed, by construction rather than by remembering to check a
+## flag.
+##
+## Its curve in `curves` is left untouched: that IS "keeping the
+## last-known curve" (D-025 part 3). The server stops sending curve
+## updates for a concealed squad the moment it drops out of visible_to(),
+## so nothing further will move it — it simply holds its last delivered
+## position, which is exactly what a stale ghost should show.
+func _handle_squad_conceal(data: PackedByteArray) -> void:
+	var decoded := NetProtocol.decode_squad_conceal(data)
+	for raw_id in (decoded["squad_ids"] as Array):
+		var id := int(raw_id)
+		if not composition.has(id):
+			# A conceal for a squad this client had no live composition for
+			# is a protocol gap, not a thing to silently shrug at — same
+			# posture as the unknown-squad check in _handle_squad_combat.
+			push_error("ClientState: conceal event for squad %d with no known live composition" % id)
+			continue
+		var entry = composition[id]
+		entry["concealed_tick"] = int(decoded["tick"])
+		_ghosts[id] = entry
+		composition.erase(id)
+		conceal_events += 1
+		if _ghosts.size() > ghosts_peak:
+			ghosts_peak = _ghosts.size()
+
+
+## True if `squad` is a stale ghost right now — concealed, showing its
+## last-known composition and curve rather than live state. Exists so a
+## renderer can draw a ghost differently later (D-025 part 3); nothing in
+## this file's own live accounting (composition_hash, alive_of,
+## squads_awaiting_composition, derive_all) ever consults this — they
+## exclude ghosts by construction because `composition` simply doesn't
+## contain them.
+func is_ghost(squad: int) -> bool:
+	return _ghosts.has(squad)
+
+
+## Squad ids currently held as ghosts.
+func ghost_squad_ids() -> Array:
+	return _ghosts.keys()
+
+
+## A ghost's last-known composition (alive, shape, spacing, and the tick
+## it was concealed on) — {} if `squad` isn't currently a ghost.
+## Deliberately separate from alive_of()/shape_of()/spacing_of(), which
+## read `composition` and are live-only by construction.
+func ghost_info(squad: int) -> Dictionary:
+	return _ghosts.get(squad, {})
+
+
+## Squad ids this client currently treats as live — exactly the set
+## composition_hash() covers. One explicit answer to "how many squads does
+## this client think are live", rather than every future caller
+## re-deriving it from composition.keys() and risking forgetting ghosts
+## are stored elsewhere.
+func live_squad_ids() -> Array:
+	return composition.keys()
 
 
 func _handle_state_hash(data: PackedByteArray) -> void:
@@ -151,8 +316,22 @@ func spacing_of(squad: int) -> float:
 	return float(composition[squad]["spacing"]) if composition.has(squad) else 0.0
 
 
+## Not hashed (see composition_hash below) — routing is display/behaviour
+## state, not part of what "the same composition" means for desync
+## purposes, so a client that hasn't heard about a rout yet still agrees
+## with the server on strength.
+func routed_of(squad: int) -> bool:
+	return bool(composition[squad].get("routed", false)) if composition.has(squad) else false
+
+
 ## Hash of the composition this client will derive from, in the format
 ## SquadSim produces for the server side. Compared on every STATE_HASH.
+##
+## Iterates `composition` only — LIVE squads, by construction, since
+## ghosts are never stored there (see `_ghosts` above). The server hashes
+## exactly `visible_to(player)`, so this must hash exactly what this
+## client currently treats as live, or the two sides compare different
+## sets and the check fires on a healthy system (D-026 criterion 8).
 func composition_hash() -> int:
 	var entries := []
 	for id in composition:
@@ -190,13 +369,17 @@ func derive_all(now: float) -> int:
 	return total
 
 
-## Squads whose curve has arrived but whose composition has not. Should
-## settle to zero; a persistent non-zero value means the server is
-## replicating something it never described.
+## Squads whose curve has arrived but whose composition has not — LIVE
+## composition, specifically: a ghost has a curve and no entry in
+## `composition` by design (it moved to `_ghosts` on conceal), and that is
+## not the same "never described" gap this is meant to catch, so ghosts
+## are excluded here too. Should otherwise settle to zero; a persistent
+## non-zero value means the server is replicating something it never
+## described.
 func squads_awaiting_composition() -> int:
 	var missing := 0
 	for id in curves:
-		if not composition.has(id):
+		if not composition.has(id) and not _ghosts.has(id):
 			missing += 1
 	return missing
 

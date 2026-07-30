@@ -298,30 +298,36 @@ test-unit: _import
     fi
 
 # Full load test: server + N bots for DURATION seconds, then check the
-# result three independent ways. Teardown runs via trap on success,
+# result several independent ways. Teardown runs via trap on success,
 # failure, AND Ctrl-C — an interrupted load test must not leave
 # containers running (D-014).
 #
-# Why three checks rather than just the log scan: the log scan alone once
-# reported "clean" for a run in which every bot had exited non-zero,
-# because the bots' failure message said ERROR and the scan only looked
-# for warning/desync. Grepping for the absence of bad news cannot
-# distinguish "nothing went wrong" from "nothing happened". So:
+# Why not just the log scan: the log scan alone once reported "clean" for
+# a run in which every bot had exited non-zero, because the bots' failure
+# message said ERROR and the scan only looked for warning/desync.
+# Grepping for the absence of bad news cannot distinguish "nothing went
+# wrong" from "nothing happened". So:
 #
 #   1. bots' exit status         — did the run itself succeed?
-#   2. explicit VERDICT line     — did every bot connect, replicate, AND
-#                                  verify its state against the server's?
-#   3. diagnostic log scan       — did anything complain along the way?
+#   2. explicit VERDICT line     — did every bot connect, replicate,
+#                                  verify its state against the server's,
+#                                  AND (M2) actually observe a casualty, a
+#                                  conceal, and a reveal (D-026 criterion 9)?
+#   3. fog-gating comparison     — did the bots collectively know FEWER
+#                                  squads than the server actually
+#                                  simulated (D-026 criterion 6's load half)?
+#   4. diagnostic log scan       — did anything complain along the way?
 #
-# Check 2 is the one that makes this a test rather than a smoke run: a
-# bot that connects and receives nothing would otherwise pass 1 and 3.
-#
-# The VERDICT now also requires that state-hash checks actually RAN, not
-# merely that none failed. That distinction is not pedantic: this recipe
-# spent all of M1 grepping for the word "desync" which no code path ever
-# printed, and the vacuous pass hid a live bug in which every client
-# derived soldier positions from a different squad strength than the
-# server used.
+# Check 2 is the one that makes this a test rather than a smoke run: a bot
+# that connects and receives nothing would otherwise pass 1 and 4. M1's
+# equivalent required state-hash checks to actually RUN, not merely that
+# none failed — M2 extends the same principle: a run in which nobody ever
+# died, or nothing was ever hidden and re-shown, proves nothing about
+# combat or fog, however clean the rest looks. Both new bot-side
+# conditions (casualties/conceal/reveal) live inside bot_client.gd's own
+# _verdict_ok(), so check 1/2 already fail on them; check 3 is the one
+# condition bot_client.gd cannot check itself, because a client never
+# learns the server's TOTAL squad count, only what it can see.
 [doc("Load test: server + N bots for DURATION seconds, then verify the run")]
 test-load N DURATION:
     #!/usr/bin/env bash
@@ -358,6 +364,32 @@ test-load N DURATION:
         exit 1
     fi
 
+    # D-026 criterion 6's load half: fog must be shown gating a REAL
+    # multi-client run, not a test fixture — even the single MOST-INFORMED
+    # bot must know FEWER squads than the server actually simulated. This
+    # is deliberately per-bot, not a sum/union across every bot: every
+    # squad belongs to exactly one connected player, and an owner always
+    # sees its own squads regardless of vision, so a union across ALL bots
+    # would equal the server's total on every run whether fog gates
+    # anything or not — see bot_client.gd's _max_known_squads() for why.
+    # Compared via two distinct, structured key=value markers (never a
+    # substring of unrelated prose, per the rule below) rather than
+    # inferred from prose. Absence of either marker is itself a failure —
+    # a check that silently skips because it found nothing to compare is
+    # exactly the "passes vacuously" shape D-022's audit was written
+    # against.
+    known_squads_max="$(grep -oE 'known_squads_max=[0-9]+' "$bots_log" | tail -1 | cut -d= -f2)"
+    total_squads="$(grep -oE 'FOG_TOTAL_SQUADS=[0-9]+' "$server_log" | tail -1 | cut -d= -f2)"
+    if [ -z "${known_squads_max:-}" ] || [ -z "${total_squads:-}" ]; then
+        echo "test-load: could not find known_squads_max (bots log) or FOG_TOTAL_SQUADS (server log) — can't check fog gating" >&2
+        exit 1
+    fi
+    if [ "$known_squads_max" -ge "$total_squads" ]; then
+        echo "test-load: fog did not gate anything at load — the most-informed bot knew $known_squads_max of $total_squads simulated squads (expected fewer)" >&2
+        exit 1
+    fi
+    echo "test-load: fog gated at least $((total_squads - known_squads_max)) of $total_squads simulated squads even from the most-informed bot (known_squads_max=$known_squads_max)"
+
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
     # failed a perfectly good run because the success line said
@@ -371,6 +403,11 @@ test-load N DURATION:
 
     echo "test-load: clean"
     grep -E "VERDICT" "$bots_log"
+    # us/squad is meaningless without its squad count (CLAUDE.md) — the
+    # server's own summary line carries both, plus vision/combat as
+    # identifiable components (D-026 criterion 10), so surface it here
+    # rather than making a human dig through server_log for it.
+    grep -E "server: final" "$server_log" || true
 
 # Render the REAL GUI client against a real server and check the frame.
 #
@@ -384,12 +421,26 @@ test-load N DURATION:
 # "is the client correct"; real-GPU appearance and performance remain a
 # human judgement made natively (D-014).
 #
+# M2: a lone client with no opponent cannot exercise combat or fog at all
+# — every squad stays at full strength and ghosts=0 no matter how correct
+# the rendering is, which would verify M1's rendering again and say
+# nothing about M2 (see game_design_decisions.md D-026 criterion 11). So
+# BOTS virtual load-test bots come up alongside the client as a second
+# player, and the client itself runs a scripted rally/withdraw/re-rally
+# (client.gd's _drive_m2_scenario, capture-mode only — it never runs
+# during `just run-client`) toward that neighbour's estimated spawn, for
+# the same reason bot_client.gd scripts its own bot-vs-bot contact: leaving
+# it to chance would make the verdict conditions below flaky rather than a
+# real check.
+#
 # Checks, in the same shape as test-load: the client's exit status, an
-# explicit VERDICT line, and that the frame contains more than one flat
-# colour — a scene that rendered nothing still writes a perfectly valid
-# PNG, so the colour count is what makes this a test.
-[doc("Render the GUI client headlessly and verify the frame (software GPU)")]
-test-client SECONDS="12": _import
+# explicit VERDICT line, that the frame contains more than one flat colour
+# (a scene that rendered nothing still writes a perfectly valid PNG), AND
+# — mirroring test-load's combat/fog conditions — that this run's client
+# actually observed a casualty, a conceal, AND a reveal, not merely that it
+# didn't complain (D-022's standing rule).
+[doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
+test-client SECONDS="24" BOTS="1": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "{{runtime}}" != "docker" ]; then
@@ -400,9 +451,20 @@ test-client SECONDS="12": _import
     mkdir -p "{{artifacts_dir}}"
     shot="{{artifacts_dir}}/client-frame.png"
     log="{{artifacts_dir}}/test-client.log"
+    bots_log="{{artifacts_dir}}/test-client-bots.log"
     rm -f "$shot"
     trap '"{{just_executable()}}" down' EXIT INT TERM
     "{{just_executable()}}" up
+
+    # Bots run for a little longer than the client so they don't vanish out
+    # from under it right before the screenshot is taken. Backgrounded (not
+    # `--rm`-raced against the client): its own container is still labelled
+    # for this compose project, so `just down`'s stray sweep (D-014) cleans
+    # it up even if it somehow outlives this recipe.
+    docker compose -p edotmw run --rm --no-deps bots --headless --script bot_client.gd \
+        -- --clients={{BOTS}} --duration=$(({{SECONDS}} + 10)) \
+        > "$bots_log" 2>&1 &
+    bots_pid=$!
 
     # gl_compatibility, not the Forward+ default: the image ships Mesa's
     # software OpenGL rasteriser (llvmpipe), not a software Vulkan one, so
@@ -419,6 +481,14 @@ test-client SECONDS="12": _import
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
 
+    # Best-effort: the bots' OWN verdict (bot_client.gd's _verdict_ok())
+    # judges itself against ITS OWN teammates, which with a single bot and
+    # no other bot to rally toward is not the thing this recipe is
+    # checking — the CLIENT's observations, asserted below, are. So the
+    # bots' exit status is not a pass/fail gate here, only diagnostic
+    # context kept in its own log.
+    wait "$bots_pid" || true
+
     if [ "$status" -ne 0 ]; then
         echo "test-client: client exited with status $status (see $log)" >&2
         grep -E "VERDICT|ERROR" "$log" >&2 | head -20 || true
@@ -433,8 +503,30 @@ test-client SECONDS="12": _import
         echo "test-client: no frame was written to $shot" >&2
         exit 1
     fi
+
+    # Structured key=value markers (per the standing "scary words vs
+    # structured markers" rule — test-load's own known_squads_max/
+    # FOG_TOTAL_SQUADS check follows the same shape), not an inference from
+    # prose. Absence of any of these, or a zero value, means M2 was not
+    # actually exercised by this run even if everything else looks clean.
+    casualties="$(grep -oE 'casualties_applied=[0-9]+' "$log" | tail -1 | cut -d= -f2)"
+    conceals="$(grep -oE 'conceal_events=[0-9]+' "$log" | tail -1 | cut -d= -f2)"
+    reveals="$(grep -oE 'reveal_events=[0-9]+' "$log" | tail -1 | cut -d= -f2)"
+    if [ -z "${casualties:-}" ] || [ "$casualties" -le 0 ]; then
+        echo "test-client: no casualties observed (casualties_applied=${casualties:-<missing>}) — M2 combat did not happen this run" >&2
+        exit 1
+    fi
+    if [ -z "${conceals:-}" ] || [ "$conceals" -le 0 ]; then
+        echo "test-client: no conceal events observed (conceal_events=${conceals:-<missing>}) — fog never hid anything from this client" >&2
+        exit 1
+    fi
+    if [ -z "${reveals:-}" ] || [ "$reveals" -le 0 ]; then
+        echo "test-client: no reveal events observed (reveal_events=${reveals:-<missing>}) — nothing concealed was ever re-revealed" >&2
+        exit 1
+    fi
+
     grep -E "^client: VERDICT" "$log"
-    echo "test-client: clean — frame at $shot"
+    echo "test-client: clean — frame at $shot (casualties_applied=$casualties conceal_events=$conceals reveal_events=$reveals)"
 
 # Inspect a recorded replay (D-016). Reads the curve log back and
 # reconstructs world state from it — the read half of "replays are the
