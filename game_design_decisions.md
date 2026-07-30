@@ -117,9 +117,14 @@ Questions. Updated to point here.
 **Revisit trigger:** If M2/M3 turn out to need something M1 was assumed
 to have proven, add it here rather than quietly widening the milestone.
 
-**M1 complete 2026-07-29.** All seven criteria met; `just test-unit` is
-green at 127 tests / 10 scripts, and `just test-load 4 12` runs clean end
-to end. Criterion by criterion:
+**M1 was declared complete 2026-07-29, then audited and found incomplete
+the same day.** See the audit block after the criteria list. The
+completion notes below are accurate about what was built; they were
+wrong that it was done.
+
+**M1 complete (revised) 2026-07-29.** All seven criteria met after the
+audit fixes; `just test-unit` is green at 141 tests / 10 scripts, and
+`just test-load 4 12` runs clean end to end. Criterion by criterion:
 
 1. `torus_space.gd` — wrap enforced by every method normalising its own
    inputs, so a call site that forgets to wrap cannot get a different
@@ -141,9 +146,20 @@ to end. Criterion by criterion:
    server. Cosmetic offsets live in a separate file (`cosmetic_offset.gd`)
    so clause 2's one-way boundary is structural rather than a comment.
 5. `squad_sim.gd` — packed arrays, no Nodes, explicit 10 Hz tick
-   (D-023). **Measured 2.14 µs per squad-update** at 48 squads against
-   D-020's ~50 µs budget — about 4% of budget, which is direct evidence
-   for D-021's judgement that GDScript would fit.
+   (D-023). **Measured 1.5–2.7 µs per squad-update** at 48 squads against
+   D-020's ~50 µs budget — a few percent of budget, which is direct
+   evidence for D-021's judgement that GDScript would fit. The figure
+   varies run to run with host load; treat the order of magnitude as the
+   result, not the third digit.
+
+   **The figure is only comparable at equal squad counts.** It is total
+   tick time over (ticks × squads), so per-tick fixed overhead is charged
+   to the per-squad number and inflates it when squads are few — a real
+   play session at 12 squads measured ~3.9 µs where 48 squads measured
+   ~2 µs on identical code. Quote the squad count alongside it, or a
+   smaller test will look like a regression. The bias runs in the safe
+   direction for D-018's extrapolation: it overstates per-squad cost at
+   low counts, so real headroom at ~1,000 squads is better, not worse.
 6. `replay_log.gd` — the curve log, byte-identical to the wire format.
    `just replay-info` reads a real load-test replay back and
    reconstructs all 48 squads.
@@ -184,6 +200,83 @@ reveal semantics), combat (Q7), casualties (M1 has no combat, so
 `alive` is only ever the full squad size), and per-squad selection in
 the client (M3 UI work). Replication uses reliable ENet delivery
 throughout; unreliable-with-resend is a refinement M4 can measure.
+
+**Known stub:** `SquadSim.visible_to()` returns every squad. That is
+correct for M1 — fog is D-004/M2 — but it means the replicator's
+per-client gating is exercised only by unit tests and never by the
+running system. Recorded here so the criterion above does not read as
+more proven than it is.
+
+---
+
+### Audit of this entry, 2026-07-29 — and why it was needed
+
+D-022 was written by the same agent, in the same session, that then built
+the code against it. That is exactly the arrangement in which a
+definition of done drifts to fit whatever was produced, so it was
+re-examined rather than restated. It had drifted, in two specific ways,
+and both let real bugs through:
+
+**Criterion 4 asked for the wrong thing.** It required "tests proving
+purity and client/server agreement". The tests proved agreement *given
+identical inputs* — they passed `def.squad_size` to both sides — and
+therefore could not notice that the live client fed `Formation` a
+nominal 40-strong "line" while the server used 32-strong "loose". Every
+soldier on every client was in the wrong place, and the suite was green.
+The criterion should have demanded agreement **in the running system,
+with the test taking its inputs from the wire**. See D-006's "necessary
+but not sufficient" note.
+
+**Criterion 7 could be satisfied vacuously.** "`test-load` runs clean"
+was true while one of its three checks — a grep for the word `desync` —
+matched nothing any code path ever printed. A check that cannot fail is
+indistinguishable from one that passes. It hid the bug above through
+every green run of M1.
+
+Both are now closed. The protocol carries squad composition
+(`S2C_SQUAD_INFO`), the server publishes a composition hash
+(`S2C_STATE_HASH`) that clients check themselves against, and the bot
+verdict fails if that verification did not *happen*, not merely if it
+did not complain.
+
+**A further live bug the new check caught on its first run:** squad
+composition was sent only to the joining client, so every
+already-connected client received curves for the newcomer's squads
+without ever being told what they were. The desync check flagged it
+immediately — bot 0 knew 12 squads, bot 1 knew 24, bot 2 knew 36 — which
+is the clearest possible demonstration that the previous check had been
+dead rather than passing.
+
+**Standing rule this produces:** every check added to a test recipe must
+be *observed to fail* before it is trusted. Both new checks were
+verified by deliberate perturbation, and the log scan itself was fixed
+after it failed a good run by matching its own success line ("0
+desyncs") — a check that fires on its own good news is no better than
+one that never fires.
+
+**Also fixed in the audit:** the sim now rejects a
+`curve_lookahead_seconds` that does not exceed the replicator's
+`horizon_seconds` (previously a comment, enforced by nothing), and the
+server counts and reports simulation ticks discarded by its catch-up
+bound instead of silently falling behind wall-clock.
+
+**The GUI client gap is closed too — see D-014's 2026-07-29 amendment.**
+`just test-client` renders the real client against a real server using a
+software rasteriser, so criterion 4 is now verified visually and not
+merely numerically. That distinction earned its keep immediately: the
+first frame ever rendered showed **no soldiers at all**, while every
+numeric assertion passed — 12 squads drawn, 384 soldiers derived, zero
+desyncs. `ClientState` was calling `Formation.soldier_transforms` with no
+terrain sampler, so every soldier derived at y=0 and rendered *inside*
+the terrain.
+
+That is a D-006 gap, not a cosmetic one: "terrain sample" is the fourth
+element of clause 1's input tuple, and it was simply never supplied. It
+is now, from the same `TerrainGen` instance that builds the mesh, so the
+ground a soldier stands on is the ground that was drawn. When the server
+begins deriving soldier positions for combat in M2 it must use an
+identical sampler, or the two sides will disagree about who is standing
+where.
 
 ---
 
@@ -412,6 +505,25 @@ Three clauses, now binding:
    reliable events, so reassignment stays inside the purity boundary.
    The formation restamps; soldiers do not walk to fill a dead man's
    slot.
+
+**Clause 1 is necessary but not sufficient — added 2026-07-29.** Purity
+guarantees client and server agree *given identical inputs*. It says
+nothing about whether the system actually hands them identical inputs,
+and that turned out to be the gap that mattered.
+
+M1 shipped with the server spawning the roster's default unit (32-strong
+archers in "loose" order) while every client assumed a nominal 40-strong
+"line". Because `Formation.slot_offset` takes `alive` as an input, this
+did not merely draw eight phantom soldiers — it put *every* soldier
+somewhere the server had not. The formation function was flawlessly pure
+throughout. The tests proved that purity and passed, because they handed
+both sides `def.squad_size` themselves.
+
+So: **supplying both sides identical inputs is a protocol obligation**,
+and it belongs to whatever message carries squad composition (see
+`NetProtocol.encode_squad_info`). A test that supplies the inputs itself
+verifies the function, not the system. Any future test claiming
+client/server agreement must take its inputs from the wire.
 
 **Corrected revisit trigger** (replaces the original above, which was
 miswritten): the trigger is *not* "combat needs server-authoritative
@@ -744,6 +856,57 @@ path is `rm -rf tools/` (portable binaries) plus clearing
 **Revisit trigger:** Once WSL2 is repaired and the docker path is
 verified working, `EDOTMW_RUNTIME=docker` can become the default; native
 stays as the fallback either way for the GUI pieces.
+
+**Amended 2026-07-29 — automated GUI testing, without a GPU.** This entry
+rejected containerising the GUI client, and that judgement stands *for
+interactive development*: GPU passthrough into a container on this
+hardware is fragile and buys nothing. `just run-client` is still native.
+
+But the rejection was overly broad, and it left M1's client with no
+automated verification at all — it had never rendered a frame anywhere.
+The gap was never really about GPUs: **rendering does not require a GPU,
+it requires a rasteriser.** Mesa's llvmpipe renders Godot's Compatibility
+(OpenGL) backend entirely in software, under a virtual X server, in a
+plain container. Verified here at OpenGL 4.5 core against Godot's 3.3
+requirement.
+
+So `just test-client` renders the real client scene against a real
+server, screenshots it, and asserts on the result. Nothing is installed
+on the host and no GPU is involved. Teardown is unchanged: the X server
+dies with its container, and `just nuke` removes the image.
+
+Software rendering is a feature here rather than a compromise — output
+does not vary by driver vendor or version, so frames are comparable run
+to run. What it deliberately does **not** cover is real-GPU appearance
+and performance, which stay a human judgement made via `just run-client`.
+
+Two traps this laid, both worth knowing:
+
+1. The `gui` stage extends `base` and is therefore *last*, and Docker
+   builds the last stage by default — so a bare `build: .` silently gave
+   the **server** an X server and an OpenGL context instead of running it
+   headless. Every headless service now pins `target: base` explicitly.
+   Caught by the tightened log scan on its first run after the change.
+2. Godot defaults to Forward+/Vulkan. The image ships software *OpenGL*,
+   not software Vulkan, so the client hung at startup emitting no
+   diagnostic whatsoever until `--rendering-method gl_compatibility` was
+   passed.
+
+**And it exposed a pre-existing hole in this entry's own guarantee.**
+`docker compose down` removes what `compose up` created; it does **not**
+reliably remove a still-running one-off `compose run` container, and
+`--remove-orphans` does not either. A client-test container that hung at
+startup survived a full `just nuke` and was still running half an hour
+later — the exact stray-container failure this decision exists to
+prevent, sitting undetected because nothing ever checked. `just down`
+now also sweeps by `com.docker.compose.project=edotmw` label, which is
+scoped to this project exactly as the pinned `-p edotmw` is and cannot
+touch anything else. Verified: run `test-client`, then `nuke`, then
+confirm zero containers and zero images remain.
+
+The lesson generalises past Docker: **the teardown guarantee needs its
+own check.** It was asserted in this entry from M0 onward and was, for
+some paths, simply not true.
 
 **Update 2026-07-28:** WSL2 repaired (firmware virtualization was
 disabled — fixed in BIOS) and Docker Desktop installed. Docker path

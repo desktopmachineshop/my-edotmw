@@ -21,12 +21,6 @@ const CHANNELS := 2
 const ORDER_INTERVAL_SECONDS := 3.0
 const CONNECT_TIMEOUT_SECONDS := 10.0
 
-# Bots assume a nominal squad strength for derivation. M1 has no
-# casualties yet (combat is M2), so this stands in for what the client
-# will later learn from combat events.
-const NOMINAL_ALIVE := 40
-
-
 class VirtualClient:
 	var index: int
 	var server_address: String
@@ -101,8 +95,13 @@ class VirtualClient:
 
 	## Derive soldier positions from held curves — the client-side half of
 	## D-006. Nothing here came off the wire; it is all recomputed.
+	##
+	## Composition now comes from the server rather than being assumed. It
+	## used to pass a nominal 40 soldiers in "line" at 1.0 spacing, while
+	## the server was actually spawning 32-strong archers in "loose" — so
+	## every derived soldier sat somewhere the server did not put it.
 	func derive_soldiers(now: float) -> int:
-		soldiers_derived = state.derive_all(now, NOMINAL_ALIVE, "line", 1.0)
+		soldiers_derived = state.derive_all(now)
 		return soldiers_derived
 
 	func curve_packets_received() -> int:
@@ -230,14 +229,48 @@ func _packets_received() -> int:
 	return n
 
 
-## A run is only a success if every bot connected AND state actually
-## replicated. "Didn't crash" is not the bar — a bot that connects and
-## receives nothing would mean the netcode is broken while every process
-## exits 0.
+func _desync_count() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.state.desync_count
+	return n
+
+
+func _state_hash_checks() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.state.state_hash_checks
+	return n
+
+
+func _squads_awaiting_composition() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.state.squads_awaiting_composition()
+	return n
+
+
+## A run is only a success if every bot connected, state actually
+## replicated, the client's view was *checked* against the server's, and
+## that check passed.
+##
+## The `state_hash_checks > 0` condition is the important one and is there
+## deliberately. The previous version of this suite grepped logs for the
+## word "desync" that no code path ever emitted — a check that cannot fail
+## is indistinguishable from a check that passes, and it hid a real bug
+## (client and server deriving different soldier positions) through many
+## green runs. Requiring that verification demonstrably HAPPENED, not just
+## that it didn't complain, is what stops that recurring.
 func _verdict_ok() -> bool:
 	if _clients.is_empty():
 		return false
-	return _ever_connected_count() == _clients.size() and _packets_received() > 0
+	if _ever_connected_count() != _clients.size():
+		return false
+	if _packets_received() <= 0:
+		return false
+	if _state_hash_checks() <= 0:
+		return false
+	return _desync_count() == 0
 
 
 func _report() -> void:
@@ -251,10 +284,22 @@ func _report() -> void:
 		soldiers += vc.soldiers_derived
 		curves += vc.state.curves.size()
 
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
-		_packets_received(), curves, soldiers])
+		_packets_received(), curves, soldiers,
+		_state_hash_checks(), _desync_count()])
+
+	# Printed only on failure, and containing the word the log scan looks
+	# for — which now actually appears when something is wrong.
+	if _desync_count() > 0:
+		for vc in _clients:
+			if vc.state.desync_count > 0:
+				push_error("bot %d: desync — %s" % [vc.index, vc.state.last_desync])
+
+	var awaiting := _squads_awaiting_composition()
+	if awaiting > 0:
+		push_error("bot_client.gd: %d squad(s) had a curve but no composition — the server replicated something it never described" % awaiting)
 
 
 ## Minimal `--key=value` CLI parser for user args (after `--`).

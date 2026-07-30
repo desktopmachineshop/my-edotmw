@@ -22,9 +22,11 @@ const CAMERA_ZOOM_STEP := 4.0
 const CAMERA_MIN_HEIGHT := 8.0
 const CAMERA_MAX_HEIGHT := 90.0
 
-# M1 has no combat, so squads are at full strength. When casualties land
-# in M2 this comes from replicated squad state instead.
-const NOMINAL_ALIVE := 40
+## Distinct colours a genuinely-rendered frame must contain. A blank or
+## cleared frame has one; lit terrain plus shaded soldiers has hundreds.
+## Set low enough to tolerate a software rasteriser's differences, high
+## enough that an empty scene cannot pass.
+const MIN_DISTINCT_COLOURS := 24
 
 var _host: ENetConnection
 var _peer: ENetPacketPeer
@@ -40,11 +42,28 @@ var _camera_height := 40.0
 var _now := 0.0
 var _terrain_built := false
 
+# Capture mode (`just test-client`). The real client renders the real
+# scene and screenshots itself, rather than a stand-in doing it — same
+# reasoning as ClientState being shared with the bots: a test that
+# exercises an imitation can pass while the thing itself is broken.
+var _run_seconds := -1.0
+var _screenshot_path := ""
+var _shot_taken := false
+var _verdict_reported := false
+
 
 func _ready() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
-	var address := String(args.get("address", DEFAULT_SERVER_ADDRESS))
+	# Inside the compose network the server is a hostname, not localhost,
+	# so the address is overridable by env as well as by flag — same
+	# convention as bot_client.gd.
+	var default_address := OS.get_environment("EDOTMW_SERVER_ADDRESS")
+	if default_address == "":
+		default_address = DEFAULT_SERVER_ADDRESS
+	var address := String(args.get("address", default_address))
 	var port := int(args.get("port", DEFAULT_SERVER_PORT))
+	_run_seconds = float(args.get("run-seconds", -1.0))
+	_screenshot_path = String(args.get("screenshot", ""))
 
 	_unit_def = UnitRoster.first()
 
@@ -102,6 +121,72 @@ func _process(delta: float) -> void:
 
 	_refresh_squads()
 
+	if _run_seconds > 0.0 and _now >= _run_seconds:
+		_finish_capture()
+
+
+## Screenshot, self-assess, report, exit. Mirrors bot_client's verdict
+## shape deliberately: an exit code is the machine-readable half, so the
+## recipe can fail on it rather than trying to infer success from prose.
+func _finish_capture() -> void:
+	if _verdict_reported:
+		return
+	_verdict_reported = true
+
+	var image: Image = null
+	if _screenshot_path != "":
+		# Wait for the frame to actually be drawn before reading it back,
+		# otherwise the capture races rendering and yields an empty image.
+		await RenderingServer.frame_post_draw
+		image = get_viewport().get_texture().get_image()
+		var directory := _screenshot_path.get_base_dir()
+		if directory != "" and not DirAccess.dir_exists_absolute(directory):
+			DirAccess.make_dir_recursive_absolute(directory)
+		if image.save_png(_screenshot_path) == OK:
+			print("client: wrote %s (%dx%d)" % [
+				_screenshot_path, image.get_width(), image.get_height()])
+			_shot_taken = true
+		else:
+			push_error("client: could not write %s" % _screenshot_path)
+
+	var squads_drawn := _squad_nodes.size()
+	var soldiers := _state.derive_all(_now)
+	var distinct := _distinct_colours(image)
+
+	# A frame that rendered nothing still saves as a valid PNG — it is
+	# just one flat colour. Counting distinct colours is what separates
+	# "drew the scene" from "wrote out the clear colour", and it is the
+	# assertion that makes this a test rather than a screenshot.
+	var ok := (
+		_state.welcomed
+		and _state.desync_count == 0
+		and squads_drawn > 0
+		and soldiers > 0
+		and (_screenshot_path == "" or (_shot_taken and distinct >= MIN_DISTINCT_COLOURS))
+	)
+
+	print("client: VERDICT %s — connected=%s squads_drawn=%d soldiers=%d curves=%d desyncs=%d distinct_colours=%d" % [
+		"ok" if ok else "failed",
+		str(_state.welcomed), squads_drawn, soldiers,
+		_state.curves.size(), _state.desync_count, distinct])
+
+	get_tree().quit(0 if ok else 1)
+
+
+## Sampled rather than exhaustive — a 1280x720 readback is 921,600 pixels
+## and the question is only "is there more than a flat fill here".
+func _distinct_colours(image: Image) -> int:
+	if image == null:
+		return 0
+	var seen := {}
+	var step := 7
+	for y in range(0, image.get_height(), step):
+		for x in range(0, image.get_width(), step):
+			seen[image.get_pixel(x, y).to_rgba32()] = true
+			if seen.size() > MIN_DISTINCT_COLOURS * 4:
+				return seen.size()
+	return seen.size()
+
 
 func _service_network() -> void:
 	if _host == null:
@@ -136,6 +221,16 @@ func _build_terrain() -> void:
 	var chunk_size := 16
 	var grid := TerrainChunk.chunk_grid(space, chunk_size)
 
+	# Stand soldiers ON the terrain rather than at y=0. Without this they
+	# derive at sea level and render buried inside every hill — which is
+	# how this shipped, because every numeric check (squad count, soldier
+	# count, desyncs) passes perfectly while the units are underground.
+	# Uses the same TerrainGen instance that built the mesh, so the ground
+	# a soldier stands on is the ground that was drawn.
+	_state.terrain_sampler = func(x: float, z: float) -> float:
+		var cell := space.world_to_cell(Vector3(x, 0.0, z))
+		return terrain.elevation_at(space, cell) * terrain.height_scale
+
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
 	material.roughness = 0.95
@@ -163,15 +258,21 @@ func _refresh_squads() -> void:
 		return
 
 	for squad_id in _state.curves:
+		# Nothing to draw until the server has said what this squad is.
+		# Rendering a guessed strength would put every soldier in the
+		# wrong place — see NetProtocol.encode_squad_info.
+		if not _state.composition.has(squad_id):
+			continue
+
 		var unit: PrimitiveUnit = _squad_nodes.get(squad_id, null)
 		if unit == null:
 			unit = PrimitiveUnit.new()
 			add_child(unit)
-			unit.rebuild(_unit_def)
+			var def := UnitRoster.by_id(StringName(_state.composition[squad_id]["def_id"]))
+			unit.rebuild(def if def != null else _unit_def)
 			_squad_nodes[squad_id] = unit
 
-		var transforms := _state.soldier_transforms(
-			squad_id, _now, NOMINAL_ALIVE, _unit_def.formation_shape, _unit_def.formation_spacing)
+		var transforms := _state.soldier_transforms(squad_id, _now)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
 		unit.set_slot_transforms(CosmeticOffset.decorate_all(transforms, _now, 1.0))

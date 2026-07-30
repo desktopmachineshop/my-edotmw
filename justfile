@@ -16,10 +16,14 @@
 # Headless (docker or native): doctor, bootstrap, up, down, nuke, status,
 # run-server, run-bots, test-unit, test-load, gen-terrain-preview,
 # replay-info.
-# Native only: run-client — the GUI client needs a GPU and is not
-# containerized (D-014). It is also the one thing the headless suite
-# cannot cover, which is why its non-rendering logic lives in
-# client_state.gd and IS covered.
+# Docker only: test-client — renders the real GUI client via Mesa's
+# software rasteriser and checks the frame. No GPU involved.
+# Native only: run-client — for a human to actually look at on real
+# hardware (D-014).
+#
+# NOTE: the Dockerfile is multi-stage and `gui` is the LAST stage, so a
+# bare `build: .` builds the GUI image. Every headless compose service
+# pins `target: base` explicitly for that reason — see docker-compose.yml.
 #
 # Per CLAUDE.md's testing section, a recipe must never report success for
 # something that didn't run. test-load learned that the hard way during
@@ -155,6 +159,19 @@ down:
     set -euo pipefail
     if [ "{{runtime}}" = "docker" ]; then
         docker compose -p edotmw down --remove-orphans
+        # `compose down` removes what `compose up` created. It does NOT
+        # reliably remove a still-RUNNING one-off `compose run` container,
+        # and `--remove-orphans` does not either — a client-test container
+        # that hung at startup survived a full `just nuke` and was found
+        # still running half an hour later. That is precisely the stray
+        # container D-014 exists to prevent, so sweep by project label as
+        # well. The label filter is scoped to this project exactly like
+        # the pinned `-p edotmw`, so it can never touch anything else.
+        strays="$(docker ps -aq --filter 'label=com.docker.compose.project=edotmw' || true)"
+        if [ -n "$strays" ]; then
+            echo "down: removing $(echo "$strays" | wc -l | tr -d ' ') stray one-off container(s)"
+            echo "$strays" | xargs -r docker rm -f >/dev/null
+        fi
     else
         if [ -f "{{artifacts_dir}}/server.pid" ]; then
             kill "$(cat {{artifacts_dir}}/server.pid)" 2>/dev/null || true
@@ -225,6 +242,22 @@ run-client ADDRESS="127.0.0.1" PORT="4433":
         echo "      Run: {{just_executable()}} bootstrap" >&2
         exit 1
     fi
+    # Import NATIVELY first, and unconditionally.
+    #
+    # This recipe cannot use the `_import` dependency the headless recipes
+    # share: `_import` follows EDOTMW_RUNTIME, which defaults to docker and
+    # populates .godot-container, while the client is always native
+    # (D-014) and reads .godot. On a machine that has only ever run the
+    # docker path, the native cache does not exist and the client dies
+    # with parse errors naming unrelated lines — "Identifier
+    # 'CosmeticOffset' not declared" and a scatter of "cannot infer type".
+    #
+    # This is exactly D-015's trap. run-client was the one recipe it had
+    # not been applied to, because the rule was written as "any new
+    # HEADLESS recipe" and this one is not headless. The requirement is
+    # really about global class_name resolution, which is not a headless
+    # concern at all.
+    "$godot" --headless --path . --import
     "$godot" --path . client.tscn -- --address={{ADDRESS}} --port={{PORT}}
 
 # Spawn N virtual load-test bots in a SINGLE process (D-018 sizing note)
@@ -276,11 +309,19 @@ test-unit: _import
 # distinguish "nothing went wrong" from "nothing happened". So:
 #
 #   1. bots' exit status         — did the run itself succeed?
-#   2. explicit VERDICT line     — did every bot connect AND replicate?
-#   3. warning/desync log scan   — did anything complain along the way?
+#   2. explicit VERDICT line     — did every bot connect, replicate, AND
+#                                  verify its state against the server's?
+#   3. diagnostic log scan       — did anything complain along the way?
 #
 # Check 2 is the one that makes this a test rather than a smoke run: a
 # bot that connects and receives nothing would otherwise pass 1 and 3.
+#
+# The VERDICT now also requires that state-hash checks actually RAN, not
+# merely that none failed. That distinction is not pedantic: this recipe
+# spent all of M1 grepping for the word "desync" which no code path ever
+# printed, and the vacuous pass hid a live bug in which every client
+# derived soldier positions from a different squad strength than the
+# server used.
 [doc("Load test: server + N bots for DURATION seconds, then verify the run")]
 test-load N DURATION:
     #!/usr/bin/env bash
@@ -317,13 +358,83 @@ test-load N DURATION:
         exit 1
     fi
 
-    if grep -Ein "warning|desync" "{{artifacts_dir}}"/test-load-*.log; then
-        echo "test-load: warnings/desyncs found (see {{artifacts_dir}}/)" >&2
+    # Match engine/script diagnostics by their line PREFIX, not by prose
+    # containing a scary word. The previous `warning|desync` word scan
+    # failed a perfectly good run because the success line said
+    # "0 desyncs" — a check that fires on its own good news is no more
+    # useful than one that never fires at all.
+    if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "{{artifacts_dir}}"/test-load-*.log; then
+        echo "test-load: engine errors or warnings found (see {{artifacts_dir}}/)" >&2
+        grep -EIn '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "{{artifacts_dir}}"/test-load-*.log >&2 | head -20
         exit 1
     fi
 
     echo "test-load: clean"
     grep -E "VERDICT" "$bots_log"
+
+# Render the REAL GUI client against a real server and check the frame.
+#
+# This closes the one M1 exit criterion nothing could verify: the client
+# had never rendered a frame anywhere, so "it draws the right thing" was
+# an assumption. It runs the actual client scene — not a stand-in — with
+# Mesa's llvmpipe software rasteriser under a virtual X server, so no GPU
+# is required and nothing is installed on the host.
+#
+# It does NOT replace `just run-client`. Software rendering answers
+# "is the client correct"; real-GPU appearance and performance remain a
+# human judgement made natively (D-014).
+#
+# Checks, in the same shape as test-load: the client's exit status, an
+# explicit VERDICT line, and that the frame contains more than one flat
+# colour — a scene that rendered nothing still writes a perfectly valid
+# PNG, so the colour count is what makes this a test.
+[doc("Render the GUI client headlessly and verify the frame (software GPU)")]
+test-client SECONDS="12": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "test-client requires the docker runtime (it needs the software-GL image)." >&2
+        echo "For the native GUI client use: {{just_executable()}} run-client" >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/client-frame.png"
+    log="{{artifacts_dir}}/test-client.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down' EXIT INT TERM
+    "{{just_executable()}}" up
+
+    # gl_compatibility, not the Forward+ default: the image ships Mesa's
+    # software OpenGL rasteriser (llvmpipe), not a software Vulkan one, so
+    # Forward+ hangs at startup with no diagnostic whatsoever.
+    # Dummy audio because the container has no sound card and ALSA's
+    # failure is a dozen lines of noise in the log.
+    status=0
+    docker compose -p edotmw run --rm --no-deps client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution 1280x720 \
+        -- --address=server --run-seconds={{SECONDS}} \
+        --screenshot=res://artifacts/client-frame.png \
+        > "$log" 2>&1 || status=$?
+
+    if [ "$status" -ne 0 ]; then
+        echo "test-client: client exited with status $status (see $log)" >&2
+        grep -E "VERDICT|ERROR" "$log" >&2 | head -20 || true
+        exit 1
+    fi
+    if ! grep -q "VERDICT ok" "$log"; then
+        echo "test-client: client did not report a successful verdict (see $log)" >&2
+        grep -E "VERDICT" "$log" >&2 || echo "test-client: no VERDICT line — did the client run?" >&2
+        exit 1
+    fi
+    if [ ! -s "$shot" ]; then
+        echo "test-client: no frame was written to $shot" >&2
+        exit 1
+    fi
+    grep -E "^client: VERDICT" "$log"
+    echo "test-client: clean — frame at $shot"
 
 # Inspect a recorded replay (D-016). Reads the curve log back and
 # reconstructs world state from it — the read half of "replays are the

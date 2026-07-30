@@ -3,9 +3,16 @@
 # containers (D-014 teardown requirement).
 name: edotmw
 
+# Every headless service pins `target: base` EXPLICITLY. The Dockerfile
+# is multi-stage and `gui` is the last stage, so a bare `build: .` builds
+# the GUI image — which silently gave the server an X server and an
+# OpenGL context instead of running it headless. Do not replace these
+# with a bare `build: .` because it "looks tidier".
 services:
   server:
-    build: .
+    build:
+      context: .
+      target: base
     command: ["--path", ".", "server.tscn"]
     volumes:
       - .:/work
@@ -17,7 +24,9 @@ services:
     cpus: 4
 
   bots:
-    build: .
+    build:
+      context: .
+      target: base
     command: ["--script", "bot_client.gd"]
     environment:
       # Inside the compose network the server is reachable by service
@@ -37,8 +46,26 @@ services:
     mem_limit: 1g
     cpus: 2
 
+  # The GUI client rendered with Mesa's software rasteriser under a
+  # virtual X server — no GPU, nothing installed on the host. See the
+  # `gui` stage in the Dockerfile for why this does not contradict D-014.
+  client-test:
+    build:
+      context: .
+      target: gui
+    environment:
+      EDOTMW_SERVER_ADDRESS: server
+    volumes:
+      - .:/work
+      - ./.godot-container:/work/.godot
+    restart: "no"
+    mem_limit: 2g
+    cpus: 4
+
   test:
-    build: .
+    build:
+      context: .
+      target: base
     command: ["-s", "res://addons/gut/gut_cmdln.gd", "-gdir=res://tests", "-gexit"]
     volumes:
       - .:/work

@@ -17,12 +17,43 @@ func _space() -> TorusSpace:
 	return TorusSpace.new(W, H, 1.0)
 
 
+## A synthetic def, for tests that don't go through SQUAD_INFO.
 func _def() -> UnitDef:
 	var d := UnitDef.new()
 	d.id = &"client_test"
 	d.squad_size = 10
 	d.move_speed = 3.5
 	return d
+
+
+## The def the SERVER actually spawns. Tests that exercise the live path
+## must use this rather than a synthetic one — a hand-built def would not
+## resolve through UnitRoster.by_id on the client side, and more
+## importantly a test that invents its own squad size cannot notice the
+## client and server disagreeing about the real one.
+func _roster_def() -> UnitDef:
+	return UnitRoster.first()
+
+
+## Drive a sim and a client through the real protocol, exactly as
+## server.gd does: welcome, then composition, then curves.
+func _connect(sim: SquadSim, state: ClientState, player: int) -> void:
+	var visible := sim.visible_to(player)
+	state.handle_packet(NetProtocol.encode_welcome(player, W, H, visible))
+	state.handle_packet(NetProtocol.encode_squad_info(sim.squad_info_entries(visible)))
+
+
+func _pump(sim: SquadSim, state: ClientState, player: int, ticks: int) -> int:
+	var bytes := 0
+	for _i in range(ticks):
+		sim.tick()
+		for packet in sim.replicator.collect_for_client(player, sim.time, sim.visible_to(player)):
+			var wire := NetProtocol.encode_curve(packet["bytes"])
+			bytes += wire.size()
+			state.handle_packet(wire)
+		state.handle_packet(NetProtocol.encode_state_hash(
+			sim.tick_count, sim.composition_hash(sim.visible_to(player))))
+	return bytes
 
 
 # --- protocol roundtrips ---------------------------------------------
@@ -106,26 +137,28 @@ func test_client_reconstructs_squad_state_from_server_packets() -> void:
 func test_client_derives_the_same_soldiers_the_server_would() -> void:
 	# D-006 end to end through the real protocol: no soldier position is
 	# ever sent, and both sides still agree.
-	var space := _space()
-	var sim := SquadSim.new(space, CurveReplicator.new())
-	var def := _def()
-	var id := sim.add_squad(def, 1, Vector2i(4, 4))
+	#
+	# The test deliberately never mentions squad size, formation shape or
+	# spacing. Its predecessor passed `def.squad_size` straight to the
+	# client, which meant it proved Formation is a pure function — it could
+	# not notice that the live client was feeding that function completely
+	# different inputs than the server used. It passed for the entire time
+	# a real client was drawing 40-strong lines where the server had
+	# 32-strong loose formations.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(4, 4))
 	sim.order_move(id, Vector2i(18, 10))
 
 	var state := ClientState.new()
-	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [id]))
-
-	for _i in range(20):
-		sim.tick()
-		for packet in sim.replicator.collect_for_client(1, sim.time, sim.visible_to(1)):
-			state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+	_connect(sim, state, 1)
+	_pump(sim, state, 1, 20)
 
 	var server_side := sim.soldier_transforms(id)
-	var client_side := state.soldier_transforms(
-		id, sim.time, def.squad_size, def.formation_shape, def.formation_spacing)
+	var client_side := state.soldier_transforms(id, sim.time)
 
-	assert_eq(client_side.size(), server_side.size())
-	assert_gt(client_side.size(), 0)
+	assert_gt(client_side.size(), 0, "The client should be deriving soldiers by now")
+	assert_eq(client_side.size(), server_side.size(),
+		"Client and server disagree about how many soldiers this squad has")
 	for i in range(server_side.size()):
 		assert_almost_eq(client_side[i].origin.x, server_side[i].origin.x, 0.001,
 			"Soldier %d x diverges" % i)
@@ -133,14 +166,48 @@ func test_client_derives_the_same_soldiers_the_server_would() -> void:
 			"Soldier %d z diverges" % i)
 
 
+func test_client_learns_composition_rather_than_assuming_it() -> void:
+	# The specific regression. The roster's default unit is NOT 40 strong
+	# in "line" — the values the client used to assume — so this fails
+	# loudly if anyone reintroduces a nominal default.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	assert_eq(state.alive_of(id), def.squad_size,
+		"Client's squad strength should come from the server, not a guess")
+	assert_eq(state.shape_of(id), def.formation_shape,
+		"Client's formation shape should come from the UnitDef the server named")
+	assert_almost_eq(state.spacing_of(id), def.formation_spacing, 0.0001)
+
+
+func test_squad_with_no_composition_derives_nothing_rather_than_guessing() -> void:
+	# A plausible-looking wrong answer is worse than none: guessing puts
+	# every soldier somewhere the server did not.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(6, 6))
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [id]))
+	# Curves, but no SQUAD_INFO.
+	for packet in sim.replicator.collect_for_client(1, sim.time, sim.visible_to(1)):
+		state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+
+	assert_eq(state.soldier_transforms(id, sim.time).size(), 0,
+		"Without composition the client must derive nothing at all")
+	assert_eq(state.squads_awaiting_composition(), 1,
+		"...and must be able to report that it is missing")
+
+
 func test_client_never_receives_soldier_positions() -> void:
 	# Structural: everything a client holds is a squad curve. The soldier
 	# count it can draw is derived, and bears no relation to bytes on the
 	# wire — which is the entire 40x saving in D-006.
-	var space := _space()
-	var sim := SquadSim.new(space, CurveReplicator.new())
-	var def := _def()
-	def.squad_size = 40
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
 	var ids := []
 	for i in range(10):
 		ids.append(sim.add_squad(def, 1, Vector2i(i * 2, 3)))
@@ -148,19 +215,14 @@ func test_client_never_receives_soldier_positions() -> void:
 		sim.order_move(id, Vector2i(20, 12))
 
 	var state := ClientState.new()
-	state.handle_packet(NetProtocol.encode_welcome(1, W, H, ids))
+	_connect(sim, state, 1)
 
 	var ticks := 20
-	var bytes := 0
-	for _i in range(ticks):
-		sim.tick()
-		for packet in sim.replicator.collect_for_client(1, sim.time, sim.visible_to(1)):
-			var wire := NetProtocol.encode_curve(packet["bytes"])
-			bytes += wire.size()
-			state.handle_packet(wire)
+	var bytes := _pump(sim, state, 1, ticks)
 
-	var soldiers := state.derive_all(sim.time, def.squad_size, def.formation_shape, def.formation_spacing)
-	assert_eq(soldiers, 400, "10 squads of 40 should derive 400 soldiers")
+	var soldiers := state.derive_all(sim.time)
+	assert_eq(soldiers, 10 * def.squad_size,
+		"10 squads should derive 10x the roster def's squad size")
 
 	# Compare like with like: what per-soldier snapshot replication would
 	# have cost over the SAME ticks. (Comparing cumulative bytes against a
@@ -200,3 +262,129 @@ func test_world_to_cell_picks_the_nearest_cell_near_boundaries() -> void:
 	for offset in [Vector3(0.2, 0, 0), Vector3(-0.2, 0, 0), Vector3(0, 0, 0.2), Vector3(0, 0, -0.2)]:
 		assert_eq(space.world_to_cell(centre + offset), Vector2i(5, 5),
 			"A small nudge from the centre of a cell should stay in that cell")
+
+
+# --- composition and desync detection ---------------------------------
+
+func test_squad_info_roundtrips() -> void:
+	var entries := [
+		{"id": 4, "def_id": "militia", "alive": 40},
+		{"id": 9, "def_id": "archers", "alive": 32},
+	]
+	var decoded := NetProtocol.decode_squad_info(NetProtocol.encode_squad_info(entries))
+	assert_eq(decoded.size(), 2)
+	assert_eq(int(decoded[0]["id"]), 4)
+	assert_eq(String(decoded[0]["def_id"]), "militia")
+	assert_eq(int(decoded[0]["alive"]), 40)
+	assert_eq(String(decoded[1]["def_id"]), "archers")
+	assert_eq(int(decoded[1]["alive"]), 32)
+
+
+func test_state_hash_roundtrips() -> void:
+	var decoded := NetProtocol.decode_state_hash(NetProtocol.encode_state_hash(77, 123456))
+	assert_eq(int(decoded["tick"]), 77)
+	assert_eq(int(decoded["hash"]), 123456)
+
+
+func test_composition_hash_ignores_entry_order() -> void:
+	# Server and client build their entry lists by iterating different
+	# containers, so the hash must not depend on iteration order.
+	var a := [{"id": 1, "alive": 10, "shape": "line", "spacing": 1.0},
+		{"id": 2, "alive": 20, "shape": "wedge", "spacing": 1.5}]
+	var b := [{"id": 2, "alive": 20, "shape": "wedge", "spacing": 1.5},
+		{"id": 1, "alive": 10, "shape": "line", "spacing": 1.0}]
+	assert_eq(NetProtocol.composition_hash(a), NetProtocol.composition_hash(b))
+
+
+func test_composition_hash_changes_with_every_field() -> void:
+	# A hash that ignored a field would let that field drift undetected.
+	var base := [{"id": 1, "alive": 10, "shape": "line", "spacing": 1.0}]
+	var baseline := NetProtocol.composition_hash(base)
+	assert_ne(baseline, NetProtocol.composition_hash(
+		[{"id": 2, "alive": 10, "shape": "line", "spacing": 1.0}]), "id must matter")
+	assert_ne(baseline, NetProtocol.composition_hash(
+		[{"id": 1, "alive": 11, "shape": "line", "spacing": 1.0}]), "alive must matter")
+	assert_ne(baseline, NetProtocol.composition_hash(
+		[{"id": 1, "alive": 10, "shape": "loose", "spacing": 1.0}]), "shape must matter")
+	assert_ne(baseline, NetProtocol.composition_hash(
+		[{"id": 1, "alive": 10, "shape": "line", "spacing": 1.4}]), "spacing must matter")
+
+
+func test_matching_client_reports_no_desync() -> void:
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	for i in range(5):
+		sim.add_squad(_roster_def(), 1, Vector2i(i * 3, 4))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	_pump(sim, state, 1, 30)
+
+	assert_gt(state.state_hash_checks, 0,
+		"The client must actually have been checked — a check that never runs is not a check")
+	assert_eq(state.desync_count, 0, "A correctly-informed client should never desync")
+
+
+func test_desync_check_catches_a_client_that_assumed_the_wrong_squad_size() -> void:
+	# THE regression test. This reproduces the exact bug that shipped:
+	# the server spawns the roster's default unit, the client assumes a
+	# nominal 40-strong "line" squad, and because Formation.slot_offset
+	# takes `alive` as an input, every soldier ends up somewhere the
+	# server did not put it.
+	#
+	# This is what a working desync check would have caught on the first
+	# load test. The check that existed grepped logs for a word no code
+	# ever printed, so it caught nothing, for many green runs.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(3, 3))
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [id]))
+
+	# Hand-inject the old assumption instead of the server's truth.
+	state.composition[id] = {
+		"def_id": String(def.id), "alive": 40, "shape": "line", "spacing": 1.0,
+	}
+	assert_ne(def.squad_size, 40,
+		"This test is only meaningful while the roster default is not 40 strong")
+
+	state.handle_packet(NetProtocol.encode_state_hash(
+		sim.tick_count, sim.composition_hash(sim.visible_to(1))))
+
+	assert_eq(state.state_hash_checks, 1)
+	assert_eq(state.desync_count, 1,
+		"A client deriving from the wrong squad size must be detected")
+	assert_string_contains(state.last_desync, "composition hash")
+
+
+func test_desync_check_catches_a_wrong_formation_shape() -> void:
+	# The bots' other assumption: hardcoded "line" regardless of the def.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(3, 3))
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [id]))
+	state.composition[id] = {
+		"def_id": String(def.id),
+		"alive": def.squad_size,
+		"shape": "line" if def.formation_shape != "line" else "column",
+		"spacing": def.formation_spacing,
+	}
+
+	state.handle_packet(NetProtocol.encode_state_hash(
+		sim.tick_count, sim.composition_hash(sim.visible_to(1))))
+	assert_eq(state.desync_count, 1, "A wrong formation shape must be detected")
+
+
+func test_sim_and_client_agree_on_the_hash_for_the_same_state() -> void:
+	# Both sides must compute the hash identically from their own storage.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	for i in range(4):
+		sim.add_squad(_roster_def(), 1, Vector2i(i, i))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	assert_eq(state.composition_hash(), sim.composition_hash(sim.visible_to(1)),
+		"Server and client must derive the same composition hash from the same facts")

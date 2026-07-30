@@ -277,3 +277,60 @@ func test_per_squad_update_cost_is_measurable() -> void:
 	assert_gte(sim.mean_usec_per_squad_update(), 0.0,
 		"Per-squad update cost must be measurable from M1 (D-012)")
 	gut.p("mean usec per squad-update: %f (200 squads, 20 ticks)" % sim.mean_usec_per_squad_update())
+
+
+# --- configuration invariants ----------------------------------------
+
+func test_lookahead_must_exceed_the_replication_horizon() -> void:
+	# The sim writes `curve_lookahead_seconds` of path into each curve; the
+	# replicator only ships `horizon_seconds` of it. If the horizon is
+	# raised past the lookahead — a natural thing to try while tuning —
+	# clients run out of curve between updates and squads stutter, with
+	# nothing anywhere explaining why. Previously this was a comment.
+	var sim := _sim()
+	assert_true(sim.is_valid(), "Default configuration should be valid: %s" % sim.validate())
+
+	sim.replicator.horizon_seconds = sim.curve_lookahead_seconds
+	assert_false(sim.is_valid(), "Equal lookahead and horizon leaves no margin and must be rejected")
+
+	sim.replicator.horizon_seconds = sim.curve_lookahead_seconds + 1.0
+	assert_false(sim.is_valid(), "A horizon beyond the lookahead must be rejected")
+	assert_string_contains(sim.validate(), "horizon")
+
+
+func test_invalid_configuration_is_reported_on_first_tick() -> void:
+	# Validated lazily rather than at construction, because callers
+	# legitimately set horizon and lookahead after wiring the two together.
+	var sim := _sim()
+	sim.replicator.horizon_seconds = 99.0
+	sim.tick()
+	assert_push_error_count(1, "A bad lookahead/horizon pairing should be reported once")
+
+	# ...and only once, not every tick.
+	for _i in range(5):
+		sim.tick()
+	assert_push_error_count(1, "The configuration complaint should not repeat every tick")
+
+
+func test_squad_info_entries_describe_what_the_server_spawned() -> void:
+	var sim := _sim()
+	var def := _def()
+	var id := sim.add_squad(def, 1, Vector2i(2, 2))
+
+	var entries := sim.squad_info_entries([id])
+	assert_eq(entries.size(), 1)
+	assert_eq(int(entries[0]["id"]), id)
+	assert_eq(String(entries[0]["def_id"]), String(def.id))
+	assert_eq(int(entries[0]["alive"]), def.squad_size)
+
+
+func test_composition_hash_tracks_casualties() -> void:
+	# Once combat lands in M2, a client that misses a casualty event will
+	# derive the wrong formation. The hash must notice.
+	var sim := _sim()
+	var id := sim.add_squad(_def(), 1, Vector2i(2, 2))
+	var before := sim.composition_hash([id])
+
+	sim.set_alive(id, sim.alive_of(id) - 1)
+	assert_ne(sim.composition_hash([id]), before,
+		"Losing a soldier must change the composition hash")

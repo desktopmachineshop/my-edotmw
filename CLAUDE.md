@@ -7,16 +7,35 @@ this file is the condensed "ground rules" version.
 
 ## Current status
 
-**M1 (movement + netcode proof) complete**, as of 2026-07-29. All seven
-exit criteria in **D-022** are met. `just test-unit` is green at 127
-tests across 10 scripts; `just test-load 4 12` runs 4 bots against the
-server end to end and reports a clean verdict. Every justfile recipe is
-real — there are no remaining "NOT IMPLEMENTED UNTIL M1" stubs.
+**M1 (movement + netcode proof) complete**, as of 2026-07-29 — declared
+done, then audited and found incomplete, then actually finished. `just
+test-unit` is green at 141 tests across 10 scripts; `just test-load 4 12`
+runs 4 bots against the server end to end and reports a clean verdict.
+Every justfile recipe is real.
 
-The headline measurement: **2.14 µs per squad-update** at 48 squads,
+The headline measurement: **~1.5–2.7 µs per squad-update** at 48 squads,
 against D-020's ~50 µs budget. That is the number D-018's full-scale
 target and D-021's no-C# call both depend on, so re-measure it (via
 `just test-load`, which prints it) whenever the simulation changes shape.
+It moves run to run with host load — the order of magnitude is the
+result, not the third digit.
+
+**Always quote it with a squad count.** It is total tick time divided by
+(ticks × squads), so per-tick fixed overhead lands in the per-squad
+figure and inflates it when squads are few: a real play session with 12
+squads measured ~3.9 µs against ~2 µs for the same code at 48. Comparing
+the two numbers directly would read as a 2x regression that isn't there.
+Since the whole point is extrapolating to ~1,000 squads, if anything
+this metric flatters low counts and understates headroom.
+
+**Read the audit block at the end of D-022 before adding any test or
+check.** M1's first "complete" was wrong in two ways that are easy to
+repeat: a test that supplied both client and server the same inputs
+itself, and so could not see them disagreeing in the live system; and a
+log grep for a word no code path ever printed, which passed vacuously
+for the whole milestone and hid the first bug. The standing rule that
+came out of it: **every check must be observed to fail before it is
+trusted.**
 
 Next is **M2**: combat + fog of war. Both are blocked on decisions, not
 code — Q7 (combat model) and D-004's reveal/conceal semantics. See
@@ -219,27 +238,46 @@ Lifecycle:
 Dev loop and tests:
 
 - `just run-server` — headless authoritative server
-- `just run-client [ADDRESS] [PORT]` — GUI client. **Native only**; needs
-  a GPU (D-014), so it ignores `EDOTMW_RUNTIME` and says so if portable
-  Godot is missing. WASD pans, wheel zooms, right-click orders.
+- `just run-client [ADDRESS] [PORT]` — GUI client for a human to look at.
+  **Native only**; needs a GPU (D-014), so it ignores `EDOTMW_RUNTIME` and
+  says so if portable Godot is missing. WASD pans, wheel zooms,
+  right-click orders.
+- `just test-client [SECONDS]` — the same client, rendered headlessly via
+  Mesa's software rasteriser and checked automatically. Writes
+  `artifacts/client-frame.png`; **look at it**, that is the point. Docker
+  only. See D-014's 2026-07-29 amendment for why this doesn't contradict
+  "the client can't be containerized".
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 127 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 141 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
-  line, AND the log scan. Tears down via trap on success, failure, and
-  Ctrl-C. Prints the per-squad update cost — the number to watch.
+  line, AND a log scan for engine diagnostics. Tears down via trap on
+  success, failure, and Ctrl-C. Prints the per-squad update cost — the
+  number to watch — plus how many client/server state-hash comparisons
+  ran and how many desynced.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost. Vary CHUNK_SIZE to settle D-017 with data.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 
 Every recipe listed is real and verified; none are stubs.
 
-**Any new headless recipe must depend on `_import`.** Godot resolves
-global `class_name`s from the import cache, and without it a script
-fails to parse with a misleading "Identifier not declared in the current
-scope". This bit M1 exactly where D-015 predicted it would.
+**Any recipe that runs Godot against this project must import first.**
+Godot resolves global `class_name`s from the import cache, and without it
+scripts fail to parse with a misleading "Identifier not declared in the
+current scope" plus a scatter of "cannot infer type" on unrelated lines.
+
+This was previously written as "any new *headless* recipe must depend on
+`_import`" — and that wording predicted the wrong set. `run-client` is
+not headless, so it was never given the step, and it failed on the first
+real launch exactly this way. Headlessness was never the relevant
+property; needing global `class_name`s is, and everything needs those.
+
+Note `run-client` cannot use the shared `_import` dependency: `_import`
+follows `EDOTMW_RUNTIME`, which defaults to docker and populates
+`.godot-container`, while the GUI client is always native (D-014) and
+reads `.godot`. It runs a native import inline instead.
 
 **Before reporting a change as done, run the relevant test recipe.**
 Given the project's performance targets (40,000 soldiers / ~1,000
@@ -249,9 +287,32 @@ simulation cost.
 
 **A green run is not the same as a run that happened.** `test-load` once
 reported "clean" while every bot had exited non-zero, because it only
-grepped for words that didn't appear. When adding a check, make it
-assert that the thing *did* happen, not merely that nothing complained —
-and verify the check can actually fail before trusting it.
+grepped for words that didn't appear. Separately, its `desync` scan
+matched no code path at all and passed vacuously for the whole of M1,
+hiding a live bug in which every client derived soldier positions from a
+different squad strength than the server used.
+
+So, three rules, each bought with a real defect:
+
+1. Assert the thing *did* happen, not merely that nothing complained.
+   `test-load`'s verdict now fails if zero state-hash comparisons ran.
+2. **Observe every new check fail before trusting it.** Perturb the
+   thing it guards, watch it go red, then revert.
+3. Don't scan for scary words — scan for structured markers. The word
+   scan was later fixed again after it failed a good run by matching its
+   own success line, "0 desyncs".
+
+**Client/server agreement must be tested through the wire.** A test that
+hands both sides the same inputs proves `Formation` is pure — which it
+is — and cannot notice the live system feeding them different ones. See
+D-006's "necessary but not sufficient" note.
+
+**Numbers can all be right while the picture is wrong.** The first frame
+the client ever rendered contained no soldiers, with every numeric check
+passing: 12 squads drawn, 384 soldiers derived, zero desyncs. They were
+deriving at y=0 and rendering inside the terrain. `just test-client`
+exists for this class of bug — and the PNG it writes is meant to be
+looked at, not just asserted about.
 
 ## Conventions
 
