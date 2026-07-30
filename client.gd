@@ -322,15 +322,42 @@ func _build_terrain() -> void:
 	material.vertex_color_use_as_albedo = true
 	material.roughness = 0.95
 
+	var meshes := []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
 			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size)
-			if mesh == null:
-				continue
-			var instance := MeshInstance3D.new()
-			instance.mesh = mesh
-			instance.material_override = material
-			_terrain_root.add_child(instance)
+			if mesh != null:
+				meshes.append(mesh)
+
+	# The world is a torus, so it must not visibly END (D-035). Draw the
+	# whole chunk set nine times — the centre copy plus its eight
+	# neighbours across both seams — sharing the SAME Mesh resources, so
+	# this costs draw calls rather than memory. Before this, panning far
+	# enough left the meshed ground behind and stared into the void, and a
+	# squad mid-seam-crossing drew outside the map entirely.
+	#
+	# The two lattice vectors come straight from TorusSpace.to_world, and
+	# they are NOT axis-aligned. Stepping `width` in q moves world x by
+	# width*SQRT_3*hex_size. Stepping `height` in r moves z by
+	# height*1.5*hex_size *and* x by height/2*SQRT_3*hex_size, because x
+	# depends on r/2. Offsetting by (x, 0, z) rectangles instead would look
+	# correct straight ahead and tear at the diagonal seams.
+	var step_q := Vector3(float(space.width) * space.hex_size * TorusSpace.SQRT_3, 0.0, 0.0)
+	var step_r := Vector3(
+		float(space.height) * 0.5 * space.hex_size * TorusSpace.SQRT_3,
+		0.0,
+		float(space.height) * 1.5 * space.hex_size)
+
+	for i in [-1, 0, 1]:
+		for j in [-1, 0, 1]:
+			var tile := Node3D.new()
+			tile.position = step_q * float(i) + step_r * float(j)
+			for mesh in meshes:
+				var instance := MeshInstance3D.new()
+				instance.mesh = mesh
+				instance.material_override = material
+				tile.add_child(instance)
+			_terrain_root.add_child(tile)
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
@@ -827,7 +854,31 @@ func _pan_camera(delta: float) -> void:
 	if move == Vector3.ZERO:
 		return
 	_camera_target += move.normalized() * CAMERA_PAN_SPEED * delta
+	_wrap_camera_target()
 	_update_camera()
+
+
+## Fold the camera back into the map's own domain (D-035).
+##
+## Done in CONTINUOUS lattice coordinates rather than by round-tripping
+## through world_to_cell: that would snap the camera to the nearest cell
+## centre and turn smooth panning into a stutter. Inverting to_world's
+## arithmetic and taking it modulo the map keeps the motion continuous,
+## and because the terrain is tiled in every direction the player never
+## sees the fold happen — they simply come back around.
+func _wrap_camera_target() -> void:
+	var space := _state.space
+	if space == null or space.hex_size <= 0.0:
+		return
+
+	var r := _camera_target.z / (1.5 * space.hex_size)
+	var q := _camera_target.x / (TorusSpace.SQRT_3 * space.hex_size) - r * 0.5
+
+	q = fposmod(q, float(space.width))
+	r = fposmod(r, float(space.height))
+
+	_camera_target.x = TorusSpace.SQRT_3 * space.hex_size * (q + r * 0.5)
+	_camera_target.z = 1.5 * space.hex_size * r
 
 
 func _update_camera() -> void:
