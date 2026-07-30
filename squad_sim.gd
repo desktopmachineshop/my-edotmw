@@ -422,6 +422,22 @@ func _rebuild_curve(squad: int) -> void:
 			curve.append_cell(at, space.from_index(next), space)
 			current = next
 
+	# If the field could not take the squad a single step, the destination
+	# is unreachable — walled off by water or mountains, which became
+	# possible the moment the server started feeding terrain passability
+	# into the sim. Give up on it by treating the current cell as the
+	# destination.
+	#
+	# Without this the squad re-paths EVERY TICK forever: its curve holds
+	# one keyframe, so `time >= curve.end_time()` is true immediately, and
+	# tick() rebuilds again. That is an invalidation storm of one (D-003),
+	# and it is not subtle — turning terrain on made curves_rebuilt jump
+	# from 265 to 2,011 over a 40-second load test and doubled per-squad
+	# cost, while every functional check stayed green. Terrain is static,
+	# so unreachable now is unreachable later; there is nothing to retry.
+	if curve.key_count() <= 1 and current != _destination[squad]:
+		_destination[squad] = current
+
 	_curves[squad] = curve
 	replicator.set_curve(squad, curve)
 	_log_curve(squad, curve)

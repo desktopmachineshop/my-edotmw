@@ -86,6 +86,26 @@ func _ready() -> void:
 	var space := _config.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
 
+	# Terrain is real to the SIMULATION, not just to the renderer.
+	#
+	# M1 left the sim's passability empty on purpose — terrain generation
+	# was out of scope — and nothing since put it back. The visible result
+	# only became obvious on the 128x64 map: the first capture frame after
+	# the map grew showed a squad standing in the middle of a lake. Water
+	# and mountains are impassable per TerrainGen.passability, and the flow
+	# field (D-007) already knows how to route around an impassable cell;
+	# it was simply never told.
+	#
+	# The client builds its mesh from a default TerrainGen (client.gd's
+	# _build_terrain), so the server builds passability from the same
+	# defaults and the two agree about where the water is BY CONSTRUCTION.
+	# That contract is implicit and worth stating: the moment terrain
+	# parameters become tunable they have to become map data and travel on
+	# the wire, or the two sides will quietly disagree about which cells a
+	# squad may enter — the same class of divergence D-006's composition
+	# obligation exists to prevent.
+	_sim.set_passable(TerrainGen.new().passability(space))
+
 	# Match lifecycle (D-033). Defaults to 1 so the single-client
 	# development flows (`run-client`, `test-client`) behave exactly as
 	# they did before matches existed: the match starts on the first join
