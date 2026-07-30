@@ -58,11 +58,29 @@ down before the code the same way D-022 was for M1 — read it before
 treating anything above as settled, since "landed" and "meets D-026" are
 different claims.
 
-**M3 slice 1 has landed** (map foundations): the map is 128×64,
-generation is quadrant-symmetric so four spawns are fair by construction
-(D-036), biome is simulation data rather than colour (D-037), and spawn
-points come from `MapConfig` instead of a formula duplicated between
-server and client. `just test-unit` is green at **178 tests**.
+**M3 is in progress** — exit criteria are D-027, sliced into (1) map
+foundations, (2) playable skirmish, (3) torus presentation, (4)
+buildings, (5) economy. `just test-unit` is green at **192 tests**.
+
+*Slice 1, landed:* the map is 128×64, generation is quadrant-symmetric so
+four spawns are fair by construction (D-036), biome is simulation data
+rather than colour (D-037), and spawn points come from `MapConfig`
+instead of a formula duplicated between server and client.
+
+*Slice 2, sim half landed:* combat rounds resolve **simultaneously** —
+attacks read a start-of-round snapshot, so squad id no longer confers a
+first strike and player 1 no longer wins mirror engagements. The roster
+is four units with a real counter triangle in `.tres` data (D-032).
+Matches have a lifecycle (`match_state.gd`, D-033): a lobby, elimination
+when a player has no living squads, and a winner. Disconnect wipes the
+abandoned army and the ordinary rule notices — defeated has one
+definition.
+
+*Slice 2, still to do:* selection (click, box, control groups), the
+command vocabulary beyond move, and the HUD. `client.tscn` is still a
+bare `Node3D` with no UI layer at all, and right-click still orders every
+squad you own. `client.gd` also still carries its stale copy of the old
+spawn formula, which wants spawn data on the wire to remove properly.
 
 **Use `just test-load 4 40`, not `4 12`.** Symmetric spawns are a full
 quadrant apart, so on a 128×64 map four armies cannot reach each other
