@@ -21,6 +21,12 @@ var space: TorusSpace = null
 var player: int = -1
 var squads := PackedInt32Array()
 
+## The map's starting cells, in player order (D-036). Told to us rather
+## than derived, so nothing on this side has to reimplement the server's
+## spawn placement — see NetProtocol.encode_welcome for what happened
+## when something did.
+var spawn_cells := PackedInt32Array()
+
 # squad id -> StateCurve. The entirety of replicated world state.
 var curves := {}
 
@@ -134,7 +140,18 @@ func _handle_welcome(data: PackedByteArray) -> void:
 	player = int(welcome["player"])
 	space = TorusSpace.new(int(welcome["width"]), int(welcome["height"]), 1.0)
 	squads = welcome["squads"]
+	spawn_cells = welcome["spawns"]
 	welcomed = true
+
+
+## Where `player` (1-based) starts, or (-1, -1) if the server sent no
+## spawn table. Mirrors server.gd's own wrap — players are numbered from
+## 1, spawn points indexed from 0 — so both sides answer this the same
+## way instead of each doing its own arithmetic.
+func spawn_cell_of(player: int) -> Vector2i:
+	if space == null or spawn_cells.is_empty() or player < 1:
+		return Vector2i(-1, -1)
+	return space.from_index(spawn_cells[(player - 1) % spawn_cells.size()])
 
 
 func _handle_curve(data: PackedByteArray) -> void:

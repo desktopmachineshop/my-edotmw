@@ -40,20 +40,28 @@ const CAMERA_MAX_HEIGHT := 90.0
 ## leaving contact to chance would make the verdict conditions below flaky
 ## rather than a real check.
 ##
-## NEIGHBOR_SPAWN_*_STEP duplicate server.gd's _spawn_squads_for formula
-## (lane = (player * 7) % height, x = (player * 5 + i * 2) % width) — the
-## same deliberate, documented coupling bot_client.gd already has, extended
-## to a second file for the same reason: it only shapes a scenario (where
-## to send scouts), never a correctness assertion. If server.gd's spawn
-## formula ever changes, this rendezvous goes stale — which shows up as
-## casualties_applied/conceal_events/reveal_events falling to zero and the
-## verdict going red, loudly, not silently.
-const NEIGHBOR_SPAWN_X_STEP := 5
-const NEIGHBOR_SPAWN_Y_STEP := 7
+## This file used to duplicate server.gd's spawn formula so the scenario
+## could guess where a neighbour started, with a comment arguing the
+## coupling was acceptable because it only shaped a scenario and would
+## fail loudly if the formula changed. It did change — M3 moved spawns
+## into map data (D-036) — and it did fail loudly, exactly as predicted:
+## the scouts marched at empty ground and the verdict's casualty and fog
+## counters fell to zero. Spawn points now arrive in the welcome message,
+## so there is one definition of where a player starts and nothing here
+## to go stale.
 const SCOUT_COUNT := 4
+## Scenario timings, in seconds of run time.
+##
+## Retuned for the 128x64 map (D-036). They used to be 1 / 9 / 14, which
+## worked when players spawned close enough to meet almost at once. On a
+## quadrant-symmetric map the contested middle is roughly 25 seconds of
+## marching away, so withdrawing at 9s pulled the scouts back before they
+## had ever seen anyone — the run produced a conceal and no reveal, and
+## the verdict said so. The sequence has to be: march, make contact, break
+## contact (a conceal), then return (a reveal).
 const RALLY_AT_SECONDS := 1.0
-const WITHDRAW_AT_SECONDS := 9.0
-const RE_RALLY_AT_SECONDS := 14.0
+const WITHDRAW_AT_SECONDS := 30.0
+const RE_RALLY_AT_SECONDS := 40.0
 
 ## Distinct colours a genuinely-rendered frame must contain. A blank or
 ## cleared frame has one; lit terrain plus shaded soldiers has hundreds.
@@ -133,6 +141,8 @@ func _ready() -> void:
 	_terrain_root = Node3D.new()
 	add_child(_terrain_root)
 
+	_build_hud()
+
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
 	if err != OK:
@@ -163,6 +173,7 @@ func _process(delta: float) -> void:
 		_terrain_built = true
 
 	_refresh_squads()
+	_update_hud()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -515,8 +526,18 @@ func _issue_scenario_rally() -> void:
 ## a conceal, exactly as bot_client.gd's own recall comment notes.
 func _issue_scenario_withdraw() -> void:
 	for squad in _scout_squads:
-		if _scout_home.has(squad):
-			_send_order(squad, _scout_home[squad])
+		if not _scout_home.has(squad):
+			continue
+		# Pull back far enough to break vision, not all the way home.
+		# Vision reaches ~7 cells (D-025), while home is most of a quadrant
+		# away on the 128x64 map — a full round trip out, back and out
+		# again takes longer than the entire capture run, which is why the
+		# scenario used to produce a conceal and never a reveal. A quarter
+		# of the way home is ~12 cells: enough to lose sight of the enemy,
+		# short enough to return within the run.
+		var here := _state.squad_cell(squad, _now)
+		var toward_home := _state.space.delta(here, _scout_home[squad])
+		_send_order(squad, _state.space.normalize(here + toward_home / 4))
 
 
 ## The player id(s) most likely to be an actual opponent — see the header
@@ -529,12 +550,30 @@ func _neighbor_player_candidates() -> Array:
 	return out
 
 
-## Mirrors server.gd's _spawn_squads_for formula for i=0 (see the constants
-## above this file for why duplicating it here is acceptable).
+## Where the scenario sends its scouts to find a fight: the middle of the
+## map, not the neighbour's camp.
+##
+## Marching on a neighbour's spawn stopped working when the map grew
+## (D-036). Quadrant symmetry puts every player a full quadrant from
+## every other — 64 cells, about 32 seconds of walking — which is further
+## than a capture run lasts, so the scouts arrived nowhere and the
+## verdict's casualty and fog counters sat at zero. The centre is
+## equidistant-ish for everyone and is where bot_client.gd sends its own
+## squads, so both sides converge on one place instead of missing each
+## other in open country.
+##
+## `target_player` is still taken (and still used to look up a real spawn
+## when one is known) so the caller's shape does not change, and so a
+## future scenario can march on a specific opponent once travel time
+## stops being the binding constraint.
 func _estimated_neighbor_cell(target_player: int) -> Vector2i:
-	var lane := (target_player * NEIGHBOR_SPAWN_Y_STEP) % _state.space.height
-	var x := (target_player * NEIGHBOR_SPAWN_X_STEP) % _state.space.width
-	return Vector2i(x, lane)
+	var centre := Vector2i(_state.space.width / 2, _state.space.height / 2)
+	var spawn := _state.spawn_cell_of(target_player)
+	if spawn.x < 0:
+		return centre
+	# Bias slightly toward the neighbour so the two scout groups do not
+	# stack on the exact same cell, while staying in the contested middle.
+	return _state.space.normalize((centre + spawn) / 2)
 
 
 func _send_order(squad: int, destination: Vector2i) -> void:
@@ -543,46 +582,226 @@ func _send_order(squad: int, destination: Vector2i) -> void:
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed:
-		match event.button_index:
-			MOUSE_BUTTON_WHEEL_UP:
-				_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
-				_update_camera()
-			MOUSE_BUTTON_WHEEL_DOWN:
-				_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
-				_update_camera()
-			MOUSE_BUTTON_RIGHT:
-				_order_to_screen_point(event.position)
+# --- selection, commands and HUD (D-034, D-027 criteria 3-5) ----------
+#
+# Right-click used to order EVERY squad this client owned, with a comment
+# saying per-squad selection was M3's job rather than M1's. This is that
+# job. Selection is entirely client-side — the wire carries orders for
+# squads, never a "selection", because the server has no reason to know
+# what a player has highlighted (D-002).
+
+## A click within this many pixels of a squad's centre selects it. Squads
+## draw as loose clusters of soldiers rather than one sprite, so a click
+## almost never lands exactly on the centre.
+const SELECT_CLICK_RADIUS_PX := 48.0
+
+## Drags shorter than this are clicks, not boxes.
+const DRAG_THRESHOLD_PX := 8.0
+
+var _selected: Array = []
+var _dragging := false
+var _drag_start := Vector2.ZERO
+var _selection_rect: ColorRect = null
+var _control_groups := {}
+
+var _hud_status: Label = null
+var _hud_selection: Label = null
 
 
-## Right-click orders every owned squad to the clicked cell.
-##
-## Deliberately crude: per-squad selection is UI work and belongs to M3's
-## playable MVP, not to M1's netcode proof. What matters here is that the
-## click becomes a CELL and is sent as an order for the server to
-## interpret — the client never moves anything itself (D-002).
-func _order_to_screen_point(screen_position: Vector2) -> void:
-	if not _connected or _state.space == null:
+## client.tscn is a bare Node3D, so every node is built in code — the HUD
+## included. A CanvasLayer puts it in screen space above the 3D view.
+func _build_hud() -> void:
+	var layer := CanvasLayer.new()
+	add_child(layer)
+
+	var panel := VBoxContainer.new()
+	panel.position = Vector2(12.0, 10.0)
+	layer.add_child(panel)
+
+	_hud_status = Label.new()
+	_hud_selection = Label.new()
+	var hint := Label.new()
+	hint.text = "LMB select · drag box · RMB move · Ctrl+RMB attack-move · X stop · Ctrl+1-9 group"
+
+	# Outlined text because the map underneath is light sand and dark
+	# forest in equal measure; plain white is unreadable over half of it.
+	for label in [_hud_status, _hud_selection, hint]:
+		label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
+		label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+		label.add_theme_constant_override("outline_size", 5)
+		panel.add_child(label)
+
+	_selection_rect = ColorRect.new()
+	_selection_rect.color = Color(0.4, 0.8, 1.0, 0.18)
+	_selection_rect.visible = false
+	_selection_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(_selection_rect)
+
+
+func _update_hud() -> void:
+	if _hud_status == null:
 		return
 
+	_hud_status.text = "player %d · %d squads known · %d ghosts" % [
+		_state.player, _state.curves.size(), _state.ghost_squad_ids().size()]
+
+	if _selected.is_empty():
+		_hud_selection.text = "nothing selected"
+		return
+
+	var strength := 0
+	for squad in _selected:
+		strength += _state.alive_of(squad)
+	var kind: String = String(_state.composition.get(_selected[0], {}).get("def_id", "?"))
+	_hud_selection.text = "%d selected · %s · %d soldiers" % [_selected.size(), kind, strength]
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		_handle_mouse_button(event)
+	elif event is InputEventMouseMotion and _dragging:
+		_update_selection_rect(event.position)
+	elif event is InputEventKey and event.pressed and not event.echo:
+		_handle_key(event)
+
+
+func _handle_mouse_button(event: InputEventMouseButton) -> void:
+	match event.button_index:
+		MOUSE_BUTTON_WHEEL_UP:
+			if event.pressed:
+				_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
+				_update_camera()
+		MOUSE_BUTTON_WHEEL_DOWN:
+			if event.pressed:
+				_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
+				_update_camera()
+		MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_dragging = true
+				_drag_start = event.position
+			else:
+				_finish_selection(event.position, event.shift_pressed)
+		MOUSE_BUTTON_RIGHT:
+			if event.pressed:
+				_order_selected(event.position, event.ctrl_pressed)
+
+
+func _update_selection_rect(to: Vector2) -> void:
+	if _selection_rect == null:
+		return
+	var rect := Rect2(_drag_start, to - _drag_start).abs()
+	_selection_rect.position = rect.position
+	_selection_rect.size = rect.size
+	_selection_rect.visible = rect.size.length() > DRAG_THRESHOLD_PX
+
+
+func _finish_selection(at: Vector2, additive: bool) -> void:
+	_dragging = false
+	if _selection_rect != null:
+		_selection_rect.visible = false
+	if not additive:
+		_selected.clear()
+
+	var rect := Rect2(_drag_start, at - _drag_start).abs()
+	if rect.size.length() <= DRAG_THRESHOLD_PX:
+		_select_nearest(at)
+	else:
+		_select_within(rect)
+
+
+## Where a squad appears on screen. Squads behind the camera unproject to
+## a meaningless point, so they are pushed far off-screen rather than
+## being allowed to match a click.
+func _squad_screen_position(squad: int) -> Vector2:
+	var world := _state.squad_world_position(squad, _now)
+	if _camera.is_position_behind(world):
+		return Vector2(-1e6, -1e6)
+	return _camera.unproject_position(world)
+
+
+func _select_nearest(at: Vector2) -> void:
+	var best := -1
+	var best_distance := SELECT_CLICK_RADIUS_PX
+	for squad in _state.squads:
+		if not _state.curves.has(squad):
+			continue
+		var distance := _squad_screen_position(squad).distance_to(at)
+		if distance < best_distance:
+			best_distance = distance
+			best = squad
+	if best >= 0 and not _selected.has(best):
+		_selected.append(best)
+
+
+func _select_within(rect: Rect2) -> void:
+	for squad in _state.squads:
+		if not _state.curves.has(squad):
+			continue
+		if rect.has_point(_squad_screen_position(squad)) and not _selected.has(squad):
+			_selected.append(squad)
+
+
+func _handle_key(event: InputEventKey) -> void:
+	if event.keycode == KEY_X:
+		_stop_selected()
+		return
+
+	# Control groups: Ctrl+N stores the selection, N recalls it.
+	if event.keycode >= KEY_1 and event.keycode <= KEY_9:
+		var group: int = event.keycode - KEY_0
+		if event.ctrl_pressed:
+			_control_groups[group] = _selected.duplicate()
+			print("client: control group %d = %d squad(s)" % [group, _selected.size()])
+		else:
+			_selected = (_control_groups.get(group, []) as Array).duplicate()
+
+
+## Screen point to torus cell. Returns (-1, -1) when the ray never meets
+## the ground plane. The click becomes a CELL and is sent as an order for
+## the server to interpret — the client never moves anything itself
+## (D-002).
+func _cell_under(screen_position: Vector2) -> Vector2i:
 	var from := _camera.project_ray_origin(screen_position)
 	var direction := _camera.project_ray_normal(screen_position)
 	if absf(direction.y) < 0.0001:
-		return
+		return Vector2i(-1, -1)
 	var distance := -from.y / direction.y
 	if distance <= 0.0:
+		return Vector2i(-1, -1)
+	return _state.space.world_to_cell(from + direction * distance)
+
+
+## Right-click orders the SELECTION, not everything owned (D-027
+## criterion 3). With nothing selected it does nothing: quietly marching
+## an army the player never chose is worse than ignoring the click.
+func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
+	if not _connected or _state.space == null or _selected.is_empty():
 		return
 
-	var cell := _state.space.world_to_cell(from + direction * distance)
+	var cell := _cell_under(screen_position)
+	if cell.x < 0:
+		return
+
 	var sent := 0
-	for squad_id in _state.squads:
-		var order := _state.encode_order(squad_id, cell)
+	for squad in _selected:
+		var order := _state.encode_attack_move(squad, cell) if attack_move else _state.encode_order(squad, cell)
 		if not order.is_empty():
 			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 			sent += 1
 	if sent > 0:
-		print("client: ordered %d squads to cell %s" % [sent, cell])
+		print("client: %s %d squad(s) to cell %s" % [
+			"attack-moved" if attack_move else "ordered", sent, cell])
+
+
+func _stop_selected() -> void:
+	var sent := 0
+	for squad in _selected:
+		var order := _state.encode_stop(squad)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			sent += 1
+	if sent > 0:
+		print("client: stopped %d squad(s)" % sent)
 
 
 func _pan_camera(delta: float) -> void:

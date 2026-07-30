@@ -265,8 +265,8 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# enough that paying a full rebuild here is not a real cost concern.
 	_sim.recompute_vision_now()
 
-	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads),
-		ENetPacketPeer.FLAG_RELIABLE)
+	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads,
+		_spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
 
 	# Composition for everything each client can see, not just what it
 	# owns — clients derive soldiers for other players' squads too, and
@@ -332,6 +332,16 @@ func _broadcast_squad_info() -> void:
 		var entries := _sim.squad_info_entries(_all_squad_ids())
 		if not entries.is_empty():
 			_replay.record_squad_info(_sim.time, NetProtocol.encode_squad_info(entries))
+
+
+## The map's spawn points as cell indices, for the welcome message
+## (D-036). Sent so no client has to reimplement spawn placement to know
+## where anyone starts.
+func _spawn_cell_indices() -> Array:
+	var out := []
+	for point in _config.spawn_points():
+		out.append(_sim.space.index(point))
+	return out
 
 
 func _all_squad_ids() -> Array:

@@ -440,7 +440,7 @@ test-load N DURATION:
 # actually observed a casualty, a conceal, AND a reveal, not merely that it
 # didn't complain (D-022's standing rule).
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="24" BOTS="1": _import
+test-client SECONDS="60" BOTS="3": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "{{runtime}}" != "docker" ]; then

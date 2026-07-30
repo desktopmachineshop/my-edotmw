@@ -37,7 +37,13 @@ const FNV_PRIME := 16777619
 ## WELCOME: tells a joining client who it is, how big the map is, and
 ## which squads it owns. Map dimensions matter because the client needs a
 ## TorusSpace to derive soldier positions (D-006) and to interpret curves.
-static func encode_welcome(player: int, width: int, height: int, squads: Array) -> PackedByteArray:
+## `spawn_cells` is the map's starting positions as cell indices, in
+## player order (D-036). Sent because the client otherwise has to *guess*
+## where anyone starts: the capture-mode scenario used to duplicate
+## server.gd's spawn formula to do exactly that, and went silently wrong
+## the moment spawns became map data. One definition, on the wire.
+static func encode_welcome(player: int, width: int, height: int, squads: Array,
+		spawn_cells: Array = []) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_WELCOME)
 	buf.put_u32(player)
@@ -46,6 +52,9 @@ static func encode_welcome(player: int, width: int, height: int, squads: Array) 
 	buf.put_u32(squads.size())
 	for id in squads:
 		buf.put_u32(id)
+	buf.put_u32(spawn_cells.size())
+	for cell_index in spawn_cells:
+		buf.put_u32(cell_index)
 	return buf.data_array
 
 
@@ -66,11 +75,20 @@ static func decode_welcome(data: PackedByteArray) -> Dictionary:
 	for i in range(count):
 		squads.append(buf.get_u32())
 
+	# Trailing field, so a packet written before spawn tables existed reads
+	# back as "no spawns known" rather than as garbage: get_u32 past the
+	# end returns 0, which is exactly an empty table.
+	var spawn_count := buf.get_u32()
+	var spawns := PackedInt32Array()
+	for i in range(spawn_count):
+		spawns.append(buf.get_u32())
+
 	return {
 		"player": player,
 		"width": width,
 		"height": height,
 		"squads": squads,
+		"spawns": spawns,
 	}
 
 
