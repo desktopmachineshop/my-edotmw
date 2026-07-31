@@ -36,6 +36,11 @@ var spawn_cells := PackedInt32Array()
 var wallet := PackedInt32Array()
 var wallet_updates: int = 0
 
+## The most recent thing the server refused, and why (D-002 owns the
+## rules, so it owns the explanation).
+var last_notice := ""
+var notices_received: int = 0
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -146,6 +151,9 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_squad_conceal(data)
 		NetProtocol.S2C_STATE_HASH:
 			_handle_state_hash(data)
+		NetProtocol.S2C_NOTICE:
+			last_notice = NetProtocol.decode_notice(data)
+			notices_received += 1
 		NetProtocol.S2C_WALLET:
 			wallet = NetProtocol.decode_wallet(data)
 			wallet_updates += 1

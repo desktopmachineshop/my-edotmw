@@ -508,15 +508,19 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 		push_error("server: client asked for unknown building '%s'" % order["def_id"])
 		return
 
-	# The built_by rule lives in data (D-031) — this is where it bites.
+	# Every refusal below tells the player WHY. Silence made a refused
+	# order indistinguishable from a broken key during the first playtest.
 	if not BuildingSim.can_build(def, _sim.def_id_of(squad)):
-		push_error("server: %s may not build %s" % [_sim.def_id_of(squad), def.id])
+		_notify(peer, "%s cannot build a %s" % [_sim.def_id_of(squad), def.display_name])
 		return
 
 	var cell := _sim.space.from_index(int(order["cell"]))
 	if not _is_buildable(cell):
+		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
-	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+	var reach := _sim.space.distance(_sim.cell_of(squad), cell)
+	if reach > BUILD_REACH_CELLS:
+		_notify(peer, "Too far — move closer (%d cells away, reach is %d)" % [reach, BUILD_REACH_CELLS])
 		return
 
 	# Construction costs resources (D-028). This was missing, so
@@ -526,6 +530,7 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	# part-spent wallet.
 	var owner := _sim.owner_of(squad)
 	if not _economy.try_spend(owner, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
+		_notify(peer, "Cannot afford a %s" % def.display_name)
 		return
 
 	var built := _buildings.add_building(def, owner, cell, false, squad)
@@ -584,6 +589,13 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	_buildings.enqueue(building, def)
 	_send_wallet(peer, player)
+
+
+## Tell one player why something did not happen. The server owns the
+## rules, so it owns the explanation too — a client inventing its own
+## refusal messages would be a second copy of those rules, free to drift.
+func _notify(peer: ENetPacketPeer, text: String) -> void:
+	peer.send(0, NetProtocol.encode_notice(text), ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Wallets go to their owner and nobody else (D-028).

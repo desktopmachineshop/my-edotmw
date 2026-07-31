@@ -706,6 +706,9 @@ var _control_groups := {}
 var _hud_status: Label = null
 var _hud_selection: Label = null
 var _hud_resources: Label = null
+var _hud_notice: Label = null
+var _notice_seen := 0
+var _notice_until := 0.0
 var _building_nodes := {}
 var _founded := false
 
@@ -733,12 +736,13 @@ func _build_hud() -> void:
 	_hud_status = Label.new()
 	_hud_resources = Label.new()
 	_hud_selection = Label.new()
+	_hud_notice = Label.new()
 	var hint := Label.new()
 	hint.text = "LMB select · click minimap to jump · RMB move · Ctrl+RMB attack-move · B found town hall · X stop · Ctrl+1-9 group"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
-	for label in [_hud_status, _hud_resources, _hud_selection, hint]:
+	for label in [_hud_status, _hud_resources, _hud_selection, _hud_notice, hint]:
 		label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
 		label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
 		label.add_theme_constant_override("outline_size", 5)
@@ -836,6 +840,15 @@ func _update_hud() -> void:
 			_state.wallet[0], _state.wallet[1], _state.wallet[2], _state.wallet[3]]
 	else:
 		_hud_resources.text = "food — · wood — · gold — · stone —"
+
+	# Show the server's explanation for a few seconds after it arrives.
+	# Timed off the COUNTER rather than the string, so two identical
+	# refusals in a row still re-show the message — pressing B twice from
+	# the same bad spot should say so twice, not look ignored.
+	if _state.notices_received != _notice_seen:
+		_notice_seen = _state.notices_received
+		_notice_until = _now + 5.0
+	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
 
 	if _selected.is_empty():
 		_hud_selection.text = "nothing selected"

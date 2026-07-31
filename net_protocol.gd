@@ -33,6 +33,7 @@ const C2S_ORDER_BUILD := 13
 const C2S_ORDER_PRODUCE := 14
 
 const S2C_WALLET := 9
+const S2C_NOTICE := 15
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -287,6 +288,35 @@ static func decode_wallet(data: PackedByteArray) -> PackedInt32Array:
 	for i in range(count):
 		out.append(buf.get_u32())
 	return out
+
+
+## NOTICE: a short human-readable line for the player who sent an order.
+##
+## The server refuses orders for good reasons — out of reach, wrong
+## ground, cannot afford it — and used to do so in total silence. A
+## playtest pressed B nine cells from its founders, saw nothing at all
+## happen, and had no way to tell a refused order from a broken key.
+##
+## The REASON has to come from the server: it owns the rules, and a
+## client that decided its own refusal messages would be a second copy of
+## those rules, free to drift from the real ones. That is the mistake the
+## duplicated spawn formula already made once.
+static func encode_notice(text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NOTICE)
+	var bytes := text.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_notice(data: PackedByteArray) -> String:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return bytes.get_string_from_utf8()
 
 
 ## ORDER_PRODUCE: a building is told to make a unit (D-028/D-031).
