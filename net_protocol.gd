@@ -23,9 +23,13 @@ const S2C_SQUAD_COMBAT := 5
 const S2C_SQUAD_CONCEAL := 6
 
 # Client -> server
+const S2C_BUILDING_INFO := 7
+const S2C_BUILDING_STATE_HASH := 8
+
 const C2S_ORDER_MOVE := 10
 const C2S_ORDER_STOP := 11
 const C2S_ORDER_ATTACK_MOVE := 12
+const C2S_ORDER_BUILD := 13
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -207,6 +211,102 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var alive := buf.get_u32()
 		out.append({"id": id, "def_id": def_id, "alive": alive})
 	return out
+
+
+## BUILDING_INFO: everything a client needs to know a building exists
+## (D-029). Sent when a building is first revealed and again whenever its
+## state changes in a way clients must see.
+##
+## `progress` rides along rather than being replicated as a curve for now:
+## a build is short, and the client only needs to know how far along it
+## is, not to interpolate it precisely. The curve treatment D-003
+## describes is worth having when construction gets long enough to watch.
+static func encode_building_info(entries: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_BUILDING_INFO)
+	buf.put_u32(entries.size())
+	for entry in entries:
+		buf.put_u32(int(entry["id"]))
+		var def_id := String(entry["def_id"]).to_utf8_buffer()
+		buf.put_u16(def_id.size())
+		buf.put_data(def_id)
+		buf.put_u32(int(entry["owner"]))
+		buf.put_u32(int(entry["cell"]))
+		buf.put_float(float(entry["progress"]))
+		buf.put_u8(1 if bool(entry["destroyed"]) else 0)
+	return buf.data_array
+
+
+static func decode_building_info(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		var id := buf.get_u32()
+		var name_length := buf.get_u16()
+		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+		out.append({
+			"id": id,
+			"def_id": name_bytes.get_string_from_utf8(),
+			"owner": buf.get_u32(),
+			"cell": buf.get_u32(),
+			"progress": buf.get_float(),
+			"destroyed": buf.get_u8() == 1,
+		})
+	return out
+
+
+## BUILDING_STATE_HASH: its own message rather than folded into
+## S2C_STATE_HASH, and deliberately so (D-030).
+##
+## The two hashes are computed over differently-shaped sets — squads over
+## what a client can see RIGHT NOW, buildings over everything it has EVER
+## been shown, because a building once seen stays known. Combining them
+## into one number would make a mismatch undiagnosable: you could not tell
+## which subsystem had broken.
+static func encode_building_state_hash(tick: int, hash_value: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_BUILDING_STATE_HASH)
+	buf.put_u32(tick)
+	buf.put_u32(hash_value)
+	return buf.data_array
+
+
+static func decode_building_state_hash(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"tick": buf.get_u32(), "hash": buf.get_u32()}
+
+
+## ORDER_BUILD: a squad is told to found a building at a cell (D-031).
+## Carries the building's def id rather than an index, so adding a
+## building to /buildings never renumbers the wire.
+static func encode_order_build(squad: int, def_id: String, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_BUILD)
+	buf.put_u32(squad)
+	var name_bytes := def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_build(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var squad := buf.get_u32()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"squad": squad,
+		"def_id": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+	}
 
 
 ## STATE_HASH: the server's view of composition, for the client to check

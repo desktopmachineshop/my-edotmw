@@ -27,6 +27,15 @@ var squads := PackedInt32Array()
 ## when something did.
 var spawn_cells := PackedInt32Array()
 
+## Buildings this client has ever been shown, by wire id (D-029/D-030).
+## Never pruned: buildings are persistent-explored, so leaving vision
+## freezes what is known rather than forgetting it.
+var buildings := {}
+var buildings_revealed: int = 0
+var building_state_hash_checks: int = 0
+var building_desync_count: int = 0
+var last_building_desync := ""
+
 # squad id -> StateCurve. The entirety of replicated world state.
 var curves := {}
 
@@ -131,6 +140,10 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_squad_conceal(data)
 		NetProtocol.S2C_STATE_HASH:
 			_handle_state_hash(data)
+		NetProtocol.S2C_BUILDING_INFO:
+			_handle_building_info(data)
+		NetProtocol.S2C_BUILDING_STATE_HASH:
+			_handle_building_state_hash(data)
 		_:
 			unknown_packets += 1
 
@@ -293,6 +306,71 @@ func _handle_state_hash(data: PackedByteArray) -> void:
 		desync_count += 1
 		last_desync = "tick %d: client composition hash %d != server %d over %d squads" % [
 			int(decoded["tick"]), ours, theirs, composition.size()]
+
+
+## BUILDING_INFO (D-029/D-030). Buildings are **persistent-explored**:
+## once a client has been shown one it keeps it forever, with its state
+## frozen at last-known while out of vision. That is deliberately NOT
+## D-025's ghosting, which exists because a squad moves while unseen —
+## a building does not, so there is no positional staleness to represent
+## and no reason to stop knowing it is there.
+func _handle_building_info(data: PackedByteArray) -> void:
+	for entry in NetProtocol.decode_building_info(data):
+		var id := int(entry["id"])
+		if not buildings.has(id):
+			buildings_revealed += 1
+		buildings[id] = {
+			"def_id": String(entry["def_id"]),
+			"owner": int(entry["owner"]),
+			"cell": int(entry["cell"]),
+			"progress": float(entry["progress"]),
+			"destroyed": bool(entry["destroyed"]),
+		}
+
+
+## Its own hash, checked against its own message (D-030).
+##
+## The set matters more than the arithmetic: this covers every building
+## EVER shown to this client, and the server hashes the same ever-revealed
+## set. Hashing "what I can see now" on one side and "everything I have
+## seen" on the other would compare differently-shaped sets and fire on a
+## perfectly healthy system — the same trap D-025 part 3 documents for
+## squads, wearing different clothes.
+func _handle_building_state_hash(data: PackedByteArray) -> void:
+	var decoded := NetProtocol.decode_building_state_hash(data)
+	building_state_hash_checks += 1
+	var ours := building_hash()
+	var theirs := int(decoded["hash"])
+	if ours != theirs:
+		building_desync_count += 1
+		last_building_desync = "tick %d: client building hash %d != server %d over %d buildings" % [
+			int(decoded["tick"]), ours, theirs, buildings.size()]
+
+
+## Hash of every building this client knows about. Must produce the same
+## entry shape as BuildingSim.composition_entries, which is why health and
+## progress are absent from both: they vary continuously and a client
+## legitimately lags a tick.
+func building_hash() -> int:
+	var entries := []
+	for id in buildings:
+		var info: Dictionary = buildings[id]
+		entries.append({
+			"id": id,
+			"alive": 0 if bool(info["destroyed"]) else 1,
+			"shape": String(info["def_id"]),
+			"spacing": float(info["owner"]),
+		})
+	return NetProtocol.composition_hash(entries)
+
+
+## Build order for the server (D-031). The server re-checks everything —
+## ownership, who may build what, whether the ground is buildable — so
+## this only avoids sending obvious nonsense.
+func encode_build(squad: int, def_id: String, cell: Vector2i) -> PackedByteArray:
+	if space == null or not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_build(squad, def_id, space.index(cell))
 
 
 func owns(squad: int) -> bool:

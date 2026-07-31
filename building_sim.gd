@@ -50,6 +50,9 @@ var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
 var _destroyed := PackedByteArray()
 var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 
+# Ids whose replicated state changed and have not been sent yet.
+var _dirty := {}
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -94,6 +97,57 @@ static func local_id(wire: int) -> int:
 
 static func is_building_id(wire: int) -> bool:
 	return wire >= BUILDING_ID_OFFSET
+
+
+## Load a BuildingDef by id, the way UnitRoster.by_id does for units.
+static func def_by_id(id: StringName) -> BuildingDef:
+	var path := "res://buildings/%s.tres" % String(id)
+	if not ResourceLoader.exists(path):
+		return null
+	return load(path) as BuildingDef
+
+
+## Buildings `player` can see: its own always, plus any standing in a cell
+## its vision currently covers. Same shape as SquadSim.visible_to, and it
+## feeds the same per-client gating (D-004).
+func visible_to(player: int, vision: Vision) -> Array:
+	var ids := []
+	for i in range(_cell.size()):
+		if _owner[i] == player or (vision != null and vision.is_visible(player, _cell[i])):
+			ids.append(i)
+	return ids
+
+
+## Wire entries for BUILDING_INFO, in wire ids.
+func info_entries(ids: Array) -> Array:
+	var out := []
+	for id in ids:
+		if id < 0 or id >= _cell.size():
+			continue
+		out.append({
+			"id": wire_id(id),
+			"def_id": String(_defs[id].id),
+			"owner": _owner[id],
+			"cell": _cell[id],
+			"progress": _progress[id],
+			"destroyed": _destroyed[id] == 1,
+		})
+	return out
+
+
+## Ids whose replicated state changed since the last call, and clears the
+## list. Only completion and destruction qualify — the two things a client
+## must be told about, one of which is in the hash.
+##
+## Exists so a building whose state changes AFTER a client already knows
+## it still gets resent. Without it, destruction would silently diverge
+## the building hash, and it would do so only in matches long enough for
+## something to be destroyed — the worst kind of bug to find late.
+func take_dirty() -> Array:
+	var out := _dirty.keys()
+	_dirty.clear()
+	out.sort()
+	return out
 
 
 ## May a squad of `unit_def_id` construct `def`? (D-031.)
@@ -155,6 +209,7 @@ func advance_construction(dt: float) -> Array:
 		_progress[i] = minf(_progress[i] + dt / build_time, 1.0)
 		if _progress[i] >= 1.0:
 			completed.append(i)
+			_dirty[i] = true
 	return completed
 
 
@@ -169,6 +224,7 @@ func damage(building: int, amount: float) -> bool:
 	if _health[building] > 0.0:
 		return false
 	_destroyed[building] = 1
+	_dirty[building] = true
 	return true
 
 

@@ -347,6 +347,172 @@ func test_building_fire_reports_casualty_events() -> void:
 	assert_true(saw_event, "Damage from a building must surface as a casualty event")
 
 
+# --- persistent-explored fog and its hash (D-030) ---------------------
+
+## Mirrors server.gd's building block in _replicate() for one client.
+## Hand-driven for the same reason test_fog.gd hand-drives the squad
+## path: server.gd needs a live ENet host a GUT test cannot stand up.
+func _replicate_buildings(sim: SquadSim, buildings: BuildingSim, state: ClientState,
+		player: int, known: Dictionary) -> Dictionary:
+	var to_send := []
+	for id in buildings.visible_to(player, sim.vision):
+		if not known.has(id):
+			known[id] = true
+			to_send.append(id)
+	for id in buildings.take_dirty():
+		if known.has(id) and not to_send.has(id):
+			to_send.append(id)
+
+	if not to_send.is_empty():
+		state.handle_packet(NetProtocol.encode_building_info(buildings.info_entries(to_send)))
+	state.handle_packet(NetProtocol.encode_building_state_hash(
+		sim.tick_count, buildings.composition_hash(known.keys())))
+	return known
+
+
+func test_a_building_once_seen_stays_known_and_the_hash_keeps_agreeing() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var scout := sim.add_squad(_unit_def(), 1, Vector2i(9, 8))
+	var enemy_hall := buildings.add_building(_building_def(), 2, Vector2i(10, 8), true)
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [scout]))
+
+	sim.recompute_vision_now()
+	var known := _replicate_buildings(sim, buildings, state, 1, {})
+	assert_eq(state.buildings.size(), 1, "The scout should have revealed the enemy hall")
+	assert_eq(state.building_desync_count, 0, "Hashes agree once it is known")
+
+	# The scout dies, so player 1 can no longer see that cell at all.
+	sim.set_alive(scout, 0)
+	sim.recompute_vision_now()
+	assert_false(buildings.visible_to(1, sim.vision).has(enemy_hall),
+		"Setup: the hall is genuinely out of vision now")
+
+	for _i in range(5):
+		known = _replicate_buildings(sim, buildings, state, 1, known)
+
+	assert_eq(state.buildings.size(), 1,
+		"A building once seen is never un-known — it cannot have moved (D-030)")
+	assert_eq(state.building_desync_count, 0,
+		"And the hash keeps agreeing the whole time it is out of sight")
+
+
+func test_hashing_the_visible_set_instead_of_the_known_set_would_desync() -> void:
+	# The trap this design exists to avoid, demonstrated rather than
+	# asserted. If the server hashed "what you can see now" while the
+	# client hashes "everything you have been shown", the two compare
+	# differently-shaped sets and the check fires on a perfectly healthy
+	# system — the same failure D-025 part 3 documents for squads.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var scout := sim.add_squad(_unit_def(), 1, Vector2i(9, 8))
+	buildings.add_building(_building_def(), 2, Vector2i(10, 8), true)
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [scout]))
+	sim.recompute_vision_now()
+	_replicate_buildings(sim, buildings, state, 1, {})
+	assert_eq(state.building_desync_count, 0, "Setup: healthy so far")
+
+	sim.set_alive(scout, 0)
+	sim.recompute_vision_now()
+
+	# The WRONG hash: over the currently-visible set, which is now empty.
+	state.handle_packet(NetProtocol.encode_building_state_hash(
+		1, buildings.composition_hash(buildings.visible_to(1, sim.vision))))
+	assert_gt(state.building_desync_count, 0,
+		"Hashing the visible set must desync a healthy client — which is why the server hashes the known set")
+
+
+func test_a_client_is_told_about_a_building_only_once() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var scout := sim.add_squad(_unit_def(), 1, Vector2i(9, 8))
+	buildings.add_building(_building_def(), 2, Vector2i(10, 8), true)
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [scout]))
+	sim.recompute_vision_now()
+
+	var known := {}
+	for _i in range(6):
+		known = _replicate_buildings(sim, buildings, state, 1, known)
+
+	assert_eq(state.buildings_revealed, 1,
+		"Re-announcing a known building every tick would be bandwidth for nothing (D-003)")
+
+
+func test_destruction_reaches_a_client_that_has_walked_away() -> void:
+	# The reason take_dirty() exists: destruction is IN the hash, so a
+	# client that knows a building but can no longer see it must still be
+	# told when it falls, or the two sides diverge for the rest of the match.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var scout := sim.add_squad(_unit_def(), 1, Vector2i(9, 8))
+	var hall := buildings.add_building(_building_def(), 2, Vector2i(10, 8), true)
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [scout]))
+	sim.recompute_vision_now()
+	var known := _replicate_buildings(sim, buildings, state, 1, {})
+
+	sim.set_alive(scout, 0)
+	sim.recompute_vision_now()
+	buildings.damage(hall, 10000.0)
+	known = _replicate_buildings(sim, buildings, state, 1, known)
+
+	assert_true(bool(state.buildings[BuildingSim.wire_id(hall)]["destroyed"]),
+		"The client must learn the building fell even though it could not see it")
+	assert_eq(state.building_desync_count, 0, "And the hash must still agree afterwards")
+
+
+# --- the build order on the wire (D-031) ------------------------------
+
+func test_build_orders_round_trip() -> void:
+	var bytes := NetProtocol.encode_order_build(4, "town_centre", 129)
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.C2S_ORDER_BUILD)
+	var decoded := NetProtocol.decode_order_build(bytes)
+	assert_eq(int(decoded["squad"]), 4)
+	assert_eq(String(decoded["def_id"]), "town_centre")
+	assert_eq(int(decoded["cell"]), 129)
+
+
+func test_a_client_will_not_send_a_build_order_for_a_squad_it_does_not_own() -> void:
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [4]))
+	assert_true(state.encode_build(9, "town_centre", Vector2i(1, 1)).is_empty())
+	assert_false(state.encode_build(4, "town_centre", Vector2i(1, 1)).is_empty())
+
+
+func test_building_info_round_trips_every_field() -> void:
+	var entries := [{
+		"id": BuildingSim.wire_id(3), "def_id": "tower", "owner": 2,
+		"cell": 77, "progress": 0.5, "destroyed": false,
+	}]
+	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
+	assert_eq(decoded.size(), 1)
+	assert_eq(int(decoded[0]["id"]), BuildingSim.wire_id(3))
+	assert_eq(String(decoded[0]["def_id"]), "tower")
+	assert_eq(int(decoded[0]["owner"]), 2)
+	assert_eq(int(decoded[0]["cell"]), 77)
+	assert_almost_eq(float(decoded[0]["progress"]), 0.5, 0.001)
+	assert_false(bool(decoded[0]["destroyed"]))
+
+
 # --- who may build what (D-031) ---------------------------------------
 
 func test_only_founders_can_build_a_town_hall() -> void:

@@ -255,6 +255,19 @@ class VirtualClient:
 		# was ever concealed and the verdict correctly reported
 		# conceal_events=0. Raiding in and back out is both more like real
 		# play and what makes vision genuinely gain and lose contact.
+		# First order of the match: found a town hall where we stand
+		# (D-031). A player starts with founders and nothing else, so this
+		# is the opening move a real player makes — and it means the load
+		# test exercises construction, building replication and the
+		# persistent-explored hash in the running system rather than
+		# leaving all three to unit tests.
+		if _orders_issued == 0:
+			var home := state.spawn_cell_of(state.player)
+			if home.x >= 0:
+				var build := state.encode_build(squad, "town_centre", home)
+				if not build.is_empty():
+					peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
+
 		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
 		# Orders go out every 3 seconds while the contested middle is a
 		# good 25 seconds of marching away, so alternating per order made
@@ -428,6 +441,20 @@ func _conceal_events() -> int:
 	return n
 
 
+func _buildings_known() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.state.buildings.size()
+	return n
+
+
+func _building_desyncs() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.state.building_desync_count
+	return n
+
+
 func _reveal_events() -> int:
 	var n := 0
 	for vc in _clients:
@@ -502,6 +529,14 @@ func _verdict_ok() -> bool:
 		return false
 	if _reveal_events() <= 0:
 		return false
+	# Slice 4's live proof: a town hall was founded and reached clients,
+	# and the persistent-explored hash agreed about it throughout. A run
+	# where nobody built anything proves nothing about buildings, exactly
+	# as a run where nobody died proves nothing about combat.
+	if _buildings_known() <= 0:
+		return false
+	if _building_desyncs() != 0:
+		return false
 	return true
 
 
@@ -523,13 +558,13 @@ func _report() -> void:
 	# for D-026 criterion 6's load half; the recipe compares it against the
 	# server log's FOG_TOTAL_SQUADS (see _max_known_squads()'s comment for
 	# why this must be a max, not a sum/union across bots).
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
 		_state_hash_checks(), _desync_count(),
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
-		_max_known_squads()])
+		_max_known_squads(), _buildings_known(), _building_desyncs()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.

@@ -49,6 +49,12 @@ var _replay: ReplayLog
 
 var _match: MatchState
 var _buildings: BuildingSim
+var _passable := PackedByteArray()
+
+## How near a squad must be to found a building, in cells. A player
+## should not be able to plant a town hall across the map from the
+## founders who are supposedly building it.
+const BUILD_REACH_CELLS := 3
 
 ## Casualty/rout events produced OUTSIDE a tick — currently only a
 ## disconnecting player's army being wiped (D-033). They cannot simply be
@@ -105,7 +111,8 @@ func _ready() -> void:
 	# the wire, or the two sides will quietly disagree about which cells a
 	# squad may enter — the same class of divergence D-006's composition
 	# obligation exists to prevent.
-	_sim.set_passable(TerrainGen.new().passability(space))
+	_passable = TerrainGen.new().passability(space)
+	_sim.set_passable(_passable)
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
@@ -412,6 +419,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_stop(peer, data)
 			NetProtocol.C2S_ORDER_ATTACK_MOVE:
 				_handle_order_attack_move(peer, data)
+			NetProtocol.C2S_ORDER_BUILD:
+				_handle_order_build(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -454,6 +463,48 @@ func _handle_order_attack_move(peer: ENetPacketPeer, data: PackedByteArray) -> v
 	if squad < 0:
 		return
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Found a building (D-031). Every rule is enforced here rather than
+## trusted from the client (D-002): who owns the squad, whether that KIND
+## of squad may build this kind of building, whether the ground takes a
+## foundation, and whether the builder is anywhere near the site.
+func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_build(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+
+	var def := BuildingSim.def_by_id(StringName(order["def_id"]))
+	if def == null:
+		push_error("server: client asked for unknown building '%s'" % order["def_id"])
+		return
+
+	# The built_by rule lives in data (D-031) — this is where it bites.
+	if not BuildingSim.can_build(def, _sim.def_id_of(squad)):
+		push_error("server: %s may not build %s" % [_sim.def_id_of(squad), def.id])
+		return
+
+	var cell := _sim.space.from_index(int(order["cell"]))
+	if not _is_buildable(cell):
+		return
+	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+		return
+
+	_buildings.add_building(def, _sim.owner_of(squad), cell, false)
+	print("server: player %d began %s at %s" % [_sim.owner_of(squad), def.id, cell])
+
+
+## Buildable ground: passable terrain (no lakes, no mountains) with
+## nothing already standing on it.
+func _is_buildable(cell: Vector2i) -> bool:
+	var index := _sim.space.index(cell)
+	if index < _passable.size() and _passable[index] == 0:
+		return false
+	for i in range(_buildings.building_count()):
+		if _buildings.cell_index_of(i) == index and not _buildings.is_destroyed(i):
+			return false
+	return true
 
 
 func _handle_order_stop(peer: ENetPacketPeer, data: PackedByteArray) -> void:
@@ -558,6 +609,11 @@ func _replicate() -> void:
 	if not _pending_events.is_empty():
 		combat_events = combat_events + _pending_events
 
+	# Buildings whose replicated state changed this tick. Taken once, out
+	# here, because take_dirty() clears — reading it inside the per-client
+	# loop would hand the change to the first client and nobody else.
+	var dirty_buildings := _buildings.take_dirty()
+
 	for peer in _clients:
 		var record = _clients[peer]
 		var player := int(record["player"])
@@ -614,9 +670,40 @@ func _replicate() -> void:
 		# Hashed over this client's visible set, so client and server
 		# always compare the same set even though it now differs per
 		# client (D-004/D-025). Last, per the ordering above.
+		# Buildings (D-029/D-030). Persistent-explored: a client is told
+		# about a building once, when it first comes into view, and keeps
+		# it forever. `known` therefore only ever grows — and the hash
+		# below is computed over exactly that growing set, because the
+		# client hashes everything it has been shown. Hashing the
+		# currently-visible set here instead would compare
+		# differently-shaped sets and fire on a healthy system.
+		var known: Dictionary = record.get("known_buildings", {})
+		var to_send := []
+		for id in _buildings.visible_to(player, _sim.vision):
+			if not known.has(id):
+				known[id] = true
+				to_send.append(id)
+		# Plus anything already known whose state changed — otherwise a
+		# destruction would never reach a client that had walked away.
+		for id in dirty_buildings:
+			if known.has(id) and not to_send.has(id):
+				to_send.append(id)
+		record["known_buildings"] = known
+
+		if not to_send.is_empty():
+			peer.send(0, NetProtocol.encode_building_info(_buildings.info_entries(to_send)),
+				ENetPacketPeer.FLAG_RELIABLE)
+
 		if send_hash:
 			peer.send(0,
 				NetProtocol.encode_state_hash(_sim.tick_count, _sim.composition_hash(visible)),
+				ENetPacketPeer.FLAG_RELIABLE)
+			# Its own message, deliberately: the two hashes cover
+			# differently-shaped sets, and one combined number would make a
+			# mismatch undiagnosable.
+			peer.send(0,
+				NetProtocol.encode_building_state_hash(
+					_sim.tick_count, _buildings.composition_hash(known.keys())),
 				ENetPacketPeer.FLAG_RELIABLE)
 
 	# Delivered to every client above, so they are no longer pending.
