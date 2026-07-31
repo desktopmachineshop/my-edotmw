@@ -534,17 +534,7 @@ func tick() -> void:
 	# message — and a tick with neither kind of fighting still sends
 	# nothing at all (D-003).
 	if buildings != null:
-		# Founders are consumed by the town they found (D-031): the
-		# founding party becomes the settlement rather than walking away
-		# from it. Reported as an ordinary casualty event, so it reaches
-		# clients through the path they already understand and the
-		# composition hash stays in step.
-		for completed in buildings.advance_construction(1.0 / TICK_HZ):
-			var builder: int = buildings.builder_of(completed)
-			if builder >= 0 and builder < _cell.size() and _alive[builder] > 0:
-				_alive[builder] = 0
-				_routed[builder] = 0
-				last_combat_events.append({"id": builder, "alive": 0, "routed": false})
+		buildings.advance_construction(1.0 / TICK_HZ)
 
 		# Production closes the loop: resources become squads (D-028).
 		# Spawned next to the building that made them, which is why this
@@ -634,6 +624,23 @@ func living_squad_count(player: int) -> int:
 		if _owner[i] == player and _alive[i] > 0:
 			n += 1
 	return n
+
+
+## Spend a squad founding something (D-031). Returns the casualty events
+## describing it, or an empty array if there was nothing to consume.
+##
+## Consumed when the order is ACCEPTED, not when the building finishes.
+## That timing is the whole mechanism: consuming on completion left the
+## founders standing for the length of the build, and one founding party
+## could queue as many town halls as it could click on — which is exactly
+## what the first playtest did, three times in a row. Committing the party
+## to the site immediately makes one founding party mean one town.
+func consume_squad(squad: int) -> Array:
+	if squad < 0 or squad >= _cell.size() or _alive[squad] <= 0:
+		return []
+	_alive[squad] = 0
+	_routed[squad] = 0
+	return [{"id": squad, "alive": 0, "routed": false}]
 
 
 ## Wipe out everything `player` owns, returning the casualty events that

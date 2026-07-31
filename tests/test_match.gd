@@ -184,6 +184,24 @@ func test_a_match_played_to_completion_produces_exactly_one_winner() -> void:
 	assert_eq(state.active_players(), [1])
 
 
+func test_founding_consumes_the_whole_party_immediately() -> void:
+	# One founding party means one town. Consuming them when the building
+	# COMPLETED left them standing for the length of the build, and a
+	# playtest promptly founded three halls with one squad — so the party
+	# is spent when the order is accepted, not forty seconds later.
+	var sim := _sim()
+	var founders := sim.add_squad(_def(), 1, Vector2i(4, 4))
+	assert_gt(sim.alive_of(founders), 0)
+
+	var events := sim.consume_squad(founders)
+	assert_eq(sim.alive_of(founders), 0, "The party is spent on the spot")
+	assert_eq(events.size(), 1, "And it reports as an ordinary casualty event")
+	assert_eq(int(events[0]["id"]), founders)
+
+	assert_eq(sim.consume_squad(founders), [],
+		"A spent party cannot found a second town")
+
+
 func test_a_player_with_a_building_but_no_squads_is_not_defeated() -> void:
 	# The bug this guards ended live matches within a minute. Founders are
 	# consumed by the town hall they found (D-031), so a player who made

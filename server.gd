@@ -521,6 +521,13 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	var built := _buildings.add_building(def, _sim.owner_of(squad), cell, false, squad)
 
+	# The founding party becomes the settlement, here and now (D-031).
+	# Consuming them at completion instead left them free to queue another
+	# hall, and another, for the length of the build — the first playtest
+	# founded three in a row. This is what makes one founding party mean
+	# one town, and it is why founding is a real decision about WHERE.
+	_pending_events.append_array(_sim.consume_squad(squad))
+
 	# Ground truth into the replay (D-016, D-027 criterion 18): the full
 	# unfiltered view, not any one client's, so a replay can explain what
 	# was built even where fog hid it from everybody.
