@@ -162,6 +162,83 @@ torus presentation, (3) buildings, (4) economy.
 **Revisit trigger:** If M4 needs something M3 was assumed to have proven,
 add it here rather than quietly widening the milestone.
 
+**Reviewed against these criteria, 2026-07-31.** Written after the work,
+by the same agent that did it — the arrangement D-022's audit warns
+about — so it is stated as a checklist with evidence rather than a
+verdict, and the gaps are listed as plainly as the passes.
+
+*Met, with the evidence:*
+
+1–2. Match lifecycle and elimination — `match_state.gd`, lobby →
+running → finished, elimination read from `living_squad_count` so
+"defeated" has one definition. Disconnect wipes the army and the ordinary
+rule notices. Tested in `test_match.gd`, including the cases a smoke run
+cannot distinguish: a match that never starts, one that declares a winner
+instantly, one that never ends.
+3–5. Selection, the command vocabulary, and a HUD — click, shift-extend,
+box drag, Ctrl+1-9 groups; move, stop, attack-move, build, produce, each
+a distinct opcode validated server-side through one shared helper; a
+CanvasLayer with status, selection, controls and a wrap-aware minimap.
+6–8. The economy — gatherer SQUADS (D-005 affirmed, not excepted),
+four resources, biome-derived depleting nodes, round-trip hauling.
+`test_economy.gd`.
+9–12. Buildings — sibling `BuildingSim`, the id-collision test that
+landed before any other building code, construction, and
+persistent-explored fog whose hash is computed over the ever-revealed
+set. A test hashes the *visible* set instead and asserts it desyncs, so
+the trap is demonstrated rather than described.
+13–14. Four unit types with a working counter triangle, and simultaneous
+combat resolution. Perturbing the latter back to sequential makes mirror
+matchups differ by exactly one soldier.
+15–16. The torus renders as one — terrain tiled across both seams, the
+camera wrapping in continuous lattice coordinates — and spawns are map
+data with the duplicated formula deleted from both files that held it.
+18. Replays carry buildings under their own top-level key, and
+`replay-info` reports what was founded.
+19. Every new check was perturbed, observed red, and reverted, with the
+perturbations applied and reverted atomically after M2's review found two
+left behind.
+
+*Not met, and recorded rather than glossed:*
+
+- **Criterion 17 is only half met.** Cost is measured and its components
+  are identified, but the milestone changed the game's shape underneath
+  the metric: an opening of one founding party means a run reaches a
+  useful squad count only after production has been going for a while,
+  and the per-squad figure is dominated by fixed overhead below ~20
+  squads.
+
+  The best M3 measurement, from `just test-load 4 180`: **100.95 µs per
+  squad-update at 24 squads — vision 42.2, combat 54.6**, with four town
+  halls standing. That is **not** comparable to the 65.2 µs measured at
+  48 squads before the opening changed, and saying so is the point:
+  CLAUDE.md's rule is that the figure is meaningless without its squad
+  count, and here the counts differ. What IS comparable is the absolute
+  work per tick — about **2.4 ms against a 100 ms budget** — which is the
+  number that actually answers "does it keep up", and it does, with
+  `dropped_ticks=0` throughout.
+
+  Two things this milestone added that the metric now folds in: buildings
+  contribute vision at a larger radius than squads, and their cost lands
+  on whatever squad count happens to exist. A per-squad figure comparable
+  to M2's needs a run that reaches ~48 squads, which needs production
+  running longer than any current recipe does. That is M4's job, and M4's
+  tiered sweep (D-027's own reference point) is exactly the shape of
+  measurement this needs.
+- **Criterion 20 is partly done.** `CLAUDE.md` describes slices 1–2; the
+  economy and buildings are not yet in it.
+- **Not attempted at all: the human 4-player LAN session** D-027's
+  verification section calls the one criterion no automated check
+  substitutes for. Everything above is machine-verified. Whether this is
+  *fun* — whether founding, gathering and fighting hang together as a
+  game — is untested, and that is the whole point of a "launchable MVP".
+
+**M3 is therefore not declared complete.** The systems are built and
+green; the milestone's own bar includes a thing no test can stand in for.
+M1 and M2 were both declared done and then found incomplete, and the
+honest reading of this checklist is that M3 is one playtest and one doc
+pass away rather than finished.
+
 **Amended 2026-07-30, when the seven open items closed** (see section 2).
 Four resolved as recommended and change nothing here. Three did not, and
 these criteria change with them:

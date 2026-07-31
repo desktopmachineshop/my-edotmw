@@ -39,7 +39,7 @@ const HEADER_BYTES := 8 + 4 + 4 + 4 + 4  # magic + hz + width + height + hex_siz
 # payload_size (u32).
 const RECORD_HEADER_BYTES := 1 + 4 + 4
 
-enum Kind { CURVE = 0, SQUAD_INFO = 1, COMBAT = 2 }
+enum Kind { CURVE = 0, SQUAD_INFO = 1, COMBAT = 2, BUILDING_INFO = 3 }
 
 var _file: FileAccess = null
 var records_written: int = 0
@@ -102,6 +102,14 @@ func record_squad_info(at_time: float, wire_bytes: PackedByteArray) -> void:
 ## reason as record_squad_info above.
 func record_combat(at_time: float, wire_bytes: PackedByteArray) -> void:
 	_write_record(Kind.COMBAT, at_time, wire_bytes)
+
+
+## Record a BUILDING_INFO broadcast verbatim (D-016, D-027 criterion 18).
+## Same discipline as the two above: NetProtocol's own encoding, and the
+## server's FULL unfiltered view rather than any one client's — a replay
+## is ground truth, including what fog hid from everybody.
+func record_building_info(at_time: float, wire_bytes: PackedByteArray) -> void:
+	_write_record(Kind.BUILDING_INFO, at_time, wire_bytes)
 
 
 func _write_record(kind: int, at_time: float, payload: PackedByteArray) -> void:
@@ -202,6 +210,8 @@ static func read(path: String) -> Dictionary:
 				record["squad_info"] = NetProtocol.decode_squad_info(payload)
 			Kind.COMBAT:
 				record["combat"] = NetProtocol.decode_squad_combat(payload)
+			Kind.BUILDING_INFO:
+				record["buildings"] = NetProtocol.decode_building_info(payload)
 			_:
 				pass  # Unknown kind: keep the record's time/kind, decode nothing.
 
@@ -219,6 +229,13 @@ static func read(path: String) -> Dictionary:
 const STRENGTHS_KEY := "__strengths__"
 const ROUTED_KEY := "__routed__"
 
+## Buildings get their own top-level key rather than sharing the numeric
+## keyspace with squads (D-029). Building wire ids are offset far above
+## squad ids so they could not collide anyway, but relying on that inside
+## a dictionary that also holds squad curves would make the offset
+## load-bearing in a second place. One numeric keyspace per dictionary.
+const BUILDINGS_KEY := "__buildings__"
+
 
 ## Rebuild the world state a replay describes at a given time.
 ##
@@ -235,6 +252,7 @@ static func reconstruct_at(replay: Dictionary, at_time: float) -> Dictionary:
 	var state := {}
 	var strengths := {}
 	var routed := {}
+	var buildings := {}
 	if not replay.has("records"):
 		return state
 
@@ -253,7 +271,11 @@ static func reconstruct_at(replay: Dictionary, at_time: float) -> Dictionary:
 				for event in (combat.get("events", []) as Array):
 					strengths[int(event["id"])] = int(event["alive"])
 					routed[int(event["id"])] = bool(event["routed"])
+			Kind.BUILDING_INFO:
+				for entry in (record.get("buildings", []) as Array):
+					buildings[int(entry["id"])] = entry
 
 	state[STRENGTHS_KEY] = strengths
 	state[ROUTED_KEY] = routed
+	state[BUILDINGS_KEY] = buildings
 	return state

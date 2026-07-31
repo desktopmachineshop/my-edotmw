@@ -47,6 +47,7 @@ func _initialize() -> void:
 	var info_records := 0
 	var combat_records := 0
 	var casualty_events := 0
+	var building_records := 0
 	for record in records:
 		match int(record.get("kind", ReplayLog.Kind.CURVE)):
 			ReplayLog.Kind.CURVE:
@@ -59,6 +60,8 @@ func _initialize() -> void:
 				combat_records += 1
 				var combat: Dictionary = record.get("combat", {})
 				casualty_events += (combat.get("events", []) as Array).size()
+			ReplayLog.Kind.BUILDING_INFO:
+				building_records += 1
 
 	print("replay-info: %s" % path)
 	print("  map:      %dx%d cells, hex size %.2f, tick %.0f Hz" % [
@@ -108,6 +111,16 @@ func _initialize() -> void:
 	# replay is unclipped ground truth, so this covers every squad that
 	# ever had a SQUAD_INFO or SQUAD_COMBAT record — including one that
 	# never fought and so has no combat event at all.
+	var known_buildings: Dictionary = state.get(ReplayLog.BUILDINGS_KEY, {})
+	print("  buildings: %d founded (%d records)" % [known_buildings.size(), building_records])
+	var building_ids := known_buildings.keys()
+	building_ids.sort()
+	for id in building_ids:
+		var b: Dictionary = known_buildings[id]
+		print("    %s (player %d) at cell %d%s" % [
+			b["def_id"], int(b["owner"]), int(b["cell"]),
+			" [destroyed]" if bool(b["destroyed"]) else ""])
+
 	print("  final strengths (%d squads known):" % strengths.size())
 	var strength_ids := strengths.keys()
 	strength_ids.sort()

@@ -514,7 +514,15 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
 		return
 
-	_buildings.add_building(def, _sim.owner_of(squad), cell, false)
+	var built := _buildings.add_building(def, _sim.owner_of(squad), cell, false)
+
+	# Ground truth into the replay (D-016, D-027 criterion 18): the full
+	# unfiltered view, not any one client's, so a replay can explain what
+	# was built even where fog hid it from everybody.
+	if _replay != null and _replay.is_open():
+		_replay.record_building_info(_sim.time,
+			NetProtocol.encode_building_info(_buildings.info_entries([built])))
+
 	print("server: player %d began %s at %s" % [_sim.owner_of(squad), def.id, cell])
 
 

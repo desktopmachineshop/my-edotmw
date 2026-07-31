@@ -76,11 +76,36 @@ when a player has no living squads, and a winner. Disconnect wipes the
 abandoned army and the ordinary rule notices — defeated has one
 definition.
 
-*Slice 2, still to do:* selection (click, box, control groups), the
-command vocabulary beyond move, and the HUD. `client.tscn` is still a
-bare `Node3D` with no UI layer at all, and right-click still orders every
-squad you own. `client.gd` also still carries its stale copy of the old
-spawn formula, which wants spawn data on the wire to remove properly.
+*Slice 2, rest landed:* selection (click, shift-extend, box drag,
+Ctrl+1-9 groups) and a HUD on a `CanvasLayer`. Right-click orders the
+SELECTION and does nothing when nothing is selected. Commands are move,
+stop, attack-move, build and produce, each its own opcode validated
+server-side through one shared helper.
+
+*Slice 3, landed:* terrain is drawn nine times, tiling across both seams,
+so the world no longer visibly ends; the camera wraps in continuous
+lattice coordinates (round-tripping through `world_to_cell` would snap
+panning to cell centres). Wrap-aware minimap.
+
+*Slice 4, landed:* `building_sim.gd` — a SIBLING of `SquadSim`, with its
+own id space. Both sims mint ids from their array length, so the first
+squad and the first building are both entity 0; `wire_id()` and separate
+plumbing keep them apart, and a test builds one of each at the same local
+index to prove nothing leaks. Buildings see, shoot (town centre and
+tower), are constructed by squads, and use **persistent-explored** fog —
+once seen, never un-known — whose hash must therefore be taken over the
+*ever-revealed* set, not the currently-visible one.
+
+*Slice 5, landed:* `economy.gd` — four resources, biome-derived depleting
+nodes, and round-trip hauling by gatherer SQUADS, which is what keeps
+D-005 intact. Production is per building, gated on ownership, the def's
+`produces` list, the shared squad cap and affordability (all-or-nothing).
+
+**The opening changed in M3 and is worth knowing before reading any
+test:** a player starts with ONE founding party and no base. Founders
+fight better than line infantry, and only they can build a town hall —
+expressed in `BuildingDef.built_by`, which is also how they are barred
+from building anything else. Everything else is produced.
 
 **Use `just test-load 4 40`, not `4 12`.** Symmetric spawns are a full
 quadrant apart, so on a 128×64 map four armies cannot reach each other
