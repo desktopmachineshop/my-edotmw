@@ -25,3 +25,5 @@ mesh_primitive = "box"
 mesh_color = Color(0.45, 0.5, 0.58, 1)
 build_time = 9.0
 cost = 45
+cost_food = 50
+cost_wood = 20

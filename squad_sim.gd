@@ -535,6 +535,18 @@ func tick() -> void:
 	# nothing at all (D-003).
 	if buildings != null:
 		buildings.advance_construction(1.0 / TICK_HZ)
+
+		# Production closes the loop: resources become squads (D-028).
+		# Spawned next to the building that made them, which is why this
+		# lives here rather than in BuildingSim — that class has no
+		# SquadSim to put a squad into.
+		for finished in buildings.advance_production(1.0 / TICK_HZ):
+			var produced := UnitRoster.by_id(StringName(finished["def_id"]))
+			if produced == null:
+				push_error("SquadSim: building produced unknown unit '%s'" % finished["def_id"])
+				continue
+			var at: int = int(finished["building"])
+			add_squad(produced, buildings.owner_of(at), buildings.cell_of(at) + Vector2i(1, 0))
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events

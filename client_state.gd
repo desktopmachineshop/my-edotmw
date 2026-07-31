@@ -30,6 +30,12 @@ var spawn_cells := PackedInt32Array()
 ## Buildings this client has ever been shown, by wire id (D-029/D-030).
 ## Never pruned: buildings are persistent-explored, so leaving vision
 ## freezes what is known rather than forgetting it.
+## This player's own four resource totals (D-028). There is nowhere to
+## put anyone else's, deliberately: wallets are private, so the protocol
+## never carries another player's.
+var wallet := PackedInt32Array()
+var wallet_updates: int = 0
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -140,6 +146,9 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_squad_conceal(data)
 		NetProtocol.S2C_STATE_HASH:
 			_handle_state_hash(data)
+		NetProtocol.S2C_WALLET:
+			wallet = NetProtocol.decode_wallet(data)
+			wallet_updates += 1
 		NetProtocol.S2C_BUILDING_INFO:
 			_handle_building_info(data)
 		NetProtocol.S2C_BUILDING_STATE_HASH:

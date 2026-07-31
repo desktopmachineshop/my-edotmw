@@ -52,6 +52,15 @@ class_name MapConfig
 ## let them drift apart; deriving them cannot.
 @export var spawn_offset: Vector2i = Vector2i(16, 8)
 
+# What a player starts with (D-028). Non-zero on purpose: gatherers cost
+# food, and food comes from gatherers, so a player starting empty could
+# never begin. A starting stockpile is the usual way out and keeps the
+# opening a choice — spend it on economy or on soldiers.
+@export var starting_food: int = 250
+@export var starting_wood: int = 200
+@export var starting_gold: int = 0
+@export var starting_stone: int = 0
+
 
 func to_space() -> TorusSpace:
 	return TorusSpace.new(width, height, hex_size)

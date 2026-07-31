@@ -53,6 +53,9 @@ var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 # Ids whose replicated state changed and have not been sent yet.
 var _dirty := {}
 
+# building -> Array of { "def_id": StringName, "remaining": float }
+var _queues := {}
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -97,6 +100,56 @@ static func local_id(wire: int) -> int:
 
 static func is_building_id(wire: int) -> bool:
 	return wire >= BUILDING_ID_OFFSET
+
+
+## Can this building make that unit at all? Data again (D-010): the
+## `produces` list on the BuildingDef, never a match statement here.
+## A building site cannot produce, and neither can rubble.
+func can_produce(building: int, unit_def_id: StringName) -> bool:
+	if is_destroyed(building) or not is_complete(building):
+		return false
+	var def := def_of(building)
+	return def != null and def.produces.has(unit_def_id)
+
+
+## Queue a unit. The CALLER has already taken the payment and checked the
+## squad cap — this only records what was bought, so there is one place
+## that decides affordability rather than two that can disagree.
+func enqueue(building: int, def: UnitDef) -> void:
+	if not _queues.has(building):
+		_queues[building] = []
+	(_queues[building] as Array).append({
+		"def_id": def.id, "remaining": maxf(def.build_time, 0.001),
+	})
+
+
+func queue_length(building: int) -> int:
+	return (_queues[building] as Array).size() if _queues.has(building) else 0
+
+
+## Advance every queue one tick. Returns [{building, def_id}] for units
+## finished this tick, because BuildingSim has no SquadSim to spawn them
+## into — the caller does that, the same shape advance_construction uses.
+##
+## Production is per BUILDING, not per unit: D-005 forbids per-unit
+## production queues, and this is a queue of SQUADS at a structure.
+func advance_production(dt: float) -> Array:
+	var done := []
+	for building in _queues:
+		if is_destroyed(building):
+			continue
+		var queue: Array = _queues[building]
+		if queue.is_empty():
+			continue
+		var head: Dictionary = queue[0]
+		head["remaining"] = float(head["remaining"]) - dt
+		if float(head["remaining"]) <= 0.0:
+			queue.pop_front()
+			done.append({"building": building, "def_id": head["def_id"]})
+		else:
+			queue[0] = head
+		_queues[building] = queue
+	return done
 
 
 ## Load a BuildingDef by id, the way UnitRoster.by_id does for units.

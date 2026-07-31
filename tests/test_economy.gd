@@ -235,6 +235,90 @@ func test_spending_is_all_or_nothing() -> void:
 	assert_eq(economy.amount(1, Economy.ResourceKind.STONE), 0)
 
 
+# --- production closes the loop (D-028, D-031) ------------------------
+
+func test_a_building_produces_only_what_its_def_lists() -> void:
+	var buildings := BuildingSim.new(_space())
+	var def := _drop_off_def()
+	def.produces = [&"gatherers"] as Array[StringName]
+	var hall := buildings.add_building(def, 1, Vector2i(4, 4), true)
+
+	assert_true(buildings.can_produce(hall, &"gatherers"))
+	assert_false(buildings.can_produce(hall, &"cavalry"),
+		"A town centre does not make horsemen")
+
+
+func test_a_building_site_cannot_produce() -> void:
+	var buildings := BuildingSim.new(_space())
+	var def := _drop_off_def()
+	def.produces = [&"gatherers"] as Array[StringName]
+	var hall := buildings.add_building(def, 1, Vector2i(4, 4), false)
+	assert_false(buildings.can_produce(hall, &"gatherers"),
+		"You cannot recruit out of a foundation")
+
+
+func test_production_finishes_and_puts_a_squad_on_the_map() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var def := _drop_off_def()
+	def.produces = [&"gatherers"] as Array[StringName]
+	var hall := buildings.add_building(def, 1, Vector2i(6, 6), true)
+
+	var unit: UnitDef = UnitRoster.by_id(&"gatherers")
+	assert_not_null(unit)
+	var before := sim.squad_count()
+	buildings.enqueue(hall, unit)
+	assert_eq(buildings.queue_length(hall), 1)
+
+	for _i in range(int(unit.build_time * SquadSim.TICK_HZ) + 5):
+		sim.tick()
+
+	assert_eq(buildings.queue_length(hall), 0, "The queue should have drained")
+	assert_gt(sim.squad_count(), before, "A finished unit must actually appear on the map")
+	assert_eq(sim.owner_of(before), 1, "And belong to the building's owner")
+
+
+func test_wallets_round_trip_and_carry_no_player_id() -> void:
+	# The absence is the point: a wallet message is always about the
+	# client receiving it, so there is no field a modified client could
+	# use to ask about somebody else's (D-028).
+	var totals := PackedInt32Array([10, 20, 30, 40])
+	var bytes := NetProtocol.encode_wallet(totals)
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.S2C_WALLET)
+
+	var decoded := NetProtocol.decode_wallet(bytes)
+	assert_eq(decoded.size(), Economy.RESOURCE_COUNT)
+	for i in range(Economy.RESOURCE_COUNT):
+		assert_eq(decoded[i], totals[i])
+
+	var state := ClientState.new()
+	state.handle_packet(bytes)
+	assert_eq(state.wallet[Economy.ResourceKind.GOLD], 30)
+	assert_eq(state.wallet_updates, 1)
+
+
+func test_produce_orders_round_trip() -> void:
+	var bytes := NetProtocol.encode_order_produce(BuildingSim.wire_id(2), "gatherers")
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.C2S_ORDER_PRODUCE)
+	var decoded := NetProtocol.decode_order_produce(bytes)
+	assert_eq(BuildingSim.local_id(int(decoded["building"])), 2)
+	assert_eq(String(decoded["def_id"]), "gatherers")
+
+
+func test_every_producible_unit_costs_something() -> void:
+	# A free unit makes the economy decorative, and this is exactly the
+	# trap UnitDef.cost fell into: declared, plausible-looking, read by
+	# nothing for two milestones.
+	for name in ["gatherers", "militia", "spearmen", "archers", "cavalry"]:
+		var def: UnitDef = UnitRoster.by_id(StringName(name))
+		assert_not_null(def, "roster should ship %s" % name)
+		var total := def.cost_food + def.cost_wood + def.cost_gold + def.cost_stone
+		assert_gt(total, 0, "%s is free, which makes the economy decorative" % name)
+
+
 func test_the_shipped_gatherer_can_actually_gather() -> void:
 	var def: UnitDef = UnitRoster.by_id(&"gatherers")
 	assert_not_null(def, "The roster must ship a 'gatherers' unit")

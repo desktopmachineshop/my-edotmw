@@ -49,6 +49,7 @@ var _replay: ReplayLog
 
 var _match: MatchState
 var _buildings: BuildingSim
+var _economy: Economy
 var _passable := PackedByteArray()
 
 ## How near a squad must be to found a building, in cells. A player
@@ -111,13 +112,25 @@ func _ready() -> void:
 	# the wire, or the two sides will quietly disagree about which cells a
 	# squad may enter — the same class of divergence D-006's composition
 	# obligation exists to prevent.
-	_passable = TerrainGen.new().passability(space)
+	# One TerrainGen for the whole server: passability, and the resource
+	# field derived from the same biomes (D-037). Two instances would be
+	# two sources of truth about the same ground.
+	var terrain := TerrainGen.new()
+	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
 	_buildings = BuildingSim.new(space)
 	_sim.buildings = _buildings
+
+	# The economy (D-028). Nodes are derived from the same terrain, with
+	# the map's symmetry order, so all four starts hold equal resources
+	# without anything here reasoning about fairness (D-036).
+	_economy = Economy.new(space)
+	_economy.generate(terrain, _config.symmetry_order)
+	_sim.economy = _economy
+	print("server: %d resource nodes generated" % _economy.node_count())
 
 	# Match lifecycle (D-033). Defaults to 1 so the single-client
 	# development flows (`run-client`, `test-client`) behave exactly as
@@ -327,6 +340,14 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# a leak, and self-correcting within one tick.
 	_clients[peer]["visible"] = _dict_from_ids(_sim.visible_to(player))
 
+	# Starting stockpile (D-028): gatherers cost food and food comes from
+	# gatherers, so a player starting empty could never begin.
+	_economy.credit(player, Economy.ResourceKind.FOOD, _config.starting_food)
+	_economy.credit(player, Economy.ResourceKind.WOOD, _config.starting_wood)
+	_economy.credit(player, Economy.ResourceKind.GOLD, _config.starting_gold)
+	_economy.credit(player, Economy.ResourceKind.STONE, _config.starting_stone)
+	_send_wallet(peer, player)
+
 	if _match.add_player(player):
 		print("server: MATCH_START — %s" % _match.describe())
 
@@ -421,6 +442,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_attack_move(peer, data)
 			NetProtocol.C2S_ORDER_BUILD:
 				_handle_order_build(peer, data)
+			NetProtocol.C2S_ORDER_PRODUCE:
+				_handle_order_produce(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -493,6 +516,50 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	_buildings.add_building(def, _sim.owner_of(squad), cell, false)
 	print("server: player %d began %s at %s" % [_sim.owner_of(squad), def.id, cell])
+
+
+## Produce a squad at a building (D-028/D-031). Four gates, all enforced
+## here because the client is not trusted (D-002): the player owns the
+## building, the building makes that kind of unit, the player is under the
+## squad cap, and the player can pay. Payment is last and is all-or-
+## nothing, so a refused order never leaves a part-spent wallet.
+func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var record = _clients.get(peer, null)
+	if record == null or not _match.is_running():
+		return
+
+	var order := NetProtocol.decode_order_produce(data)
+	var building := BuildingSim.local_id(int(order["building"]))
+	if building < 0 or building >= _buildings.building_count():
+		return
+
+	var player := int(record["player"])
+	if _buildings.owner_of(building) != player:
+		push_error("server: player %d tried to produce at a building it does not own" % player)
+		return
+
+	var unit_id := StringName(order["def_id"])
+	if not _buildings.can_produce(building, unit_id):
+		return
+	var def := UnitRoster.by_id(unit_id)
+	if def == null:
+		return
+
+	# ONE cap covering military and gatherers alike (D-033): every
+	# villager crew is an army slot not spent.
+	if not _match.has_squad_capacity(_sim, player):
+		return
+	if not _economy.try_spend(player, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
+		return
+
+	_buildings.enqueue(building, def)
+	_send_wallet(peer, player)
+
+
+## Wallets go to their owner and nobody else (D-028).
+func _send_wallet(peer: ENetPacketPeer, player: int) -> void:
+	peer.send(0, NetProtocol.encode_wallet(_economy.wallet_of(player)),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Buildable ground: passable terrain (no lakes, no mountains) with
@@ -613,6 +680,9 @@ func _replicate() -> void:
 	# here, because take_dirty() clears — reading it inside the per-client
 	# loop would hand the change to the first client and nobody else.
 	var dirty_buildings := _buildings.take_dirty()
+	var wallet_changes := {}
+	for player in _sim.last_wallet_changes:
+		wallet_changes[player] = true
 
 	for peer in _clients:
 		var record = _clients[peer]
@@ -677,6 +747,10 @@ func _replicate() -> void:
 		# client hashes everything it has been shown. Hashing the
 		# currently-visible set here instead would compare
 		# differently-shaped sets and fire on a healthy system.
+		# Income reaches only the player who earned it (D-028).
+		if wallet_changes.has(player):
+			_send_wallet(peer, player)
+
 		var known: Dictionary = record.get("known_buildings", {})
 		var to_send := []
 		for id in _buildings.visible_to(player, _sim.vision):

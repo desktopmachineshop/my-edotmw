@@ -268,6 +268,21 @@ class VirtualClient:
 				if not build.is_empty():
 					peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
 
+		# Once the hall is up, spend the starting stockpile on gatherers —
+		# the economic opening a real player makes, and what puts the
+		# production path (cost, squad cap, queue, spawn) under the load
+		# test rather than leaving it to unit tests.
+		if _orders_issued > 0 and _orders_issued % 4 == 0:
+			for wire_id in state.buildings:
+				var info: Dictionary = state.buildings[wire_id]
+				if int(info["owner"]) != state.player or bool(info["destroyed"]):
+					continue
+				if float(info["progress"]) < 1.0:
+					continue
+				peer.send(0, NetProtocol.encode_order_produce(int(wire_id), "gatherers"),
+					ENetPacketPeer.FLAG_RELIABLE)
+				break
+
 		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
 		# Orders go out every 3 seconds while the contested middle is a
 		# good 25 seconds of marching away, so alternating per order made

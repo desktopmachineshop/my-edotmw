@@ -30,6 +30,9 @@ const C2S_ORDER_MOVE := 10
 const C2S_ORDER_STOP := 11
 const C2S_ORDER_ATTACK_MOVE := 12
 const C2S_ORDER_BUILD := 13
+const C2S_ORDER_PRODUCE := 14
+
+const S2C_WALLET := 9
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -256,6 +259,56 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 			"destroyed": buf.get_u8() == 1,
 		})
 	return out
+
+
+## WALLET: a player's four resource totals — sent to that player ONLY.
+##
+## Wallets are private (D-028). Knowing an opponent's stockpile tells you
+## what they are about to field, which is the same class of knowledge
+## D-003's horizon clipping and D-004's fog exist to withhold. There is
+## therefore no player id on the wire: this message is always about the
+## client receiving it, and a client that could ask about someone else's
+## wallet is a client that could be modified to.
+static func encode_wallet(totals: PackedInt32Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_WALLET)
+	buf.put_u32(totals.size())
+	for total in totals:
+		buf.put_u32(total)
+	return buf.data_array
+
+
+static func decode_wallet(data: PackedByteArray) -> PackedInt32Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := PackedInt32Array()
+	for i in range(count):
+		out.append(buf.get_u32())
+	return out
+
+
+## ORDER_PRODUCE: a building is told to make a unit (D-028/D-031).
+## Carries the building's wire id and the unit's def id.
+static func encode_order_produce(building_wire_id: int, unit_def_id: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_PRODUCE)
+	buf.put_u32(building_wire_id)
+	var name_bytes := unit_def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_order_produce(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var building := buf.get_u32()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {"building": building, "def_id": name_bytes.get_string_from_utf8()}
 
 
 ## BUILDING_STATE_HASH: its own message rather than folded into

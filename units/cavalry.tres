@@ -25,3 +25,5 @@ mesh_primitive = "cylinder"
 mesh_color = Color(0.52, 0.28, 0.24, 1)
 build_time = 14.0
 cost = 80
+cost_food = 80
+cost_gold = 40

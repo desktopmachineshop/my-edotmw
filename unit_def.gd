@@ -87,5 +87,15 @@ class_name UnitDef
 ## without any special case (D-028).
 @export var gather_rate: float = 0.0
 
+# Cost, per resource (D-028's four). Schema addition 2026-07-31 (M3,
+# against D-010), replacing the single `cost` field that sat unread since
+# M0 — four resources need a table, not a number. `cost` is left in place
+# for now rather than removed, because nothing reads it and deleting a
+# field from a Resource rewrites every .tres that mentions it.
+@export var cost_food: int = 0
+@export var cost_wood: int = 0
+@export var cost_gold: int = 0
+@export var cost_stone: int = 0
+
 @export var build_time: float = 10.0
 @export var cost: int = 50
