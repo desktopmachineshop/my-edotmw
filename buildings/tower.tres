@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"tower"
+display_name = "Watch Tower"
+civ = &"neutral"
+max_health = 450.0
+build_time = 18.0
+vision_range = 26.0
+attack_range = 9.0
+damage = 20.0
+attack_interval = 1.5
+is_drop_off = false
+cost_food = 0
+cost_wood = 40
+cost_gold = 0
+cost_stone = 120
+mesh_primitive = "cylinder"
+mesh_color = Color(0.48, 0.47, 0.5, 1)
+footprint_radius = 1

@@ -112,6 +112,7 @@ func _ready() -> void:
 	# and the victory rule never fires with fewer than two players.
 	_match = MatchState.new()
 	_match.players_expected = maxi(1, int(args.get("players", 1)))
+	_match.squad_cap = _config.squad_cap
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
 	# (D-024) — MapConfig has no dedicated seed field, so this derives one

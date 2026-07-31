@@ -1,0 +1,192 @@
+extends RefCounted
+class_name BuildingSim
+
+## Buildings — the second networked entity class (D-029, D-031).
+##
+## A sibling of `SquadSim`, not a merger into it. Squads and buildings
+## share almost no per-tick logic: a building never moves, so destination,
+## speed, formation, morale, routing and the damage/attack accumulators
+## are all squad-only, while construction progress and a production queue
+## have no squad equivalent. Merging them would reproduce the "which kind
+## of entity is row i" ambiguity under a different name, in a language
+## with no generics to resolve it.
+##
+## ## The id space, which is where the danger is
+##
+## `SquadSim.add_squad` mints an id as `_cell.size()` — the id IS the
+## array index. A `BuildingSim` doing the same starts at 0 too, so the
+## first squad and the first building are both entity 0. Anything that
+## funnels both through one `CurveReplicator`, one `ReplayLog` key, or one
+## `composition_hash` entry list would then have a building silently
+## corrupt a squad's record: no error, no crash, just wrong state — the
+## same invisible-corruption class that has now twice been caught late in
+## this project (D-022's audit, D-026's review).
+##
+## Two defences, deliberately belt and braces:
+##
+## 1. Buildings keep their own replicator, their own client-side
+##    dictionaries and their own wire opcodes, so the two id spaces never
+##    meet in the ordinary path. `CurveReplicator` and `ReplayLog` are
+##    already entity-agnostic — they key on whatever integer they are
+##    handed — so this costs nothing but discipline.
+## 2. `wire_id()` offsets building ids far above any plausible squad count
+##    (D-018 targets ~1,000 squads at full scale), so *if* some future
+##    code does need one unified entity id, it gets an unambiguous answer
+##    instead of a collision.
+
+## Far above D-018's ~1,000-squad full-scale target, so a wire id can
+## never be mistaken for a squad id even by code that forgot the
+## distinction exists.
+const BUILDING_ID_OFFSET := 1_000_000
+
+var space: TorusSpace
+
+# --- packed state (D-009), one entry per building --------------------
+var _cell := PackedInt32Array()
+var _owner := PackedInt32Array()
+var _defs: Array[BuildingDef] = []
+var _health := PackedFloat32Array()
+var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
+var _destroyed := PackedByteArray()
+
+
+func _init(p_space: TorusSpace = null) -> void:
+	space = p_space if p_space != null else TorusSpace.new()
+
+
+func building_count() -> int:
+	return _cell.size()
+
+
+## Local id (the array index). Use wire_id() for anything that leaves this
+## class and might meet a squad id.
+func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false) -> int:
+	var id := _cell.size()
+	_cell.append(space.index(at))
+	_owner.append(owner)
+	_defs.append(def)
+	_health.append(def.max_health)
+	_progress.append(1.0 if complete else 0.0)
+	_destroyed.append(0)
+	return id
+
+
+## Local id -> the id this building is known by anywhere a squad id could
+## also appear. See the header for why this offset exists.
+static func wire_id(local_id: int) -> int:
+	return BUILDING_ID_OFFSET + local_id
+
+
+## Inverse of wire_id. Returns -1 if the id is not a building's.
+static func local_id(wire: int) -> int:
+	return wire - BUILDING_ID_OFFSET if wire >= BUILDING_ID_OFFSET else -1
+
+
+static func is_building_id(wire: int) -> bool:
+	return wire >= BUILDING_ID_OFFSET
+
+
+func cell_of(building: int) -> Vector2i:
+	return space.from_index(_cell[building])
+
+
+func cell_index_of(building: int) -> int:
+	return _cell[building]
+
+
+func owner_of(building: int) -> int:
+	return _owner[building]
+
+
+func def_of(building: int) -> BuildingDef:
+	return _defs[building]
+
+
+func health_of(building: int) -> float:
+	return _health[building]
+
+
+func progress_of(building: int) -> float:
+	return _progress[building]
+
+
+func is_complete(building: int) -> bool:
+	return _progress[building] >= 1.0 and _destroyed[building] == 0
+
+
+func is_destroyed(building: int) -> bool:
+	return _destroyed[building] == 1
+
+
+## Advance construction on every unfinished building. Returns the ids that
+## COMPLETED on this call, so the caller can announce them without
+## diffing state itself — the same shape MatchState.update uses.
+func advance_construction(dt: float) -> Array:
+	var completed := []
+	for i in range(_cell.size()):
+		if _destroyed[i] == 1 or _progress[i] >= 1.0:
+			continue
+		var build_time: float = maxf(_defs[i].build_time, 0.001)
+		_progress[i] = minf(_progress[i] + dt / build_time, 1.0)
+		if _progress[i] >= 1.0:
+			completed.append(i)
+	return completed
+
+
+## Apply damage. Returns true if this call destroyed the building.
+##
+## An unfinished building takes damage the same way a finished one does —
+## a half-built tower is a real thing standing on the map, not a plan.
+func damage(building: int, amount: float) -> bool:
+	if _destroyed[building] == 1:
+		return false
+	_health[building] = maxf(_health[building] - amount, 0.0)
+	if _health[building] > 0.0:
+		return false
+	_destroyed[building] = 1
+	return true
+
+
+func living_building_count(player: int) -> int:
+	var n := 0
+	for i in range(_cell.size()):
+		if _owner[i] == player and _destroyed[i] == 0:
+			n += 1
+	return n
+
+
+## Ids a player still has standing. Elimination (D-033) will need this
+## once buildings can produce: a player with no squads but a live barracks
+## is not yet beaten.
+func ids_of(player: int) -> Array:
+	var out := []
+	for i in range(_cell.size()):
+		if _owner[i] == player and _destroyed[i] == 0:
+			out.append(i)
+	return out
+
+
+## Composition entries for the hash, in wire ids (D-029/D-030).
+##
+## Deliberately excludes health and construction progress, for exactly the
+## reason `NetProtocol.composition_hash` excludes position: both vary
+## continuously and a client legitimately lags a tick behind, so hashing
+## them would report a desync for a system working as designed. What is
+## hashed is what is delivered as discrete reliable facts — identity,
+## owner, kind, and whether it is still standing.
+func composition_entries(ids: Array) -> Array:
+	var out := []
+	for id in ids:
+		if id < 0 or id >= _cell.size():
+			continue
+		out.append({
+			"id": wire_id(id),
+			"alive": 0 if _destroyed[id] == 1 else 1,
+			"shape": String(_defs[id].id),
+			"spacing": float(_owner[id]),
+		})
+	return out
+
+
+func composition_hash(ids: Array) -> int:
+	return NetProtocol.composition_hash(composition_entries(ids))

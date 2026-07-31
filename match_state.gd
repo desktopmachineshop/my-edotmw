@@ -29,6 +29,21 @@ enum Phase { LOBBY, RUNNING, FINISHED }
 ## solo session behaves exactly as it did before matches existed.
 var players_expected: int = 1
 
+## Hard per-player squad ceiling (D-033), set from MapConfig.squad_cap.
+##
+## **One ceiling covers military and gatherer squads alike.** Every
+## villager crew is an army slot not spent — that is the
+## economy-versus-army trade made structural rather than left to a balance
+## number, and it bounds total squad count, which is the axis the
+## architecture is actually sensitive to (D-018).
+##
+## Enforced here rather than at each production site precisely because
+## there will be more than one of those: a town centre making gatherers
+## and a barracks making soldiers. A cap only one path respected would be
+## worse than no cap, because a player would hit it without being able to
+## explain their own economy.
+var squad_cap: int = 15
+
 var phase: Phase = Phase.LOBBY
 var winner: int = -1
 
@@ -123,6 +138,18 @@ func _check_victory() -> void:
 		return
 	phase = Phase.FINISHED
 	winner = active[0] if active.size() == 1 else -1
+
+
+## May `player` field another squad? Counts LIVING squads, so losing an
+## army frees the slots it occupied — the cap is a ceiling on what stands
+## on the map, not a lifetime quota.
+##
+## Deliberately takes the simulation rather than a running tally: a
+## separate counter is a second definition of "how many squads does this
+## player have", and this project has been bitten before by two
+## definitions of the same fact drifting apart.
+func has_squad_capacity(sim: SquadSim, player: int) -> bool:
+	return sim.living_squad_count(player) < squad_cap
 
 
 func is_running() -> bool:

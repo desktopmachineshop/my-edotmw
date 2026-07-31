@@ -117,6 +117,74 @@ func test_eliminate_player_wipes_squads_and_describes_it_as_casualties() -> void
 		"Wiping an already-wiped player produces no further events")
 
 
+# --- squad cap (D-033) -------------------------------------------------
+
+## A gatherer crew is a squad like any other (D-028) — this is just a
+## UnitDef with a different id, which is exactly the point being tested.
+func _gatherer_def() -> UnitDef:
+	var d := _def()
+	d.id = &"match_test_gatherers"
+	return d
+
+
+func test_one_cap_covers_military_and_gatherer_squads_alike() -> void:
+	# The decision this guards: gatherers count towards the same total.
+	# If each kind had its own ceiling, or if only one production path
+	# checked, a player could field twice the intended army by making half
+	# of it villagers — and the economy-versus-army trade would evaporate.
+	var sim := _sim()
+	var state := MatchState.new()
+	state.squad_cap = 4
+	state.players_expected = 1
+	state.add_player(1)
+
+	var military := _def()
+	var gatherers := _gatherer_def()
+
+	sim.add_squad(military, 1, Vector2i(1, 1))
+	sim.add_squad(military, 1, Vector2i(2, 1))
+	assert_true(state.has_squad_capacity(sim, 1), "Two of four used")
+
+	sim.add_squad(gatherers, 1, Vector2i(3, 1))
+	assert_true(state.has_squad_capacity(sim, 1), "Three of four used")
+
+	sim.add_squad(gatherers, 1, Vector2i(4, 1))
+	assert_false(state.has_squad_capacity(sim, 1),
+		"Four squads is the cap regardless of how many are gatherers")
+
+
+func test_the_cap_is_per_player() -> void:
+	var sim := _sim()
+	var state := MatchState.new()
+	state.squad_cap = 2
+	state.players_expected = 2
+	state.add_player(1)
+	state.add_player(2)
+
+	sim.add_squad(_def(), 1, Vector2i(1, 1))
+	sim.add_squad(_gatherer_def(), 1, Vector2i(2, 1))
+
+	assert_false(state.has_squad_capacity(sim, 1), "Player 1 is full")
+	assert_true(state.has_squad_capacity(sim, 2), "Player 2 is untouched by player 1's army")
+
+
+func test_losing_squads_frees_capacity() -> void:
+	# The cap is a ceiling on what stands on the map, not a lifetime
+	# quota — otherwise a player who lost a battle could never rebuild.
+	var sim := _sim()
+	var state := MatchState.new()
+	state.squad_cap = 2
+	state.players_expected = 1
+	state.add_player(1)
+
+	sim.add_squad(_def(), 1, Vector2i(1, 1))
+	var doomed := sim.add_squad(_gatherer_def(), 1, Vector2i(2, 1))
+	assert_false(state.has_squad_capacity(sim, 1))
+
+	sim.set_alive(doomed, 0)
+	assert_true(state.has_squad_capacity(sim, 1), "A destroyed squad frees its slot")
+
+
 # --- victory -----------------------------------------------------------
 
 func test_last_player_standing_wins() -> void:
