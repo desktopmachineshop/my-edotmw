@@ -710,7 +710,7 @@ func _build_hud() -> void:
 	_hud_resources = Label.new()
 	_hud_selection = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select · drag box · RMB move · Ctrl+RMB attack-move · X stop · Ctrl+1-9 group"
+	hint.text = "LMB select · RMB move · Ctrl+RMB attack-move · B found town hall (founders, at cursor) · X stop · Ctrl+1-9 group"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -834,11 +834,63 @@ func _update_minimap() -> void:
 			colour = colour.darkened(0.45)
 		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
 
+	_plot_view_bounds(image)
+
 	if _minimap_texture == null:
 		_minimap_texture = ImageTexture.create_from_image(image)
 		_minimap_rect.texture = _minimap_texture
 	else:
 		_minimap_texture.update(image)
+
+
+## Outline what the camera is currently looking at.
+##
+## The corners are found by casting the four screen corners onto the
+## ground with the same `_cell_under` the right-click order uses, so the
+## box is what the player can actually see rather than an estimate from
+## camera height. A corner that misses the ground (sky above the horizon)
+## simply drops that edge, leaving a partial box rather than a wrong one.
+##
+## This matters more on a torus than it would on a flat map: with terrain
+## tiled in every direction and no edges to orient by, the minimap is the
+## only thing that answers "where am I?".
+func _plot_view_bounds(image: Image) -> void:
+	if _camera == null or _state.space == null:
+		return
+
+	var view := get_viewport().get_visible_rect().size
+	var corners := [
+		_cell_under(Vector2(0.0, 0.0)),
+		_cell_under(Vector2(view.x, 0.0)),
+		_cell_under(Vector2(view.x, view.y)),
+		_cell_under(Vector2(0.0, view.y)),
+	]
+
+	var colour := Color(1.0, 1.0, 1.0, 1.0)
+	for i in range(4):
+		var from: Vector2i = corners[i]
+		var to: Vector2i = corners[(i + 1) % 4]
+		if from.x < 0 or to.x < 0:
+			continue
+		_plot_minimap_segment(image, from, to, colour)
+
+
+## A line between two cells, taken the SHORT way around the torus — the
+## view box straddles the seam as readily as anything else here, and
+## drawing it the long way would smear a line across the whole minimap.
+func _plot_minimap_segment(image: Image, from: Vector2i, to: Vector2i, colour: Color) -> void:
+	var span := _state.space.delta(from, to)
+	var steps := maxi(absi(span.x), absi(span.y))
+	if steps <= 0:
+		return
+	steps = mini(steps, 512)
+
+	for i in range(steps + 1):
+		var t := float(i) / float(steps)
+		image.set_pixel(
+			posmod(from.x + roundi(float(span.x) * t), image.get_width()),
+			posmod(from.y + roundi(float(span.y) * t), image.get_height()),
+			colour)
 
 
 ## A 2x2 blob rather than a single pixel, so a squad is visible at one
@@ -943,6 +995,14 @@ func _handle_key(event: InputEventKey) -> void:
 		_stop_selected()
 		return
 
+	# B founds a town hall at the mouse cursor (D-031). The server checks
+	# everything that matters — that the squad may build this, that the
+	# ground takes a foundation, and that the builder is within reach —
+	# so this just sends the intent and lets the authority answer.
+	if event.keycode == KEY_B:
+		_build_selected("town_centre")
+		return
+
 	# Control groups: Ctrl+N stores the selection, N recalls it.
 	if event.keycode >= KEY_1 and event.keycode <= KEY_9:
 		var group: int = event.keycode - KEY_0
@@ -988,6 +1048,26 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	if sent > 0:
 		print("client: %s %d squad(s) to cell %s" % [
 			"attack-moved" if attack_move else "ordered", sent, cell])
+
+
+## Ask the first selected squad to found a building at the cursor.
+##
+## Only founders may build a town hall, and only a town hall — that rule
+## is data on the BuildingDef (D-031) and enforced server-side, so a
+## refused order simply does nothing here rather than being second-guessed
+## client-side.
+func _build_selected(def_id: String) -> void:
+	if not _connected or _state.space == null or _selected.is_empty():
+		return
+
+	var cell := _cell_under(get_viewport().get_mouse_position())
+	if cell.x < 0:
+		return
+
+	var order := _state.encode_build(_selected[0], def_id, cell)
+	if not order.is_empty():
+		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+		print("client: asked squad %d to found a %s at %s" % [_selected[0], def_id, cell])
 
 
 func _stop_selected() -> void:

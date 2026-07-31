@@ -117,6 +117,73 @@ func test_eliminate_player_wipes_squads_and_describes_it_as_casualties() -> void
 		"Wiping an already-wiped player produces no further events")
 
 
+# --- a whole match, actually fought (D-027 criterion 2) ---------------
+
+## Two sides that can genuinely kill each other, unlike _def() above.
+## Asymmetric on purpose: one side must actually win, and two identical
+## armies now resolve simultaneously (D-024) and can grind to mutual
+## destruction, which would end the match with no winner at all.
+func _fighter_def(strong: bool) -> UnitDef:
+	var d := UnitDef.new()
+	d.id = &"match_test_fighter"
+	# The two sides differ only in NUMBERS, not in per-soldier quality.
+	# The first version made the weak side hit softly as well as being
+	# outnumbered, and it died before landing a single casualty — so the
+	# match ended with the winner untouched, and "the winner took losses
+	# too" failed. Equal damage means the smaller army still bloodies the
+	# larger one on its way down, which is what makes this a fight rather
+	# than an execution.
+	d.squad_size = 20 if strong else 8
+	d.health = 40.0
+	d.damage = 12.0
+	d.attack_range = 3.0          # ~1.7 cells: reaches an adjacent squad
+	d.attack_interval = 0.1       # every tick, so a test-length match ends
+	d.move_speed = 3.0
+	d.formation_shape = "line"
+	d.formation_spacing = 1.0
+	d.morale = 100.0
+	d.rout_threshold = 0.0        # nobody routs away; this is a fight to a finish
+	d.morale_loss_per_casualty = 0.0
+	d.damage_variance = 0.0
+	return d
+
+
+func test_a_match_played_to_completion_produces_exactly_one_winner() -> void:
+	# Every other victory test in this file calls eliminate_player()
+	# directly, which proves the RULE but never the SYSTEM: no match had
+	# ever actually been fought to a finish. This one runs the real loop —
+	# combat resolving each tick, strengths falling, elimination noticed
+	# by the ordinary rule — and asserts a single winner comes out.
+	var sim := _sim()
+	var state := MatchState.new()
+	state.players_expected = 2
+
+	var strong := sim.add_squad(_fighter_def(true), 1, Vector2i(8, 8))
+	var weak := sim.add_squad(_fighter_def(false), 2, Vector2i(9, 8))
+	state.add_player(1)
+	state.add_player(2)
+	assert_true(state.is_running(), "Both players present, so the match starts")
+
+	var eliminated := []
+	var ticks := 0
+	while not state.is_finished() and ticks < 600:
+		sim.tick()
+		eliminated.append_array(state.update(sim))
+		ticks += 1
+
+	assert_true(state.is_finished(),
+		"A real fight must end the match, not run forever (stopped after %d ticks)" % ticks)
+	assert_eq(state.winner, 1, "The stronger army should be the one left standing")
+	assert_eq(eliminated, [2], "The loser is reported exactly once, as it falls")
+
+	assert_eq(sim.alive_of(weak), 0, "The losing squad is actually dead, not merely declared so")
+	assert_gt(sim.alive_of(strong), 0, "And the winner survived it")
+	assert_lt(sim.alive_of(strong), 20,
+		"The winner took losses too — a match decided without a shot fired would prove nothing")
+
+	assert_eq(state.active_players(), [1])
+
+
 # --- squad cap (D-033) -------------------------------------------------
 
 ## A gatherer crew is a squad like any other (D-028) — this is just a
