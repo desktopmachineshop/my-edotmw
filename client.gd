@@ -173,6 +173,7 @@ func _process(delta: float) -> void:
 		_terrain_built = true
 
 	_refresh_squads()
+	_refresh_buildings()
 	_update_hud()
 	_update_minimap()
 
@@ -488,6 +489,9 @@ func _drive_m2_scenario() -> void:
 	if not _connected or not _state.welcomed or _state.squads.is_empty():
 		return
 
+	# The opening move first: found the hall, then send scouts out.
+	_found_home_town()
+
 	if not _rallied and _now >= RALLY_AT_SECONDS:
 		_issue_scenario_rally()
 		_rallied = true
@@ -612,6 +616,32 @@ func _neighbor_player_candidates() -> Array:
 ## when one is known) so the caller's shape does not change, and so a
 ## future scenario can march on a specific opponent once travel time
 ## stops being the binding constraint.
+## Capture mode plays the real opening: found a town hall at the spawn,
+## and look at it.
+##
+## Without this the frame proves nothing about slice 4 — the client owns
+## no building and sees none, so `buildings=0` and a rendering bug would
+## be invisible. It also points the camera at the player's own base
+## rather than the middle of the map, which is where a player actually
+## starts looking.
+func _found_home_town() -> void:
+	if _founded or not _state.welcomed or _state.squads.is_empty():
+		return
+	_founded = true
+
+	var home := _state.spawn_cell_of(_state.player)
+	if home.x < 0:
+		home = _state.squad_cell(_state.squads[0], _now)
+
+	var order := _state.encode_build(_state.squads[0], "town_centre", home)
+	if not order.is_empty():
+		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+		print("client: founding a town hall at %s" % home)
+
+	_camera_target = _state.space.to_world(home)
+	_update_camera()
+
+
 func _estimated_neighbor_cell(target_player: int) -> Vector2i:
 	var centre := Vector2i(_state.space.width / 2, _state.space.height / 2)
 	var spawn := _state.spawn_cell_of(target_player)
@@ -652,6 +682,9 @@ var _control_groups := {}
 
 var _hud_status: Label = null
 var _hud_selection: Label = null
+var _hud_resources: Label = null
+var _building_nodes := {}
+var _founded := false
 
 ## Minimap (D-027 criterion 5). Wrap-awareness is free here in a way it
 ## is nowhere else in this project: the minimap IS the whole torus, so a
@@ -674,13 +707,14 @@ func _build_hud() -> void:
 	layer.add_child(panel)
 
 	_hud_status = Label.new()
+	_hud_resources = Label.new()
 	_hud_selection = Label.new()
 	var hint := Label.new()
 	hint.text = "LMB select · drag box · RMB move · Ctrl+RMB attack-move · X stop · Ctrl+1-9 group"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
-	for label in [_hud_status, _hud_selection, hint]:
+	for label in [_hud_status, _hud_resources, _hud_selection, hint]:
 		label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
 		label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
 		label.add_theme_constant_override("outline_size", 5)
@@ -703,12 +737,71 @@ func _build_hud() -> void:
 	layer.add_child(_minimap_rect)
 
 
+## Draw the buildings this client knows about (D-029).
+##
+## Without this a player founds a town hall and watches nothing happen —
+## the server knew about it, the wire carried it, `ClientState` held it,
+## and every numeric check passed. That is the same shape as M1's frame
+## with no soldiers in it, which is why this landed before anyone was
+## asked to sit down and play.
+##
+## A building under construction is drawn SHORT, rising as it completes,
+## so progress is visible in the world rather than only in a number.
+func _refresh_buildings() -> void:
+	if _state.space == null:
+		return
+
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		var instance: MeshInstance3D = _building_nodes.get(wire_id, null)
+
+		if instance == null:
+			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+			if def == null:
+				continue
+			var mesh := BoxMesh.new()
+			mesh.size = Vector3(2.4, 3.0, 2.4)
+			var material := StandardMaterial3D.new()
+			material.albedo_color = def.mesh_color
+			material.roughness = 0.9
+			instance = MeshInstance3D.new()
+			instance.mesh = mesh
+			instance.material_override = material
+			_building_nodes[wire_id] = instance
+			add_child(instance)
+
+		if bool(info["destroyed"]):
+			instance.visible = false
+			continue
+		instance.visible = true
+
+		var progress := clampf(float(info["progress"]), 0.15, 1.0)
+		instance.scale = Vector3(1.0, progress, 1.0)
+
+		var world := _state.space.to_world(_state.space.from_index(int(info["cell"])))
+		if _state.terrain_sampler.is_valid():
+			world.y = _state.terrain_sampler.call(world.x, world.z)
+		# Sit the box ON the ground rather than half-sunk into it.
+		world.y += 1.5 * progress
+		instance.position = world
+
+
 func _update_hud() -> void:
 	if _hud_status == null:
 		return
 
-	_hud_status.text = "player %d · %d squads known · %d ghosts" % [
-		_state.player, _state.curves.size(), _state.ghost_squad_ids().size()]
+	_hud_status.text = "player %d · %d squads known · %d ghosts · %d buildings" % [
+		_state.player, _state.curves.size(), _state.ghost_squad_ids().size(),
+		_state.buildings.size()]
+
+	# The four resource readouts D-027 criterion 5 asks for. Only ours
+	# exist to show: wallets are private, so the protocol never carries
+	# anyone else's (D-028).
+	if _state.wallet.size() >= 4:
+		_hud_resources.text = "food %d · wood %d · gold %d · stone %d" % [
+			_state.wallet[0], _state.wallet[1], _state.wallet[2], _state.wallet[3]]
+	else:
+		_hud_resources.text = "food — · wood — · gold — · stone —"
 
 	if _selected.is_empty():
 		_hud_selection.text = "nothing selected"
