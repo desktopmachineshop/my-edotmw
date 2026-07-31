@@ -39,6 +39,16 @@ class_name BuildingDef
 ## nothing.
 @export var produces: Array[StringName] = []
 
+## Which squad types may construct this, as UnitDef ids. **Empty means
+## any builder may.**
+##
+## Data rather than a hardcoded check, per D-010, so restricting a
+## building to a particular unit never means editing the construction
+## code. The town centre lists `founders` and nothing else: settling a new
+## base is deliberately a specific act by a specific unit, not something
+## any squad can do wherever it happens to be standing.
+@export var built_by: Array[StringName] = []
+
 # Cost, per resource (D-028's four: food, wood, gold, stone). Declared
 # now, consumed in slice 5 — unlike UnitDef.cost, which sat unread for two
 # milestones, this one has a named consumer already designed.

@@ -19,6 +19,12 @@ const DEFAULT_SERVER_PORT := 4433
 const CHANNELS := 2
 
 const ORDER_INTERVAL_SECONDS := 3.0
+
+## How many orders a bot spends marching one way before turning around.
+## At ORDER_INTERVAL_SECONDS that is ~24 seconds per leg, which is about
+## what crossing half a 128x64 map costs — long enough to actually arrive,
+## fight, and then break contact again.
+const ORDERS_PER_RAID_PHASE := 8
 const CONNECT_TIMEOUT_SECONDS := 10.0
 
 # How many of each bot's squads march on a neighbouring player's known
@@ -86,6 +92,7 @@ class VirtualClient:
 	var soldiers_derived := 0
 
 	var _next_order_at := 1.0
+	var _orders_issued := 0
 	var _rng := RandomNumberGenerator.new()
 
 	# Rally/recall scripting (see the constants above) — a bounded, one-shot
@@ -238,10 +245,35 @@ class VirtualClient:
 		# are always a full quadrant apart, so the middle is the one place
 		# every player can reach, and heading there makes the engagement
 		# deliberate. The jitter keeps squads from stacking on one cell.
+		# Alternate between the contested middle and home, rather than
+		# marching to the centre and sitting there.
+		#
+		# Sitting was enough to produce fog churn when a player started
+		# with twelve spread-out squads. It stopped being enough when the
+		# opening became a single founding party (D-031): four squads all
+		# parked in the middle can see each other permanently, so nothing
+		# was ever concealed and the verdict correctly reported
+		# conceal_events=0. Raiding in and back out is both more like real
+		# play and what makes vision genuinely gain and lose contact.
+		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
+		# Orders go out every 3 seconds while the contested middle is a
+		# good 25 seconds of marching away, so alternating per order made
+		# the bots thrash on the spot and never arrive anywhere — fog
+		# churned nicely and casualties_applied sat at zero.
 		var spread := 8
+		var target: Vector2i
+		if (_orders_issued / ORDERS_PER_RAID_PHASE) % 2 == 0:
+			target = Vector2i(state.space.width / 2, state.space.height / 2)
+		else:
+			# Spawn points come from the welcome message, so this is where
+			# the bot actually started rather than a guess (D-036).
+			var home := state.spawn_cell_of(state.player)
+			target = home if home.x >= 0 else Vector2i(0, 0)
+		_orders_issued += 1
+
 		var destination := Vector2i(
-			state.space.width / 2 + _rng.randi_range(-spread, spread),
-			state.space.height / 2 + _rng.randi_range(-spread, spread))
+			target.x + _rng.randi_range(-spread, spread),
+			target.y + _rng.randi_range(-spread, spread))
 
 		var order := state.encode_order(squad, destination)
 		if not order.is_empty():

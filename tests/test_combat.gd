@@ -159,6 +159,28 @@ func test_simultaneity_does_not_depend_on_which_side_has_the_lower_id() -> void:
 		"Swapping which player owns the lower squad id must not change the outcome")
 
 
+# --- reach (D-024) -----------------------------------------------------
+
+func test_every_armed_unit_can_reach_an_adjacent_cell() -> void:
+	# A hex is SQRT_3 (~1.73) world units across, so any attack_range
+	# below that floors to a radius of ZERO cells — the unit can only
+	# attack something standing in its own cell, which for a melee unit
+	# means it can never attack anything at all.
+	#
+	# Every melee unit in the roster shipped that way. It stayed invisible
+	# for two milestones because the opening spawned archers, whose range
+	# of 8.0 is nearly five hexes; it surfaced the moment the starting
+	# unit became a melee founding party and combat silently stopped
+	# happening at load.
+	var hex_width := TorusSpace.SQRT_3  # every shipped map uses hex_size 1.0
+	for def in UnitRoster.load_all():
+		if def.damage <= 0.0:
+			continue
+		assert_true(floori(def.attack_range / hex_width) >= 1,
+			"%s has attack_range %.2f, under one hex width (%.2f) — it could only ever attack its own cell" % [
+				def.id, def.attack_range, hex_width])
+
+
 # --- counters (D-032, D-027 criterion 13) ------------------------------
 
 ## Runs one engagement and returns the defender's surviving strength.

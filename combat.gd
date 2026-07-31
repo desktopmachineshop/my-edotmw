@@ -49,6 +49,11 @@ class_name Combat
 # away from here", not a tuned game-balance number.
 const ROUT_FLEE_MULTIPLIER := 3
 
+# The squad pass's bucket map, kept so the buildings pass in the same
+# tick does not rebuild an identical one.
+var _buckets := {}
+var _buckets_tick := -1
+
 const _FNV_OFFSET_BASIS := 2166136261
 const _FNV_PRIME := 16777619
 
@@ -91,6 +96,14 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	var round_routed := sim.routed_snapshot()
 
 	var buckets := _build_buckets(sim)
+
+	# Kept for the buildings pass, which runs later in the same tick and
+	# would otherwise rebuild an identical map. Wiring the two passes
+	# together like this is what stopped adding buildings from doubling
+	# combat's share of the tick.
+	_buckets = buckets
+	_buckets_tick = tick
+
 	for attacker in range(sim.squad_count()):
 		if round_alive[attacker] <= 0 or round_routed[attacker] == 1:
 			continue
@@ -113,6 +126,123 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 			_resolve_attack(sim, attacker, target, tick, round_alive[attacker])
 
 	return _diff(sim, before_alive, before_routed)
+
+
+## Armed buildings shoot (D-032, D-029).
+##
+## A SEPARATE pass from the squad path, deliberately. `_resolve_attack`
+## and `_check_rout` are steeped in squad assumptions — `_check_rout`
+## unconditionally calls `force_move` once morale breaks, and a building
+## has neither morale nor the ability to move. Making BuildingSim
+## duck-type its way through squad-shaped functions would be a fine source
+## of a subtle bug; sharing the bucket map and the seed convention is all
+## the overlap that is safe.
+##
+## Written as a loop over every armed building rather than a tower special
+## case, because the roster already has two shooters: the tower, and the
+## town centre, which defends itself so an early rush cannot walk into a
+## base before anything has been built.
+##
+## Cost stays O(armed buildings x disk), via the same cached hex-disk
+## offsets vision and squad targeting use — never a scan over all squads.
+func resolve_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Array:
+	if buildings == null or buildings.building_count() == 0:
+		return []
+
+	var before_alive := sim.alive_snapshot()
+
+	# Reuse the squad pass's bucket map when it is from this same tick.
+	# Squad positions do not change between the two passes — combat moves
+	# nobody except a routing squad, whose curve is rebuilt but whose CELL
+	# is unchanged until the next tick samples it.
+	var buckets: Dictionary = _buckets if _buckets_tick == tick else _build_buckets(sim)
+
+	for building in range(buildings.building_count()):
+		if not buildings.is_complete(building):
+			continue  # a building site does not shoot
+		var def := buildings.def_of(building)
+		if def == null or def.damage <= 0.0:
+			continue
+
+		var interval_ticks := maxi(1, roundi(def.attack_interval * SquadSim.TICK_HZ))
+		var last := buildings.last_attack_tick_of(building)
+		if last >= 0 and tick - last < interval_ticks:
+			continue
+
+		var target := _find_squad_near(sim, buckets, buildings.cell_index_of(building),
+			buildings.owner_of(building), _range_in_cells(sim.space, def.attack_range))
+		if target == -1:
+			continue
+
+		buildings.set_last_attack_tick(building, tick)
+		_shoot_squad(sim, target, def.damage, buildings.cell_index_of(building))
+
+	# Same before/after diff the squad pass uses, and for the same reason:
+	# it reports only what actually changed and cannot invent an event.
+	var events := []
+	for i in range(sim.squad_count()):
+		if sim.alive_of(i) != before_alive[i]:
+			events.append({"id": i, "alive": sim.alive_of(i), "routed": sim.is_routed(i)})
+	return events
+
+
+## Nearest enemy squad to a cell, within range. Mirrors _find_target's
+## bounds and tiebreak, but takes a cell rather than an attacking squad so
+## a building can use it.
+func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
+		owner: int, range_cells: float) -> int:
+	var origin := sim.space.from_index(origin_index)
+	var best := -1
+	var best_distance := 0
+
+	for offset in TorusSpace.disk_offsets(floori(range_cells)):
+		var idx := sim.space.index(origin + offset)
+		if not buckets.has(idx):
+			continue
+		for other in buckets[idx]:
+			if sim.owner_of(other) == owner:
+				continue
+			var d := TorusSpace.hex_length(offset)
+			# Deterministic tiebreak (lower id wins), so target choice
+			# never depends on bucket iteration order.
+			if best == -1 or d < best_distance or (d == best_distance and other < best):
+				best = other
+				best_distance = d
+	return best
+
+
+## Building fire against a squad. Flat damage — BuildingDef carries no
+## variance, and a fortification that rolls badly is not a mechanic
+## anybody asked for.
+func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int) -> void:
+	var def := sim.def_of(squad)
+	if def == null:
+		return
+
+	var health := maxf(def.health, 0.001)
+	var accum := sim.damage_accum_of(squad) + amount / health
+	var casualties := int(floor(accum))
+	sim.set_damage_accum(squad, accum - float(casualties))
+	if casualties <= 0:
+		return
+
+	sim.set_alive(squad, maxi(0, sim.alive_of(squad) - casualties))
+	var morale := sim.morale_of(squad) - float(casualties) * def.morale_loss_per_casualty
+	sim.set_morale(squad, maxf(morale, 0.0))
+
+	# Being shelled by a fortification breaks a squad the same way being
+	# beaten by another squad does. Handled here rather than by calling
+	# _check_rout, which needs an attacking SQUAD to flee from.
+	if sim.is_routed(squad) or sim.alive_of(squad) <= 0:
+		return
+	if sim.morale_of(squad) >= def.rout_threshold:
+		return
+	sim.set_routed(squad, true)
+	var here := sim.space.from_index(sim.cell_index_of(squad))
+	var away := sim.space.delta(sim.space.from_index(from_cell_index), here)
+	if away == Vector2i.ZERO:
+		away = Vector2i(1, 0)
+	sim.force_move(squad, here + away * ROUT_FLEE_MULTIPLIER)
 
 
 func _diff(sim: SquadSim, before_alive: PackedInt32Array, before_routed: PackedByteArray) -> Array:

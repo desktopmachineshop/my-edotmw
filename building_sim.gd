@@ -48,6 +48,7 @@ var _defs: Array[BuildingDef] = []
 var _health := PackedFloat32Array()
 var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
 var _destroyed := PackedByteArray()
+var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 
 
 func _init(p_space: TorusSpace = null) -> void:
@@ -68,7 +69,16 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false)
 	_health.append(def.max_health)
 	_progress.append(1.0 if complete else 0.0)
 	_destroyed.append(0)
+	_last_attack_tick.append(-1)
 	return id
+
+
+func last_attack_tick_of(building: int) -> int:
+	return _last_attack_tick[building]
+
+
+func set_last_attack_tick(building: int, tick: int) -> void:
+	_last_attack_tick[building] = tick
 
 
 ## Local id -> the id this building is known by anywhere a squad id could
@@ -84,6 +94,21 @@ static func local_id(wire: int) -> int:
 
 static func is_building_id(wire: int) -> bool:
 	return wire >= BUILDING_ID_OFFSET
+
+
+## May a squad of `unit_def_id` construct `def`? (D-031.)
+##
+## The rule reads one way only, from `BuildingDef.built_by`, so there is a
+## single source of truth. That is also what expresses "founders may build
+## ONLY the town hall": founders are listed on the town centre and on
+## nothing else, so every other building refuses them without needing a
+## second, builder-side list to be kept in step with this one.
+static func can_build(def: BuildingDef, unit_def_id: StringName) -> bool:
+	if def == null:
+		return false
+	if def.built_by.is_empty():
+		return true
+	return def.built_by.has(unit_def_id)
 
 
 func cell_of(building: int) -> Vector2i:

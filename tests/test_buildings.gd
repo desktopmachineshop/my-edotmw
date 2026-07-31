@@ -193,6 +193,208 @@ func test_buildings_of_different_owners_hash_differently() -> void:
 		"Ownership is part of what a client must agree with the server about")
 
 
+# --- buildings see (D-029 + D-025) ------------------------------------
+
+func test_a_building_grants_its_owner_vision() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var watched := Vector2i(20, 8)
+	# An enemy squad far from anything player 1 owns.
+	sim.add_squad(_unit_def(), 2, watched)
+	sim.recompute_vision_now()
+	assert_false(sim.visible_to(1).has(0), "Setup: player 1 cannot see it yet")
+
+	# Put a building next to the enemy. Nothing else changes.
+	buildings.add_building(_building_def(), 1, watched + Vector2i(1, 0), true)
+	sim.recompute_vision_now()
+	assert_true(sim.visible_to(1).has(0),
+		"A building must contribute to its owner's vision, not just squads")
+
+
+func test_rubble_sees_nothing() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var watched := Vector2i(20, 8)
+	sim.add_squad(_unit_def(), 2, watched)
+	var eye := buildings.add_building(_building_def(), 1, watched + Vector2i(1, 0), true)
+	sim.recompute_vision_now()
+	assert_true(sim.visible_to(1).has(0), "Setup: the building sees it")
+
+	buildings.damage(eye, 10000.0)
+	sim.recompute_vision_now()
+	assert_false(sim.visible_to(1).has(0), "Destroyed buildings stop seeing")
+
+
+# --- armed buildings shoot (D-032) ------------------------------------
+
+func _armed_def() -> BuildingDef:
+	var d := _building_def(&"test_tower")
+	d.attack_range = 6.0
+	d.damage = 40.0
+	d.attack_interval = 0.1  # one tick, so a short test still sees fire
+	return d
+
+
+func _shooting_sim() -> Dictionary:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var enemy_def := _unit_def()
+	enemy_def.health = 20.0
+	enemy_def.morale_loss_per_casualty = 0.0  # no routing; this is about damage
+	var squad := sim.add_squad(enemy_def, 2, Vector2i(10, 8))
+	return {"sim": sim, "buildings": buildings, "squad": squad}
+
+
+func test_an_armed_building_damages_an_enemy_squad_in_range() -> void:
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+	var squad: int = setup["squad"]
+
+	buildings.add_building(_armed_def(), 1, Vector2i(11, 8), true)
+	var before := sim.alive_of(squad)
+	for _i in range(5):
+		sim.tick()
+
+	assert_lt(sim.alive_of(squad), before, "A tower in range must actually shoot")
+
+
+func test_a_building_site_does_not_shoot() -> void:
+	# A half-built tower is a target, not a garrison.
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+	var squad: int = setup["squad"]
+
+	var def := _armed_def()
+	def.build_time = 1000.0
+	buildings.add_building(def, 1, Vector2i(11, 8), false)
+
+	var before := sim.alive_of(squad)
+	for _i in range(5):
+		sim.tick()
+	assert_eq(sim.alive_of(squad), before, "An unfinished building must not fire")
+
+
+func test_an_unarmed_building_does_not_shoot() -> void:
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+	var squad: int = setup["squad"]
+
+	buildings.add_building(_building_def(), 1, Vector2i(11, 8), true)  # damage 0
+	var before := sim.alive_of(squad)
+	for _i in range(5):
+		sim.tick()
+	assert_eq(sim.alive_of(squad), before, "A storehouse is not a weapon")
+
+
+func test_a_building_does_not_shoot_its_own_side() -> void:
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+
+	var friendly_def := _unit_def()
+	friendly_def.health = 20.0
+	var friendly := sim.add_squad(friendly_def, 1, Vector2i(12, 8))
+	buildings.add_building(_armed_def(), 1, Vector2i(11, 8), true)
+
+	var before := sim.alive_of(friendly)
+	for _i in range(5):
+		sim.tick()
+	assert_eq(sim.alive_of(friendly), before, "Buildings must not fire on their owner's squads")
+
+
+func test_a_building_out_of_range_does_not_reach() -> void:
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+	var squad: int = setup["squad"]
+
+	# attack_range 6.0 world units is ~3.4 cells; 12 cells away is well out.
+	buildings.add_building(_armed_def(), 1, Vector2i(22, 8), true)
+	var before := sim.alive_of(squad)
+	for _i in range(5):
+		sim.tick()
+	assert_eq(sim.alive_of(squad), before, "Range has to mean something")
+
+
+func test_building_fire_reports_casualty_events() -> void:
+	# The events merge into the same list squad combat produces, so they
+	# replicate through the path clients already understand (D-029).
+	var setup := _shooting_sim()
+	var sim: SquadSim = setup["sim"]
+	var buildings: BuildingSim = setup["buildings"]
+	var squad: int = setup["squad"]
+
+	buildings.add_building(_armed_def(), 1, Vector2i(11, 8), true)
+
+	var saw_event := false
+	for _i in range(5):
+		sim.tick()
+		for event in sim.last_combat_events:
+			if int(event["id"]) == squad:
+				saw_event = true
+	assert_true(saw_event, "Damage from a building must surface as a casualty event")
+
+
+# --- who may build what (D-031) ---------------------------------------
+
+func test_only_founders_can_build_a_town_hall() -> void:
+	var town_centre: BuildingDef = load("res://buildings/town_centre.tres")
+	assert_true(BuildingSim.can_build(town_centre, &"founders"),
+		"Founders settle — that is the whole point of them")
+	for other in [&"militia", &"archers", &"cavalry", &"spearmen", &"gatherers"]:
+		assert_false(BuildingSim.can_build(town_centre, other),
+			"%s must not be able to plant a town hall" % other)
+
+
+func test_founders_can_build_ONLY_the_town_hall() -> void:
+	# The other half of the claim, and the reason built_by is expressed on
+	# the building rather than as a list on the unit: every other building
+	# refuses founders simply by not listing them, with no second list to
+	# keep in step.
+	for name in ["barracks", "storehouse", "tower"]:
+		var def: BuildingDef = load("res://buildings/%s.tres" % name)
+		assert_false(BuildingSim.can_build(def, &"founders"),
+			"Founders found towns; they do not run a construction firm (%s)" % name)
+
+
+func test_an_unrestricted_building_accepts_any_builder() -> void:
+	# Empty built_by means unrestricted. Nothing shipped uses it, but the
+	# default has to be the permissive one or every new .tres would be
+	# unbuildable until someone remembered to fill the field in.
+	var def := _building_def()
+	assert_true(def.built_by.is_empty(), "Setup: the default is unrestricted")
+	assert_true(BuildingSim.can_build(def, &"anything_at_all"))
+
+
+func test_the_founding_party_outfights_basic_infantry() -> void:
+	# "Can fight" is a real claim, not flavour: a founding party that lost
+	# to the cheapest melee unit would make settling a formality rather
+	# than a choice.
+	var founders: UnitDef = UnitRoster.by_id(&"founders")
+	var militia: UnitDef = UnitRoster.by_id(&"militia")
+	assert_not_null(founders, "The roster must ship a 'founders' unit")
+	assert_not_null(militia)
+
+	assert_gt(founders.damage, militia.damage, "Founders hit harder, man for man")
+	assert_gt(founders.health, militia.health, "And are harder to kill")
+	assert_lt(founders.rout_threshold, militia.rout_threshold,
+		"And hold their nerve longer — they have nowhere to run to")
+	assert_lt(founders.squad_size, militia.squad_size,
+		"But there are few of them: this is a founding party, not an army")
+
+
 # --- the shipped roster (D-010) ---------------------------------------
 
 func test_the_shipped_buildings_load_and_make_sense() -> void:
@@ -206,10 +408,21 @@ func test_the_shipped_buildings_load_and_make_sense() -> void:
 	assert_true(by_id["storehouse"].is_drop_off, "So does the storehouse — that is its whole job")
 	assert_false(by_id["barracks"].is_drop_off)
 
-	# Only the tower shoots (D-032). If another building grows an attack,
-	# combat needs a buildings pass that expects more than one shooter.
+	# Two buildings shoot: the tower, and the town centre, which defends
+	# itself so an early rush cannot simply walk into an undefended base
+	# before anything has been built. This is why the buildings combat
+	# pass is written as a loop over every armed building rather than a
+	# special case for towers — the roster was always going to grow a
+	# second shooter.
 	assert_gt(by_id["tower"].damage, 0.0, "The tower must actually shoot")
-	for quiet in ["town_centre", "barracks", "storehouse"]:
+	assert_gt(by_id["town_centre"].damage, 0.0,
+		"The town centre defends itself — early-game protection")
+	assert_lt(by_id["town_centre"].damage, by_id["tower"].damage,
+		"A town centre defends; a tower is what you build when you mean it")
+	assert_lt(by_id["town_centre"].attack_range, by_id["tower"].attack_range,
+		"And it does not outrange a purpose-built tower")
+
+	for quiet in ["barracks", "storehouse"]:
 		assert_eq(by_id[quiet].damage, 0.0, "%s should be a target, not a shooter" % quiet)
 
 	assert_false(by_id["barracks"].produces.is_empty(), "A barracks that produces nothing is furniture")

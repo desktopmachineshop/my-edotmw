@@ -48,6 +48,7 @@ var _sim: SquadSim
 var _replay: ReplayLog
 
 var _match: MatchState
+var _buildings: BuildingSim
 
 ## Casualty/rout events produced OUTSIDE a tick — currently only a
 ## disconnecting player's army being wiped (D-033). They cannot simply be
@@ -105,6 +106,11 @@ func _ready() -> void:
 	# squad may enter — the same class of divergence D-006's composition
 	# obligation exists to prevent.
 	_sim.set_passable(TerrainGen.new().passability(space))
+
+	# Buildings (D-029). Owned by the server and handed to the sim, which
+	# advances construction and lets armed ones shoot as part of its tick.
+	_buildings = BuildingSim.new(space)
+	_sim.buildings = _buildings
 
 	# Match lifecycle (D-033). Defaults to 1 so the single-client
 	# development flows (`run-client`, `test-client`) behave exactly as
@@ -459,7 +465,6 @@ func _handle_order_stop(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 
 func _spawn_squads_for(player: int) -> Array:
-	var def := _pick_unit_def()
 	var ids := []
 
 	# Spawn points come from the map now, not from a formula here (D-036).
@@ -479,26 +484,30 @@ func _spawn_squads_for(player: int) -> Array:
 	# yet, so sharing a start is a better failure than crashing.
 	var origin: Vector2i = points[(player - 1) % points.size()]
 
-	for i in range(_config.squads_per_player):
-		ids.append(_sim.add_squad(def, player, _starting_cell(origin, i)))
+	# A player starts with ONE founding party and nothing else (D-031).
+	#
+	# No prebuilt base: where to settle is the first decision of the
+	# match, not something the server makes on the player's behalf. The
+	# founders can fight — better man for man than line infantry — so the
+	# opening is a genuine choice between pressing an early advantage and
+	# planting a town hall somewhere defensible.
+	#
+	# `squads_per_player` no longer describes the opening; it survives as
+	# the sizing note D-015 and D-018 reason about, while `squad_cap` is
+	# what actually binds once production exists.
+	var founders := UnitRoster.by_id(&"founders")
+	if founders == null:
+		push_error("server: no 'founders' unit in the roster — a player has nothing to start with")
+		return ids
+
+	ids.append(_sim.add_squad(founders, player, origin))
 	return ids
 
 
-## Where a player's i-th starting squad stands, relative to its spawn.
-##
-## Compact so an army starts together rather than smeared across its
-## quadrant, and a pure function of (origin, index) so replays reproduce
-## the opening position exactly (D-016). add_squad normalises through
-## TorusSpace, so a spawn near a seam wraps rather than going out of
-## bounds (D-008).
-func _starting_cell(origin: Vector2i, index: int) -> Vector2i:
-	const PER_ROW := 4
-	return origin + Vector2i(index % PER_ROW, index / PER_ROW)
-
-
-func _pick_unit_def() -> UnitDef:
-	# Data-driven roster (D-010), discovered the same way everywhere.
-	return UnitRoster.first()
+# `_starting_cell` and `_pick_unit_def` lived here to lay out a
+# twelve-squad opening army from the roster's first unit. Both went when
+# the opening became a single founding party — a spawn needs no layout,
+# and the starting unit is named rather than whichever .tres sorts first.
 
 
 ## Per-client message order within a tick is load-bearing (D-025, D-026

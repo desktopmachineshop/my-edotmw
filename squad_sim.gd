@@ -31,6 +31,11 @@ var curve_lookahead_seconds: float = 3.0
 
 var space: TorusSpace
 var replicator: CurveReplicator
+
+## Buildings, if this match has any (D-029). Optional so every existing
+## test and tool that builds a bare SquadSim keeps working — a sim with
+## no buildings simply skips their vision and their guns.
+var buildings: BuildingSim = null
 var replay: ReplayLog = null
 
 ## The combat resolver (D-024), owned here and driven once per tick. Split
@@ -500,7 +505,7 @@ func tick() -> void:
 	# that has ticked at least once.
 	if tick_count == 1 or tick_count % vision_recompute_every_ticks == 0:
 		var vision_started := Time.get_ticks_usec()
-		vision.rebuild(self)
+		vision.rebuild(self, buildings)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
 		vision_rebuilds += 1
@@ -513,6 +518,17 @@ func tick() -> void:
 	# dressed up as a message.
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
+
+	# Buildings advance and shoot after the squad round (D-029). Their
+	# casualty events merge into the same list, so they replicate through
+	# the path clients already understand rather than needing a second
+	# message — and a tick with neither kind of fighting still sends
+	# nothing at all (D-003).
+	if buildings != null:
+		buildings.advance_construction(1.0 / TICK_HZ)
+		var building_events := combat.resolve_buildings(self, buildings, tick_count)
+		if not building_events.is_empty():
+			last_combat_events = last_combat_events + building_events
 	last_combat_usec = Time.get_ticks_usec() - combat_started
 	total_combat_usec += last_combat_usec
 	_log_combat_events(last_combat_events)
@@ -567,7 +583,7 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 ## up-to-date field right after moving squads around, rather than ticking
 ## an arbitrary number of times and hoping the schedule has caught up.
 func recompute_vision_now() -> void:
-	vision.rebuild(self)
+	vision.rebuild(self, buildings)
 
 
 ## How many of `player`'s squads still have soldiers in them.
