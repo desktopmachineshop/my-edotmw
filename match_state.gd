@@ -107,7 +107,7 @@ func mark_disconnected(player: int) -> void:
 ## Only runs while the match is RUNNING: a player who has not spawned yet
 ## during LOBBY has zero squads, and eliminating them for it would end the
 ## match before it began.
-func update(sim: SquadSim) -> Array:
+func update(sim: SquadSim, buildings: BuildingSim = null) -> Array:
 	var newly_eliminated := []
 	if phase != Phase.RUNNING:
 		return newly_eliminated
@@ -115,9 +115,22 @@ func update(sim: SquadSim) -> Array:
 	for player in _players:
 		if bool(_players[player]["eliminated"]):
 			continue
-		if sim.living_squad_count(player) <= 0:
-			_players[player]["eliminated"] = true
-			newly_eliminated.append(player)
+
+		# Defeated means having nothing left to fight OR build with.
+		#
+		# Squads alone are not the test, and getting that wrong ended
+		# matches instantly: founders are consumed by the town hall they
+		# found (D-031), so a player who made the correct opening move had
+		# zero squads for a moment and was declared beaten while their
+		# hall stood there ready to produce. A base is a way back into the
+		# game; an empty map is not.
+		if sim.living_squad_count(player) > 0:
+			continue
+		if buildings != null and buildings.living_building_count(player) > 0:
+			continue
+
+		_players[player]["eliminated"] = true
+		newly_eliminated.append(player)
 
 	newly_eliminated.sort()
 	_check_victory()

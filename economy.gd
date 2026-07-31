@@ -86,6 +86,45 @@ func generate(terrain: TerrainGen, symmetry_order: int = 2) -> void:
 		nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
 
 
+## Make the starts approximately fair on an ASYMMETRIC map (D-036,
+## revised). Quadrant symmetry made fairness exact and the map boring;
+## random terrain makes it interesting and unfair. This is the middle
+## course: generate freely, then guarantee every spawn a minimum quota of
+## each resource within reach.
+##
+## Where a quota is short, a node is placed on the nearest passable cell
+## regardless of biome. That deliberately overrides biome derivation — a
+## player with no forest in reach still needs wood, and "fair" beats
+## "geologically tidy" when the alternative is losing at map-generation
+## time. Deterministic: it walks cells in index order, so replays and both
+## sides of the wire agree.
+func balance_for_spawns(spawns: Array, passable: PackedByteArray,
+		radius: int, quota: int) -> void:
+	for spawn in spawns:
+		for kind in range(RESOURCE_COUNT):
+			var found := 0
+			for offset in TorusSpace.disk_offsets(radius):
+				var index := space.index(spawn + offset)
+				if nodes.has(index) and int(nodes[index]["kind"]) == kind:
+					found += 1
+			if found >= quota:
+				continue
+
+			# Short: top up on the nearest free, walkable ground.
+			for offset in TorusSpace.disk_offsets(radius):
+				if found >= quota:
+					break
+				var index := space.index(spawn + offset)
+				if nodes.has(index):
+					continue
+				if index < passable.size() and passable[index] == 0:
+					continue
+				if space.distance(spawn, space.from_index(index)) < 2:
+					continue  # leave room for the town hall itself
+				nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
+				found += 1
+
+
 ## Biome to resource. Water and beach yield nothing — you cannot chop a
 ## lake — which is also what keeps nodes off the cells squads cannot walk
 ## to (terrain passability, D-007).

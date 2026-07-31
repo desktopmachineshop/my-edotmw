@@ -129,6 +129,11 @@ func _ready() -> void:
 	# without anything here reasoning about fairness (D-036).
 	_economy = Economy.new(space)
 	_economy.generate(terrain, _config.symmetry_order)
+	# Fairness on an asymmetric map is a post-pass now, not a property of
+	# the generator (D-036 revised): every start is guaranteed a minimum
+	# of each resource within reach.
+	_economy.balance_for_spawns(_config.spawn_points(), _passable,
+		_config.fairness_radius, _config.fairness_quota)
 	_sim.economy = _economy
 	print("server: %d resource nodes generated" % _economy.node_count())
 
@@ -514,7 +519,7 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
 		return
 
-	var built := _buildings.add_building(def, _sim.owner_of(squad), cell, false)
+	var built := _buildings.add_building(def, _sim.owner_of(squad), cell, false, squad)
 
 	# Ground truth into the replay (D-016, D-027 criterion 18): the full
 	# unfiltered view, not any one client's, so a replay can explain what
@@ -666,7 +671,7 @@ func _spawn_squads_for(player: int) -> Array:
 ## scanning for scary words instead once failed a good run by matching its
 ## own success line.
 func _advance_match() -> void:
-	for player in _match.update(_sim):
+	for player in _match.update(_sim, _buildings):
 		print("server: MATCH_ELIMINATED player=%d" % player)
 	if _match.is_finished() and not _reported_match_end:
 		_reported_match_end = true

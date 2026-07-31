@@ -534,7 +534,17 @@ func tick() -> void:
 	# message — and a tick with neither kind of fighting still sends
 	# nothing at all (D-003).
 	if buildings != null:
-		buildings.advance_construction(1.0 / TICK_HZ)
+		# Founders are consumed by the town they found (D-031): the
+		# founding party becomes the settlement rather than walking away
+		# from it. Reported as an ordinary casualty event, so it reaches
+		# clients through the path they already understand and the
+		# composition hash stays in step.
+		for completed in buildings.advance_construction(1.0 / TICK_HZ):
+			var builder: int = buildings.builder_of(completed)
+			if builder >= 0 and builder < _cell.size() and _alive[builder] > 0:
+				_alive[builder] = 0
+				_routed[builder] = 0
+				last_combat_events.append({"id": builder, "alive": 0, "routed": false})
 
 		# Production closes the loop: resources become squads (D-028).
 		# Spawned next to the building that made them, which is why this

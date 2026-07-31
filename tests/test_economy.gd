@@ -98,22 +98,59 @@ func test_nodes_never_sit_on_water() -> void:
 			"A node was placed on water at cell %d" % cell)
 
 
-func test_the_node_field_inherits_the_map_s_symmetry() -> void:
-	# Nothing in Economy knows about fairness. It falls out of terrain
-	# being quadrant-symmetric (D-036): identical ground, identical
-	# resources, for all four players.
+func test_every_start_is_guaranteed_a_minimum_of_each_resource() -> void:
+	# Fairness used to be exact, because the map was four copies of one
+	# quadrant (D-036). That made every match the same map four times, so
+	# terrain is generated freely now and fairness is a POST-PASS: nobody
+	# is allowed to start with no wood within reach.
+	#
+	# This is the test that replaces the symmetry one, and it is a weaker
+	# guarantee on purpose — "approximately fair" rather than "identical".
 	var space := TorusSpace.new(64, 32, 1.0)
-	var terrain := TerrainGen.new()  # axis_repeats 2 by default
+	var terrain := TerrainGen.new()  # axis_repeats 1: no symmetry
 	var economy := Economy.new(space)
-	economy.generate(terrain)
+	economy.generate(terrain, 1)
 
-	var mismatches := 0
-	for cell in economy.nodes:
-		var coord := space.from_index(cell)
-		var mirrored := space.index(coord + Vector2i(space.width / 2, 0))
-		if economy.kind_at(mirrored) != economy.kind_at(cell):
-			mismatches += 1
-	assert_eq(mismatches, 0, "Each quadrant must hold the same resources")
+	var spawns := [Vector2i(8, 8), Vector2i(40, 8), Vector2i(8, 24), Vector2i(40, 24)]
+	var radius := 12
+	var quota := 3
+	economy.balance_for_spawns(spawns, terrain.passability(space), radius, quota)
+
+	for spawn in spawns:
+		for kind in range(Economy.RESOURCE_COUNT):
+			var found := 0
+			for offset in TorusSpace.disk_offsets(radius):
+				var index := space.index(spawn + offset)
+				if economy.nodes.has(index) and economy.kind_at(index) == kind:
+					found += 1
+			assert_true(found >= quota,
+				"Spawn %s has only %d of resource %d within %d cells — a start with no way to get one resource has lost at map-generation time" % [
+					spawn, found, kind, radius])
+
+
+func test_an_unbalanced_map_can_genuinely_be_short() -> void:
+	# The counter-test: without the balancing pass, at least one start on
+	# at least one seed IS short of something. Otherwise the test above
+	# would pass whether or not balance_for_spawns did anything.
+	var space := TorusSpace.new(64, 32, 1.0)
+	var terrain := TerrainGen.new()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var spawns := [Vector2i(8, 8), Vector2i(40, 8), Vector2i(8, 24), Vector2i(40, 24)]
+	var shortfalls := 0
+	for spawn in spawns:
+		for kind in range(Economy.RESOURCE_COUNT):
+			var found := 0
+			for offset in TorusSpace.disk_offsets(12):
+				var index := space.index(spawn + offset)
+				if economy.nodes.has(index) and economy.kind_at(index) == kind:
+					found += 1
+			if found < 3:
+				shortfalls += 1
+
+	assert_gt(shortfalls, 0,
+		"Raw generated terrain should be unfair somewhere — if it were not, the balancing pass would be proving nothing")
 
 
 # --- the haul cycle (D-028) -------------------------------------------

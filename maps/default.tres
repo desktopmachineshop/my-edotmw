@@ -11,5 +11,5 @@ height = 64
 hex_size = 1.0
 squads_per_player = 12
 squad_cap = 15
-symmetry_order = 2
+symmetry_order = 1
 spawn_offset = Vector2i(16, 8)

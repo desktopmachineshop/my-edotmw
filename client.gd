@@ -80,6 +80,22 @@ var _terrain_root: Node3D
 var _camera: Camera3D
 var _camera_target := Vector3.ZERO
 var _camera_height := 40.0
+
+## Zoom ceiling, derived from the map rather than fixed. Terrain is tiled
+## in every direction so the world has no edge (D-035) — but zoom out far
+## enough and you start seeing the SAME map repeated, which reads as a
+## rendering bug rather than a torus. Capping the view at roughly half the
+## map keeps the illusion intact.
+var _camera_max_height := CAMERA_MAX_HEIGHT
+
+## Cells this player has ever seen. Fog of war on the client side: the map
+## starts black and is revealed by line of sight, and once revealed stays
+## revealed (terrain does not move). Derived locally from our own squads'
+## vision_range rather than replicated — the client already knows where
+## its squads are and what they are, so the server would be sending
+## something the client can compute (D-006's derivation principle applied
+## to vision rather than to soldiers).
+var _explored := {}
 var _now := 0.0
 var _terrain_built := false
 
@@ -368,6 +384,13 @@ func _build_terrain() -> void:
 	for y in range(space.height):
 		for x in range(space.width):
 			_minimap_base.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
+
+	# Half the map's width, converted to a camera height that shows about
+	# that much ground. Beyond this the tiled copies become visible.
+	_camera_max_height = clampf(
+		float(space.width) * space.hex_size * TorusSpace.SQRT_3 * 0.25,
+		CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT)
+	_camera_height = minf(_camera_height, _camera_max_height)
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
@@ -691,6 +714,7 @@ var _founded := false
 ## cell maps to a pixel directly and there is no seam to handle.
 const MINIMAP_INTERVAL := 0.25
 var _minimap_rect: TextureRect = null
+var _minimap_bounds := Rect2()
 var _minimap_base: Image = null
 var _minimap_texture: ImageTexture = null
 var _minimap_updated_at := -1.0
@@ -710,7 +734,7 @@ func _build_hud() -> void:
 	_hud_resources = Label.new()
 	_hud_selection = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select · RMB move · Ctrl+RMB attack-move · B found town hall (founders, at cursor) · X stop · Ctrl+1-9 group"
+	hint.text = "LMB select · click minimap to jump · RMB move · Ctrl+RMB attack-move · B found town hall · X stop · Ctrl+1-9 group"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -726,9 +750,19 @@ func _build_hud() -> void:
 	_selection_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_selection_rect)
 
+	# Hit-testing uses THIS rect, not the Control's reported size.
+	#
+	# Reading the size back from the node was a real bug: a TextureRect
+	# that reports a larger rect than intended swallows every click as a
+	# minimap jump, which killed selection AND ordering at once — the
+	# whole screen became minimap. Owning the bounds here means the guard
+	# can never disagree with what is drawn.
+	_minimap_bounds = Rect2(12.0, 96.0, 256.0, 128.0)
+
 	_minimap_rect = TextureRect.new()
-	_minimap_rect.position = Vector2(12.0, 96.0)
-	_minimap_rect.size = Vector2(256.0, 128.0)
+	_minimap_rect.position = _minimap_bounds.position
+	_minimap_rect.size = _minimap_bounds.size
+	_minimap_rect.custom_minimum_size = _minimap_bounds.size
 	_minimap_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	# Nearest-neighbour: one cell is one pixel, and smoothing it would
 	# blur the squad dots into the terrain they sit on.
@@ -825,7 +859,18 @@ func _update_minimap() -> void:
 		return
 	_minimap_updated_at = _now
 
+	_update_explored()
+
 	var image: Image = _minimap_base.duplicate()
+
+	# Unexplored ground is black. This is the client half of fog of war
+	# (D-004): the server already refuses to send anything outside vision,
+	# so the map a player has never walked past is genuinely unknown — it
+	# should look it, rather than showing terrain nobody has scouted.
+	for y in range(image.get_height()):
+		for x in range(image.get_width()):
+			if not _explored.has(_state.space.index(Vector2i(x, y))):
+				image.set_pixel(x, y, Color(0.02, 0.02, 0.04))
 	for squad in _state.curves:
 		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
 		# Ghosts are last-known information, so they are drawn dimmer —
@@ -841,6 +886,50 @@ func _update_minimap() -> void:
 		_minimap_rect.texture = _minimap_texture
 	else:
 		_minimap_texture.update(image)
+
+
+## Extend the explored set from what this player can currently see.
+##
+## Computed locally rather than replicated. The client knows where its own
+## squads are and what kind they are, so it can derive its own vision the
+## same way the server does — sending it would be sending something the
+## receiver could work out, which is the same argument D-006 makes about
+## soldier positions.
+##
+## Buildings see too, and a town hall sees a long way, so a base lights up
+## a useful area around itself.
+func _update_explored() -> void:
+	if _state.space == null:
+		return
+
+	var hex_width := _state.space.hex_size * TorusSpace.SQRT_3
+	if hex_width <= 0.0:
+		return
+
+	for squad in _state.squads:
+		if not _state.curves.has(squad) or not _state.composition.has(squad):
+			continue
+		if _state.alive_of(squad) <= 0:
+			continue
+		var def := UnitRoster.by_id(StringName(_state.composition[squad]["def_id"]))
+		if def == null:
+			continue
+		_reveal_around(_state.squad_cell(squad, _now), floori(def.vision_range / hex_width))
+
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
+			continue
+		var building_def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if building_def == null:
+			continue
+		_reveal_around(_state.space.from_index(int(info["cell"])),
+			floori(building_def.vision_range / hex_width))
+
+
+func _reveal_around(centre: Vector2i, radius: int) -> void:
+	for offset in TorusSpace.disk_offsets(maxi(radius, 0)):
+		_explored[_state.space.index(centre + offset)] = true
 
 
 ## Outline what the camera is currently looking at.
@@ -918,21 +1007,67 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 	match event.button_index:
 		MOUSE_BUTTON_WHEEL_UP:
 			if event.pressed:
-				_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
+				_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
 				_update_camera()
 		MOUSE_BUTTON_WHEEL_DOWN:
 			if event.pressed:
-				_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
+				_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
 				_update_camera()
 		MOUSE_BUTTON_LEFT:
 			if event.pressed:
+				# A click on the minimap jumps the view there instead of
+				# selecting. Deliberately does NOT start a drag, so the
+				# release below leaves the current selection alone — a
+				# minimap click that silently deselected your army would
+				# be worse than no minimap click at all.
+				var jump := _minimap_cell_at(event.position)
+				if jump.x >= 0:
+					_jump_camera_to(jump)
+					return
 				_dragging = true
 				_drag_start = event.position
-			else:
+			elif _dragging:
 				_finish_selection(event.position, event.shift_pressed)
 		MOUSE_BUTTON_RIGHT:
-			if event.pressed:
+			# Right-clicking the minimap does nothing rather than ordering
+			# the selection to whatever the ray happens to hit behind it.
+			# Sending an army somewhere random on a misclick is the kind of
+			# thing a player never forgives.
+			if event.pressed and _minimap_cell_at(event.position).x < 0:
 				_order_selected(event.position, event.ctrl_pressed)
+
+
+## Which cell a screen position corresponds to on the minimap, or
+## (-1, -1) if the position is not over it.
+##
+## The minimap is one pixel per cell covering the whole torus, so this is
+## a straight proportional mapping with no camera involved — which is
+## exactly why it can jump anywhere, including ground the player has
+## never seen.
+func _minimap_cell_at(screen_position: Vector2) -> Vector2i:
+	if _minimap_rect == null or _state.space == null:
+		return Vector2i(-1, -1)
+
+	if _minimap_bounds.size.x <= 0.0 or not _minimap_bounds.has_point(screen_position):
+		return Vector2i(-1, -1)
+
+	var local := (screen_position - _minimap_bounds.position) / _minimap_bounds.size
+	return Vector2i(
+		clampi(int(local.x * float(_state.space.width)), 0, _state.space.width - 1),
+		clampi(int(local.y * float(_state.space.height)), 0, _state.space.height - 1))
+
+
+## Centre the view on a cell, leaving the zoom exactly as it was.
+##
+## Height is untouched on purpose: a minimap click moves you, it does not
+## re-frame you. Having to re-zoom after every jump is the fastest way to
+## make a minimap something players stop touching.
+func _jump_camera_to(cell: Vector2i) -> void:
+	var world := _state.space.to_world(cell)
+	_camera_target.x = world.x
+	_camera_target.z = world.z
+	_wrap_camera_target()
+	_update_camera()
 
 
 func _update_selection_rect(to: Vector2) -> void:

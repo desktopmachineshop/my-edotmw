@@ -41,7 +41,7 @@ class_name TerrainGen
 ## The repeat count must divide the map's width and height, and it is
 ## tied to the player count: 2 serves 4, 2 or 1 players. Changing the
 ## player count is therefore a map-generation change, not a config tweak.
-@export var axis_repeats: int = 2
+@export var axis_repeats: int = 1
 ## Vertical exaggeration applied when building meshes.
 @export var height_scale: float = 2.0
 

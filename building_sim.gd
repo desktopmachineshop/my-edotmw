@@ -56,6 +56,9 @@ var _dirty := {}
 # building -> Array of { "def_id": StringName, "remaining": float }
 var _queues := {}
 
+# Which squad founded each building, or -1. Parallel to the rest.
+var _builder := PackedInt32Array()
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -67,8 +70,13 @@ func building_count() -> int:
 
 ## Local id (the array index). Use wire_id() for anything that leaves this
 ## class and might meet a squad id.
-func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false) -> int:
+## `builder` is the squad that founded this, or -1. Recorded because
+## founders are CONSUMED by the town they found (D-031): the founding
+## party becomes the settlement rather than wandering off from it.
+func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
+		builder: int = -1) -> int:
 	var id := _cell.size()
+	_builder.append(builder)
 	_cell.append(space.index(at))
 	_owner.append(owner)
 	_defs.append(def)
@@ -77,6 +85,11 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false)
 	_destroyed.append(0)
 	_last_attack_tick.append(-1)
 	return id
+
+
+## The squad that founded this building, or -1. Consumed on completion.
+func builder_of(building: int) -> int:
+	return _builder[building]
 
 
 func last_attack_tick_of(building: int) -> int:

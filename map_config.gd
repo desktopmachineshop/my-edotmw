@@ -43,7 +43,19 @@ class_name MapConfig
 ## 2 means four identical quadrants and four fair spawns. Player capacity
 ## is the square of this, which is why changing the supported player count
 ## is a map-generation change rather than a config tweak.
-@export var symmetry_order: int = 2
+@export var symmetry_order: int = 1
+
+## How the starting positions are laid out across the map — 2x2 seats
+## four players. Independent of `symmetry_order`, which now only affects
+## terrain generation.
+@export var spawn_grid: Vector2i = Vector2i(2, 2)
+
+## How far from a spawn resources must be topped up, and how many of each
+## kind a start is guaranteed (D-036 revised). This is what replaces
+## quadrant symmetry as the fairness mechanism: generate freely, then make
+## sure nobody starts with no wood in reach.
+@export var fairness_radius: int = 14
+@export var fairness_quota: int = 3
 
 ## Where a player spawns *within its quadrant*. The actual spawn points
 ## are derived from this by tiling it across the quadrants (see
@@ -66,26 +78,31 @@ func to_space() -> TorusSpace:
 	return TorusSpace.new(width, height, hex_size)
 
 
-## How many players this map seats — one per symmetric quadrant.
+## How many players this map seats.
 func player_capacity() -> int:
-	return symmetry_order * symmetry_order
+	return spawn_grid.x * spawn_grid.y
 
 
-## The starting cell for each player, tiled across the symmetric
-## quadrants. Fair by construction: every point is the same offset into a
-## quadrant, and the quadrants are bit-identical terrain (D-036).
+## The starting cell for each player, spread evenly over the map.
 ##
-## Ordered so player 0 and player 1 are diagonally opposite rather than
-## adjacent, which is the sensible default for a 4-player free-for-all.
+## Spawn placement is now INDEPENDENT of terrain symmetry (D-036,
+## revised). It used to be one spawn per identical quadrant, which made
+## fairness exact — and made every map the same map four times. With
+## terrain generated freely, spawns are simply spread evenly and fairness
+## comes from `Economy.balance_for_spawns` guaranteeing each start a
+## minimum of every resource within reach.
+##
+## Even spacing still matters: it keeps players a comparable distance
+## apart, which is the part of fairness that terrain cannot fix.
 func spawn_points() -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
-	var quadrant_width := width / maxi(symmetry_order, 1)
-	var quadrant_height := height / maxi(symmetry_order, 1)
-	for qy in range(symmetry_order):
-		for qx in range(symmetry_order):
+	var step_x := width / maxi(spawn_grid.x, 1)
+	var step_y := height / maxi(spawn_grid.y, 1)
+	for gy in range(spawn_grid.y):
+		for gx in range(spawn_grid.x):
 			out.append(Vector2i(
-				spawn_offset.x + qx * quadrant_width,
-				spawn_offset.y + qy * quadrant_height))
+				spawn_offset.x + gx * step_x,
+				spawn_offset.y + gy * step_y))
 	return out
 
 
@@ -107,22 +124,30 @@ func validate() -> String:
 	if symmetry_order < 1:
 		return "symmetry_order must be at least 1 (got %d)" % symmetry_order
 	if width % symmetry_order != 0 or height % symmetry_order != 0:
-		return "symmetry_order (%d) must divide both width (%d) and height (%d), or the quadrants are not identical" % [
+		return "symmetry_order (%d) must divide both width (%d) and height (%d), or the repeats do not line up" % [
 			symmetry_order, width, height]
 
-	# Each quadrant's height must itself be even, not merely the map's.
-	# D-008's row parity is what makes the seam line up; a quadrant with
-	# odd height shifts parity across the repeat boundary, so the terrain
-	# would be numerically symmetric while neighbour relationships across
-	# the seam were not.
+	# A repeat's height must itself be even, not merely the map's. D-008's
+	# row parity is what makes the seam line up; an odd-height repeat
+	# shifts parity across the boundary, so the terrain would be
+	# numerically periodic while neighbour relationships were not.
 	if (height / symmetry_order) % 2 != 0:
 		return "height / symmetry_order (%d) must be even for row parity (D-008)" % (height / symmetry_order)
 
+	if spawn_grid.x < 1 or spawn_grid.y < 1:
+		return "spawn_grid must be at least 1x1 (got %s)" % spawn_grid
+	if width % spawn_grid.x != 0 or height % spawn_grid.y != 0:
+		return "spawn_grid %s must divide the map (%dx%d), or starts are unevenly spaced" % [
+			spawn_grid, width, height]
+
 	if spawn_offset.x < 0 or spawn_offset.y < 0:
 		return "spawn_offset must be non-negative (got %s)" % spawn_offset
-	if spawn_offset.x >= width / symmetry_order or spawn_offset.y >= height / symmetry_order:
-		return "spawn_offset %s must lie inside one quadrant (%dx%d)" % [
-			spawn_offset, width / symmetry_order, height / symmetry_order]
+	if spawn_offset.x >= width / spawn_grid.x or spawn_offset.y >= height / spawn_grid.y:
+		return "spawn_offset %s must lie inside one spawn cell (%dx%d)" % [
+			spawn_offset, width / spawn_grid.x, height / spawn_grid.y]
+
+	if fairness_quota < 0 or fairness_radius < 1:
+		return "fairness_radius must be positive and fairness_quota non-negative"
 
 	return ""
 

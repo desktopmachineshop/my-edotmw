@@ -184,6 +184,33 @@ func test_a_match_played_to_completion_produces_exactly_one_winner() -> void:
 	assert_eq(state.active_players(), [1])
 
 
+func test_a_player_with_a_building_but_no_squads_is_not_defeated() -> void:
+	# The bug this guards ended live matches within a minute. Founders are
+	# consumed by the town hall they found (D-031), so a player who made
+	# the correct opening move momentarily had zero squads — and was
+	# declared beaten while their hall stood there ready to produce. Every
+	# order they sent was then refused, because the match was over.
+	var sim := _sim()
+	var buildings := BuildingSim.new(sim.space)
+	var state := _match_with(sim, 2)
+
+	var hall_def := BuildingDef.new()
+	hall_def.id = &"town_centre"
+	hall_def.max_health = 500.0
+	buildings.add_building(hall_def, 2, Vector2i(9, 9), true)
+
+	sim.eliminate_player(2)  # their founders are gone
+	assert_eq(state.update(sim, buildings), [],
+		"A base is a way back into the game — having no squads is not defeat")
+	assert_false(state.is_finished())
+
+	# Raze it and they really are finished.
+	buildings.damage(0, 10000.0)
+	assert_eq(state.update(sim, buildings), [2])
+	assert_true(state.is_finished())
+	assert_eq(state.winner, 1)
+
+
 # --- squad cap (D-033) -------------------------------------------------
 
 ## A gatherer crew is a squad like any other (D-028) — this is just a
