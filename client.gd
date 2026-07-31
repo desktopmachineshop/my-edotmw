@@ -739,7 +739,7 @@ func _build_hud() -> void:
 	_hud_selection = Label.new()
 	_hud_notice = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select (squad or building) · minimap to jump · RMB move · T train worker · B hall · N barracks · H storehouse · Y tower · X stop"
+	hint.text = "LMB select · RMB move · BUILD: B hall  N barracks  H storehouse  Y tower · TRAIN: T worker  M militia  P spearmen  R archers  C cavalry · X stop"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -1196,8 +1196,24 @@ func _handle_key(event: InputEventKey) -> void:
 		KEY_Y:
 			_build_selected("tower")         # gatherers
 			return
+		# Training keys. Which building can make which unit is decided by
+		# BuildingDef.produces on the server, so these are just requests —
+		# pressing M at a town hall gets a refusal that says so, rather
+		# than the client second-guessing the roster.
 		KEY_T:
-			_train_selected("gatherers")     # at a selected town hall
+			_train_selected("gatherers")     # town hall
+			return
+		KEY_M:
+			_train_selected("militia")       # barracks
+			return
+		KEY_P:
+			_train_selected("spearmen")      # barracks — counters cavalry
+			return
+		KEY_R:
+			_train_selected("archers")       # barracks — counters infantry
+			return
+		KEY_C:
+			_train_selected("cavalry")       # barracks — counters missile
 			return
 
 	# Control groups: Ctrl+N stores the selection, N recalls it.
