@@ -345,6 +345,52 @@ func test_produce_orders_round_trip() -> void:
 	assert_eq(String(decoded["def_id"]), "gatherers")
 
 
+func test_the_starting_stockpile_covers_a_town_hall_plus_a_few_workers() -> void:
+	# The opening has to be *possible*. A player starts with founders and
+	# nothing else, so the stockpile must pay for the hall they found AND
+	# leave enough to staff it — otherwise founding is a move that strands
+	# you with an empty base and no way to begin.
+	#
+	# Asserted as a RELATIONSHIP rather than against fixed numbers, so
+	# retuning any cost cannot quietly make the opening unplayable: that
+	# failure would show up as a confusing playtest, not as a red test,
+	# which is exactly how the first version of this shipped (a hall
+	# costing stone nobody starts with).
+	const WORKERS_AFFORDABLE := 3
+
+	var config: MapConfig = load("res://maps/default.tres")
+	var hall: BuildingDef = load("res://buildings/town_centre.tres")
+	var worker: UnitDef = UnitRoster.by_id(&"gatherers")
+	assert_not_null(config)
+	assert_not_null(hall)
+	assert_not_null(worker)
+
+	var economy := Economy.new(config.to_space())
+	economy.credit(1, Economy.ResourceKind.FOOD, config.starting_food)
+	economy.credit(1, Economy.ResourceKind.WOOD, config.starting_wood)
+	economy.credit(1, Economy.ResourceKind.GOLD, config.starting_gold)
+	economy.credit(1, Economy.ResourceKind.STONE, config.starting_stone)
+
+	assert_true(
+		economy.try_spend(1, hall.cost_food, hall.cost_wood, hall.cost_gold, hall.cost_stone),
+		"A player must be able to afford the town hall they are sent out to found")
+
+	for i in range(WORKERS_AFFORDABLE):
+		assert_true(
+			economy.try_spend(1, worker.cost_food, worker.cost_wood, worker.cost_gold, worker.cost_stone),
+			"And to staff it: worker %d of %d was unaffordable" % [i + 1, WORKERS_AFFORDABLE])
+
+
+func test_every_building_costs_something() -> void:
+	# Same reasoning as the unit version below. A free building makes
+	# construction a formality rather than a decision.
+	for name in ["town_centre", "barracks", "storehouse", "tower"]:
+		var def: BuildingDef = load("res://buildings/%s.tres" % name)
+		assert_not_null(def, "buildings/%s.tres should load" % name)
+		var total := def.cost_food + def.cost_wood + def.cost_gold + def.cost_stone
+		assert_gt(total, 0, "%s is free, which makes construction a formality" % name)
+
+
 func test_every_producible_unit_costs_something() -> void:
 	# A free unit makes the economy decorative, and this is exactly the
 	# trap UnitDef.cost fell into: declared, plausible-looking, read by

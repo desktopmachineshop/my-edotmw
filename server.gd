@@ -519,7 +519,17 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
 		return
 
-	var built := _buildings.add_building(def, _sim.owner_of(squad), cell, false, squad)
+	# Construction costs resources (D-028). This was missing, so
+	# BuildingDef's cost table was declared and unread — the same trap
+	# UnitDef.cost fell into for two milestones. Charged before anything
+	# is committed, and all-or-nothing, so a refused build never leaves a
+	# part-spent wallet.
+	var owner := _sim.owner_of(squad)
+	if not _economy.try_spend(owner, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
+		return
+
+	var built := _buildings.add_building(def, owner, cell, false, squad)
+	_send_wallet(peer, owner)
 
 	# The founding party becomes the settlement, here and now (D-031).
 	# Consuming them at completion instead left them free to queue another
