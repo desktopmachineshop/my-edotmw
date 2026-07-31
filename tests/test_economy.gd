@@ -1,0 +1,246 @@
+extends GutTest
+
+## Guards D-028 (the gathering economy) and D-037 (biome-derived nodes),
+## against D-027's criteria 6, 7 and 8.
+##
+## The claim under test is D-005's: a gathering economy without per-unit
+## anything. A gatherer crew is a SQUAD with a job — one curve, one
+## flow-field path, one network entity — so output scales with `alive`,
+## casualties cut income with no special case, and every leg of the haul
+## is an ordinary move order.
+
+const W := 32
+const H := 16
+
+
+func _space() -> TorusSpace:
+	return TorusSpace.new(W, H, 1.0)
+
+
+func _gatherer_def() -> UnitDef:
+	var d := UnitDef.new()
+	d.id = &"gatherers"
+	d.squad_size = 10
+	d.health = 30.0
+	d.damage = 0.0
+	d.attack_range = 0.0
+	d.move_speed = 4.0
+	d.formation_shape = "loose"
+	d.formation_spacing = 1.0
+	d.morale = 100.0
+	d.carry_capacity = 20
+	d.gather_rate = 1.0
+	return d
+
+
+func _drop_off_def() -> BuildingDef:
+	var d := BuildingDef.new()
+	d.id = &"town_centre"
+	d.max_health = 500.0
+	d.is_drop_off = true
+	d.vision_range = 10.0
+	return d
+
+
+## A sim with one gatherer squad, one node under it, and a drop-off two
+## cells away — the smallest thing that can complete a round trip.
+func _haul_setup() -> Dictionary:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	var economy := Economy.new(space)
+	sim.buildings = buildings
+	sim.economy = economy
+
+	var node_cell := Vector2i(10, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.WOOD, "remaining": 500,
+	}
+	buildings.add_building(_drop_off_def(), 1, Vector2i(8, 8), true)
+	var squad := sim.add_squad(_gatherer_def(), 1, node_cell)
+
+	return {
+		"sim": sim, "buildings": buildings, "economy": economy,
+		"squad": squad, "node": space.index(node_cell),
+	}
+
+
+# --- nodes come from terrain (D-037) ----------------------------------
+
+func test_nodes_are_derived_from_biome_and_are_deterministic() -> void:
+	var space := _space()
+	var terrain := TerrainGen.new()
+
+	var first := Economy.new(space)
+	first.generate(terrain)
+	var second := Economy.new(space)
+	second.generate(terrain)
+
+	assert_gt(first.node_count(), 0, "A generated map should carry resources")
+	assert_eq(first.node_count(), second.node_count(),
+		"Same terrain, same nodes — replays depend on it (D-016)")
+	for cell in first.nodes:
+		assert_true(second.nodes.has(cell), "Node placement must be deterministic")
+		assert_eq(first.kind_at(cell), second.kind_at(cell))
+
+
+func test_nodes_never_sit_on_water() -> void:
+	# You cannot chop a lake, and a node squads cannot walk to is a node
+	# that does nothing but mislead the player.
+	var space := _space()
+	var terrain := TerrainGen.new()
+	var economy := Economy.new(space)
+	economy.generate(terrain)
+
+	for cell in economy.nodes:
+		var biome := terrain.biome_at(space, space.from_index(cell))
+		assert_false(biome == TerrainGen.Biome.WATER or biome == TerrainGen.Biome.DEEP_WATER,
+			"A node was placed on water at cell %d" % cell)
+
+
+func test_the_node_field_inherits_the_map_s_symmetry() -> void:
+	# Nothing in Economy knows about fairness. It falls out of terrain
+	# being quadrant-symmetric (D-036): identical ground, identical
+	# resources, for all four players.
+	var space := TorusSpace.new(64, 32, 1.0)
+	var terrain := TerrainGen.new()  # axis_repeats 2 by default
+	var economy := Economy.new(space)
+	economy.generate(terrain)
+
+	var mismatches := 0
+	for cell in economy.nodes:
+		var coord := space.from_index(cell)
+		var mirrored := space.index(coord + Vector2i(space.width / 2, 0))
+		if economy.kind_at(mirrored) != economy.kind_at(cell):
+			mismatches += 1
+	assert_eq(mismatches, 0, "Each quadrant must hold the same resources")
+
+
+# --- the haul cycle (D-028) -------------------------------------------
+
+func test_a_gatherer_squad_fills_up_hauls_and_delivers() -> void:
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	var squad: int = setup["squad"]
+
+	assert_true(economy.order_gather(sim, squad, setup["node"]),
+		"A gatherer squad standing on a node can work it")
+
+	var delivered := false
+	for _i in range(200):
+		sim.tick()
+		if economy.amount(1, Economy.ResourceKind.WOOD) > 0:
+			delivered = true
+			break
+
+	assert_true(delivered, "A full crew must eventually deliver its load to the drop-off")
+	assert_eq(economy.carrying(squad), 0, "And be empty again afterwards")
+
+
+func test_gathering_depletes_the_node() -> void:
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+
+	var before := economy.remaining_at(setup["node"])
+	economy.order_gather(sim, setup["squad"], setup["node"])
+	for _i in range(20):
+		sim.tick()
+
+	assert_lt(economy.remaining_at(setup["node"]), before,
+		"Nodes are finite — depletion is what pushes armies onto new ground")
+
+
+func test_income_scales_with_the_surviving_crew() -> void:
+	# The reason gatherers are squads at all: casualties cut output with
+	# no special case anywhere.
+	var full := _haul_setup()
+	var full_sim: SquadSim = full["sim"]
+	full["economy"].order_gather(full_sim, full["squad"], full["node"])
+	for _i in range(10):
+		full_sim.tick()
+	var full_take: int = 500 - full["economy"].remaining_at(full["node"])
+
+	var halved := _haul_setup()
+	var halved_sim: SquadSim = halved["sim"]
+	halved_sim.set_alive(halved["squad"], 5)  # half the crew
+	halved["economy"].order_gather(halved_sim, halved["squad"], halved["node"])
+	for _i in range(10):
+		halved_sim.tick()
+	var halved_take: int = 500 - halved["economy"].remaining_at(halved["node"])
+
+	assert_lt(halved_take, full_take, "Half a crew must gather less than a whole one")
+
+
+func test_a_worked_out_node_releases_the_squad() -> void:
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	economy.nodes[setup["node"]]["remaining"] = 1
+
+	economy.order_gather(sim, setup["squad"], setup["node"])
+	for _i in range(60):
+		sim.tick()
+
+	assert_false(economy.has_node(setup["node"]), "The node should be exhausted")
+	assert_false(economy.is_gathering(setup["squad"]),
+		"A squad must not stand on an empty patch forever")
+
+
+func test_a_fighting_unit_cannot_be_told_to_gather() -> void:
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var soldier_def := _gatherer_def()
+	soldier_def.id = &"militia"
+	soldier_def.carry_capacity = 0  # not a gatherer
+	var soldier := sim.add_squad(soldier_def, 1, sim.space.from_index(setup["node"]))
+
+	assert_false(setup["economy"].order_gather(sim, soldier, setup["node"]),
+		"carry_capacity is what makes a unit a gatherer — there is no second flag")
+
+
+func test_gathering_an_empty_cell_is_refused() -> void:
+	var setup := _haul_setup()
+	assert_false(setup["economy"].order_gather(setup["sim"], setup["squad"], 0),
+		"There is nothing at cell 0 to work")
+
+
+# --- wallets (D-028) ---------------------------------------------------
+
+func test_wallets_start_empty_and_are_per_player() -> void:
+	var economy := Economy.new(_space())
+	assert_eq(economy.amount(1, Economy.ResourceKind.FOOD), 0)
+
+	economy.credit(1, Economy.ResourceKind.FOOD, 100)
+	assert_eq(economy.amount(1, Economy.ResourceKind.FOOD), 100)
+	assert_eq(economy.amount(2, Economy.ResourceKind.FOOD), 0,
+		"One player's income is not another's")
+	assert_eq(economy.amount(1, Economy.ResourceKind.WOOD), 0,
+		"And food is not wood")
+
+
+func test_spending_is_all_or_nothing() -> void:
+	# A half-paid barracks is worse than a refused one.
+	var economy := Economy.new(_space())
+	economy.credit(1, Economy.ResourceKind.WOOD, 100)
+	economy.credit(1, Economy.ResourceKind.STONE, 10)
+
+	assert_false(economy.try_spend(1, 0, 50, 0, 50), "Cannot afford the stone")
+	assert_eq(economy.amount(1, Economy.ResourceKind.WOOD), 100,
+		"A refused purchase must not have spent the wood either")
+
+	assert_true(economy.try_spend(1, 0, 50, 0, 10))
+	assert_eq(economy.amount(1, Economy.ResourceKind.WOOD), 50)
+	assert_eq(economy.amount(1, Economy.ResourceKind.STONE), 0)
+
+
+func test_the_shipped_gatherer_can_actually_gather() -> void:
+	var def: UnitDef = UnitRoster.by_id(&"gatherers")
+	assert_not_null(def, "The roster must ship a 'gatherers' unit")
+	assert_gt(def.carry_capacity, 0, "It has to be able to carry something")
+	assert_gt(def.gather_rate, 0.0, "And to gather at some rate")
+
+	var founders: UnitDef = UnitRoster.by_id(&"founders")
+	assert_eq(founders.carry_capacity, 0,
+		"Founders found towns; hauling is the gatherers' job")

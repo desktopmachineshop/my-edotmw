@@ -78,5 +78,14 @@ class_name UnitDef
 @export var mesh_color: Color = Color.WHITE
 
 # Economy
+# Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).
+# A unit with carry_capacity > 0 IS a gatherer — no separate boolean to
+# fall out of step with it. Zero is the default, so every existing .tres
+# stayed valid and no fighting unit accidentally became a villager.
+@export var carry_capacity: int = 0
+## Units gathered per second per LIVING soldier, so casualties cut income
+## without any special case (D-028).
+@export var gather_rate: float = 0.0
+
 @export var build_time: float = 10.0
 @export var cost: int = 50

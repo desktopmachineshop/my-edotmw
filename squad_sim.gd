@@ -36,6 +36,15 @@ var replicator: CurveReplicator
 ## test and tool that builds a bare SquadSim keeps working — a sim with
 ## no buildings simply skips their vision and their guns.
 var buildings: BuildingSim = null
+
+## The gathering economy, if this match has one (D-028). Optional for the
+## same reason `buildings` is: a bare SquadSim still ticks.
+var economy: Economy = null
+
+## Players whose wallets changed on the most recent tick, so the server
+## replicates only those — and only to their owner, since wallets are
+## private (D-028).
+var last_wallet_changes: Array = []
 var replay: ReplayLog = null
 
 ## The combat resolver (D-024), owned here and driven once per tick. Split
@@ -529,6 +538,12 @@ func tick() -> void:
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
+
+	# Hauling runs after combat, so a crew wiped out this tick does not
+	# also deliver a load (D-028).
+	last_wallet_changes = []
+	if economy != null:
+		last_wallet_changes = economy.tick(self, buildings, 1.0 / TICK_HZ)
 	last_combat_usec = Time.get_ticks_usec() - combat_started
 	total_combat_usec += last_combat_usec
 	_log_combat_events(last_combat_events)
