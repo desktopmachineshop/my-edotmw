@@ -575,6 +575,7 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	var unit_id := StringName(order["def_id"])
 	if not _buildings.can_produce(building, unit_id):
+		_notify(peer, "That building cannot train %s yet — is it still under construction?" % unit_id)
 		return
 	var def := UnitRoster.by_id(unit_id)
 	if def == null:
@@ -583,8 +584,10 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	# ONE cap covering military and gatherers alike (D-033): every
 	# villager crew is an army slot not spent.
 	if not _match.has_squad_capacity(_sim, player):
+		_notify(peer, "At the squad cap (%d) — gatherers count too" % _match.squad_cap)
 		return
 	if not _economy.try_spend(player, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
+		_notify(peer, "Cannot afford %s" % unit_id)
 		return
 
 	_buildings.enqueue(building, def)

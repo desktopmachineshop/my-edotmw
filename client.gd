@@ -711,6 +711,7 @@ var _notice_seen := 0
 var _notice_until := 0.0
 var _building_nodes := {}
 var _founded := false
+var _selected_building := -1
 
 ## Minimap (D-027 criterion 5). Wrap-awareness is free here in a way it
 ## is nowhere else in this project: the minimap IS the whole torus, so a
@@ -738,7 +739,7 @@ func _build_hud() -> void:
 	_hud_selection = Label.new()
 	_hud_notice = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select · click minimap to jump · RMB move · Ctrl+RMB attack-move · B found town hall · X stop · Ctrl+1-9 group"
+	hint.text = "LMB select (squad or building) · minimap to jump · RMB move · T train worker · B hall · N barracks · H storehouse · Y tower · X stop"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -849,6 +850,13 @@ func _update_hud() -> void:
 		_notice_seen = _state.notices_received
 		_notice_until = _now + 5.0
 	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
+
+	if _selected_building >= 0 and _state.buildings.has(_selected_building):
+		var b: Dictionary = _state.buildings[_selected_building]
+		var progress := float(b["progress"])
+		_hud_selection.text = "%s selected%s · T to train a worker" % [
+			b["def_id"], "" if progress >= 1.0 else " (%d%% built)" % int(progress * 100.0)]
+		return
 
 	if _selected.is_empty():
 		_hud_selection.text = "nothing selected"
@@ -1126,6 +1134,30 @@ func _select_nearest(at: Vector2) -> void:
 		if distance < best_distance:
 			best_distance = distance
 			best = squad
+
+	# Buildings are selectable the same way, and compete on the same
+	# distance — clicking a town hall should select the hall, not a squad
+	# standing behind it.
+	var best_building := -1
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
+			continue
+		var node: MeshInstance3D = _building_nodes.get(wire_id, null)
+		if node == null or _camera.is_position_behind(node.position):
+			continue
+		var distance := _camera.unproject_position(node.position).distance_to(at)
+		if distance < best_distance:
+			best_distance = distance
+			best_building = int(wire_id)
+			best = -1
+
+	if best_building >= 0:
+		_selected_building = best_building
+		_selected.clear()
+		return
+
+	_selected_building = -1
 	if best >= 0 and not _selected.has(best):
 		_selected.append(best)
 
@@ -1143,13 +1175,30 @@ func _handle_key(event: InputEventKey) -> void:
 		_stop_selected()
 		return
 
-	# B founds a town hall at the mouse cursor (D-031). The server checks
-	# everything that matters — that the squad may build this, that the
-	# ground takes a foundation, and that the builder is within reach —
-	# so this just sends the intent and lets the authority answer.
-	if event.keycode == KEY_B:
-		_build_selected("town_centre")
-		return
+	# Build keys. The server checks everything that matters — who may
+	# build what, the ground, the reach, the price — so these just send
+	# intent and let the authority answer (and now explain itself).
+	#
+	# One key per building rather than a menu: with four of them it is the
+	# shortest path to something playable, and the hint line can list them
+	# all. A build menu is worth having when the roster outgrows a row of
+	# keys, not before.
+	match event.keycode:
+		KEY_B:
+			_build_selected("town_centre")   # founders only
+			return
+		KEY_N:
+			_build_selected("barracks")      # gatherers
+			return
+		KEY_H:
+			_build_selected("storehouse")    # gatherers
+			return
+		KEY_Y:
+			_build_selected("tower")         # gatherers
+			return
+		KEY_T:
+			_train_selected("gatherers")     # at a selected town hall
+			return
 
 	# Control groups: Ctrl+N stores the selection, N recalls it.
 	if event.keycode >= KEY_1 and event.keycode <= KEY_9:
@@ -1216,6 +1265,18 @@ func _build_selected(def_id: String) -> void:
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: asked squad %d to found a %s at %s" % [_selected[0], def_id, cell])
+
+
+## Train a unit at the selected building (D-028).
+##
+## Buildings are selected the same way squads are — by clicking near them
+## — because a player should not have to learn two selection models to
+## use the two kinds of thing on the map.
+func _train_selected(unit_id: String) -> void:
+	if not _connected or _selected_building < 0:
+		return
+	_peer.send(0, NetProtocol.encode_order_produce(_selected_building, unit_id),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 func _stop_selected() -> void:
