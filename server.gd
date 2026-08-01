@@ -352,6 +352,10 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	_economy.credit(player, Economy.ResourceKind.GOLD, _config.starting_gold)
 	_economy.credit(player, Economy.ResourceKind.STONE, _config.starting_stone)
 	_send_wallet(peer, player)
+	# Where the resources are, once. A player cannot be asked to send
+	# workers to a node they have no way of finding.
+	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries()),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 	if _match.add_player(player):
 		print("server: MATCH_START — %s" % _match.describe())
@@ -449,6 +453,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_build(peer, data)
 			NetProtocol.C2S_ORDER_PRODUCE:
 				_handle_order_produce(peer, data)
+			NetProtocol.C2S_ORDER_GATHER:
+				_handle_order_gather(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -592,6 +598,24 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	_buildings.enqueue(building, def)
 	_send_wallet(peer, player)
+
+
+## Put a gatherer squad to work (D-028). The economy decides whether the
+## squad can gather and whether the cell holds anything; this only checks
+## that the order is the player's to give.
+func _handle_order_gather(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_gather(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+
+	var cell_index := int(order["cell"])
+	if not _economy.has_node(cell_index):
+		_notify(peer, "Nothing to gather there")
+		return
+	if not _economy.order_gather(_sim, squad, cell_index):
+		_notify(peer, "%s cannot gather — send workers" % _sim.def_id_of(squad))
+		return
 
 
 ## Tell one player why something did not happen. The server owns the

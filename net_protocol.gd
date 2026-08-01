@@ -31,9 +31,11 @@ const C2S_ORDER_STOP := 11
 const C2S_ORDER_ATTACK_MOVE := 12
 const C2S_ORDER_BUILD := 13
 const C2S_ORDER_PRODUCE := 14
+const C2S_ORDER_GATHER := 16
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
+const S2C_NODES := 17
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -288,6 +290,57 @@ static func decode_wallet(data: PackedByteArray) -> PackedInt32Array:
 	for i in range(count):
 		out.append(buf.get_u32())
 	return out
+
+
+## NODES: where the resources are, sent once at join.
+##
+## Node PLACEMENT is derived from terrain and would be reproducible on the
+## client — but reproducing it would mean the client running the
+## generator and the fairness pass with the same parameters, and any drift
+## in those would put resources on the client's map that are not on the
+## server's. Sending them is a couple of kilobytes once and removes the
+## question entirely.
+##
+## Their remaining STOCK is not sent: that changes constantly and belongs
+## to whoever can see the node. The client draws where resources are, not
+## how much is left.
+static func encode_nodes(entries: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NODES)
+	buf.put_u32(entries.size())
+	for entry in entries:
+		buf.put_u32(int(entry["cell"]))
+		buf.put_u8(int(entry["kind"]))
+	return buf.data_array
+
+
+static func decode_nodes(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		out.append({"cell": buf.get_u32(), "kind": buf.get_u8()})
+	return out
+
+
+## ORDER_GATHER: put a gatherer squad to work on a resource node
+## (D-028). Carries the cell rather than a node id, because a node IS a
+## cell — there is no separate node entity to name.
+static func encode_order_gather(squad: int, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_GATHER)
+	buf.put_u32(squad)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_gather(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "cell": buf.get_u32()}
 
 
 ## NOTICE: a short human-readable line for the player who sent an order.

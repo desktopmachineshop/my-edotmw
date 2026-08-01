@@ -739,7 +739,7 @@ func _build_hud() -> void:
 	_hud_selection = Label.new()
 	_hud_notice = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select · RMB move · BUILD: B hall  N barracks  H storehouse  Y tower · TRAIN: T worker  M militia  P spearmen  R archers  C cavalry · X stop"
+	hint.text = "LMB select · RMB move · BUILD: B hall  N barracks  H storehouse  Y tower · G gather · TRAIN: T worker  M militia  P spearmen  R archers  C cavalry · X stop"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -900,6 +900,14 @@ func _update_minimap() -> void:
 			colour = colour.darkened(0.45)
 		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
 
+	# Resource nodes, but only where this player has actually been. Fog
+	# governs what you know about the map, and that includes what is on it.
+	for cell in _state.nodes:
+		if not _explored.has(cell):
+			continue
+		var coord := _state.space.from_index(int(cell))
+		image.set_pixel(coord.x, coord.y, _node_colour(int(_state.nodes[cell])))
+
 	_plot_view_bounds(image)
 
 	if _minimap_texture == null:
@@ -1001,6 +1009,21 @@ func _plot_minimap_segment(image: Image, from: Vector2i, to: Vector2i, colour: C
 			posmod(from.x + roundi(float(span.x) * t), image.get_width()),
 			posmod(from.y + roundi(float(span.y) * t), image.get_height()),
 			colour)
+
+
+## Minimap colour per resource, picked to read against the terrain
+## underneath rather than to match it: food and wood especially would
+## vanish into grassland and forest if they used the obvious colours.
+func _node_colour(kind: int) -> Color:
+	match kind:
+		Economy.ResourceKind.FOOD:
+			return Color(1.0, 0.45, 0.55)
+		Economy.ResourceKind.WOOD:
+			return Color(0.85, 0.5, 0.15)
+		Economy.ResourceKind.GOLD:
+			return Color(1.0, 0.9, 0.2)
+		_:
+			return Color(0.8, 0.85, 0.95)  # stone
 
 
 ## A 2x2 blob rather than a single pixel, so a squad is visible at one
@@ -1200,6 +1223,9 @@ func _handle_key(event: InputEventKey) -> void:
 		# BuildingDef.produces on the server, so these are just requests —
 		# pressing M at a town hall gets a refusal that says so, rather
 		# than the client second-guessing the roster.
+		KEY_G:
+			_gather_selected()               # workers, at the cursor's node
+			return
 		KEY_T:
 			_train_selected("gatherers")     # town hall
 			return
@@ -1281,6 +1307,24 @@ func _build_selected(def_id: String) -> void:
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: asked squad %d to found a %s at %s" % [_selected[0], def_id, cell])
+
+
+## Put the selected workers on the node under the cursor (D-028).
+##
+## They walk there, fill up, haul to the nearest drop-off, unload and come
+## back, on their own — the order is "work this node", not a route.
+func _gather_selected() -> void:
+	if not _connected or _state.space == null or _selected.is_empty():
+		return
+
+	var cell := _cell_under(get_viewport().get_mouse_position())
+	if cell.x < 0:
+		return
+
+	for squad in _selected:
+		var order := _state.encode_gather(squad, cell)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Train a unit at the selected building (D-028).

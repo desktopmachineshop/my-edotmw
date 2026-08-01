@@ -142,6 +142,14 @@ static func _kind_for(biome: int) -> int:
 			return -1
 
 
+## Node positions and kinds for the wire, without their stock.
+func node_entries() -> Array:
+	var out := []
+	for cell in nodes:
+		out.append({"cell": cell, "kind": int(nodes[cell]["kind"])})
+	return out
+
+
 func node_count() -> int:
 	return nodes.size()
 

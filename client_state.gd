@@ -41,6 +41,10 @@ var wallet_updates: int = 0
 var last_notice := ""
 var notices_received: int = 0
 
+## Resource nodes: cell index -> ResourceKind. Sent once at join; the
+## client draws where resources are, never how much is left.
+var nodes := {}
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -151,6 +155,9 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_squad_conceal(data)
 		NetProtocol.S2C_STATE_HASH:
 			_handle_state_hash(data)
+		NetProtocol.S2C_NODES:
+			for entry in NetProtocol.decode_nodes(data):
+				nodes[int(entry["cell"])] = int(entry["kind"])
 		NetProtocol.S2C_NOTICE:
 			last_notice = NetProtocol.decode_notice(data)
 			notices_received += 1
@@ -379,6 +386,15 @@ func building_hash() -> int:
 			"spacing": float(info["owner"]),
 		})
 	return NetProtocol.composition_hash(entries)
+
+
+## Put a gatherer squad to work on a node (D-028). The server owns the
+## rules about which squads can gather and what a cell holds; this only
+## avoids sending an order for a squad we do not own.
+func encode_gather(squad: int, cell: Vector2i) -> PackedByteArray:
+	if space == null or not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_gather(squad, space.index(cell))
 
 
 ## Build order for the server (D-031). The server re-checks everything —
