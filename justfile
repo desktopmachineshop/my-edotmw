@@ -587,3 +587,33 @@ profile: _import
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script profile_sweep.gd
     fi
+
+# Client render benchmark (D-044 criteria 1-3, closing Q15's trigger).
+#
+# NATIVE ONLY, and for the same reason `run-client` is (D-014): this needs
+# a GPU. `just test-client` renders through Mesa's software rasteriser in
+# docker, which is the right tool for "is the picture correct" and useless
+# for "how fast is it" — it measures the CPU, not the hardware anyone will
+# play on.
+#
+# Prints the video adapter it ran on. A frame time with no hardware
+# attached is not a number anyone can use, the same way CLAUDE.md forbids
+# quoting us/squad without a squad count.
+#
+# Like `run-client`, this cannot use the shared `_import` dependency:
+# `_import` follows EDOTMW_RUNTIME (docker by default) and populates
+# .godot-container, while anything native reads .godot. Without a native
+# import, global class_names do not resolve and it dies with parse errors
+# naming unrelated lines.
+[doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: the render benchmark needs a native Godot with a GPU (D-014)." >&2
+        echo "      Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    "$godot" --headless --path . --import
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}

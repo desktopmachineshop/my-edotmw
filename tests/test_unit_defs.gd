@@ -140,3 +140,33 @@ func test_reloading_the_roster_still_produces_the_same_units() -> void:
 	UnitRoster.reload()
 	var after := UnitRoster.load_all().map(func(d): return d.id)
 	assert_eq(before, after, "Reloading the roster changed which units exist")
+
+
+func test_a_squad_stops_drawing_soldiers_it_has_lost() -> void:
+	# The MultiMesh is built with one instance per soldier at full
+	# strength, and casualties mean fewer transforms are written. Without
+	# capping `visible_instance_count`, the instances past that point keep
+	# rendering at whatever transform they last held — so a squad that
+	# lost half its men went on displaying them, frozen, for the rest of
+	# the match.
+	#
+	# Nothing numeric would notice: `alive` is correct, the composition
+	# hash is correct, the client and server agree. Only the picture is
+	# wrong, which is the same class of defect as the frame that derived
+	# every soldier at y=0 and rendered them inside the terrain.
+	var def := UnitRoster.first()
+	var unit := PrimitiveUnit.new()
+	add_child_autofree(unit)
+	unit.rebuild(def)
+
+	var multimesh: MultiMesh = unit.find_children("*", "MultiMeshInstance3D", true, false)[0].multimesh
+	assert_eq(multimesh.instance_count, def.squad_size,
+		"The mesh should be allocated for a squad at full strength")
+
+	var survivors: Array[Transform3D] = []
+	for i in range(3):
+		survivors.append(Transform3D(Basis(), Vector3(float(i), 0.0, 0.0)))
+	unit.set_slot_transforms(survivors)
+
+	assert_eq(multimesh.visible_instance_count, 3,
+		"Three soldiers were given; anything else is drawing the dead")

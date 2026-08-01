@@ -197,9 +197,42 @@ static func soldier_transforms(
 	space: TorusSpace,
 	terrain_sampler := Callable()
 ) -> Array[Transform3D]:
+	return soldier_transforms_sampled(
+		curve, time, alive, shape, spacing, space, terrain_sampler, alive)
+
+
+## As above, but derives at most `max_count` of the squad's soldiers,
+## spread evenly across the formation — the render LOD tier (D-045).
+##
+## ## This is COSMETIC ONLY, and the boundary is not negotiable
+##
+## `alive` is unchanged, `slot_offset` is still asked for the squad's real
+## size, and the formation therefore keeps its true footprint and shape —
+## a distant squad is drawn thinner, never smaller. Nothing here is ever
+## read back by the simulation, which is D-006 clause 2's one-way rule,
+## and D-012 permits render LOD to be camera-keyed precisely because it
+## cannot affect an outcome. Simulation LOD may NOT be camera-keyed, and
+## conflating the two would make combat depend on where someone was
+## looking.
+##
+## Slots are picked as `i * alive / n` rather than the first `n`, so a
+## half-detail squad still occupies its whole frontage instead of
+## bunching into one end of the line.
+static func soldier_transforms_sampled(
+	curve: StateCurve,
+	time: float,
+	alive: int,
+	shape: String,
+	spacing: float,
+	space: TorusSpace,
+	terrain_sampler := Callable(),
+	max_count: int = -1
+) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	if curve == null or alive <= 0:
 		return out
+
+	var count := alive if max_count < 0 else clampi(max_count, 1, alive)
 
 	# Everything except the slot offset is a property of the SQUAD, not the
 	# soldier, so it is computed once here rather than once per soldier.
@@ -219,10 +252,14 @@ static func soldier_transforms(
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
 
-	out.resize(alive)
-	for slot in range(alive):
+	out.resize(count)
+	for i in range(count):
+		# `i * alive / count` is `i` exactly when count == alive (integer
+		# division), so the full-detail path is unchanged and stays
+		# bit-identical to soldier_transform().
+		var slot := i * alive / count
 		var local := slot_offset(shape, slot, alive, spacing)
 		var origin := centre + Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
 		origin.y = terrain_sampler.call(origin.x, origin.z) if sample_terrain else 0.0
-		out[slot] = Transform3D(basis, origin)
+		out[i] = Transform3D(basis, origin)
 	return out

@@ -142,14 +142,36 @@ func is_water(space: TorusSpace, cell: Vector2i) -> bool:
 	return elevation_at(space, cell) < sea_level
 
 
+## Elevation for every cell, computed once (D-045).
+##
+## `elevation_at` evaluates 3D simplex noise on every call, and the
+## client's terrain sampler — D-006's fourth input — calls it once **per
+## soldier per frame**. At D-018's full scale that is ~26,600 noise
+## evaluations a frame, and the render benchmark measured the sampler as
+## the dominant term in a frame that was 97% CPU.
+##
+## This is memoisation, not approximation: same generator, same cells,
+## identical values by construction. Anything sampling terrain more than
+## once per cell should use this rather than calling `elevation_at` in a
+## loop — the same rule `TorusSpace.disk_offsets` established for radius
+## scans after vision cost 232 µs/squad doing the equivalent.
+func elevation_field(space: TorusSpace) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(space.cell_count())
+	for i in range(space.cell_count()):
+		out[i] = elevation_at(space, space.from_index(i))
+	return out
+
+
 ## Squads cannot cross water or mountains in M1. This is the array the
 ## flow field routes around (D-007), which is what makes terrain interact
 ## with pathfinding rather than being decoration.
 func passability(space: TorusSpace) -> PackedByteArray:
+	var field := elevation_field(space)
 	var out := PackedByteArray()
 	out.resize(space.cell_count())
 	for i in range(space.cell_count()):
-		var e := elevation_at(space, space.from_index(i))
+		var e := field[i]
 		out[i] = 0 if (e < sea_level or e >= mountain_level) else 1
 	return out
 
