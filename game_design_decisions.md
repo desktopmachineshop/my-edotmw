@@ -159,6 +159,41 @@ bounded by how much BFS lands in one tick, and at every size measured
 that already exceeds the budget under a realistic order wave. Map size
 is not the dial that fixes this — amortisation is.
 
+**Routing was the hidden source of field builds, and fixing it is the
+first real win.** Quantising player orders bought only 18% and cost exact
+arrival, so it was backed out — but the build count barely moving was the
+clue. The sweep issues 8 destinations per wave over 5 waves: at most 40
+distinct fields, and 186 were built.
+
+`Combat._check_rout` sent every broken squad fleeing to its own computed
+cell, so **a rout produced one full BFS solve per squad** — during
+precisely the large engagements that are already re-pathing everyone.
+D-007's sharing cannot help a destination nobody else shares.
+
+The fix is that a rout has no exact destination worth preserving. A squad
+is running away; where it stops is a detail nobody chose. Snapping flee
+destinations coarsely (`rout_quantum`, 8 cells) makes a whole routing
+army share a handful of fields:
+
+| cells | fields before | after | µs/squad before | after | worst tick |
+|---|---|---|---|---|---|
+| 2,048 | 215 | **57** | 33.5 | **22.1** | 130 → **88 ms** |
+| 8,192 | 186 | **123** | 80.5 | **53.5** | 457 → **323 ms** |
+| 32,768 | 125 | **110** | 151.9 | **135.7** | 903 → **844 ms** |
+
+A third off per-squad cost at the shipped map size, and a third off the
+worst tick, from one line about where cowards run to.
+
+**It is not enough on its own.** 323 ms is still 3.2x over a 100 ms
+budget, and the remaining spike is what it always was: several whole BFS
+solves landing in one tick. Amortisation remains the next move; this
+simply removed a large multiplier in front of it.
+
+The general lesson is worth keeping: the expensive pattern was not the
+one anybody designed. Player orders were carefully shared; the cost came
+from an emergency behaviour written for correctness with no thought about
+how many destinations it minted.
+
 ---
 
 ### D-027 · 2026-07-30 · Accepted

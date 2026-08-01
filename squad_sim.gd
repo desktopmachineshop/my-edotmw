@@ -393,6 +393,29 @@ func stop(squad: int) -> void:
 ## PLAYER orders, and fleeing away from the enemy is exactly what a
 ## routed squad is supposed to do, so it goes through the sim directly
 ## rather than through the player-facing entry point.
+## How coarsely a ROUT's destination is snapped (D-038).
+##
+## Routing is where unique destinations come from: a broken squad flees to
+## its own computed cell, so a rout produces one full flow-field solve PER
+## SQUAD — and routs happen during exactly the large engagements that are
+## already re-pathing everyone.
+##
+## Unlike a player's order, a rout has no exact destination worth
+## preserving. The squad is running away; where it stops is a detail
+## nobody chose. Snapping coarsely makes a whole routing army share a
+## handful of fields instead of one each, which is the same D-007 sharing
+## that already works for deliberate orders.
+var rout_quantum: int = 8
+
+
+## Flee, sharing a field with everyone fleeing the same way.
+func flee_move(squad: int, destination: Vector2i) -> void:
+	var previous := destination_quantum
+	destination_quantum = rout_quantum
+	_apply_move_order(squad, destination, true)
+	destination_quantum = previous
+
+
 func force_move(squad: int, destination: Vector2i) -> void:
 	_apply_move_order(squad, destination)
 

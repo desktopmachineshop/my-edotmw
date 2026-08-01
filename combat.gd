@@ -242,7 +242,7 @@ func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int
 	var away := sim.space.delta(sim.space.from_index(from_cell_index), here)
 	if away == Vector2i.ZERO:
 		away = Vector2i(1, 0)
-	sim.force_move(squad, here + away * ROUT_FLEE_MULTIPLIER)
+	sim.flee_move(squad, here + away * ROUT_FLEE_MULTIPLIER)
 
 
 func _diff(sim: SquadSim, before_alive: PackedInt32Array, before_routed: PackedByteArray) -> Array:
@@ -407,7 +407,7 @@ func _check_rout(sim: SquadSim, defender: int, defender_def: UnitDef, attacker: 
 	var away := sim.space.delta(attacker_coord, defender_coord)
 	if away == Vector2i.ZERO:
 		away = Vector2i(1, 0)  # degenerate same-cell case; any fixed direction is fine
-	sim.force_move(defender, defender_coord + away * ROUT_FLEE_MULTIPLIER)
+	sim.flee_move(defender, defender_coord + away * ROUT_FLEE_MULTIPLIER)
 
 
 ## World-units -> cells conversion for attack_range, mirroring
