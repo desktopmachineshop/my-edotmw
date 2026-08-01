@@ -617,6 +617,22 @@ func _report() -> void:
 	# server log's FOG_TOTAL_SQUADS (see _max_known_squads()'s comment for
 	# why this must be a max, not a sum/union across bots).
 	print("bot_client.gd: MEMORY — %.1f MB for %d virtual clients, %d soldiers derived" % [float(OS.get_static_memory_usage()) / 1048576.0, _clients.size(), soldiers])
+
+	# D-006's OTHER half. The decision trades bandwidth for client CPU, and
+	# only the bandwidth side had ever been measured. This is what a client
+	# pays per frame for every soldier it was never sent.
+	var derive_usec := 0
+	var derived_total := 0
+	var worst_derive := 0
+	for vc in _clients:
+		derive_usec += vc.state.total_derive_usec
+		derived_total += vc.state.soldiers_derived_total
+		worst_derive = maxi(worst_derive, vc.state.last_derive_usec)
+	var per_soldier := 0.0
+	if derived_total > 0:
+		per_soldier = float(derive_usec) / float(derived_total)
+	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
+		per_soldier, derived_total, float(worst_derive) / 1000.0])
 	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),

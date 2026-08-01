@@ -52,7 +52,67 @@ func _initialize() -> void:
 				SquadSim.DEFAULT_FIELD_CELLS_PER_TICK if amortised else -1)
 
 	_map_sweep()
+	_derive_sweep(config)
 	quit(0)
+
+
+## Client-side derivation cost — D-006's other half.
+##
+## D-006 sends squad curves and never soldier positions, so every soldier
+## on screen is placed by the CLIENT, every frame, from its squad's curve.
+## The bandwidth saving is measured (595 B/client/s at 20 players); the
+## CPU it was traded for never was.
+##
+## Driven through a real ClientState fed by a real CurveReplicator, not by
+## calling Formation directly: the question is what a client pays, and a
+## client pays for the dictionary walk and the composition lookups too.
+##
+## The budget is a FRAME, not a tick. A client rendering at 60 fps has
+## 16.7 ms for everything, so derivation needs to be a small fraction of
+## that — and unlike the server's tick, there is no amortising it: every
+## soldier must be somewhere every frame.
+func _derive_sweep(config: MapConfig) -> void:
+	print("profile: --- client derivation sweep ---")
+	print("profile: squads,soldiers,us_per_soldier,ms_per_frame,pct_of_60fps_frame")
+
+	for count in COUNTS:
+		var space := config.to_space()
+		var sim := SquadSim.new(space, CurveReplicator.new())
+		sim.set_passable(TerrainGen.new().passability(space))
+
+		var def := UnitRoster.by_id(&"militia")
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 0xD00D
+		for i in range(int(count)):
+			sim.add_squad(def, 1, Vector2i(
+				rng.randi_range(0, space.width - 1),
+				rng.randi_range(0, space.height - 1)))
+		for squad in range(sim.squad_count()):
+			sim.order_move(squad, Vector2i(
+				rng.randi_range(0, space.width - 1),
+				rng.randi_range(0, space.height - 1)))
+
+		# Feed a client exactly as the server would.
+		var state := ClientState.new()
+		var visible := sim.visible_to(1)
+		state.handle_packet(NetProtocol.encode_welcome(1, space.width, space.height, visible))
+		state.handle_packet(NetProtocol.encode_squad_info(sim.squad_info_entries(visible)))
+		for _i in range(5):
+			sim.tick()
+			for packet in sim.replicator.collect_for_client(1, sim.time, sim.visible_to(1)):
+				state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+
+		# Many passes, because one frame's worth is too small to time.
+		var passes := 30
+		var soldiers := 0
+		for _i in range(passes):
+			soldiers = state.derive_all(sim.time)
+
+		var per_soldier := state.mean_usec_per_soldier()
+		var ms_per_frame := float(state.total_derive_usec) / float(passes) / 1000.0
+		print("profile: %d,%d,%.4f,%.3f,%.1f%%" % [
+			int(count), soldiers, per_soldier, ms_per_frame,
+			ms_per_frame / 16.667 * 100.0])
 
 
 ## Map-size sweep — this is what answers Q8 (D-036/D-021).

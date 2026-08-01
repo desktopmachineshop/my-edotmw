@@ -511,11 +511,39 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 
 ## Total soldiers this client would be drawing — the number that makes
 ## D-006's 40x claim concrete, since none of them cost bandwidth.
+##
+## Timed, because D-006 trades BANDWIDTH for CLIENT CPU and only one half
+## of that trade had ever been measured. Every soldier not sent is a
+## soldier the client must place itself, every frame, from the squad
+## curve — so "costs zero bandwidth" is only good news if the derivation
+## fits a frame.
 func derive_all(now: float) -> int:
+	var started := Time.get_ticks_usec()
 	var total := 0
 	for id in curves:
 		total += soldier_transforms(id, now).size()
+	last_derive_usec = Time.get_ticks_usec() - started
+	total_derive_usec += last_derive_usec
+	derive_calls += 1
+	soldiers_derived_total += total
 	return total
+
+
+## Microseconds spent in the last derive_all, and the running totals
+## behind the per-soldier figure M4 reports.
+var last_derive_usec: int = 0
+var total_derive_usec: int = 0
+var derive_calls: int = 0
+var soldiers_derived_total: int = 0
+
+
+## Mean microseconds to place ONE soldier. The number D-006's trade is
+## actually settled on: multiply by the soldiers on screen to get the
+## per-frame cost of not having received them.
+func mean_usec_per_soldier() -> float:
+	if soldiers_derived_total <= 0:
+		return 0.0
+	return float(total_derive_usec) / float(soldiers_derived_total)
 
 
 ## Squads whose curve has arrived but whose composition has not — LIVE

@@ -79,6 +79,41 @@ var _worst_tick_usec := 0
 var _worst_tick_index := 0
 var _ticks_over_budget := 0
 
+## ENet's own view of the link, sampled periodically (M4's transport
+## question). Reliability is not free — a lost packet costs a round trip
+## and, on an ordered channel, blocks everything behind it — so "is
+## reliable delivery adequate?" needs the measured loss and RTT rather
+## than an argument about it.
+var _peak_rtt_ms := 0.0
+var _peak_loss_fraction := 0.0
+var _min_throttle := 1e9
+
+
+## ENet reports packet loss as a fixed-point fraction of this scale.
+const ENET_PACKET_LOSS_SCALE := 65536.0
+
+## Full throttle — ENet sends everything it is given. It backs this off
+## when it detects loss, so a value below the limit is congestion control
+## actually engaging rather than a theory about it.
+const ENET_THROTTLE_SCALE := 32.0
+
+
+func _sample_transport_stats() -> void:
+	# Peaks, not means. Reliability's cost is a tail phenomenon: the
+	# question is whether ANY client ever saw loss worth reengineering the
+	# transport for, and an average across twenty healthy links would bury
+	# exactly that.
+	for peer in _clients:
+		var p := peer as ENetPacketPeer
+		if p == null:
+			continue
+		_peak_rtt_ms = maxf(_peak_rtt_ms,
+			p.get_statistic(ENetPacketPeer.PEER_ROUND_TRIP_TIME))
+		_peak_loss_fraction = maxf(_peak_loss_fraction,
+			p.get_statistic(ENetPacketPeer.PEER_PACKET_LOSS) / ENET_PACKET_LOSS_SCALE)
+		_min_throttle = minf(_min_throttle,
+			p.get_statistic(ENetPacketPeer.PEER_PACKET_THROTTLE) / ENET_THROTTLE_SCALE)
+
 ## D-020's 100 ms tick, in microseconds.
 const TICK_BUDGET_USEC := 100_000
 var _reported_drop := false
@@ -267,6 +302,7 @@ func _process(delta: float) -> void:
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
+			_sample_transport_stats()
 			_print_status()
 
 	# If the backlog still exceeds a tick, the catch-up bound just threw
@@ -331,6 +367,10 @@ func _print_summary(reason: String) -> void:
 		float(_worst_tick_usec) / 1000.0,
 		_sim.field_waits,
 	])
+	print("server: transport — peak RTT %.1fms, peak loss %.3f%%, min throttle %.2f of 1.00, all reliable on channel 0" % [
+		_peak_rtt_ms, _peak_loss_fraction * 100.0,
+		_min_throttle if _min_throttle < 1e8 else 1.0])
+
 	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
 		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
 		float(_worst_tick_usec) / 1000.0, _worst_tick_index])

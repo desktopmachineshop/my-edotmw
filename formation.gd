@@ -201,11 +201,28 @@ static func soldier_transforms(
 	if curve == null or alive <= 0:
 		return out
 
+	# Everything except the slot offset is a property of the SQUAD, not the
+	# soldier, so it is computed once here rather than once per soldier.
+	# Calling soldier_transform() in the loop re-sampled the curve twice
+	# (position and heading) and rebuilt the basis for every man — 40
+	# identical curve samples for a 40-man squad, every frame.
+	#
+	# This is not a shortcut around D-006's purity clause; it is the same
+	# pure function with its loop-invariants hoisted. The result must stay
+	# bit-identical to soldier_transform(), which is what
+	# test_bulk_derivation_matches_the_single_soldier_path asserts — if
+	# these two ever disagree, client and server disagree about where
+	# soldiers are, and that is the exact failure D-006 exists to prevent.
+	var centre := curve.sample_world(time, space)
+	var world_dir := space.axial_offset_to_world(heading(curve, time))
+	var angle := atan2(world_dir.x, world_dir.z)
+	var basis := Basis(Vector3.UP, angle)
+	var sample_terrain := terrain_sampler.is_valid()
+
+	out.resize(alive)
 	for slot in range(alive):
-		var t := soldier_transform(curve, time, slot, alive, shape, spacing, space, 0.0)
-		if terrain_sampler.is_valid():
-			var origin := t.origin
-			origin.y = terrain_sampler.call(origin.x, origin.z)
-			t.origin = origin
-		out.append(t)
+		var local := slot_offset(shape, slot, alive, spacing)
+		var origin := centre + Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+		origin.y = terrain_sampler.call(origin.x, origin.z) if sample_terrain else 0.0
+		out[slot] = Transform3D(basis, origin)
 	return out

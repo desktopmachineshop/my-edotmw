@@ -356,3 +356,55 @@ func test_stationary_squads_do_not_bob() -> void:
 		"A stationary soldier should not have a footfall bob")
 	assert_gt(CosmeticOffset.footfall_bob(3, 1.0, 1.0), 0.0,
 		"A moving soldier should bob")
+
+
+func test_bulk_derivation_matches_the_single_soldier_path() -> void:
+	# soldier_transforms() hoists the squad-wide parts of
+	# soldier_transform() out of its loop, for a ~3x saving on a path that
+	# runs every frame for every soldier on screen.
+	#
+	# The two MUST agree exactly. The client derives in bulk and anything
+	# checking one soldier derives singly, so a divergence here is a
+	# client and a server disagreeing about where a man is standing —
+	# precisely the failure D-006's purity clause exists to prevent, and
+	# one no bandwidth measurement would ever notice.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var curve := StateCurve.new()
+	curve.append_cell(0.0, Vector2i(2, 3), space)
+	curve.append_cell(1.0, Vector2i(9, 7), space)
+	curve.append_cell(2.0, Vector2i(20, 12), space)
+
+	for shape in ["line", "column", "wedge", "loose"]:
+		for alive in [1, 7, 12, 40]:
+			for t in [0.0, 0.35, 1.4, 2.0]:
+				var bulk := Formation.soldier_transforms(
+					curve, t, alive, shape, 1.0, space)
+				assert_eq(bulk.size(), alive,
+					"%s/%d at t=%.2f produced %d transforms" % [shape, alive, t, bulk.size()])
+				for slot in range(alive):
+					var single := Formation.soldier_transform(
+						curve, t, slot, alive, shape, 1.0, space, 0.0)
+					assert_eq(bulk[slot], single,
+						"%s slot %d of %d at t=%.2f differs between bulk and single derivation" % [
+							shape, slot, alive, t])
+
+
+func test_bulk_derivation_applies_the_terrain_sampler_per_soldier() -> void:
+	# The sampler is D-006's fourth input and takes the SOLDIER's position,
+	# not the squad's — hoisting the squad-wide work must not accidentally
+	# hoist this too, which would flatten a formation onto one height.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var curve := StateCurve.new()
+	curve.append_cell(0.0, Vector2i(4, 4), space)
+	curve.append_cell(1.0, Vector2i(14, 9), space)
+
+	var sampler := func(x: float, z: float) -> float: return x * 0.25 + z * 0.5
+	var bulk := Formation.soldier_transforms(curve, 0.4, 12, "line", 1.0, space, sampler)
+
+	var heights := {}
+	for t in bulk:
+		assert_almost_eq(t.origin.y, t.origin.x * 0.25 + t.origin.z * 0.5, 0.0001,
+			"A soldier's height should come from ITS OWN position")
+		heights[snappedf(t.origin.y, 0.001)] = true
+	assert_gt(heights.size(), 1,
+		"Every soldier got the same height — the sampler was hoisted out of the loop")

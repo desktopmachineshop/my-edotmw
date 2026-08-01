@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **275 tests**.
+buildings, (5) economy. `just test-unit` is green at **278 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
@@ -119,8 +119,9 @@ and fog never happened rather than passing vacuously. Bots converge on
 the middle of the map deliberately, but they still need time to get
 there.
 
-**M4 (scale + performance) is in progress.** Measurements live in D-038.
-The four that exist so far, all at D-018's target of 20 players:
+**M4 (scale + performance): every measurement it set out to take is
+taken.** They live in D-038 and D-040 through D-042. At D-018's target of
+20 players:
 
 - **bandwidth 595 B/client/s**, zero budget overruns — not close to a
   problem, which is D-003's curve sync doing its job
@@ -129,6 +130,14 @@ The four that exist so far, all at D-018's target of 20 players:
   the squad-count caveat above before comparing it to anything
 - **0 ticks over D-020's 100 ms budget** in a 20-player match, worst tick
   38.1 ms
+- **transport: peak RTT 14 ms, peak loss 0.98%, 0 desyncs** — reliable
+  delivery is genuinely absorbing loss, not idling, so unreliable-with-
+  resend is rejected (D-042). Note curve packets carry no sequence
+  number, so **in-order delivery is load-bearing**, not incidental
+- **client derivation 0.72 µs/soldier** — a player's own 2,000-soldier
+  army costs ~1.4 ms/frame, but all 40,000 visible at once is 174% of a
+  60 fps frame (D-041). Frustum culling before deriving is the next
+  lever, ahead of any LOD work
 - the sweep (`just profile`) remains the authority on *scaling*, since a
   live match cannot reach 1,000 squads — but see the blind-spot warning
   below before trusting it alone: **33 µs/squad and a 73.4 ms worst tick
