@@ -56,6 +56,20 @@ func set_slot_transforms(transforms: Array[Transform3D]) -> void:
 	for i in range(count):
 		mm.set_instance_transform(i, transforms[i])
 
+	# Draw only the slots that were actually written this frame.
+	#
+	# Without this the MultiMesh keeps drawing all `instance_count`
+	# instances, and the ones past `count` render at whatever transform
+	# they last held. A squad that lost half its soldiers therefore went
+	# on displaying them, frozen, for the rest of the match — casualties
+	# were literally invisible, because `alive` falls and the formation
+	# restamps the survivors (D-006 clause 3) while the dead stayed put.
+	#
+	# It is also what makes render LOD possible at all (D-045): drawing
+	# fewer soldiers than the squad has is exactly writing fewer
+	# transforms than `instance_count`.
+	mm.visible_instance_count = count
+
 
 func _build_primitive_mesh(def: UnitDef) -> Mesh:
 	match def.mesh_primitive:

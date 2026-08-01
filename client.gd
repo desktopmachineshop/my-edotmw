@@ -22,6 +22,14 @@ const CAMERA_ZOOM_STEP := 4.0
 const CAMERA_MIN_HEIGHT := 8.0
 const CAMERA_MAX_HEIGHT := 90.0
 
+## Slack around the viewport, in pixels, when deciding whether a squad is
+## worth deriving (D-045). Culling tests a squad's CENTRE, but a squad has
+## real extent, so a formation whose centre is just off screen can still
+## have soldiers on it. Generous on purpose: the cost of being wrong in
+## this direction is a little wasted derivation, and the cost of being
+## wrong in the other is soldiers popping in at the screen edge.
+const CULL_MARGIN_PIXELS := 192.0
+
 ## M2 capture-mode scenario (`just test-client`) — see _drive_m2_scenario().
 ##
 ## Active ONLY when _run_seconds > 0.0 (i.e. never during `just run-client`,
@@ -96,6 +104,42 @@ var _camera_max_height := CAMERA_MAX_HEIGHT
 ## something the client can compute (D-006's derivation principle applied
 ## to vision rather than to soldiers).
 var _explored := {}
+
+## Render LOD tiers (D-045): distance from the camera in world units, and
+## the most soldiers a squad past that distance is drawn with.
+##
+## Tuned against `just bench-render` rather than chosen: at D-018's full
+## scale the client was at 17.8 fps with every visible soldier derived,
+## and per-soldier derivation was ~96% of the frame.
+##
+## Nothing here touches `alive`. A thinned squad keeps its true frontage
+## because `slot_offset` is still asked for the real size, so this reads
+## as a distant formation being sparse rather than as a smaller unit —
+## which matters, because unit size is tactical information a player is
+## entitled to read off the screen correctly.
+const LOD_TIERS := [
+	{"distance": 55.0, "soldiers": 1 << 30},
+	{"distance": 110.0, "soldiers": 12},
+	{"distance": INF, "soldiers": 5},
+]
+
+
+## How many soldiers to draw for a squad at `world` (D-045).
+func _detail_for(world: Vector3) -> int:
+	if _camera == null:
+		return 1 << 30
+	var distance := _camera.global_position.distance_to(world)
+	for tier in LOD_TIERS:
+		if distance < float(tier["distance"]):
+			return int(tier["soldiers"])
+	return int(LOD_TIERS[LOD_TIERS.size() - 1]["soldiers"])
+
+
+## Squads derived and drawn this frame, against the number known. Shown in
+## the HUD because the gap between them is the whole point of D-045: if
+## these two numbers are ever equal at scale, the cull has stopped working
+## and the only symptom would be a slow client.
+var _visible_squads := 0
 var _now := 0.0
 var _terrain_built := false
 
@@ -117,6 +161,14 @@ var _scout_home := {}
 var _rallied := false
 var _withdrawn := false
 var _re_rallied := false
+
+## When this client first owned a squad it could actually order — see
+## _drive_m2_scenario. Negative until then.
+var _army_at := -1.0
+
+## When the capture scenario may next order a unit trained. Zero means
+## "as soon as the hall is finished".
+var _trained_at := 0.0
 
 
 func _ready() -> void:
@@ -332,9 +384,18 @@ func _build_terrain() -> void:
 	# count, desyncs) passes perfectly while the units are underground.
 	# Uses the same TerrainGen instance that built the mesh, so the ground
 	# a soldier stands on is the ground that was drawn.
+	#
+	# Sampled from a precomputed field rather than by calling
+	# `elevation_at` per soldier (D-045). This closure runs once per
+	# soldier per frame — ~26,600 times a frame at D-018's full scale —
+	# and `elevation_at` evaluates 3D simplex noise every call, which the
+	# render benchmark measured as the dominant term in a frame that was
+	# 97% CPU. The field holds identical values by construction, so this
+	# is memoisation and not a change to where anyone stands.
+	var elevation := terrain.elevation_field(space)
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		var cell := space.world_to_cell(Vector3(x, 0.0, z))
-		return terrain.elevation_at(space, cell) * terrain.height_scale
+		return elevation[space.index(cell)] * terrain.height_scale
 
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
@@ -413,6 +474,10 @@ func _refresh_squads() -> void:
 	if _state.space == null:
 		return
 
+	_visible_squads = 0
+	var offsets := _state.space.lattice_offsets()
+	var viewport_size := get_viewport().get_visible_rect().size
+
 	for squad_id in _state.curves:
 		# Nothing to draw until the server has said what this squad is.
 		# Rendering a guessed strength would put every soldier in the
@@ -423,7 +488,31 @@ func _refresh_squads() -> void:
 		var unit := _squad_node(squad_id, String(_state.composition[squad_id]["def_id"]))
 		_set_ghost_look(unit, false)
 
-		var transforms := _state.soldier_transforms(squad_id, _now)
+		# Cull BEFORE deriving, not after (D-045). Deriving a squad the
+		# camera cannot see costs the same as deriving one it can, and at
+		# D-018's full scale almost none of them are on screen: the
+		# benchmark measured 1,000 squads at 66 ms a frame, 96% of it
+		# derivation, while Godot's own culling had already discarded most
+		# of those squads before they reached the GPU. The engine was
+		# throwing away work we had just paid for.
+		# One curve sample to place the squad, against ~40 to derive its
+		# soldiers — so the cheap question is asked first.
+		var centre := _state.squad_world_position(squad_id, _now)
+		var offset := RenderCull.nearest_offset(offsets, centre, _camera_target)
+		if not RenderCull.is_on_screen(_camera, centre + offset, CULL_MARGIN_PIXELS, viewport_size):
+			unit.visible = false
+			continue
+		unit.visible = true
+		unit.position = offset
+		_visible_squads += 1
+
+		# Render LOD (D-045, permitted camera-keyed by D-012): a squad far
+		# from the camera is drawn thinner, never smaller. Per-soldier
+		# derivation is ~96% of this client's frame at scale, so this is
+		# the only lever that moves the number once culling has taken the
+		# off-screen squads out.
+		var transforms := _state.soldier_transforms_lod(
+			squad_id, _now, _detail_for(centre + offset))
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
 		unit.set_slot_transforms(CosmeticOffset.decorate_all(transforms, _now, 1.0))
@@ -509,21 +598,56 @@ func _set_ghost_look(unit: PrimitiveUnit, is_ghost: bool) -> void:
 ## exactly once (guarded by the _rallied/_withdrawn/_re_rallied flags), on
 ## whichever frame first reaches its time.
 func _drive_m2_scenario() -> void:
-	if not _connected or not _state.welcomed or _state.squads.is_empty():
+	if not _connected or not _state.welcomed:
 		return
 
 	# The opening move first: found the hall, then send scouts out.
 	_found_home_town()
 
-	if not _rallied and _now >= RALLY_AT_SECONDS:
+	# Training needs a BUILDING, not a squad, so it runs before the "no
+	# squads" guard below — the identical fix bot_client.gd needed in M4,
+	# for the identical reason, in the other file that scripts a player.
+	#
+	# Founding a town hall CONSUMES the founding party the instant the
+	# order is given (D-031), so a client that makes the correct opening
+	# move owns nothing at all a moment later. This function used to
+	# return early on `squads.is_empty()`, which meant the scenario went
+	# quiet forever the moment it did the one thing it was written to do,
+	# and `test-client` reported `soldiers=0` on a frame with a perfectly
+	# good town hall in it.
+	#
+	# It was masked until M5 because the client kept dead squads in its
+	# owned list, so the guard stayed false while every order it protected
+	# was refused. Making ownership honest (D-045) exposed it — the same
+	# sequence, and the same pair of mutually-cancelling defects, as the
+	# bots.
+	_train_from_home_town()
+
+	if _state.squads.is_empty():
+		return
+
+	# Phases are timed from when this client first HAS an army, not from
+	# the start of the run.
+	#
+	# They used to be absolute, which was right when a player started with
+	# twelve squads. D-031 changed the opening: the founding party is spent
+	# on the town hall, the hall takes 40 s to build, and only then can
+	# anything be trained — so by the time this client owned a soldier,
+	# every absolute deadline had already passed and all three phases fired
+	# in the same frame. The scouts never marched, so nothing was ever
+	# concealed, and the verdict said so.
+	if _army_at < 0.0:
+		_army_at = _now
+
+	if not _rallied and _now >= _army_at + RALLY_AT_SECONDS:
 		_issue_scenario_rally()
 		_rallied = true
 
-	if _rallied and not _withdrawn and _now >= WITHDRAW_AT_SECONDS:
+	if _rallied and not _withdrawn and _now >= _army_at + WITHDRAW_AT_SECONDS:
 		_issue_scenario_withdraw()
 		_withdrawn = true
 
-	if _withdrawn and not _re_rallied and _now >= RE_RALLY_AT_SECONDS:
+	if _withdrawn and not _re_rallied and _now >= _army_at + RE_RALLY_AT_SECONDS:
 		_issue_scenario_rally()
 		_re_rallied = true
 
@@ -663,6 +787,30 @@ func _found_home_town() -> void:
 
 	_camera_target = _state.space.to_world(home)
 	_update_camera()
+
+
+## Train a squad at the town hall once it is finished (capture mode only).
+##
+## Without this the capture run has nothing to draw: the founding party is
+## spent on the hall (D-031), and a frame whose whole point is "look at
+## the soldiers" would contain none. It also means `test-client` exercises
+## the production path in a rendered client rather than leaving it to the
+## bots — the frame now shows a town hall AND the troops it made.
+func _train_from_home_town() -> void:
+	if _trained_at < 0.0 or _now < _trained_at:
+		return
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
+			continue
+		if float(info["progress"]) < 1.0:
+			continue
+		_peer.send(0, NetProtocol.encode_order_produce(int(wire_id), "gatherers"),
+			ENetPacketPeer.FLAG_RELIABLE)
+		# Space the orders out rather than firing one per frame at a
+		# building that can only make one thing at a time.
+		_trained_at = _now + 2.0
+		return
 
 
 func _estimated_neighbor_cell(target_player: int) -> Vector2i:

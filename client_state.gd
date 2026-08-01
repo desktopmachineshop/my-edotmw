@@ -509,6 +509,24 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 		terrain_sampler)
 
 
+## As above, but drawing at most `max_soldiers` of them — the render LOD
+## tier (D-045).
+##
+## Deliberately a SEPARATE entry point rather than a parameter on
+## soldier_transforms, so that every existing caller keeps full detail by
+## construction and nothing acquires a reduced view of a squad by
+## accident. The only caller is the renderer; `composition_hash` and the
+## desync check never come near it, which is what keeps this cosmetic
+## (D-006 clause 2, D-012).
+func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[Transform3D]:
+	var empty: Array[Transform3D] = []
+	if space == null or not curves.has(squad) or not composition.has(squad):
+		return empty
+	return Formation.soldier_transforms_sampled(
+		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
+		terrain_sampler, max_soldiers)
+
+
 ## Total soldiers this client would be drawing — the number that makes
 ## D-006's 40x claim concrete, since none of them cost bandwidth.
 ##

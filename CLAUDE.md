@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **278 tests**.
+buildings, (5) economy. `just test-unit` is green at **287 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
@@ -134,8 +134,10 @@ taken.** They live in D-038 and D-040 through D-042. At D-018's target of
   delivery is genuinely absorbing loss, not idling, so unreliable-with-
   resend is rejected (D-042). Note curve packets carry no sequence
   number, so **in-order delivery is load-bearing**, not incidental
-- **client derivation 0.72 µs/soldier** — a player's own 2,000-soldier
-  army costs ~1.4 ms/frame, but all 40,000 visible at once is 174% of a
+- **client derivation 0.72 µs/soldier** — *but see M5: that was measured
+  with no terrain sampler attached, and the real client always has one,
+  so it understated the true cost several-fold.* A player's own
+  2,000-soldier army costs ~1.4 ms/frame, but all 40,000 visible at once is 174% of a
   60 fps frame (D-041). Frustum culling before deriving is the next
   lever, ahead of any LOD work
 - the sweep (`just profile`) remains the authority on *scaling*, since a
@@ -203,6 +205,50 @@ so the offsets within a radius are computed once and cached
 (`TorusSpace.disk_offsets`) and reused by both `vision.gd` and
 `combat.gd`. If you add another radius-scanning system, use that table —
 do not reach for `distance()` per cell.
+
+**M5 (client scale) — the milestone D-015 called "LOD", renamed on
+evidence.** Exit criteria are D-044; the work is D-045. M4's numbers made
+"LOD" wrong in both directions: the simulation did not need it (the tick
+budget was already met), and the client had never been measured at all.
+So M5 measured the client first and built only what the numbers asked
+for.
+
+`just bench-render` is the new recipe — **native, because it needs a real
+GPU**; `test-client`'s software rasteriser can say whether the picture is
+correct but never how fast it is. It prints the video adapter, and **a
+frame time without hardware attached is not a number anyone can use**,
+the same rule as never quoting µs/squad without a squad count.
+
+On Intel Iris Xe integrated, at 1,000 squads / 26,644 soldiers:
+
+| | ms | fps |
+|---|---|---|
+| baseline | 94.50 | 10.6 |
+| + terrain sampled from a precomputed field | 66.70 | 15.0 |
+| + cull before derive (wrap-aware) | 56.06 | 17.8 |
+| + render LOD | 35.66 | **28.0** |
+
+500 squads now runs at ~57 fps. **The measurement overturned one of M5's
+own criteria before it was written**: batching squads by unit type was
+planned on the assumption of ~1,000 draw calls, and the real number was
+154 — Godot already frustum-culls per-squad `MultiMeshInstance3D`s. The
+frame was 97% CPU, all derivation, so batching would have solved nothing.
+That is what taking a baseline first is for.
+
+**Three rules carried out of it.** Terrain elevation is memoised
+(`TerrainGen.elevation_field`) — sampling noise per soldier per frame was
+the third instance of the same defect, after `distance()` per cell in
+vision and `by_id` per produced squad. Culling on a torus must test the
+**wrapped** copy (`TorusSpace.lattice_steps` is now the one definition,
+shared with terrain tiling and camera wrap) or armies vanish at the seam.
+And render LOD draws a distant squad **thinner, never smaller** — unit
+size is tactical information a player reads off the screen.
+
+**Watch `test-client`'s casualty gate.** It is meant to prove combat
+happened and is now satisfied by *founding a town hall*, because
+consuming the founding party reports through the casualty path. It passes
+without any fighting. Recorded in D-045; fix it when next touching the
+capture scenario.
 
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
@@ -338,6 +384,10 @@ vision.gd                Per-player vision field over cells (D-025).
                         every squad" stub D-022 flagged for M1.
 terrain_gen.gd           Periodic (seam-continuous) terrain noise.
 terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
+render_cull.gd           Wrap-aware render culling and LOD selection
+                        (D-045). All-static and pure, so the half with
+                        the interesting failure mode — which lattice copy
+                        of a squad to draw — is testable without a GPU.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -374,6 +424,8 @@ primitive_unit.gd       Tier-1 mesh generation (capsule/box/cylinder/
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
+bench_render.gd          Client render benchmark (D-045). NATIVE — it
+                        needs a real GPU, and prints which one.
 terrain_preview.gd       Headless terrain preview + chunk profiling.
 replay_info.gd           Reads a replay back and reconstructs state.
 game_design_decisions.md The living design doc. Read before deciding,

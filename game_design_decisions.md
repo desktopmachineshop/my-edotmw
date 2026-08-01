@@ -240,6 +240,397 @@ reading the server's own error log did, immediately.
 
 ---
 
+### D-045 · 2026-08-02 · Accepted — client render architecture, and the LOD the numbers actually asked for
+**Decision:** The client culls before deriving, samples terrain from a
+precomputed field, and thins distant squads with a camera-keyed,
+cosmetic-only render LOD. **Batching squads by unit type is rejected on
+measurement**, and D-012's simulation half is closed as not needed.
+
+**The baseline, taken before touching anything** (`just bench-render`,
+Intel Iris Xe integrated, 128x64, terrain on, client's own camera
+framing):
+
+| squads | soldiers | ms | fps | draw calls | of which CPU |
+|---|---|---|---|---|---|
+| 0 | 0 | 2.35 | 425 | 32 | 0.02 |
+| 100 | 2,644 | 10.00 | 100 | 40 | 9.31 |
+| 250 | 6,644 | 23.43 | 42.7 | 62 | 22.76 |
+| 500 | 13,336 | 46.58 | 21.5 | 89 | 45.04 |
+| 1,000 | 26,644 | 94.50 | **10.6** | **154** | **91.78** |
+
+**This overturned D-044 criterion 4 before a line of it was written**,
+which is what taking the baseline first is for. The criterion assumed
+~1,000 draw calls at 1,000 squads, one per squad's
+`MultiMeshInstance3D`. The real number is **154**: Godot already
+frustum-culls those instances at the RenderingServer level. Batching by
+unit type would have been a careful solution to a problem that does not
+exist. **97% of the frame was our own CPU, all of it derivation** — so
+the work went where the measurement pointed.
+
+**What was actually done, each measured:**
+
+| change | ms at 1,000 squads | fps |
+|---|---|---|
+| baseline | 94.50 | 10.6 |
+| + elevation sampled from a precomputed field | 66.70 | 15.0 |
+| + cull before derive (wrap-aware) | 56.06 | 17.8 |
+| + render LOD | 35.92 | 27.8 |
+| + viewport lookup hoisted out of the cull | 35.66 | **28.0** |
+
+2.6x overall. **500 squads / 13,336 soldiers now runs at ~57 fps on
+integrated graphics**, where it was 21.5.
+
+**1. Terrain sampled from a field, not from noise per soldier.**
+`TerrainGen.elevation_at` evaluates 3D simplex noise on every call, and
+the client's terrain sampler — D-006's fourth input — calls it **once per
+soldier per frame**, ~26,600 times a frame at full scale.
+`elevation_field()` computes it once per cell. Memoisation, not
+approximation: same generator, same cells, identical values. This is the
+third time the same shape of defect has cost this project real
+performance, after `TorusSpace.distance()` per cell in vision (232
+µs/squad) and `UnitRoster.by_id` per produced squad (858 ms in one tick).
+
+**2. Cull before deriving, wrap-aware.** The engine was discarding
+squads *after* the client had paid to derive every soldier in them. The
+cull has to know about the seam: the world tiles nine times (D-035), so a
+squad just past the seam is on screen at a wrapped position while its
+canonical coordinates are a map away. `RenderCull.nearest_offset` picks
+the lattice copy nearest the camera, and `TorusSpace.lattice_steps` now
+holds the one definition of that geometry, shared with terrain tiling and
+the camera wrap (D-044 criterion 6).
+
+This **also fixed a visual bug nobody had reported**: squads were never
+drawn on the tiled copies at all, so terrain wrapped across the seam and
+armies did not. Placing a squad at its visible copy is the same operation
+as culling on it.
+
+**3. Render LOD, cosmetic only.** Beyond 55 world units a squad is drawn
+with at most 12 soldiers, beyond 110 with 5. `alive` is untouched and
+`slot_offset` is still asked for the squad's real size, so a distant
+formation is drawn **thinner, never smaller** — unit size is tactical
+information a player is entitled to read correctly off the screen. The
+slots are sampled as `i * alive / n` rather than the first n, so the
+formation keeps its frontage instead of bunching at one end.
+
+Camera-keyed, which **D-012 explicitly permits for render and forbids for
+simulation**. `Formation.soldier_transforms_sampled` is a separate entry
+point from `soldier_transforms`, so every existing caller keeps full
+detail by construction, and a test proves the reduced path never changes
+`alive` or `composition_hash()` — D-006 clause 2's one-way boundary.
+
+**A live rendering bug found on the way.** `PrimitiveUnit` allocated one
+MultiMesh instance per soldier at full strength and never set
+`visible_instance_count`, so instances past the number written kept
+rendering at their last transform. **A squad that lost half its men went
+on displaying them, frozen, for the rest of the match.** Nothing numeric
+could notice — `alive` correct, hash correct, no desync — only the
+picture was wrong, which is the same class as the frame that once derived
+every soldier at y=0 and rendered them inside the terrain.
+
+**Rejected alternatives:** Batching by unit type (rejected on the
+baseline above — Godot already culls per-squad instances, and the frame
+was CPU-bound anyway). Deriving at a lower rate than the frame rate and
+interpolating (rejected — soldiers move continuously along the curve, so
+this needs per-soldier interpolation state, which D-006 clause 1
+forbids). Frustum-plane tests instead of screen-space projection
+(rejected — `Camera3D.get_frustum()`'s normal orientation is easy to get
+backwards, and both mistakes it produces, cull-everything and
+cull-nothing, look like "the culling does not work" while being opposite
+bugs).
+
+**Consequences:** `test-client` needed two fixes that D-031 had quietly
+broken and nothing had caught (see the amendment below). The benchmark
+duplicates the client's LOD tiers knowingly and narrowly — if the tiers
+are retuned, both move.
+
+**Revisit trigger:** All 1,000 squads visible at once is still 28 fps.
+That case is prevented by fog (D-004/D-025) and by the zoom cap, and a
+realistic client in a 20-player match knows ~54 squads. If a real match
+ever puts more than ~500 squads on one screen, the next lever is a
+distance tier that stops deriving individual soldiers entirely and draws
+a single marker per squad — which is where render LOD stops being
+cosmetic detail and starts being a different representation, and deserves
+its own decision.
+
+---
+
+**Amendment — `test-client`'s scenario had been broken since D-031, and
+one of its gates is vacuous.**
+
+Two defects, both surfaced by making client-side ownership honest, and
+neither caused by M5:
+
+1. **The capture scenario went silent the moment it did its job.**
+   Founding a town hall consumes the founding party the instant the order
+   is given (D-031), and `_drive_m2_scenario` returned early on
+   `squads.is_empty()` — so a client that made the correct opening move
+   owned nothing and stopped scripting. This is the **identical** defect,
+   in the identical shape, as the one M4 fixed in `bot_client.gd`: work
+   that needs a BUILDING sitting below a guard about SQUADS. It was
+   masked the same way too — the client kept dead squads in its owned
+   list, so the guard stayed false while every order it protected was
+   refused.
+2. **Its phase timings were absolute.** Rally at 1 s, withdraw at 30 s,
+   re-rally at 40 s were written when a player started with twelve
+   squads. Under D-031 the hall takes 40 s and the first trained unit
+   arrives later still, so every deadline had passed before the client
+   owned a soldier and all three phases fired in one frame. The scouts
+   never marched, nothing was ever concealed, and the verdict correctly
+   said so. Phases are timed from when the client first has an army now.
+
+**And the gate that still needs work:** `casualties_applied > 0` is
+supposed to prove combat happened. It is now satisfied by **founding a
+town hall**, because consuming the founding party is reported through the
+casualty path. The check passes without any fighting — precisely the
+vacuous-check failure D-022's audit exists to prevent. It is recorded
+here rather than fixed because the fix belongs with whoever next touches
+the capture scenario: the gate needs to distinguish casualties inflicted
+by combat from soldiers spent on construction.
+
+---
+
+### D-043 · 2026-08-02 · Accepted — M4's exit criteria, written retroactively, and the audit against them
+**Decision:** M4 shipped without written exit criteria, unlike M1
+(D-022), M2 (D-026) and M3 (D-027). This entry writes them down and
+audits M4 against them.
+
+Writing criteria *after* the work is exactly the failure mode D-022
+records — criteria that drift to fit what was produced. The defence used
+here is that **every criterion below is derived from a decision that
+predates M4**, and each names the decision it comes from. Nothing is
+derived from what M4 happened to produce.
+
+**The criteria M4 should have been given:**
+
+1. Per-squad update cost measured at D-018's full scale (~1,000 squads),
+   against D-020's ~50 µs budget and its 100 ms tick.
+2. Cost measured across a **range** of squad counts, not one point, so
+   accidental non-linearity is visible rather than inferred (D-018's
+   target assumes linearity).
+3. **Worst** tick measured, not only the mean (D-003 warns a large
+   engagement re-paths many squads at once; an average cannot see that).
+4. Bandwidth per client per second at D-018's 20 players, with a
+   budget-overrun count, against D-003's zero-cost-when-idle claim.
+5. Memory measured: the server at scale, and per virtual client, against
+   D-018's N-clients-in-one-process analysis.
+6. Q8 (ship map size) answered **from the measured curve** rather than
+   assumed.
+7. An explicit verdict on **D-021's GDExtension trigger**: the named
+   candidate kernel measured, and a yes/no with evidence attached.
+8. Data that **sizes D-012's LOD tiers** — which phase dominates, and at
+   what scale, on both the simulation and the rendering side.
+9. Client-side derivation cost measured (D-006 trades bandwidth for
+   client CPU; only one half of that trade had ever been quantified).
+10. The transport question answered — reliable versus
+    unreliable-with-resend, which D-026 explicitly listed as "an M4
+    measurement".
+11. Measurements taken through the **real system** — server, protocol and
+    the actual client path — not only synthetic harnesses.
+12. Every measurement reproducible from a named `just` recipe.
+13. What M4 deliberately does **not** measure stated explicitly at
+    completion, not left implied.
+
+**The audit:**
+
+| # | Verdict | Evidence |
+|---|---|---|
+| 1 | **Met** | 33 µs/squad, 73.4 ms worst tick at 1,000 squads (D-040) |
+| 2 | **Met** | count sweep at 100 / 250 / 500 / 1,000 |
+| 3 | **Met, with a scar** | see below |
+| 4 | **Met** | 595 B/client/s, 0 overruns (D-038) |
+| 5 | **Met** | server 42.5 MB; ~1.4 MB per virtual client |
+| 6 | **Met, then re-answered** | see below |
+| 7 | **Met** | hatch stays shut, candidate retired (D-040) |
+| 8 | **Met for simulation, MISSED for rendering** | see below |
+| 9 | **Met** | 0.72 µs/soldier (D-041) |
+| 10 | **Met** | reliable-ordered kept, on measured loss (D-042) |
+| 11 | **Met, and it was the milestone's most valuable finding** | see below |
+| 12 | **Met** | `just profile`, `just test-load`, `just test-client` |
+| 13 | **Missed** | see below |
+
+**Criterion 3 — met with a scar.** The worst tick was *not* measured at
+first. D-038's original pass reported a comfortable 20 ms average while
+the real spike was 323 ms, and the correction is recorded in D-038
+because the mistake is instructive. It ended up met, but only after the
+average had already produced one confident wrong conclusion.
+
+**Criterion 6 — met, then re-answered inside the same milestone.** D-038
+answered Q8 as "keep the ship map at or below ~8,192 cells unless field
+building is amortised". D-040 then amortised it, and the answer changed
+completely: worst tick is now flat in map size, so the solver no longer
+bounds it at all. Both answers were correct when taken. Worth recording
+that a milestone's own later work invalidated its earlier conclusion —
+that is what a conditional answer is *for*.
+
+**Criterion 8 — the real gap, and it was a knowing one.** Simulation-side
+sizing data exists and is good: combat dominates at every scale, which is
+where simulation LOD would have something to save. **Rendering-side
+sizing data does not exist at all.** Nothing has ever been drawn at
+scale.
+
+This is not a discovery — Q15 predicted it precisely, saying M4 leaves
+"D-012's LOD tiers only partly served: simulation LOD is measurable, but
+rendering LOD is not, and M5 must not design that half blind." So the
+gap is real, accepted deliberately, and its trigger is now due. **It is
+why M5 opens by measuring the client rather than by building LOD**
+(D-044).
+
+**Criterion 11 — met, and the most valuable thing M4 produced.** The
+sweep and a live 20-player run disagreed by an order of magnitude (~29 ms
+against 866 ms), and the sweep was the one that could not see the truth:
+`UnitRoster.by_id` re-scanned `/units` from disk on every call, which a
+harness resolving its defs once at setup structurally cannot reproduce.
+Had M4 been judged on synthetic profiling alone it would have passed
+while the live server spent eight tick budgets in a filesystem walk.
+
+**Criterion 13 — missed.** M4's scope boundary lives in Q15's deferral
+note, but was never restated when the milestone was called complete.
+That is the documentation gap this entry closes, and D-044 criterion 3
+makes the same omission impossible for M5 by requiring Q15 to be either
+closed or explicitly re-armed.
+
+**Verdict: M4 is complete on the simulation and network side.** One
+criterion (8) is half-missed by prior agreement rather than by oversight,
+and one (13) is a documentation gap now closed. Neither blocks M5;
+criterion 8's missing half *is* M5's first slice.
+
+**Consequences:** The milestone ladder gains a standing rule —
+**exit criteria are written before the milestone, not after.** M4 is the
+only milestone that broke it, and this audit is the cost of that. The
+practice exists because M1's first "complete" was wrong in two ways
+(D-022) and M2's and M3's reviews each found real failures a green suite
+could not see.
+
+**Revisit trigger:** None — M4 is closed. If criterion 8's rendering half
+turns out to change any conclusion M4 drew about the simulation, that is
+a D-038/D-040 amendment, not a reopening of this entry.
+
+---
+
+### D-044 · 2026-08-02 · Accepted — M5's exit criteria
+**Decision:** M5 is **"draw it at scale"**, not "LOD". D-015's ladder
+named it LOD; M4's measurements make that name wrong in both directions,
+so the milestone is reshaped to match what was measured rather than what
+was guessed in July.
+
+**Why the rename.** The simulation does not need LOD: D-040 brought the
+worst tick to 73.4 ms at D-018's full 1,000 squads, inside D-020's 100 ms
+with ~27% headroom, and D-012's own wording is that LOD is built "only
+for the tiers M4's profiling shows are actually necessary" — on the
+simulation side, currently none. Meanwhile the client has never been
+measured at all (D-043 criterion 8), and Q15's deferral trigger —
+*"client-render scale must be measured before M5 commits to any rendering
+LOD tier"* — is now due.
+
+Two structural facts make the render path the suspect before any LOD
+tier: `client.gd` builds **one `MultiMeshInstance3D` per squad**, so
+1,000 squads is ~1,000 draw calls; and `_refresh_squads` derives **every
+known squad every frame**, including squads nowhere near the camera —
+which is the frustum-culling lever D-041 already named as coming *ahead*
+of any fidelity reduction.
+
+So: **measure the client, take the cheap structural wins, then build only
+the LOD the numbers demand.** LOD is an outcome of this milestone, not
+its premise.
+
+**Hardware caveat, stated before the work rather than after.** The
+available GPU is integrated/modest, so M5 will **not** definitively
+answer "can a client draw 40,000 soldiers". It will produce the shape of
+the curve, the draw-call and derivation costs, and an honest
+extrapolation — and it will re-arm Q15 with a sharper trigger naming the
+hardware still needed rather than letting it lapse.
+
+**The criteria.** Each derived from an accepted decision, each
+observable-to-fail, numbered so a review can go line by line as D-026's
+and D-027's did.
+
+*Measurement — closes or sharpens Q15*
+
+1. `just bench-render` exists: a **native** recipe (D-014 — the GUI
+   client needs a GPU, and `test-client`'s Mesa software rasteriser
+   cannot answer a performance question), running without a server, that
+   sweeps squad counts to D-018's ~1,000 and reports per count: mean
+   frame time, **worst** frame time, draw calls per frame, and soldiers
+   drawn.
+2. Every reported figure names **the GPU adapter it was taken on**, and
+   the recipe prints it. Same discipline as CLAUDE.md's rule that
+   µs/squad is never quoted without a squad count: a frame time with no
+   hardware attached is not a number anyone can use.
+3. Results recorded here, and **Q15 either closed or re-armed with a
+   sharper trigger** naming the hardware still required. It must not
+   silently lapse — D-043 criterion 13 exists because that already
+   happened once.
+
+*Structural wins, measured before and after*
+
+4. Squads are drawn in batches keyed by **unit type** (and live/ghost),
+   not one `MultiMeshInstance3D` per squad. Draw calls per frame at 1,000
+   squads fall by at least an order of magnitude, with before/after
+   numbers from criterion 1's harness.
+5. Squads outside the camera are **not derived**. The cull is
+   **wrap-aware**: a squad visible only through a seam copy must still be
+   derived and drawn, and a test proves a squad across the seam is not
+   culled. Getting this wrong makes armies vanish near the seam — D-008's
+   recurring torus tax.
+6. The lattice step vectors are defined **once**, promoted out of
+   `client.gd`'s terrain builder into `TorusSpace`. Terrain tiling,
+   camera wrap and the new cull must not become three copies of the same
+   arithmetic — M3 deleted a duplicated spawn formula for exactly this
+   reason (D-036).
+7. Per-frame derivation cost at full scale re-measured against D-041's
+   29 ms / 174%-of-a-frame baseline.
+
+*LOD, only if the numbers demand it*
+
+8. **If** frame time at target scale still misses a 60 fps budget after
+   4–7, a **render** LOD tier is implemented: camera-keyed (D-012
+   explicitly permits this for render), **cosmetic only**, with a test
+   proving it never feeds back into simulation, into
+   `composition_hash()`, or into anything the server reads — D-006 clause
+   2's one-way boundary.
+9. **If not**, D-012's render half is resolved with the evidence and an
+   explicit revisit trigger — the same standard as the simulation half,
+   not an unstated assumption that it is fine.
+10. D-012's **simulation** half is resolved as *not needed yet*, citing
+    D-040's 73.4 ms at 1,000 squads, with a written revisit trigger.
+11. **Q9's remainder is answered** rather than deferred a third time:
+    whether tick rate varies by LOD tier.
+
+*The picture, not just the counters*
+
+12. `just test-client` green **and the PNG inspected**. Batching and
+    culling are precisely the class of change where every counter passes
+    and the image is wrong — this project has already shipped a frame
+    with 12 squads drawn, 384 soldiers derived, zero desyncs and no
+    visible soldiers at all (D-022's audit).
+13. A human `run-client` session confirms squads look right while panning
+    across both seams, at minimum and maximum zoom.
+
+*Process*
+
+14. Every new check **observed to fail** before it is trusted (D-022's
+    standing rule), with perturbation and revert applied atomically.
+15. `just test-unit` green; `just test-load 20 120` still green — the
+    client changes touch `ClientState`, so the server path must be shown
+    unaffected rather than assumed to be.
+16. CLAUDE.md's status section and this log updated to match.
+
+**Rejected alternatives:** Building LOD as D-015's ladder names it
+(rejected — D-012's rationale is explicitly against building a complex,
+fairness-sensitive system against guessed numbers, and the simulation
+budget is already met). Making M5 about playability instead (rejected for
+now — D-027's "is it any good" question is real and still open, but Q15's
+trigger is *due* and gates M7; playability has no such deadline).
+Deferring the client measurement again (rejected — that is how Q15 nearly
+lapsed once already).
+
+**Revisit trigger:** If criterion 1's baseline shows the client already
+meets 60 fps at target scale untouched, criteria 4–7 become optimisations
+without a problem to solve, and M5 should shrink to the measurement plus
+resolving D-012 — not proceed out of momentum.
+
+---
+
 ### D-042 · 2026-08-01 · Accepted — transport stays reliable-ordered
 **Decision:** Keep ENet reliable, ordered delivery for everything.
 **Unreliable-with-resend is rejected**, and the M4 measurement it was
@@ -363,6 +754,34 @@ the binding constraint at realistic counts).
 **Revisit trigger:** If frustum culling lands and a realistic engagement
 still exceeds ~30% of a frame in derivation, that is the point to bring
 D-012's LOD to the client rather than tune this further.
+
+**Corrected 2026-08-02 (M5): 0.72 µs/soldier understated the real cost,
+because the sweep passed no terrain sampler.**
+
+D-006's input tuple is (curve, formation shape, slot index, **terrain
+sample**), and the real client always supplies that fourth input — it is
+what stands soldiers on the ground instead of at y=0. The sweep behind
+the table above passed `Callable()`, so it skipped the sampler entirely
+and measured a client that does not exist.
+
+Measured with the sampler attached, as the client actually runs:
+**~3.4 µs/soldier**, not 0.72 — nearly five times more, because
+`TerrainGen.elevation_at` evaluates 3D simplex noise per call and the
+sampler is called once per soldier per frame. Memoising elevation into a
+per-cell field (D-045) took it back down, and that single change was
+worth 29% of the whole frame at full scale.
+
+The conclusions this entry drew survive — derivation is comfortable at
+realistic on-screen counts and binds only the pathological one — but the
+margin was much thinner than the number said.
+
+**This is the same failure as D-043 criterion 11's**, one milestone
+later and in the opposite direction: there, a harness resolved UnitDefs
+once at setup while the live server resolved them per tick; here, a
+harness omitted an input the live client always provides. Both are a
+measurement of something adjacent to the thing being measured. The rule
+worth keeping: **when a harness stands in for the client, list what the
+client feeds it and check the harness feeds the same.**
 
 ---
 
@@ -2051,6 +2470,35 @@ swappable from M1 onward even though LOD itself isn't built until M5.
 **Revisit trigger:** M4's profiling data determines which LOD tiers (if
 any) are actually needed.
 
+**Resolved 2026-08-02 (M5), both halves, on measurement.**
+
+**Simulation LOD: not needed, and not built.** D-040 brought the worst
+tick to 73.4 ms at D-018's full 1,000 squads, inside D-020's 100 ms with
+~27% headroom, and the average to 33 ms. This entry's own rule is that
+LOD is implemented "only for the tiers M4's profiling shows are actually
+necessary"; on the simulation side that is none. Building it anyway would
+have meant a complex, fairness-sensitive system — the one whose failure
+mode is combat outcomes depending on where somebody was looking — against
+a budget already met.
+
+*Revisit trigger:* the tick budget being exceeded at full scale, or
+D-018's player/squad counts being revised upward. Not "it feels slow" —
+`just profile` reports the worst tick, and that is the number.
+
+**Render LOD: needed, built, and camera-keyed** — see D-045. The client
+was at 10.6 fps drawing 1,000 squads and is at 28.0 after culling,
+memoising terrain and thinning distant squads, with 500 squads at ~57
+fps. The camera-keying that would be a fairness bug in simulation is
+safe here for the reason this entry gives: it cannot affect an outcome,
+and a test proves the reduced path never changes `alive` or the
+composition hash.
+
+**Q9's remainder is answered: tick rate does NOT vary by LOD tier.**
+There are no simulation LOD tiers for it to vary across. If simulation
+LOD is ever built, per-tier tick rate becomes a live question again and
+must be answered then rather than assumed — but it is no longer an open
+item hanging over the ladder.
+
 ---
 
 ### D-013 · 2026-07-28 · Accepted
@@ -2440,6 +2888,26 @@ items resolved as:
   Shipping without ever having drawn the target soldier count is the risk
   this decision knowingly accepts; the trigger is what keeps it accepted
   rather than forgotten.
+
+  **Trigger met 2026-08-02 (M5), and RE-ARMED rather than closed.**
+  `just bench-render` now draws the real client path at 100/250/500/1,000
+  squads and reports frame time, worst frame, draw calls and the GPU it
+  ran on (D-045). So rendering LOD is no longer designed blind — that
+  half of the deferral is discharged.
+
+  What is **not** discharged: this was measured on **Intel Iris Xe
+  integrated graphics**, and 1,000 squads / 26,644 soldiers renders at
+  28 fps there. Whether the target holds on the hardware players will
+  actually use is still unmeasured, and an integrated GPU cannot answer
+  it — favourably or unfavourably.
+
+  **Sharpened trigger:** before M7, run `just bench-render` on a discrete
+  GPU (the numbers are meaningless without the adapter name, which the
+  recipe prints for exactly this reason) at the map size and squad count
+  the ship configuration uses. The specific unknown is whether the
+  remaining cost is CPU-bound — it is 90% CPU on integrated, which
+  predicts a discrete GPU changes little and makes *derivation*, not
+  fill rate, the thing to watch.
 
 **Blocking M7 / product-level:**
 - **Q3 — Who runs the server?** Dedicated (whose money, per-match cost?),

@@ -232,6 +232,47 @@ func _axial_round(fractional: Vector2) -> Vector2i:
 ## geometry — no torus, no wrap, no instance state — so it's static and
 ## public: disk_offsets()'s callers (Vision, Combat) need this to rank
 ## candidates without re-deriving it via a wrap-aware distance() call.
+## The two world-space vectors that tile this torus (D-035, D-045).
+##
+## Stepping `width` in q moves world x only. Stepping `height` in r moves
+## BOTH z and x, because x depends on r/2 — tiling by an axis-aligned
+## rectangle instead looks correct straight ahead and tears at the
+## diagonal seams.
+##
+## Defined once because there are three consumers: the client's nine-copy
+## terrain tiling, the camera's wrap, and render culling. M3 deleted a
+## spawn formula that had been duplicated between server and client for
+## exactly this reason (D-036), and a torus has more of these traps than
+## most geometries — every distance, neighbour and now every visibility
+## test has to know about the seam.
+func lattice_steps() -> Array[Vector3]:
+	var out: Array[Vector3] = [
+		Vector3(float(width) * hex_size * SQRT_3, 0.0, 0.0),
+		Vector3(
+			float(height) * 0.5 * hex_size * SQRT_3,
+			0.0,
+			float(height) * 1.5 * hex_size),
+	]
+	return out
+
+
+## The nine world offsets at which this torus's contents appear: the
+## centre copy and its eight neighbours across both seams.
+##
+## The centre (0,0) is FIRST, so a caller scanning for the first visible
+## copy prefers the canonical position and only reaches for a wrapped one
+## when the canonical position is off screen.
+func lattice_offsets() -> Array[Vector3]:
+	var steps := lattice_steps()
+	var out: Array[Vector3] = [Vector3.ZERO]
+	for i in [-1, 0, 1]:
+		for j in [-1, 0, 1]:
+			if i == 0 and j == 0:
+				continue
+			out.append(steps[0] * float(i) + steps[1] * float(j))
+	return out
+
+
 static func hex_length(d: Vector2i) -> int:
 	return int((abs(d.x) + abs(d.x + d.y) + abs(d.y)) / 2.0)
 
