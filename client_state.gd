@@ -214,6 +214,16 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 		# below, and only counted when it was actually true.
 		if _ghosts.has(id):
 			reveal_events += 1
+
+		# Learn ownership of squads produced after the welcome message.
+		# Without this a trained unit belongs to nobody as far as the
+		# client is concerned — not selectable, not orderable, and refused
+		# if an order somehow reached the server. Bots stopped issuing any
+		# orders at all once their founding party was spent, because the
+		# only squad they knew they owned no longer existed.
+		if int(entry.get("owner", 0)) == player and not squads.has(id):
+			squads.append(id)
+
 		composition[id] = {
 			"def_id": def_id,
 			"alive": int(entry["alive"]),

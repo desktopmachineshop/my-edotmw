@@ -198,6 +198,12 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		buf.put_u16(def_id.size())
 		buf.put_data(def_id)
 		buf.put_u32(int(entry["alive"]))
+		# Owner rides along so a client learns it owns a squad it did not
+		# start with. The welcome message lists what a player begins with,
+		# and nothing updated that list when a building PRODUCED a squad —
+		# so trained units could not be selected or ordered by anybody,
+		# including the player who paid for them.
+		buf.put_u32(int(entry.get("owner", 0)))
 	return buf.data_array
 
 
@@ -215,7 +221,7 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
 		var def_id := name_bytes.get_string_from_utf8()
 		var alive := buf.get_u32()
-		out.append({"id": id, "def_id": def_id, "alive": alive})
+		out.append({"id": id, "def_id": def_id, "alive": alive, "owner": buf.get_u32()})
 	return out
 
 

@@ -293,7 +293,10 @@ func squad_info_entries(squad_ids: Array) -> Array:
 	for id in squad_ids:
 		if id < 0 or id >= _cell.size():
 			continue
-		out.append({"id": id, "def_id": String(_def_id[id]), "alive": _alive[id]})
+		out.append({
+			"id": id, "def_id": String(_def_id[id]),
+			"alive": _alive[id], "owner": _owner[id],
+		})
 	return out
 
 

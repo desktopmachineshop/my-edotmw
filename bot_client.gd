@@ -272,7 +272,12 @@ class VirtualClient:
 		# the economic opening a real player makes, and what puts the
 		# production path (cost, squad cap, queue, spawn) under the load
 		# test rather than leaving it to unit tests.
-		if _orders_issued > 0 and _orders_issued % 4 == 0:
+		# Every other order, not every fourth. Squad count is the axis
+		# D-018's budget is stated in, and the load test could not reach a
+		# count comparable to M2's 48-squad measurement while bots
+		# recruited this slowly — leaving D-027 criterion 17 measurable but
+		# not COMPARABLE.
+		if _orders_issued > 0 and _orders_issued % 2 == 0:
 			for wire_id in state.buildings:
 				var info: Dictionary = state.buildings[wire_id]
 				if int(info["owner"]) != state.player or bool(info["destroyed"]):

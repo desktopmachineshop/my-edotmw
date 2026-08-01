@@ -279,6 +279,42 @@ at the speed a fight actually happens. Four human players, and an
 opinion. Nothing in this repository can produce that, and a milestone
 named "launchable MVP" should not be closed without it.
 
+**Amended 2026-08-01, by Dave's call: the session criterion is ONE human
+against three bots, plus a written judgement.** Four humans on four
+machines is a logistics problem rather than an engineering one, and it
+would leave M3 unclosable on any timescale a solo developer controls. One
+human against three bots is the strongest verification this project's
+actual team can produce — and it has already demonstrated its worth by
+finding four defects in twenty minutes that 260 tests had not.
+
+This is a deliberate lowering of the bar, recorded as such. The risk it
+accepts: three bots are not three people, and the things four humans
+would surface — collusion, unexpected build orders, someone doing the
+thing nobody designed for — stay untested until M7's Steam work brings
+real opponents.
+
+**And a scope reversal that makes it defensible: BOTS ARE NOW A SHIPPED
+FEATURE.** D-015 scoped M3 with "no AI opponent", so bots existed purely
+as a load-test fixture. Dave's call reverses that — they ship, which
+means effort spent making them cleverer and more genuinely competitive is
+product work rather than test scaffolding.
+
+The reason this matters beyond the feature list: it removes the tension
+that has quietly shaped every load test so far. Bot behaviour was written
+to *exercise code paths* — converge here, raid there, found once — and
+that is exactly why every defect the human playtest found was invisible
+to them: bots did each thing once, in the expected order. Making them
+play to win instead of play to cover makes them better opponents AND
+better tests at the same time, with no conflict between the two goals.
+The reverse held before: every hour spent on smarter bots was an hour
+spent on scaffolding.
+
+Consequences: D-015's "no AI opponent" cut line no longer holds and
+should be treated as superseded for M3 onward. Bot quality becomes a
+product concern with its own budget, and D-018's scale targets now have
+to accommodate whatever an AI opponent costs per player at full scale —
+worth measuring at M4 rather than assuming it is free.
+
 **Amended 2026-07-30, when the seven open items closed** (see section 2).
 Four resolved as recommended and change nothing here. Three did not, and
 these criteria change with them:
