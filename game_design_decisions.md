@@ -20,6 +20,95 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-038 · 2026-08-01 · Accepted — M4's first measurements
+**Decision:** Record what the scale sweep actually measured, and what it
+settles. Three things were being taken on faith and are now numbers:
+whether simulation cost is linear in squad count, where the flow-field
+solver breaks (Q8), and whether any kernel needs GDExtension (D-021).
+
+Measured by `just profile` — the simulation driven directly at chosen
+counts rather than played, because squad count in a real match is
+whatever production produces and D-018 targets ~1,000.
+
+**1. Cost is linear in squad count.** 128x64 map, 200 ticks:
+
+| squads | µs/squad | vision | combat | ms/tick |
+|---|---|---|---|---|
+| 100 | 74.8 | 13.3 | 59.8 | 7.5 |
+| 250 | 79.7 | 11.3 | 66.9 | 19.9 |
+| 500 | 80.5 | 10.4 | 68.5 | 40.3 |
+| 1000 | 74.1 | 9.6 | 62.9 | 74.1 |
+
+Tenfold more squads, no per-squad growth. **At D-018's full scale that
+is 74 ms inside a 100 ms tick** — it fits, with ~26% headroom, and
+D-020's revisit trigger is not tripped. Vision cost per squad *falls* as
+count rises (13.3 → 9.6) because the per-player coverage field is stamped
+once and shared however many squads read it, which is D-025 part 1's
+argument paying off. Combat is ~85% of the tick.
+
+**2. Q8 — ship map size. The flow-field solver is linear in cells, and
+that is not the problem.** 250 squads, varying map:
+
+| cells | µs per field build | µs/squad |
+|---|---|---|
+| 2,048 | 4,146 | 31.7 |
+| 8,192 | 16,818 | 81.6 |
+| 18,432 | 37,169 | 103.7 |
+| 32,768 | 67,434 | 156.4 |
+
+Almost exactly 2 µs per cell at every size — no cliff, no bend. D-021
+guessed at a threshold "over 10,000+ cells"; there isn't one, because
+nothing about the algorithm degrades.
+
+**The real constraint is spike size against the tick.** ONE field build
+at 32,768 cells costs 67 ms — two thirds of an entire 100 ms tick, for a
+single squad choosing a new destination. At the current 8,192 it is
+16.8 ms, or 17% of a tick, and D-003 already warns that a large
+engagement re-paths many squads at once. That is an invalidation storm
+with a hard number attached.
+
+**Q8's answer: keep the ship map at or below ~8,192 cells** unless field
+building is amortised. This is a budget bounded by latency spikes, not by
+average throughput — average tick cost at 32,768 cells is a comfortable
+39 ms, which is exactly why measuring only the average would have missed
+it.
+
+**3. D-021 — no kernel needs GDExtension yet, and the cheap fix comes
+first.** The flow-field solver is the named candidate and it *is* the
+thing exceeding budget, but not because GDScript is too slow per cell:
+2 µs/cell over 32,768 cells would be a big number in any language. The
+problem is doing it all inside one tick.
+
+The GDScript-level fixes are untried and obvious: amortise a build across
+several ticks (a squad already tolerates a tick of latency before its
+curve is extended), or widen destination sharing so fewer distinct fields
+are built at all — the sweep shows 1,112 builds for 250 squads, which is
+far more re-pathing than D-007's per-destination sharing should require.
+Per M4's fix policy, those come before the native escape hatch.
+
+**Rationale:** All three were assumptions load-bearing enough to appear
+in other decisions. D-018's target assumed linearity, Q8 assumed a
+threshold existed, and D-021 assumed the flow field would be the kernel
+that broke. Two of three survived contact; the third was right about
+*which* kernel and wrong about *why*.
+
+**Rejected alternatives:** Measuring only at 1,000 squads (rejected — a
+single point gives pass/fail without saying whether anything is
+accidentally quadratic, which is the defect class already found twice
+here). Measuring average tick cost alone (rejected — it hides exactly the
+spike that bounds map size).
+
+**Consequences:** Q8 is answered pending the amortisation work. D-021
+stays unexercised, deliberately. D-012's LOD tiers gain their first
+evidence: combat dominates at every scale, so combat resolution is where
+LOD has something to save.
+
+**Revisit trigger:** If amortising field builds does not bring the spike
+under a tick at the chosen map size, revisit GDExtension for that kernel
+specifically — and only that kernel.
+
+---
+
 ### D-027 · 2026-07-30 · Accepted
 **Decision:** M3's exit criteria, written down before the code, in the
 shape D-022 established and D-026 confirmed — each criterion names the
@@ -314,6 +403,23 @@ should be treated as superseded for M3 onward. Bot quality becomes a
 product concern with its own budget, and D-018's scale targets now have
 to accommodate whatever an AI opponent costs per player at full scale —
 worth measuring at M4 rather than assuming it is free.
+
+**M3 CLOSED 2026-08-01 by Dave's call.** Every systems criterion is met
+with evidence above. The amended session criterion is partly discharged:
+the human-versus-bots sessions happened and produced five defects, all
+fixed and regression-tested. The **written judgement was not produced** —
+recorded plainly rather than glossed, because that is the part D-027
+argued no automated check substitutes for, and skipping it is a choice
+rather than an oversight.
+
+What that leaves genuinely unknown, and worth revisiting whenever the
+game is next played: whether founding somewhere feels like a decision,
+whether losing the founders reads as a fair price at the moment it
+happens, whether fog at 128x64 hides too much, and whether the counter
+triangle is legible at the speed a fight resolves. None of those are
+bugs, so none will surface as a failing test; they will surface as a
+game that is correct and not much fun, which is the failure mode this
+criterion existed to catch.
 
 **Amended 2026-07-30, when the seven open items closed** (see section 2).
 Four resolved as recommended and change nothing here. Three did not, and

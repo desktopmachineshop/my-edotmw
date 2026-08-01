@@ -569,3 +569,21 @@ gen-terrain-preview CHUNK_SIZE="16": _import
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
     fi
+
+# M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
+#
+# Drives the simulation directly at 100/250/500/1000 squads rather than
+# playing a match, because squad count in a real game is whatever
+# production produces and D-018 targets ~1,000. Prints CSV: the SHAPE of
+# the curve is the deliverable, not the endpoint — cost should stay flat
+# per squad, and a bend means something is accidentally quadratic.
+[doc("Scale sweep: simulation cost at 100/250/500/1000 squads")]
+profile: _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p edotmw run --rm --no-deps test --headless --script profile_sweep.gd
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script profile_sweep.gd
+    fi

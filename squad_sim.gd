@@ -124,6 +124,7 @@ var _fields := {}
 var last_tick_usec: int = 0
 var total_tick_usec: int = 0
 var fields_built: int = 0
+var total_field_usec: int = 0
 var curves_rebuilt: int = 0
 var vision_rebuilds: int = 0
 
@@ -408,8 +409,15 @@ func _apply_move_order(squad: int, destination: Vector2i) -> void:
 func _field_for(destination_index: int) -> FlowField:
 	if _fields.has(destination_index):
 		return _fields[destination_index]
+	# Timed separately because this is the one kernel D-021 names as its
+	# GDExtension candidate: a wrap-aware BFS over every cell, rebuilt per
+	# destination. Whether it needs escaping to native code is an M4
+	# question with a number attached, not a matter of opinion.
+	var started := Time.get_ticks_usec()
 	var field := FlowField.new()
 	field.build(space, space.from_index(destination_index), _passable)
+	total_field_usec += Time.get_ticks_usec() - started
+
 	_fields[destination_index] = field
 	fields_built += 1
 	return field
