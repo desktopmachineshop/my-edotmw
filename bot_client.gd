@@ -578,6 +578,7 @@ func _report() -> void:
 	# for D-026 criterion 6's load half; the recipe compares it against the
 	# server log's FOG_TOTAL_SQUADS (see _max_known_squads()'s comment for
 	# why this must be a max, not a sum/union across bots).
+	print("bot_client.gd: MEMORY — %.1f MB for %d virtual clients, %d soldiers derived" % [float(OS.get_static_memory_usage()) / 1048576.0, _clients.size(), soldiers])
 	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
