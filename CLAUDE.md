@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **287 tests**.
+buildings, (5) economy. `just test-unit` is green at **299 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
@@ -111,13 +111,22 @@ fight better than line infantry, and only they can build a town hall —
 expressed in `BuildingDef.built_by`, which is also how they are barred
 from building anything else. Everything else is produced.
 
-**Use `just test-load 4 40`, not `4 12`.** Spawns are far apart on a
-128×64 map, so four armies cannot reach each other inside 12 seconds —
-the run fails with `casualties_applied=0 conceal_events=0
-reveal_events=0`, which is the verdict correctly reporting that combat
-and fog never happened rather than passing vacuously. Bots converge on
-the middle of the map deliberately, but they still need time to get
-there.
+**Use `just test-load 4 120`.** Two separate reasons, both learned the
+hard way:
+
+- Spawns are far apart on a 128×64 map, so four armies cannot reach each
+  other quickly. A short run fails with `casualties_applied=0
+  conceal_events=0 reveal_events=0` — the verdict correctly reporting
+  that combat and fog never happened rather than passing vacuously.
+- **A town hall takes 40 seconds and the founding party is spent on it
+  (D-031), so a player owns no soldiers until production finishes.** Any
+  run shorter than ~90 s reports `soldiers=0` and fails, and that is the
+  check working, not a bug. `4 40` was the recommendation here for a
+  whole milestone and could not have passed since D-031 landed;
+  `test-client`'s 15 s default had the same problem. **When the opening
+  changes, every timing tuned against the old one is stale** — that
+  applies to the load test, the capture scenario, and any scripted bot
+  phase.
 
 **M4 (scale + performance): every measurement it set out to take is
 taken.** They live in D-038 and D-040 through D-042. At D-018's target of
@@ -412,6 +421,13 @@ bot_client.gd            Headless load-test bot. Runs N *virtual*
 unit_def.gd             UnitDef schema — extend fields here when a new
                         unit needs a stat that doesn't exist yet, and
                         record the change in D-010's schema log.
+/civs/*.tres           Civilizations as data (D-047). A civ fields a
+                        SUBSET of unit archetypes and tunes them its own
+                        way, so the same type is not the same troops in
+                        two armies. Mechanical differences are declarative
+                        knobs EVERY civ has — never a per-civ branch, and
+                        a test fails if any .gd file names a civ at all.
+civ_def.gd              CivDef schema; civ_roster.gd loads them.
 unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads

@@ -75,8 +75,8 @@ func test_unit_def_ids_are_unique() -> void:
 
 
 func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
-	var def := load("res://units/militia.tres") as UnitDef
-	assert_not_null(def, "militia.tres should load as a UnitDef")
+	var def := UnitRoster.first()
+	assert_not_null(def, "the roster should ship at least one unit")
 	if def == null:
 		return
 
@@ -99,7 +99,7 @@ func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
 
 
 func test_rebuild_is_idempotent_and_tracks_squad_size() -> void:
-	var def := load("res://units/archers.tres") as UnitDef
+	var def := UnitRoster.first()
 	var unit := PrimitiveUnit.new()
 	autofree(unit)
 

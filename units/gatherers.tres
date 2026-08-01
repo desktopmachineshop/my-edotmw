@@ -7,6 +7,7 @@ script = ExtResource("1")
 id = &"gatherers"
 display_name = "Gatherers"
 civ = &"neutral"
+archetype = &"gatherers"
 squad_size = 16
 health = 35.0
 damage = 1.0

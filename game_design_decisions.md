@@ -240,6 +240,174 @@ reading the server's own error log did, immediately.
 
 ---
 
+### D-047 · 2026-08-02 · Accepted — civilizations as data: archetypes, subsets, and per-civ tuning
+**Decision:** A **unit archetype** is the shared idea of a troop type —
+spearmen, archers, cavalry. A **UnitDef is one civ's version of an
+archetype**. Each civ fields a *subset* of the archetypes, and tunes the
+ones it has differently, so the same type is not the same troops in two
+armies.
+
+The worked example that set this: one civ's spearmen may be cheap and
+weak, fielded in numbers quickly, and lose to a smaller body of another
+civ's stronger spearmen. Same archetype, different answer to it.
+
+**Schema (logged against D-010):** `UnitDef` gains `archetype`. It
+already has `civ`, and it already has per-unit `cost_*`, stats and
+`bonus_vs`, so "cheap and weak" versus "expensive and strong" is
+expressible today with no new machinery.
+
+**A civ's roster is DERIVED, not listed.** A unit declares its `civ`;
+which archetypes a civ fields is simply which unit files name it. Adding
+a `.tres` gives that civ a type — no register to update, and no second
+place for the roster to disagree with itself. `CivDef` therefore carries
+only what is genuinely civ-level: display name, starting stockpile,
+buildings, and declarative modifiers.
+
+**Why `archetype` is not just `armour_class`.** `bonus_vs` already keys
+on `armour_class` (infantry/cavalry/missile), which is why the counter
+triangle survives new civs untouched — a civ added tomorrow is countered
+correctly by every civ written before it, with no edits anywhere. That
+was a genuinely lucky call in D-032. But `armour_class` has three values
+and exists to answer "what beats this". `archetype` answers "what IS
+this", and there are more archetypes than armour classes.
+
+**What archetype buys, and it is the point of the whole design:** every
+script can stay civ-agnostic. The client's train keybinds bind to
+*archetype*, so one key trains your civ's spearmen whatever that civ
+names them; production, UI grouping and AI all reason about archetypes.
+Nothing needs to know a civ id — which is exactly what D-046 criterion 3
+tests for.
+
+**Mechanical asymmetry stays declarative**, per D-046's governing
+constraint: a civ that wants a new mechanic adds a knob every civ has and
+turns it. `CivDef`'s modifiers are that surface.
+
+**Rejected alternatives:** One shared UnitDef per archetype plus per-civ
+stat multipliers in `CivDef` (rejected — less duplication, but it hides
+a unit's real numbers behind arithmetic in another file, and this project
+optimises for stats being directly readable and editable as text; balance
+work wants to see the number, not derive it). Per-civ unit ids referenced
+directly in `bonus_vs` (rejected — every new civ would then require
+editing every existing civ's counter lists, which is precisely the
+"adding a civ is an engineering project" failure D-046 exists to
+prevent).
+
+**Consequences:** The existing four units become one civ's roster and
+gain an `archetype`. The client's keybind table stops naming units and
+starts naming archetypes. `UnitRoster` gains civ- and archetype-aware
+lookups; `UnitRoster.first()` — currently "the default unit" — has to
+become civ-relative or its callers do.
+
+**Revisit trigger:** If two civs want the same archetype to differ
+structurally rather than numerically — different formation behaviour, a
+different number of attacks — that is the moment to check whether it is
+still a parameter or has become a branch, and to amend D-046 honestly if
+it has.
+
+---
+
+### D-046 · 2026-08-02 · Accepted — M6's exit criteria
+**Decision:** M6 is **"a civilization is data"** — proved by a second
+civ, a lobby that lets people choose one, and AI players an admin can
+seat. Written before the code, per D-043's standing rule.
+
+**The governing constraint, because two of the answers pull against each
+other.** M6 wants asymmetry that is *real* — unique units, different
+stats, and different mechanics — and it wants adding a civ to need no
+new code. Mechanical asymmetry is exactly the thing that normally becomes
+`if civ == "romans"`, and the third civ then needs a programmer.
+
+So the rule for this milestone: **mechanical asymmetry is expressed as
+declarative parameters the engine already interprets, never as a per-civ
+branch.** A civ that wants a genuinely new *mechanic* is a schema
+addition (logged against D-010) implemented generically for every civ —
+one more knob everybody has, which one civ happens to turn. That is what
+keeps "a mix of all three" and "data, not code" from being contradictory,
+and criterion 3 below is what makes it falsifiable rather than an
+intention.
+
+**The criteria:**
+
+*Civilizations as data (D-047)*
+
+1. A `CivDef` resource in `/civs/*.tres` defines a civ: display name,
+   which units and buildings it may field, starting stockpile, and its
+   declarative modifiers. Server, client and tests discover civs through
+   one loader, the way `UnitRoster` does for units.
+2. A **second civ exists and is genuinely different**: at least one
+   exclusive unit the other cannot build, different stat tuning on the
+   shared core, and at least one mechanical difference expressed purely
+   as `CivDef` data.
+3. **The falsifiable one.** A test asserts that **no `.gd` file mentions
+   any civ id**. Adding a third civ must require only `.tres` files. This
+   is the criterion the whole milestone turns on, and it is trivially
+   observed to fail by hardcoding one civ id anywhere.
+4. Production, construction and the roster all filter by the acting
+   player's civ, server-side. A player cannot build another civ's units,
+   and a test proves the server refuses it rather than the UI merely
+   hiding it (D-002 — the client is not trusted).
+
+*Lobby, admin and AI players (D-048)*
+
+5. A lobby phase with **seats**: each seat has an occupant (human, AI, or
+   empty) and a civ choice. The match starts when the admin starts it,
+   not when a connection count is reached.
+6. **One admin**, the first human to connect. If they leave, it passes to
+   the next human deterministically. Only the admin may add or remove AI
+   players, set an AI's civ, or start the match.
+7. **Each human picks their own civ**, and the server enforces that: a
+   client changing another seat's civ is refused, and a test proves it.
+8. **"Random" is always an option**, resolved at match start, **uniform
+   across civs** — no weighting toward any civ for now. Resolution is
+   seeded so a replay reproduces the same draw (D-016). A test asserts
+   the distribution is flat over many draws, and that the same seed
+   yields the same civ.
+9. **AI players are server-side and see only what a human in their seat
+   would see.** They read the world through the same `visible_to(player)`
+   gate that gates replication (D-025), so an AI cannot read through fog.
+   A test proves an AI's knowledge is a subset of its vision — the same
+   shape as D-026 criterion 6's fog check, and for the same reason: an AI
+   that cheats is not a test of the game.
+
+*It has to work*
+
+10. `just test-load` runs a match with **both civs present**, and the
+    verdict fails if either civ never fielded a unit — a run where
+    everyone happened to be one civ proves nothing about the second.
+11. Replays reconstruct a match including civ assignment (D-016).
+12. `just test-unit` green; `just test-client` green and the PNG
+    inspected; `just test-load 20 120` still clean with zero ticks over
+    D-020's budget.
+13. Every new check **observed to fail** before it is trusted (D-022).
+
+*The question M3 left open*
+
+14. **A human session against AI players of the other civ**, judged on
+    whether the asymmetry reads as interesting rather than merely
+    different. This closes D-027's last criterion, which has been
+    outstanding since M3 and which no automated check can answer.
+
+**Rejected alternatives:** Stat-tuning-only asymmetry (rejected — it
+would prove the data pipeline while telling us nothing about whether the
+architecture supports asymmetry anyone would notice). Per-civ code
+branches (rejected — it makes civ 3 a programming task and quietly
+converts D-015's "4-6 civilizations at launch" into six engineering
+projects). Assigning civs by slot with no lobby (rejected — the lobby is
+also where AI players get seated, and AI opponents are a shipped feature
+of this game rather than test scaffolding).
+
+**Consequences:** `bot_client.gd`'s role splits. It stays the load-test
+harness; the *in-game* AI is a separate, server-side thing that occupies
+a seat. Those are different jobs and conflating them would give the load
+test a stake in AI quality.
+
+**Revisit trigger:** If criterion 3 cannot be met without contorting the
+data model — if some mechanic genuinely resists being a parameter — that
+is worth knowing early. Record the mechanic, take the code branch
+deliberately, and amend this entry rather than pretending the rule held.
+
+---
+
 ### D-045 · 2026-08-02 · Accepted — client render architecture, and the LOD the numbers actually asked for
 **Decision:** The client culls before deriving, samples terrain from a
 precomputed field, and thins distant squads with a camera-keyed,

@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"northmen_skirmishers"
+display_name = "Skirmishers"
+civ = &"northmen"
+archetype = &"skirmishers"
+squad_size = 30
+health = 42.0
+damage = 9.0
+move_speed = 4.4
+attack_range = 6.5
+attack_interval = 1.1
+formation_shape = "loose"
+formation_spacing = 0.9
+morale = 78.0
+rout_threshold = 36.0
+armour_class = "missile"
+bonus_vs = {
+"infantry": 1.3
+}
+mesh_primitive = "cylinder"
+mesh_color = Color(0.8, 0.62, 0.35, 1)
+build_time = 5.0
+cost = 45
+cost_food = 30
+cost_wood = 25
+cost_gold = 0
+vision_range = 12.0

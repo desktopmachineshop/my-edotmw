@@ -549,7 +549,7 @@ func test_the_founding_party_outfights_basic_infantry() -> void:
 	# to the cheapest melee unit would make settling a formality rather
 	# than a choice.
 	var founders: UnitDef = UnitRoster.by_id(&"founders")
-	var militia: UnitDef = UnitRoster.by_id(&"militia")
+	var militia: UnitDef = UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"militia")
 	assert_not_null(founders, "The roster must ship a 'founders' unit")
 	assert_not_null(militia)
 

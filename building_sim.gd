@@ -118,11 +118,18 @@ static func is_building_id(wire: int) -> bool:
 ## Can this building make that unit at all? Data again (D-010): the
 ## `produces` list on the BuildingDef, never a match statement here.
 ## A building site cannot produce, and neither can rubble.
-func can_produce(building: int, unit_def_id: StringName) -> bool:
+## `produces` lists ARCHETYPES, not unit ids (D-047).
+##
+## That is what lets one set of buildings serve every civ: a barracks
+## offers "spearmen", and which spearmen you get depends on who is asking.
+## The caller resolves the archetype against the acting player's civ, so a
+## client cannot even name another civ's unit — criterion 4 of D-046 is
+## structural here rather than a check that could be forgotten.
+func can_produce(building: int, archetype: StringName) -> bool:
 	if is_destroyed(building) or not is_complete(building):
 		return false
 	var def := def_of(building)
-	return def != null and def.produces.has(unit_def_id)
+	return def != null and def.produces.has(archetype)
 
 
 ## Queue a unit. The CALLER has already taken the payment and checked the

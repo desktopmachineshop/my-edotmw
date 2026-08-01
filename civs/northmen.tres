@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="CivDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://civ_def.gd" id="1_civ"]
+
+[resource]
+script = ExtResource("1_civ")
+id = &"northmen"
+display_name = "Northmen"
+summary = "Numbers over quality. Cheap troops, fielded fast and in strength, that lose any even fight and are rarely asked to take one. Raiders and skirmishers; no heavy foot at all."
+starting_food = 300
+starting_wood = 180
+starting_gold = 0
+starting_stone = 0
+squad_cap_bonus = 4
+production_speed = 1.3
+gather_speed = 1.0

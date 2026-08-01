@@ -395,11 +395,17 @@ func test_every_producible_unit_costs_something() -> void:
 	# A free unit makes the economy decorative, and this is exactly the
 	# trap UnitDef.cost fell into: declared, plausible-looking, read by
 	# nothing for two milestones.
-	for name in ["gatherers", "militia", "spearmen", "archers", "cavalry"]:
-		var def: UnitDef = UnitRoster.by_id(StringName(name))
-		assert_not_null(def, "roster should ship %s" % name)
+	# EVERY shipped unit, not a named list. A list would have to be edited
+	# whenever a civ is added (D-047), and the one thing D-046 criterion 3
+	# is protecting is that adding a civ needs no edits to anything but
+	# .tres files — a test that had to be updated would be the same
+	# maintenance burden wearing a different hat.
+	var checked := 0
+	for def in UnitRoster.load_all():
 		var total := def.cost_food + def.cost_wood + def.cost_gold + def.cost_stone
-		assert_gt(total, 0, "%s is free, which makes the economy decorative" % name)
+		assert_gt(total, 0, "%s is free, which makes the economy decorative" % def.id)
+		checked += 1
+	assert_gt(checked, 0, "No units were checked, so this proves nothing")
 
 
 func test_the_shipped_gatherer_can_actually_gather() -> void:

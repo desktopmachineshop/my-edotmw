@@ -227,16 +227,32 @@ func test_shipped_roster_has_a_real_counter_triangle() -> void:
 	# D-015's cut line asks for 3-4 unit types; four types with no
 	# counters between them would meet the letter of it and none of the
 	# point. This checks the shipped .tres data, not a fixture.
-	var by_id := {}
+	# Keyed on ARCHETYPE, not unit id (D-047): every civ has its own
+	# spearmen, and the triangle has to hold for all of them. Checking one
+	# civ's would let a civ added later quietly ship archers that lose to
+	# infantry.
+	var by_archetype := {}
 	for def in UnitRoster.load_all():
-		by_id[String(def.id)] = def
+		if not by_archetype.has(String(def.archetype)):
+			by_archetype[String(def.archetype)] = []
+		by_archetype[String(def.archetype)].append(def)
 
 	for expected in ["militia", "archers", "spearmen", "cavalry"]:
-		assert_true(by_id.has(expected), "The roster should ship a '%s' unit" % expected)
+		assert_true(by_archetype.has(expected),
+			"Some civ should field the '%s' archetype" % expected)
 
-	assert_eq(by_id["archers"].armour_class, "missile")
-	assert_eq(by_id["cavalry"].armour_class, "cavalry")
-	assert_eq(by_id["spearmen"].armour_class, "infantry")
+	for def in by_archetype.get("archers", []):
+		assert_eq(def.armour_class, "missile", "%s is archers but not missile" % def.id)
+	for def in by_archetype.get("cavalry", []):
+		assert_eq(def.armour_class, "cavalry", "%s is cavalry but not cavalry-classed" % def.id)
+	for def in by_archetype.get("spearmen", []):
+		assert_eq(def.armour_class, "infantry", "%s is spearmen but not infantry" % def.id)
+
+	# Flatten back to one representative per archetype for the triangle
+	# assertions below, which are about the shape rather than the tuning.
+	var by_id := {}
+	for archetype in by_archetype:
+		by_id[archetype] = by_archetype[archetype][0]
 
 	# The triangle: spears beat cavalry, cavalry beat missile, missile
 	# beats infantry.

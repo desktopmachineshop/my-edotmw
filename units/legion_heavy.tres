@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"legion_heavy"
+display_name = "Triarii"
+civ = &"legion"
+archetype = &"heavy_infantry"
+squad_size = 24
+health = 140.0
+damage = 15.0
+move_speed = 2.6
+attack_range = 1.8
+attack_interval = 1.4
+formation_shape = "line"
+formation_spacing = 0.9
+morale = 120.0
+rout_threshold = 15.0
+armour_class = "infantry"
+bonus_vs = {
+"cavalry": 1.5
+}
+mesh_primitive = "hull"
+mesh_color = Color(0.28, 0.34, 0.52, 1)
+build_time = 16.0
+cost = 45
+cost_food = 90
+cost_wood = 40
+cost_gold = 40
+vision_range = 12.0

@@ -54,9 +54,14 @@ func _sim() -> SquadSim:
 ## override attack_range/damage explicitly after construction.
 func _def(vision_range: float, move_speed: float = 3.5, attack_range: float = 0.0, damage: float = 0.0) -> UnitDef:
 	var d := UnitDef.new()
-	d.id = &"militia"
-	d.formation_shape = "line"
-	d.formation_spacing = 1.0
+	# A real roster id, taken from the roster rather than named: a
+	# synthetic def_id would fail ClientState._handle_squad_info's
+	# UnitRoster lookup and silently drop the composition. Reading it from
+	# the roster keeps that true however the shipped units change.
+	var real := UnitRoster.first()
+	d.id = real.id
+	d.formation_shape = real.formation_shape
+	d.formation_spacing = real.formation_spacing
 	d.squad_size = 10
 	d.health = 20.0
 	d.move_speed = move_speed

@@ -1375,19 +1375,19 @@ func _handle_key(event: InputEventKey) -> void:
 			_gather_selected()               # workers, at the cursor's node
 			return
 		KEY_T:
-			_train_selected("gatherers")     # town hall
+			_train_selected(&"gatherers")    # town hall
 			return
 		KEY_M:
-			_train_selected("militia")       # barracks
+			_train_selected(&"militia")      # barracks
 			return
 		KEY_P:
-			_train_selected("spearmen")      # barracks — counters cavalry
+			_train_selected(&"spearmen")     # barracks — counters cavalry
 			return
 		KEY_R:
-			_train_selected("archers")       # barracks — counters infantry
+			_train_selected(&"archers")      # barracks — counters infantry
 			return
 		KEY_C:
-			_train_selected("cavalry")       # barracks — counters missile
+			_train_selected(&"cavalry")      # barracks — counters missile
 			return
 
 	# Control groups: Ctrl+N stores the selection, N recalls it.
@@ -1480,10 +1480,10 @@ func _gather_selected() -> void:
 ## Buildings are selected the same way squads are — by clicking near them
 ## — because a player should not have to learn two selection models to
 ## use the two kinds of thing on the map.
-func _train_selected(unit_id: String) -> void:
+func _train_selected(archetype: StringName) -> void:
 	if not _connected or _selected_building < 0:
 		return
-	_peer.send(0, NetProtocol.encode_order_produce(_selected_building, unit_id),
+	_peer.send(0, NetProtocol.encode_order_produce(_selected_building, archetype),
 		ENetPacketPeer.FLAG_RELIABLE)
 
 

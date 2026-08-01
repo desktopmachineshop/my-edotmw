@@ -44,6 +44,28 @@ var _clients := {}
 var _next_player := 1
 var _peak_clients := 0
 
+## player id -> civ id (D-047).
+##
+## Assigned round-robin at join for now, so a mixed match is the default
+## rather than a coincidence — D-046 criterion 10 fails a load test in
+## which one civ never fielded anything, and that must be a real finding
+## rather than an artifact of everyone drawing the same civ.
+##
+## D-048's lobby replaces this with seats and player choice; the shape of
+## the lookup does not change, only who decides.
+var _civs := {}
+
+
+## This player's civ. Never a hardcoded id — the roster is the authority,
+## and no script may name a civ (D-046 criterion 3).
+func _civ_of(player: int) -> StringName:
+	if _civs.has(player):
+		return _civs[player]
+	var all := CivRoster.ids()
+	if all.is_empty():
+		return &""
+	return all[(player - 1) % all.size()]
+
 var _config: MapConfig
 var _sim: SquadSim
 var _replay: ReplayLog
@@ -471,10 +493,19 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 
 	# Starting stockpile (D-028): gatherers cost food and food comes from
 	# gatherers, so a player starting empty could never begin.
-	_economy.credit(player, Economy.ResourceKind.FOOD, _config.starting_food)
-	_economy.credit(player, Economy.ResourceKind.WOOD, _config.starting_wood)
-	_economy.credit(player, Economy.ResourceKind.GOLD, _config.starting_gold)
-	_economy.credit(player, Economy.ResourceKind.STONE, _config.starting_stone)
+	#
+	# From the CIV, falling back to the map (D-047). A civ built on cheap
+	# numbers wants a different opening bank than one built on expensive
+	# quality, and that is civ-level data rather than a map property.
+	var civ := CivRoster.by_id(_civ_of(player))
+	_economy.credit(player, Economy.ResourceKind.FOOD,
+		civ.starting_food if civ != null else _config.starting_food)
+	_economy.credit(player, Economy.ResourceKind.WOOD,
+		civ.starting_wood if civ != null else _config.starting_wood)
+	_economy.credit(player, Economy.ResourceKind.GOLD,
+		civ.starting_gold if civ != null else _config.starting_gold)
+	_economy.credit(player, Economy.ResourceKind.STONE,
+		civ.starting_stone if civ != null else _config.starting_stone)
 	_send_wallet(peer, player)
 	# Where the resources are, once. A player cannot be asked to send
 	# workers to a node they have no way of finding.
@@ -659,7 +690,7 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	# Every refusal below tells the player WHY. Silence made a refused
 	# order indistinguishable from a broken key during the first playtest.
-	if not BuildingSim.can_build(def, _sim.def_id_of(squad)):
+	if not BuildingSim.can_build(def, _sim.def_of(squad).archetype):
 		_notify(peer, "%s cannot build a %s" % [_sim.def_id_of(squad), def.display_name])
 		return
 
@@ -722,12 +753,17 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 		push_error("server: player %d tried to produce at a building it does not own" % player)
 		return
 
-	var unit_id := StringName(order["def_id"])
-	if not _buildings.can_produce(building, unit_id):
-		_notify(peer, "That building cannot train %s yet — is it still under construction?" % unit_id)
+	# The wire carries an ARCHETYPE, not a unit id (D-047), and the server
+	# resolves it against this player's civ. A client therefore cannot
+	# name another civ's unit at all — D-046 criterion 4 is structural
+	# here rather than a check somebody has to remember to write.
+	var archetype := StringName(order["def_id"])
+	if not _buildings.can_produce(building, archetype):
+		_notify(peer, "That building cannot train %s yet — is it still under construction?" % archetype)
 		return
-	var def := UnitRoster.by_id(unit_id)
+	var def := UnitRoster.for_civ_archetype(_civ_of(player), archetype)
 	if def == null:
+		_notify(peer, "Your people do not field %s" % archetype)
 		return
 
 	# ONE cap covering military and gatherers alike (D-033): every
@@ -736,7 +772,7 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 		_notify(peer, "At the squad cap (%d) — gatherers count too" % _match.squad_cap)
 		return
 	if not _economy.try_spend(player, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
-		_notify(peer, "Cannot afford %s" % unit_id)
+		_notify(peer, "Cannot afford %s" % def.display_name)
 		return
 
 	_buildings.enqueue(building, def)
@@ -824,7 +860,7 @@ func _spawn_squads_for(player: int) -> Array:
 	# `squads_per_player` no longer describes the opening; it survives as
 	# the sizing note D-015 and D-018 reason about, while `squad_cap` is
 	# what actually binds once production exists.
-	var founders := UnitRoster.by_id(&"founders")
+	var founders := UnitRoster.for_civ_archetype(_civ_of(player), &"founders")
 	if founders == null:
 		push_error("server: no 'founders' unit in the roster — a player has nothing to start with")
 		return ids

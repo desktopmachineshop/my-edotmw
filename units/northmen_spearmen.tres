@@ -4,26 +4,29 @@
 
 [resource]
 script = ExtResource("1")
-id = &"spearmen"
-display_name = "Spearmen"
-civ = &"neutral"
-squad_size = 36
-health = 75.0
-damage = 7.0
-move_speed = 3.1
+id = &"northmen_spearmen"
+display_name = "Hearth Spears"
+civ = &"northmen"
+archetype = &"spearmen"
+squad_size = 40
+health = 60.0
+damage = 6.0
+move_speed = 3.4
 attack_range = 2.2
 attack_interval = 1.3
 formation_shape = "line"
 formation_spacing = 0.9
-morale = 95.0
-rout_threshold = 28.0
+morale = 85.0
+rout_threshold = 32.0
 armour_class = "infantry"
 bonus_vs = {
 "cavalry": 2.0
 }
 mesh_primitive = "box"
-mesh_color = Color(0.45, 0.5, 0.58, 1)
-build_time = 9.0
+mesh_color = Color(0.68, 0.5, 0.36, 1)
+build_time = 6.0
 cost = 45
-cost_food = 50
-cost_wood = 20
+cost_food = 38
+cost_wood = 15
+cost_gold = 0
+vision_range = 12.0

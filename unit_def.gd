@@ -10,6 +10,23 @@ class_name UnitDef
 @export var display_name: String = ""
 @export var civ: StringName = &"neutral"
 
+## The shared idea of a troop type — spearmen, archers, cavalry (D-047).
+##
+## A UnitDef is ONE CIV'S VERSION of an archetype. Two civs that both
+## field spearmen have two UnitDefs with the same `archetype` and
+## different ids, stats and costs: one may be cheap and weak, fielded fast
+## and in numbers, and lose to a smaller body of the other's.
+##
+## This is what lets every script stay civ-agnostic (D-046 criterion 3).
+## Keybinds, production UI and the AI all reason about archetypes, so one
+## key trains *your* civ's spearmen whatever that civ calls them, and
+## nothing anywhere needs to know a civ id.
+##
+## Distinct from `armour_class`, which has three values and answers "what
+## beats this" for `bonus_vs`. This answers "what IS this", and there are
+## more archetypes than armour classes.
+@export var archetype: StringName = &"militia"
+
 # Squad composition (D-005: squads are the atomic sim unit; D-018: full
 # scale target is ~40 soldiers/squad, ~50 squads/player).
 @export var squad_size: int = 40
