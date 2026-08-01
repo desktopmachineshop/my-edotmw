@@ -19,9 +19,23 @@ const S2C_WELCOME := 1
 const S2C_CURVE := 2
 const S2C_SQUAD_INFO := 3
 const S2C_STATE_HASH := 4
+const S2C_SQUAD_COMBAT := 5
+const S2C_SQUAD_CONCEAL := 6
 
 # Client -> server
+const S2C_BUILDING_INFO := 7
+const S2C_BUILDING_STATE_HASH := 8
+
 const C2S_ORDER_MOVE := 10
+const C2S_ORDER_STOP := 11
+const C2S_ORDER_ATTACK_MOVE := 12
+const C2S_ORDER_BUILD := 13
+const C2S_ORDER_PRODUCE := 14
+const C2S_ORDER_GATHER := 16
+
+const S2C_WALLET := 9
+const S2C_NOTICE := 15
+const S2C_NODES := 17
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -33,7 +47,13 @@ const FNV_PRIME := 16777619
 ## WELCOME: tells a joining client who it is, how big the map is, and
 ## which squads it owns. Map dimensions matter because the client needs a
 ## TorusSpace to derive soldier positions (D-006) and to interpret curves.
-static func encode_welcome(player: int, width: int, height: int, squads: Array) -> PackedByteArray:
+## `spawn_cells` is the map's starting positions as cell indices, in
+## player order (D-036). Sent because the client otherwise has to *guess*
+## where anyone starts: the capture-mode scenario used to duplicate
+## server.gd's spawn formula to do exactly that, and went silently wrong
+## the moment spawns became map data. One definition, on the wire.
+static func encode_welcome(player: int, width: int, height: int, squads: Array,
+		spawn_cells: Array = []) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_WELCOME)
 	buf.put_u32(player)
@@ -42,6 +62,9 @@ static func encode_welcome(player: int, width: int, height: int, squads: Array) 
 	buf.put_u32(squads.size())
 	for id in squads:
 		buf.put_u32(id)
+	buf.put_u32(spawn_cells.size())
+	for cell_index in spawn_cells:
+		buf.put_u32(cell_index)
 	return buf.data_array
 
 
@@ -62,11 +85,20 @@ static func decode_welcome(data: PackedByteArray) -> Dictionary:
 	for i in range(count):
 		squads.append(buf.get_u32())
 
+	# Trailing field, so a packet written before spawn tables existed reads
+	# back as "no spawns known" rather than as garbage: get_u32 past the
+	# end returns 0, which is exactly an empty table.
+	var spawn_count := buf.get_u32()
+	var spawns := PackedInt32Array()
+	for i in range(spawn_count):
+		spawns.append(buf.get_u32())
+
 	return {
 		"player": player,
 		"width": width,
 		"height": height,
 		"squads": squads,
+		"spawns": spawns,
 	}
 
 
@@ -100,6 +132,47 @@ static func decode_order_move(data: PackedByteArray) -> Dictionary:
 	return {"squad": buf.get_u32(), "destination": buf.get_u32()}
 
 
+## STOP: halt where you stand (D-034). Carries no destination — the
+## server decides that "here" means the squad's current cell, because the
+## client's idea of where a squad is lags replication by up to a tick and
+## is not authoritative (D-002).
+static func encode_order_stop(squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_STOP)
+	buf.put_u32(squad)
+	return buf.data_array
+
+
+static func decode_order_stop(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32()}
+
+
+## ATTACK_MOVE: advance, but stop on contact (D-034).
+##
+## Squads already engage anything that comes into range, so this is not
+## "move and also fight" — that is what a plain move already does. The
+## difference is what happens on contact: an attack-moving squad halts
+## and fights where it stands, while a moving squad walks on through and
+## keeps taking hits from behind. That distinction is the whole reason
+## the order exists.
+static func encode_order_attack_move(squad: int, destination_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_ATTACK_MOVE)
+	buf.put_u32(squad)
+	buf.put_u32(destination_index)
+	return buf.data_array
+
+
+static func decode_order_attack_move(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "destination": buf.get_u32()}
+
+
 ## SQUAD_INFO: what each squad actually IS — its UnitDef id and current
 ## strength.
 ##
@@ -125,6 +198,12 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		buf.put_u16(def_id.size())
 		buf.put_data(def_id)
 		buf.put_u32(int(entry["alive"]))
+		# Owner rides along so a client learns it owns a squad it did not
+		# start with. The welcome message lists what a player begins with,
+		# and nothing updated that list when a building PRODUCED a squad —
+		# so trained units could not be selected or ordered by anybody,
+		# including the player who paid for them.
+		buf.put_u32(int(entry.get("owner", 0)))
 	return buf.data_array
 
 
@@ -142,8 +221,234 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
 		var def_id := name_bytes.get_string_from_utf8()
 		var alive := buf.get_u32()
-		out.append({"id": id, "def_id": def_id, "alive": alive})
+		out.append({"id": id, "def_id": def_id, "alive": alive, "owner": buf.get_u32()})
 	return out
+
+
+## BUILDING_INFO: everything a client needs to know a building exists
+## (D-029). Sent when a building is first revealed and again whenever its
+## state changes in a way clients must see.
+##
+## `progress` rides along rather than being replicated as a curve for now:
+## a build is short, and the client only needs to know how far along it
+## is, not to interpolate it precisely. The curve treatment D-003
+## describes is worth having when construction gets long enough to watch.
+static func encode_building_info(entries: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_BUILDING_INFO)
+	buf.put_u32(entries.size())
+	for entry in entries:
+		buf.put_u32(int(entry["id"]))
+		var def_id := String(entry["def_id"]).to_utf8_buffer()
+		buf.put_u16(def_id.size())
+		buf.put_data(def_id)
+		buf.put_u32(int(entry["owner"]))
+		buf.put_u32(int(entry["cell"]))
+		buf.put_float(float(entry["progress"]))
+		buf.put_u8(1 if bool(entry["destroyed"]) else 0)
+	return buf.data_array
+
+
+static func decode_building_info(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		var id := buf.get_u32()
+		var name_length := buf.get_u16()
+		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+		out.append({
+			"id": id,
+			"def_id": name_bytes.get_string_from_utf8(),
+			"owner": buf.get_u32(),
+			"cell": buf.get_u32(),
+			"progress": buf.get_float(),
+			"destroyed": buf.get_u8() == 1,
+		})
+	return out
+
+
+## WALLET: a player's four resource totals — sent to that player ONLY.
+##
+## Wallets are private (D-028). Knowing an opponent's stockpile tells you
+## what they are about to field, which is the same class of knowledge
+## D-003's horizon clipping and D-004's fog exist to withhold. There is
+## therefore no player id on the wire: this message is always about the
+## client receiving it, and a client that could ask about someone else's
+## wallet is a client that could be modified to.
+static func encode_wallet(totals: PackedInt32Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_WALLET)
+	buf.put_u32(totals.size())
+	for total in totals:
+		buf.put_u32(total)
+	return buf.data_array
+
+
+static func decode_wallet(data: PackedByteArray) -> PackedInt32Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := PackedInt32Array()
+	for i in range(count):
+		out.append(buf.get_u32())
+	return out
+
+
+## NODES: where the resources are, sent once at join.
+##
+## Node PLACEMENT is derived from terrain and would be reproducible on the
+## client — but reproducing it would mean the client running the
+## generator and the fairness pass with the same parameters, and any drift
+## in those would put resources on the client's map that are not on the
+## server's. Sending them is a couple of kilobytes once and removes the
+## question entirely.
+##
+## Their remaining STOCK is not sent: that changes constantly and belongs
+## to whoever can see the node. The client draws where resources are, not
+## how much is left.
+static func encode_nodes(entries: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NODES)
+	buf.put_u32(entries.size())
+	for entry in entries:
+		buf.put_u32(int(entry["cell"]))
+		buf.put_u8(int(entry["kind"]))
+	return buf.data_array
+
+
+static func decode_nodes(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		out.append({"cell": buf.get_u32(), "kind": buf.get_u8()})
+	return out
+
+
+## ORDER_GATHER: put a gatherer squad to work on a resource node
+## (D-028). Carries the cell rather than a node id, because a node IS a
+## cell — there is no separate node entity to name.
+static func encode_order_gather(squad: int, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_GATHER)
+	buf.put_u32(squad)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_gather(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## NOTICE: a short human-readable line for the player who sent an order.
+##
+## The server refuses orders for good reasons — out of reach, wrong
+## ground, cannot afford it — and used to do so in total silence. A
+## playtest pressed B nine cells from its founders, saw nothing at all
+## happen, and had no way to tell a refused order from a broken key.
+##
+## The REASON has to come from the server: it owns the rules, and a
+## client that decided its own refusal messages would be a second copy of
+## those rules, free to drift from the real ones. That is the mistake the
+## duplicated spawn formula already made once.
+static func encode_notice(text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NOTICE)
+	var bytes := text.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_notice(data: PackedByteArray) -> String:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return bytes.get_string_from_utf8()
+
+
+## ORDER_PRODUCE: a building is told to make a unit (D-028/D-031).
+## Carries the building's wire id and the unit's def id.
+static func encode_order_produce(building_wire_id: int, unit_def_id: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_PRODUCE)
+	buf.put_u32(building_wire_id)
+	var name_bytes := unit_def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_order_produce(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var building := buf.get_u32()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {"building": building, "def_id": name_bytes.get_string_from_utf8()}
+
+
+## BUILDING_STATE_HASH: its own message rather than folded into
+## S2C_STATE_HASH, and deliberately so (D-030).
+##
+## The two hashes are computed over differently-shaped sets — squads over
+## what a client can see RIGHT NOW, buildings over everything it has EVER
+## been shown, because a building once seen stays known. Combining them
+## into one number would make a mismatch undiagnosable: you could not tell
+## which subsystem had broken.
+static func encode_building_state_hash(tick: int, hash_value: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_BUILDING_STATE_HASH)
+	buf.put_u32(tick)
+	buf.put_u32(hash_value)
+	return buf.data_array
+
+
+static func decode_building_state_hash(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"tick": buf.get_u32(), "hash": buf.get_u32()}
+
+
+## ORDER_BUILD: a squad is told to found a building at a cell (D-031).
+## Carries the building's def id rather than an index, so adding a
+## building to /buildings never renumbers the wire.
+static func encode_order_build(squad: int, def_id: String, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_BUILD)
+	buf.put_u32(squad)
+	var name_bytes := def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_build(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var squad := buf.get_u32()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"squad": squad,
+		"def_id": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+	}
 
 
 ## STATE_HASH: the server's view of composition, for the client to check
@@ -161,6 +466,77 @@ static func decode_state_hash(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"tick": buf.get_u32(), "hash": buf.get_u32()}
+
+
+## SQUAD_COMBAT: casualty/rout events for the tick they happened on
+## (D-024, D-026 criterion 3).
+##
+## This is the ONLY place a squad's `alive` changes after it spawns, and
+## it is sent exclusively when at least one squad in the message actually
+## changed — a tick with no deaths and no routing produces no message at
+## all, not a message with an empty list, so it is genuinely zero bytes
+## rather than merely a small constant. `ReplayLog` logs this exact
+## encoding too (D-016): there is one definition of this wire shape, used
+## by the server, the client, and the replay alike.
+static func encode_squad_combat(tick: int, events: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_SQUAD_COMBAT)
+	buf.put_u32(tick)
+	buf.put_u32(events.size())
+	for event in events:
+		buf.put_u32(int(event["id"]))
+		buf.put_u32(int(event["alive"]))
+		buf.put_u8(1 if bool(event["routed"]) else 0)
+	return buf.data_array
+
+
+static func decode_squad_combat(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var tick := buf.get_u32()
+	var count := buf.get_u32()
+	var events := []
+	for i in range(count):
+		var id := buf.get_u32()
+		var alive := buf.get_u32()
+		var routed := buf.get_u8() != 0
+		events.append({"id": id, "alive": alive, "routed": routed})
+	return {"tick": tick, "events": events}
+
+
+## SQUAD_CONCEAL: a squad (or squads) leaving this client's vision this
+## tick (D-025 part 3, D-026 criterion 7).
+##
+## This is the explicit event D-025 insists on rather than leaving conceal
+## as an inference from silence. Without it a client cannot tell "this
+## squad just left my vision" apart from "its curve update is merely late"
+## — and worse, the server's STATE_HASH would then be computed over a
+## different set than the client's own composition_hash(), which is
+## exactly the "check that cries wolf" failure composition_hash's header
+## warns about (D-026 criterion 8). The client's response is to keep the
+## squad's last-known curve and composition as a stale, explicitly flagged
+## ghost (ClientState._ghosts) rather than discarding or silently ageing it.
+static func encode_squad_conceal(tick: int, squad_ids: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_SQUAD_CONCEAL)
+	buf.put_u32(tick)
+	buf.put_u32(squad_ids.size())
+	for id in squad_ids:
+		buf.put_u32(int(id))
+	return buf.data_array
+
+
+static func decode_squad_conceal(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var tick := buf.get_u32()
+	var count := buf.get_u32()
+	var squad_ids := []
+	for i in range(count):
+		squad_ids.append(buf.get_u32())
+	return {"tick": tick, "squad_ids": squad_ids}
 
 
 ## Hash of squad COMPOSITION — id, strength, formation shape and spacing —
@@ -219,3 +595,18 @@ static func _hash_string(h: int, text: String) -> int:
 
 static func opcode_of(data: PackedByteArray) -> int:
 	return -1 if data.is_empty() else data[0]
+
+
+## Deterministic seed derivation for anything that needs a map-derived
+## seed rather than a wall-clock one — Combat (D-024) is the current
+## user, via server.gd. Not part of the wire protocol, but kept here to
+## reuse the same FNV mixing the composition hash already does rather
+## than inventing a second hash for the same purpose. Same inputs always
+## produce the same seed, which is what lets a replay reproduce the exact
+## battle that happened (D-016) rather than a different one seeded from
+## whatever moment the server happened to start.
+static func seed_from(text: String, a: int, b: int) -> int:
+	var h := _hash_string(FNV_OFFSET_BASIS, text)
+	h = _hash_int(h, a)
+	h = _hash_int(h, b)
+	return h

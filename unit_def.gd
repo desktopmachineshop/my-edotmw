@@ -35,12 +35,67 @@ class_name UnitDef
 @export var morale: float = 100.0
 @export var rout_threshold: float = 25.0
 
+# Schema addition 2026-07-30 (M2, recorded against D-010): combat and
+# morale tuning for D-024/D-019, plus vision for D-025 (owned by the fog
+# worker, added here because this file is combat's, not theirs, to touch).
+# Existing .tres files pick up these defaults, same as formation_spacing.
+#
+# How far this unit's squad can see, in world units (D-025). Radius-only
+# on the torus — elevation does not occlude in M2.
+@export var vision_range: float = 12.0
+# Morale regained per second while not taking casualties (D-024/D-019).
+@export var morale_recovery_per_second: float = 2.0
+# Hysteresis above rout_threshold a routed squad must recover past before
+# it rallies — without this a squad sitting exactly at the threshold
+# would flicker in and out of routing every tick it takes no damage.
+@export var rout_rally_margin: float = 15.0
+# Morale lost per soldier this squad loses to casualties.
+@export var morale_loss_per_casualty: float = 4.0
+# Stochastic spread on this unit's damage roll: output is drawn uniformly
+# from [damage * (1 - variance), damage * (1 + variance)] per D-024's
+# "rolled stochastically". 0 would make combat deterministic attrition,
+# which D-024's rejected alternatives explicitly reads as too decided by
+# stat ties alone.
+@export var damage_variance: float = 0.25
+
 # Primitive-tier mesh generation (D-011, see primitive_unit.gd). Tiers 2
 # (modular/parametric) and 3 (Blender/glTF final-fidelity) are
 # unscheduled — don't add fields for them speculatively.
+# Counters (D-032, a D-024 amendment). Schema addition 2026-07-30 (M3,
+# recorded against D-010): D-015's cut line asks for 3-4 unit types, and
+# four types distinguished only by flat stats give none of the
+# rock-paper-scissors the genre runs on.
+#
+# `armour_class` is what this unit IS for targeting purposes;
+# `bonus_vs` maps an opponent's armour_class to a damage multiplier, so
+# the counter table is data rather than a match statement in combat.gd.
+# A missing entry means 1.0 — a unit with no bonuses is simply a
+# generalist, not a special case.
+@export_enum("infantry", "cavalry", "missile") var armour_class: String = "infantry"
+@export var bonus_vs: Dictionary = {}
+
 @export_enum("capsule", "box", "cylinder", "hull") var mesh_primitive: String = "capsule"
 @export var mesh_color: Color = Color.WHITE
 
 # Economy
+# Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).
+# A unit with carry_capacity > 0 IS a gatherer — no separate boolean to
+# fall out of step with it. Zero is the default, so every existing .tres
+# stayed valid and no fighting unit accidentally became a villager.
+@export var carry_capacity: int = 0
+## Units gathered per second per LIVING soldier, so casualties cut income
+## without any special case (D-028).
+@export var gather_rate: float = 0.0
+
+# Cost, per resource (D-028's four). Schema addition 2026-07-31 (M3,
+# against D-010), replacing the single `cost` field that sat unread since
+# M0 — four resources need a table, not a number. `cost` is left in place
+# for now rather than removed, because nothing reads it and deleting a
+# field from a Resource rewrites every .tres that mentions it.
+@export var cost_food: int = 0
+@export var cost_wood: int = 0
+@export var cost_gold: int = 0
+@export var cost_stone: int = 0
+
 @export var build_time: float = 10.0
 @export var cost: int = 50

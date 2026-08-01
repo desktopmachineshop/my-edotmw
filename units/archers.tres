@@ -16,7 +16,13 @@ attack_interval = 1.5
 formation_shape = "loose"
 morale = 70.0
 rout_threshold = 35.0
+armour_class = "missile"
+bonus_vs = {
+"infantry": 1.5
+}
 mesh_primitive = "capsule"
 mesh_color = Color(0.55, 0.45, 0.25, 1)
 build_time = 10.0
 cost = 55
+cost_food = 40
+cost_wood = 40

@@ -35,16 +35,36 @@ var _distance := PackedInt32Array()
 # unreachable cells.
 var _flow := PackedByteArray()
 
+# Frontier state, kept between expand() calls so one BFS can be spread
+# across several ticks (D-040). A completed field leaves head == tail and
+# never touches these again.
+var _queue := PackedInt32Array()
+var _head := 0
+var _tail := 0
+var _passable := PackedByteArray()
+var _use_passable := false
 
-## Build the field for `p_destination`.
+
+## Build the field for `p_destination`, all at once.
 ##
 ## `passable` is one byte per cell, non-zero meaning passable. Pass an
 ## empty array to treat every cell as passable. An impassable destination
 ## yields an entirely unreachable field rather than an exception — the
 ## caller decides what to do about an invalid order.
 func build(p_space: TorusSpace, p_destination: Vector2i, passable := PackedByteArray()) -> void:
-	assert(p_space != null, "FlowField.build needs a TorusSpace")
-	assert(p_space.is_valid(), "FlowField.build got an invalid TorusSpace: %s" % p_space.validate())
+	begin(p_space, p_destination, passable)
+	expand(-1)
+
+
+## Start an incremental build (D-040). Allocates and seeds the frontier
+## but expands nothing; call expand() until it returns true.
+##
+## Splitting build() in two is what makes an order wave survivable: a full
+## BFS is ~2 µs per cell no matter the language, so the problem was never
+## the per-cell cost but doing every cell inside one 100 ms tick.
+func begin(p_space: TorusSpace, p_destination: Vector2i, passable := PackedByteArray()) -> void:
+	assert(p_space != null, "FlowField.begin needs a TorusSpace")
+	assert(p_space.is_valid(), "FlowField.begin got an invalid TorusSpace: %s" % p_space.validate())
 
 	space = p_space
 	var count := space.cell_count()
@@ -58,37 +78,56 @@ func build(p_space: TorusSpace, p_destination: Vector2i, passable := PackedByteA
 	_flow.resize(count)
 	_flow.fill(NO_DIRECTION)
 
-	var use_passable := passable.size() == count
-	if passable.size() > 0 and not use_passable:
-		push_error("FlowField.build: passable array is %d long but the space has %d cells — ignoring it" % [passable.size(), count])
+	_use_passable = passable.size() == count
+	if passable.size() > 0 and not _use_passable:
+		push_error("FlowField.begin: passable array is %d long but the space has %d cells — ignoring it" % [passable.size(), count])
+	_passable = passable if _use_passable else PackedByteArray()
 
-	if use_passable and passable[destination] == 0:
-		# Destination itself is blocked; leave the field fully unreachable.
+	_queue = PackedInt32Array()
+	_head = 0
+	_tail = 0
+
+	if _use_passable and _passable[destination] == 0:
+		# Destination itself is blocked; leave the field fully unreachable
+		# and already complete — there is nothing to expand.
 		return
 
-	# Breadth-first expansion outward from the destination. Uniform step
-	# cost, so BFS is exact and no priority queue is needed. The queue is
-	# a packed array with a head index rather than Array.pop_front(),
-	# which is O(n) per pop and would dominate at 10,000+ cells.
-	var queue := PackedInt32Array()
-	queue.resize(count)
-	var head := 0
-	var tail := 0
-
+	_queue.resize(count)
 	_distance[destination] = 0
-	queue[tail] = destination
-	tail += 1
+	_queue[_tail] = destination
+	_tail += 1
 
-	while head < tail:
-		var current := queue[head]
-		head += 1
+
+## Expand up to `cell_budget` frontier cells; -1 means "until finished".
+## Returns true when the field is complete.
+##
+## Breadth-first expansion outward from the destination. Uniform step
+## cost, so BFS is exact and no priority queue is needed. The queue is a
+## packed array with a head index rather than Array.pop_front(), which is
+## O(n) per pop and would dominate at 10,000+ cells.
+##
+## **A partially expanded field is CORRECT wherever it is defined**, which
+## is the property the whole amortisation rests on: BFS assigns a cell its
+## final distance the first time it is reached, so nothing already written
+## can change later. A partial field is not an approximation to be
+## corrected — it is a complete answer over a smaller region.
+##
+## The one thing a caller must not do is read UNREACHABLE as "no path"
+## while `is_complete()` is false. Mid-build it means "not reached YET",
+## and those are opposite instructions.
+func expand(cell_budget: int = -1) -> bool:
+	var spent := 0
+	while _head < _tail and (cell_budget < 0 or spent < cell_budget):
+		var current := _queue[_head]
+		_head += 1
+		spent += 1
 		var next_distance := _distance[current] + 1
 
 		for dir in range(6):
 			var neighbor := space.neighbor_index(current, dir)
 			if _distance[neighbor] != UNREACHABLE:
 				continue
-			if use_passable and passable[neighbor] == 0:
+			if _use_passable and _passable[neighbor] == 0:
 				continue
 			_distance[neighbor] = next_distance
 			# We expanded from `current` to `neighbor` in direction `dir`,
@@ -96,8 +135,45 @@ func build(p_space: TorusSpace, p_destination: Vector2i, passable := PackedByteA
 			# the opposite direction. Opposite of d is (d + 3) % 6 given
 			# TorusSpace.DIRECTIONS' counter-clockwise ordering.
 			_flow[neighbor] = (dir + 3) % 6
-			queue[tail] = neighbor
-			tail += 1
+			_queue[_tail] = neighbor
+			_tail += 1
+
+	if _head >= _tail:
+		# Release the frontier as soon as it is spent. At 32,768 cells this
+		# is 128 KB per field, and fields are cached for the life of the
+		# match — holding them all would turn a latency fix into a memory
+		# problem.
+		_queue = PackedInt32Array()
+		_passable = PackedByteArray()
+		return true
+	return false
+
+
+## Whether the BFS has finished. Until it has, a cell with no distance may
+## simply not have been reached yet — see expand().
+func is_complete() -> bool:
+	return _head >= _tail
+
+
+## Whether this cell has a final answer yet. True for reachable cells the
+## expansion has covered, and for the destination itself.
+func covers(cell: int) -> bool:
+	if _distance.is_empty():
+		return false
+	return _distance[posmod(cell, _distance.size())] != UNREACHABLE
+
+
+## How many cells remain on the frontier — a progress gauge for callers
+## budgeting expansion across several fields.
+func pending_cells() -> int:
+	return maxi(0, _tail - _head)
+
+
+## How many frontier cells this field has expanded in total. What a
+## budgeting caller should charge itself, since a field that finishes
+## early costs less than the budget it was offered.
+func expanded_cells() -> int:
+	return _head
 
 
 ## Direction index (0..5) to travel from this cell, or NO_DIRECTION if

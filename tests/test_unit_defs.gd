@@ -110,3 +110,33 @@ func test_rebuild_is_idempotent_and_tracks_squad_size() -> void:
 		"Rebuilding should reuse the existing MultiMeshInstance3D, not stack up children")
 	var mmi := unit.get_child(0) as MultiMeshInstance3D
 	assert_eq(mmi.multimesh.instance_count, def.squad_size)
+
+
+func test_the_roster_is_cached_rather_than_rescanned_per_lookup() -> void:
+	# `by_id` is called from inside SquadSim.tick, once per squad a
+	# building finishes. It used to re-open /units and re-load every .tres
+	# on every call, which cost 858 ms in a single live tick when twenty
+	# players completed a unit at the same moment — against a 100 ms
+	# budget.
+	#
+	# Asserted structurally rather than by timing: same array instance, so
+	# no scan happened. A duration assertion would be flaky on a loaded
+	# host and would not say WHY it got slow.
+	var first_call := UnitRoster.load_all()
+	var second_call := UnitRoster.load_all()
+	assert_true(is_same(first_call, second_call),
+		"load_all rebuilt the roster — /units is being re-scanned per call")
+
+	var a := UnitRoster.by_id(first_call[0].id)
+	var b := UnitRoster.by_id(first_call[0].id)
+	assert_true(is_same(a, b), "by_id returned a freshly loaded UnitDef rather than the cached one")
+	assert_not_null(a, "by_id should find a unit the roster just listed")
+
+
+func test_reloading_the_roster_still_produces_the_same_units() -> void:
+	# The cache must be droppable without changing what the roster says,
+	# or the escape hatch is worse than no escape hatch.
+	var before := UnitRoster.load_all().map(func(d): return d.id)
+	UnitRoster.reload()
+	var after := UnitRoster.load_all().map(func(d): return d.id)
+	assert_eq(before, after, "Reloading the roster changed which units exist")

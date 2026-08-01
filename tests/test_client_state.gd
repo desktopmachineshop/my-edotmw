@@ -102,6 +102,48 @@ func test_welcome_establishes_the_clients_view_of_the_map() -> void:
 	assert_false(state.owns(99), "A client should not think it owns a squad it wasn't given")
 
 
+func test_a_squad_wiped_out_stops_being_one_this_client_owns() -> void:
+	# Ownership has to shrink, not only grow. It did not, and the symptom
+	# was invisible for a long time because the server refused the orders
+	# anyway: the GUI kept offering dead squads for selection, and the
+	# load-test bots kept ordering corpses instead of noticing they had
+	# nothing left and training more.
+	#
+	# The founding party makes this ordinary rather than exotic — it is
+	# consumed the moment it is committed to a town hall (D-031), so every
+	# player reaches zero owned squads in the first minute of a match.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	assert_true(state.owns(id), "The client should start owning what the welcome gave it")
+
+	state.handle_packet(NetProtocol.encode_squad_combat(
+		sim.tick_count, [{"id": id, "alive": 0, "routed": false}]))
+
+	assert_false(state.owns(id), "A squad with no soldiers left is not one this client can order")
+	assert_eq(state.encode_order(id, Vector2i(3, 3)).size(), 0,
+		"The client should stop sending orders for a squad it just watched die")
+
+
+func test_a_squad_merely_bloodied_is_still_ours() -> void:
+	# The other side of the boundary, so the check above cannot pass by
+	# dropping squads on any casualty at all.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	state.handle_packet(NetProtocol.encode_squad_combat(
+		sim.tick_count, [{"id": id, "alive": 1, "routed": true}]))
+
+	assert_true(state.owns(id), "One surviving soldier is still a squad we command")
+
+
 func test_orders_are_refused_for_squads_the_client_does_not_own() -> void:
 	var state := ClientState.new()
 	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [4]))
@@ -388,3 +430,63 @@ func test_sim_and_client_agree_on_the_hash_for_the_same_state() -> void:
 
 	assert_eq(state.composition_hash(), sim.composition_hash(sim.visible_to(1)),
 		"Server and client must derive the same composition hash from the same facts")
+
+
+# --- what the transport choice rests on (D-042) -----------------------
+
+func test_curve_application_is_last_write_wins_so_order_is_load_bearing() -> void:
+	# A curve packet carries no sequence number, and the client installs
+	# whichever arrives most recently. That is fine — and only fine —
+	# because the transport delivers reliably and IN ORDER.
+	#
+	# This test exists to make that dependency explicit rather than
+	# implicit. "Unreliable with resend" is not a drop-in swap: without
+	# ordering, two curves for the same squad can arrive reversed and the
+	# client permanently installs the older one, with nothing to detect it
+	# — curves are sent only on change (D-003), so there is no later
+	# message to correct the mistake. Any move off ordered delivery needs
+	# a version field on the curve first.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	sim.order_move(id, Vector2i(20, 10))
+	sim.tick()
+	var first := _curve_bytes_for(sim, 1, id)
+
+	sim.order_move(id, Vector2i(4, 12))
+	sim.tick()
+	var second := _curve_bytes_for(sim, 1, id)
+
+	assert_false(first.is_empty(), "The first order should have produced a curve")
+	assert_false(second.is_empty(), "The second order should have produced a curve")
+	assert_ne(first, second, "The two orders should produce different curves")
+
+	# In order: the newer curve wins, which is correct.
+	state.handle_packet(NetProtocol.encode_curve(first))
+	state.handle_packet(NetProtocol.encode_curve(second))
+	var in_order := state.squad_cell(id, sim.time + 1.0)
+
+	# Reversed: the client installs the STALE curve and keeps it. Nothing
+	# here is asserting that this is desirable — it is asserting that
+	# ordering is what stands between the protocol and this outcome.
+	var reversed := ClientState.new()
+	_connect(sim, reversed, 1)
+	reversed.handle_packet(NetProtocol.encode_curve(second))
+	reversed.handle_packet(NetProtocol.encode_curve(first))
+	var out_of_order := reversed.squad_cell(id, sim.time + 1.0)
+
+	assert_ne(in_order, out_of_order,
+		"Reordering two curves changed nothing, so either the test is not exercising the hazard or a sequence number was added — if the latter, D-042 can be revisited")
+
+
+## The raw curve payload the replicator would send `player` for `squad`,
+## or empty if it sent none this tick.
+func _curve_bytes_for(sim: SquadSim, player: int, squad: int) -> PackedByteArray:
+	for packet in sim.replicator.collect_for_client(player, sim.time, sim.visible_to(player)):
+		if int(packet.get("id", -1)) == squad:
+			return packet["bytes"]
+	return PackedByteArray()

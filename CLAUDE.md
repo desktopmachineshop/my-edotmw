@@ -8,17 +8,18 @@ this file is the condensed "ground rules" version.
 ## Current status
 
 **M1 (movement + netcode proof) complete**, as of 2026-07-29 — declared
-done, then audited and found incomplete, then actually finished. `just
-test-unit` is green at 141 tests across 10 scripts; `just test-load 4 12`
-runs 4 bots against the server end to end and reports a clean verdict.
-Every justfile recipe is real.
+done, then audited and found incomplete, then actually finished. At M1's
+completion `just test-unit` was green at 141 tests across 10 scripts
+(now 158 across 12 — see M2 below); `just test-load 4 12` runs 4 bots
+against the server end to end and reports a clean verdict. Every
+justfile recipe is real.
 
-The headline measurement: **~1.5–2.7 µs per squad-update** at 48 squads,
-against D-020's ~50 µs budget. That is the number D-018's full-scale
-target and D-021's no-C# call both depend on, so re-measure it (via
-`just test-load`, which prints it) whenever the simulation changes shape.
-It moves run to run with host load — the order of magnitude is the
-result, not the third digit.
+The headline measurement (M1, movement only): **~1.5–2.7 µs per
+squad-update** at 48 squads, against D-020's ~50 µs budget. That is the
+number D-018's full-scale target and D-021's no-C# call both depend on,
+so re-measure it (via `just test-load`, which prints it) whenever the
+simulation changes shape. It moves run to run with host load — the
+order of magnitude is the result, not the third digit.
 
 **Always quote it with a squad count.** It is total tick time divided by
 (ticks × squads), so per-tick fixed overhead lands in the per-squad
@@ -26,7 +27,8 @@ figure and inflates it when squads are few: a real play session with 12
 squads measured ~3.9 µs against ~2 µs for the same code at 48. Comparing
 the two numbers directly would read as a 2x regression that isn't there.
 Since the whole point is extrapolating to ~1,000 squads, if anything
-this metric flatters low counts and understates headroom.
+this metric flatters low counts and understates headroom. This rule
+applies to any future number the same way, M2's included.
 
 **Read the audit block at the end of D-022 before adding any test or
 check.** M1's first "complete" was wrong in two ways that are easy to
@@ -37,9 +39,170 @@ for the whole milestone and hid the first bug. The standing rule that
 came out of it: **every check must be observed to fail before it is
 trusted.**
 
-Next is **M2**: combat + fog of war. Both are blocked on decisions, not
-code — Q7 (combat model) and D-004's reveal/conceal semantics. See
-`game_design_decisions.md` section 2.
+**M2 (combat + fog of war) complete**, as of 2026-07-30 — landed, then
+reviewed against D-026 and found to fail three criteria, then actually
+finished. `just test-unit` is green at **165 tests** across 12 scripts;
+`just test-load 4 12` and `just test-client` both report clean verdicts
+that now require combat and fog to have *demonstrably happened*. The two
+things that were blocking it are both decided: **D-024** (combat resolves
+squad-level and
+stochastic, server-only, integer decrements to `alive` with a fractional
+carry, morale/rout per D-019, deterministic from a seed) and **D-025**
+(fog stays curve gating — a per-player vision field with an O(1)
+per-squad lookup, radius-only; reveal is a truthful pop-in, conceal is an
+explicit wire event that leaves a stale client-side ghost). `combat.gd`
+and `vision.gd` now exist, wired into `squad_sim.gd`; the protocol
+carries casualty/rout and conceal events; `just test-unit` is green at
+**158 tests** across 12 scripts. D-026 is M2's exit criteria, written
+down before the code the same way D-022 was for M1 — read it before
+treating anything above as settled, since "landed" and "meets D-026" are
+different claims.
+
+**M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
+(1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
+buildings, (5) economy. `just test-unit` is green at **278 tests**.
+
+*Slice 1, landed:* the map is 128×64, biome is simulation data rather
+than colour (D-037), and spawn points come from `MapConfig` instead of a
+formula duplicated between server and client. Terrain generation was
+briefly quadrant-symmetric, for provably fair spawns — that was dropped
+(D-036 revised) because it made every map the same map four times.
+Fairness is a resource post-pass now, and as of **D-039 spawns are
+scattered randomly at a minimum spacing** rather than placed on a grid,
+so adjacency differs every match.
+
+*Slice 2, sim half landed:* combat rounds resolve **simultaneously** —
+attacks read a start-of-round snapshot, so squad id no longer confers a
+first strike and player 1 no longer wins mirror engagements. The roster
+is four units with a real counter triangle in `.tres` data (D-032).
+Matches have a lifecycle (`match_state.gd`, D-033): a lobby, elimination
+when a player has no living squads, and a winner. Disconnect wipes the
+abandoned army and the ordinary rule notices — defeated has one
+definition.
+
+*Slice 2, rest landed:* selection (click, shift-extend, box drag,
+Ctrl+1-9 groups) and a HUD on a `CanvasLayer`. Right-click orders the
+SELECTION and does nothing when nothing is selected. Commands are move,
+stop, attack-move, build and produce, each its own opcode validated
+server-side through one shared helper.
+
+*Slice 3, landed:* terrain is drawn nine times, tiling across both seams,
+so the world no longer visibly ends; the camera wraps in continuous
+lattice coordinates (round-tripping through `world_to_cell` would snap
+panning to cell centres). Wrap-aware minimap.
+
+*Slice 4, landed:* `building_sim.gd` — a SIBLING of `SquadSim`, with its
+own id space. Both sims mint ids from their array length, so the first
+squad and the first building are both entity 0; `wire_id()` and separate
+plumbing keep them apart, and a test builds one of each at the same local
+index to prove nothing leaks. Buildings see, shoot (town centre and
+tower), are constructed by squads, and use **persistent-explored** fog —
+once seen, never un-known — whose hash must therefore be taken over the
+*ever-revealed* set, not the currently-visible one.
+
+*Slice 5, landed:* `economy.gd` — four resources, biome-derived depleting
+nodes, and round-trip hauling by gatherer SQUADS, which is what keeps
+D-005 intact. Production is per building, gated on ownership, the def's
+`produces` list, the shared squad cap and affordability (all-or-nothing).
+
+**The opening changed in M3 and is worth knowing before reading any
+test:** a player starts with ONE founding party and no base. Founders
+fight better than line infantry, and only they can build a town hall —
+expressed in `BuildingDef.built_by`, which is also how they are barred
+from building anything else. Everything else is produced.
+
+**Use `just test-load 4 40`, not `4 12`.** Spawns are far apart on a
+128×64 map, so four armies cannot reach each other inside 12 seconds —
+the run fails with `casualties_applied=0 conceal_events=0
+reveal_events=0`, which is the verdict correctly reporting that combat
+and fog never happened rather than passing vacuously. Bots converge on
+the middle of the map deliberately, but they still need time to get
+there.
+
+**M4 (scale + performance): every measurement it set out to take is
+taken.** They live in D-038 and D-040 through D-042. At D-018's target of
+20 players:
+
+- **bandwidth 595 B/client/s**, zero budget overruns — not close to a
+  problem, which is D-003's curve sync doing its job
+- **server 42.5 MB** at 120 squads; **~1.4 MB per virtual client**
+- **40.8 µs/squad at 120 squads** live, inside D-020's ~50 µs — but read
+  the squad-count caveat above before comparing it to anything
+- **0 ticks over D-020's 100 ms budget** in a 20-player match, worst tick
+  38.1 ms
+- **transport: peak RTT 14 ms, peak loss 0.98%, 0 desyncs** — reliable
+  delivery is genuinely absorbing loss, not idling, so unreliable-with-
+  resend is rejected (D-042). Note curve packets carry no sequence
+  number, so **in-order delivery is load-bearing**, not incidental
+- **client derivation 0.72 µs/soldier** — a player's own 2,000-soldier
+  army costs ~1.4 ms/frame, but all 40,000 visible at once is 174% of a
+  60 fps frame (D-041). Frustum culling before deriving is the next
+  lever, ahead of any LOD work
+- the sweep (`just profile`) remains the authority on *scaling*, since a
+  live match cannot reach 1,000 squads — but see the blind-spot warning
+  below before trusting it alone: **33 µs/squad and a 73.4 ms worst tick
+  at 1,000 squads**, inside the 100 ms tick
+
+**The flow-field spike is fixed (D-040), and the tick budget is met.**
+A BFS is now spread across ticks under a per-tick CELL budget
+(`field_cells_per_tick`, 4,096). Worst tick at 8,192 cells went **344 ms
+→ 28.6 ms**, and at D-018's full 1,000 squads **1,211 ms → 73.4 ms**,
+inside D-020's 100 ms with ~27% headroom. Worst tick is now *flat in map
+size* — 32,768 cells costs the same spike as 2,048 — so **Q8's map-size
+bound is no longer the solver**. D-021's GDExtension hatch stays shut and
+its one named candidate is retired: the solver never needed native code,
+it needed to stop doing a whole solve in one slice.
+
+Two things to carry forward. A partially expanded field is **correct
+wherever it is defined** (BFS finalises a cell the first time it reaches
+it) — but UNREACHABLE means "not reached yet" until `is_complete()`, and
+reading it as "no path" would silently cancel every order in a wave.
+Budgeting **cells** works where D-038's budget on **builds** failed,
+because partial progress is kept instead of discarded.
+
+**A green `just profile` is not a green server.** The sweep reported a
+healthy ~29 ms worst tick while a live 20-player match spiked to 866 ms.
+The cause was `UnitRoster.by_id` re-scanning `/units` from disk on every
+call — and `SquadSim.tick` calls it once per squad a building finishes,
+so twenty simultaneous completions spent **858 ms in a filesystem walk**.
+A sweep resolves its UnitDefs once at setup and structurally cannot see
+this. Where the sweep and a live run disagree, believe the live run.
+
+The server now reports `worst_tick`, how many ticks exceeded budget, and
+a **per-phase breakdown on any over-budget tick**. That is what found it;
+every hypothesis formed before instrumenting was wrong.
+
+**Before theorising about an anomalous run, read the server log.** The
+first 20-player run reported "zero movement" and invited theories about
+spawn placement. The cause was 2,700 lines of "tried to order squad N it
+does not own": ownership was cached per connection at join, so every
+*produced* squad was refused. Fixing it exposed two more defects whose
+symptoms had been cancelling each other out. See D-038's amendment.
+
+Measured after that change: **72.4 µs per squad-update at 48 squads —
+vision 14.0, combat 42.7**, on 128×64. Quadrupling the map area cost
+essentially nothing against M2's 70.8, because vision and combat scale
+with their disk *radius* rather than map area and flow fields stay shared
+per destination (D-007). Fog now gates 21 of 48 squads from the
+best-informed client, against 5 of 48 on the old map.
+
+The M2 measurement it replaces, from `just test-load 4 12` on 64×32:
+**70.8 µs per squad-update at 48 squads — vision 15.3, combat 45.5.** Against D-020's
+~50 µs that is 1.4x over the "half a core" aspiration, but it
+extrapolates to ~71 ms inside a 100 ms tick at D-018's ~1,000 squads, so
+D-020's actual revisit trigger (exceeding the tick budget at full scale)
+is **not** tripped. Two things to carry forward: **combat is now the hot
+spot**, not vision, so it is where M4 profiling should start; and the
+per-squad figure is dominated by genuinely per-squad work, so unlike M1's
+number it does not shrink as squad count grows.
+
+That figure was 282 µs/squad before review — vision alone was 232. The
+cause was calling `TorusSpace.distance()` once per candidate cell while
+stamping a hex disk. **A hex disk is translation-invariant on a torus**,
+so the offsets within a radius are computed once and cached
+(`TorusSpace.disk_offsets`) and reused by both `vision.gd` and
+`combat.gd`. If you add another radius-scanning system, use that table —
+do not reach for `distance()` per cell.
 
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
@@ -55,12 +218,11 @@ and is the explicit revisit trigger.
 `Formation` is an all-static class on purpose: there is nowhere to put
 per-soldier state, so the purity clause is enforced rather than merely
 documented. Cosmetic motion lives in its own file (`cosmetic_offset.gd`)
-for the same reason — the one-way boundary is structural.
-
-Q7's *shape* (squad-level rolls vs. per-soldier resolution) is worth
-settling before M2 starts. D-006 constrains it — any answer must be
-expressible within the purity clause — and D-020 gives it a 100 ms
-minimum round granularity.
+for the same reason — the one-way boundary is structural. Combat's
+resolution of Q7 (D-024) satisfies this trivially rather than delicately:
+`alive` is the only formation input a death changes, so casualty
+reassignment needs no per-soldier identity anywhere, and `Formation`
+gained no instance state to support combat.
 
 ## What this project is
 
@@ -115,6 +277,32 @@ just implemented.
   configs, terrain-gen parameters: plain text (`.tres`/JSON), not
   hardcoded. This is what makes the project actually editable via
   Claude Code rather than requiring the Godot editor GUI.
+- **Combat is squad-level, stochastic, and server-only** (D-024). A
+  squad-vs-squad engagement resolves as aggregate arithmetic over
+  `alive`, `damage`, and `attack_interval`, rolled from a seeded RNG —
+  never a per-soldier resolution, and never a client-side roll (clients
+  receive outcomes, so there is no client RNG to diverge). Casualties
+  are integer decrements to `alive`, with fractional damage carried in a
+  per-squad accumulator. `alive` is the *only* formation input a death
+  changes, so casualty slot reassignment (D-006 clause 3) needs no
+  per-soldier identity anywhere — don't reintroduce one to make combat
+  feel more "precise". Morale and routing are per-squad values (D-019),
+  not per-soldier.
+- **Fog of war is still curve gating, and only that** (D-004, D-025).
+  Vision is a per-player field, stamped once per player over cells from
+  their own squads, then a single O(1) lookup per squad
+  (`Vision.is_visible`) — never a per-pair distance test, and
+  radius-only: elevation does not occlude in M2. Reveal is a truthful
+  pop-in (the same horizon-clipped curve any squad gets, sent fresh, no
+  synthetic catch-up). Conceal is an explicit wire event, not an
+  inference from a curve going quiet, because a client can't otherwise
+  tell "out of vision" from "merely late". A concealed squad becomes a
+  client-side ghost — last-known curve and composition, frozen — and a
+  ghost must never be folded into `composition_hash()`: the server
+  hashes exactly `visible_to(player)`, and a client that counted its own
+  ghosts would hash a strictly larger set and desync on a perfectly
+  healthy system. Don't build a second data-hiding mechanism anywhere —
+  extend this one.
 
 ## Project layout
 
@@ -140,6 +328,14 @@ cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
 squad_sim.gd             The authoritative 10 Hz sim (D-020) over packed
                         arrays (D-009). Ticked by an explicit
                         accumulator, never _physics_process (D-023).
+combat.gd                Squad-vs-squad combat resolution (D-024),
+                        server-only. A bucket map plus a per-attacker
+                        disk scan, not a pairwise squad×squad scan —
+                        same cost shape as vision.gd, same reason.
+vision.gd                Per-player vision field over cells (D-025).
+                        Stamped once per player, then an O(1) lookup
+                        per squad — closes the "visible_to() returns
+                        every squad" stub D-022 flagged for M1.
 terrain_gen.gd           Periodic (seam-continuous) terrain noise.
 terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
@@ -250,7 +446,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 141 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 158 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

@@ -35,6 +35,13 @@ const DIRECTIONS: Array[Vector2i] = [
 
 const SQRT_3 := 1.7320508075688772
 
+# The nine ghost-copy shift multipliers delta() searches (this axis's own
+# copy plus one period-shift either way). A const rather than a fresh
+# `[-1, 0, 1]` array literal built on every delta() call — delta() is the
+# hottest function in the whole simulation (every distance() call goes
+# through it), so two per-call heap allocations here were pure waste.
+const _GHOST_SHIFTS := [-1, 0, 1]
+
 @export var width: int = 64
 @export var height: int = 64
 @export var hex_size: float = 1.0
@@ -131,14 +138,14 @@ func delta(a: Vector2i, b: Vector2i) -> Vector2i:
 	var raw_dr := nb.y - na.y
 
 	var best := Vector2i(raw_dq, raw_dr)
-	var best_len := _axial_length(best)
+	var best_len := hex_length(best)
 
-	for i in [-1, 0, 1]:
-		for j in [-1, 0, 1]:
+	for i in _GHOST_SHIFTS:
+		for j in _GHOST_SHIFTS:
 			if i == 0 and j == 0:
 				continue
 			var candidate := Vector2i(raw_dq + i * width, raw_dr + j * height)
-			var candidate_len := _axial_length(candidate)
+			var candidate_len := hex_length(candidate)
 			if candidate_len < best_len:
 				best = candidate
 				best_len = candidate_len
@@ -148,7 +155,7 @@ func delta(a: Vector2i, b: Vector2i) -> Vector2i:
 
 ## Toroidal hex distance in cells.
 func distance(a: Vector2i, b: Vector2i) -> int:
-	return _axial_length(delta(a, b))
+	return hex_length(delta(a, b))
 
 
 ## World-space position of a cell centre. Note this is the position on
@@ -220,7 +227,63 @@ func _axial_round(fractional: Vector2) -> Vector2i:
 	return Vector2i(int(rx), int(rz))
 
 
-## Hex length of an axial vector, via the cube-coordinate identity
-## (x, y, z) = (q, -q-r, r) and length = (|x| + |y| + |z|) / 2.
-func _axial_length(d: Vector2i) -> int:
+## Hex length of an axial OFFSET, via the cube-coordinate identity
+## (x, y, z) = (q, -q-r, r) and length = (|x| + |y| + |z|) / 2. Pure
+## geometry — no torus, no wrap, no instance state — so it's static and
+## public: disk_offsets()'s callers (Vision, Combat) need this to rank
+## candidates without re-deriving it via a wrap-aware distance() call.
+static func hex_length(d: Vector2i) -> int:
 	return int((abs(d.x) + abs(d.x + d.y) + abs(d.y)) / 2.0)
+
+
+## Cache: integer radius -> Array[Vector2i] of every (dq, dr) axial offset
+## whose hex_length() is <= radius, i.e. a full hex disk of that radius
+## centred at the origin. Pure axial geometry — independent of
+## width/height/hex_size — so one static cache safely serves every
+## TorusSpace instance and every radius.
+static var _disk_offset_cache: Dictionary = {}
+
+
+## The hex disk of integer `radius`, as (dq, dr) offsets from an
+## unspecified centre.
+##
+## Why this can be cached and reused unmodified for any squad, any
+## centre, any rebuild: a hex disk is translation-invariant — the set of
+## offsets within a given hex length of the origin does not depend on
+## where the origin actually sits on the torus. So it is computed once
+## per radius rather than re-enumerated (and, in the code this replaces,
+## re-distance-tested cell by cell) for every squad on every vision
+## rebuild or combat round (D-025, D-024).
+##
+## The standard cube-coordinate diamond bound below — for each dq in
+## [-radius, radius], dr ranges over [max(-radius, -dq-radius),
+## min(radius, -dq+radius)] — already enumerates EXACTLY the disk (every
+## offset it yields has hex_length() <= radius, and no offset with
+## hex_length() <= radius is skipped). That means no per-offset distance
+## test is needed to trim it: the old code's "enumerate a superset
+## diamond, then call distance() per candidate to filter it down to the
+## true disk" was doing work this bound already does for free.
+##
+## Callers still turn (origin + offset) into an actual wrapped cell via
+## index() — that normalization, not this function, is where D-008's
+## wrap-awareness lives. A radius exceeding half the map's width or
+## height can make the same wrapped cell reachable via more than one
+## offset in this table; that is harmless here for exactly the reason
+## combat.gd's header already gives (a redundant visit, never a wrong
+## set), and Combat._find_target's header explains why it doesn't even
+## corrupt nearest-target ranking.
+static func disk_offsets(radius: int) -> Array[Vector2i]:
+	if radius < 0:
+		return []
+	if _disk_offset_cache.has(radius):
+		return _disk_offset_cache[radius]
+
+	var offsets: Array[Vector2i] = []
+	for dq in range(-radius, radius + 1):
+		var dr_min := maxi(-radius, -dq - radius)
+		var dr_max := mini(radius, -dq + radius)
+		for dr in range(dr_min, dr_max + 1):
+			offsets.append(Vector2i(dq, dr))
+
+	_disk_offset_cache[radius] = offsets
+	return offsets

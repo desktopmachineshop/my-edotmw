@@ -22,9 +22,26 @@ class_name TerrainGen
 ## explicitly excludes terrain generation beyond that).
 
 @export var noise_seed: int = 1337
-## Roughly how many features fit across the map on each axis.
+## Roughly how many features fit across the map on each axis. Independent
+## of `axis_repeats` — see _sample, which divides the noise scale by the
+## repeat count so raising symmetry does not silently shrink features.
 @export var elevation_frequency: float = 2.5
 @export var moisture_frequency: float = 4.0
+
+## How many times the field repeats along each axis (D-036).
+##
+## 1 is ordinary terrain. **2 makes the four quadrants bit-identical**,
+## which is how M3 guarantees 4-player spawn fairness: the generator walks
+## twice around each circle of the embedding torus, so cell (x, y) and
+## cell (x + width/2, y) map to exactly the same sample point and cannot
+## differ. Fairness becomes a property of the generator rather than
+## something scored and validated after the fact — there is no heuristic
+## to tune and no seed to reject.
+##
+## The repeat count must divide the map's width and height, and it is
+## tied to the player count: 2 serves 4, 2 or 1 players. Changing the
+## player count is therefore a map-generation change, not a config tweak.
+@export var axis_repeats: int = 1
 ## Vertical exaggeration applied when building meshes.
 @export var height_scale: float = 2.0
 
@@ -69,8 +86,14 @@ func _ensure_noise() -> void:
 ## Sample a noise field at a cell, periodically in both axes.
 func _sample(noise: FastNoiseLite, space: TorusSpace, cell: Vector2i, frequency: float) -> float:
 	var c := space.normalize(cell)
-	var u := TAU * float(c.x) / float(space.width)
-	var v := TAU * float(c.y) / float(space.height)
+
+	# `repeats` laps of each circle instead of one. Because u and v are
+	# ANGLES, walking round twice returns to exactly the same embedding
+	# point at the halfway cell — so quadrant symmetry is exact, not
+	# approximate, and costs nothing at runtime (D-036).
+	var repeats := maxi(1, axis_repeats)
+	var u := TAU * float(repeats) * float(c.x) / float(space.width)
+	var v := TAU * float(repeats) * float(c.y) / float(space.height)
 
 	# Minor radius tracks the map's aspect ratio, so a 64x32 map gets
 	# features that are about as many cells tall as they are wide. With a
@@ -93,7 +116,13 @@ func _sample(noise: FastNoiseLite, space: TorusSpace, cell: Vector2i, frequency:
 	# still looks superficially like terrain in aggregate statistics
 	# (sensible water fraction, sensible biome spread) while having no
 	# coherent landmasses at all.
-	var scale := frequency / TAU
+	# Divided by the repeat count too. The sample point now travels
+	# `repeats` laps, so without this a symmetric map would draw the same
+	# terrain at half the feature size and `elevation_frequency` would
+	# quietly mean something different depending on symmetry. With it, the
+	# two settings are independent: symmetry changes how often the field
+	# repeats, frequency changes how big its features are.
+	var scale := frequency / (TAU * float(repeats))
 
 	# get_noise_3d returns roughly [-1,1]; normalise to [0,1].
 	return clampf(noise.get_noise_3d(x * scale, y * scale, z * scale) * 0.5 + 0.5, 0.0, 1.0)
@@ -125,23 +154,57 @@ func passability(space: TorusSpace) -> PackedByteArray:
 	return out
 
 
-## Biome colour for the preview and for the (M2+) terrain mesh. Colour
-## rather than a biome enum for now: M1 has no gameplay that reads biome,
-## and inventing an enum nothing consumes would be speculative.
-func biome_color(space: TorusSpace, cell: Vector2i) -> Color:
+## Biome as simulation data (D-037).
+##
+## This used to be colour only, with a comment explaining that an enum
+## nothing consumed would be speculative. M3 makes that false: resource
+## nodes are derived from biome (forest gives wood, mountain gives stone),
+## so biome is now something the simulation reads, not just something the
+## renderer paints.
+enum Biome { DEEP_WATER, WATER, BEACH, DRY_GRASSLAND, GRASSLAND, FOREST, MOUNTAIN, PEAK }
+
+
+## The single classification. `biome_color` paints whatever this returns,
+## so colour and gameplay cannot drift apart — a cell that looks like
+## forest is a cell that yields wood, by construction rather than by two
+## threshold ladders being kept in sync by hand.
+func biome_at(space: TorusSpace, cell: Vector2i) -> Biome:
 	var e := elevation_at(space, cell)
-	var m := moisture_at(space, cell)
 
 	if e < sea_level * 0.6:
-		return Color(0.05, 0.14, 0.35)  # deep water
+		return Biome.DEEP_WATER
 	if e < sea_level:
-		return Color(0.12, 0.32, 0.55)  # shallow water
+		return Biome.WATER
 	if e < beach_level:
-		return Color(0.78, 0.72, 0.48)  # beach
+		return Biome.BEACH
 	if e >= mountain_level:
-		return Color(0.92, 0.92, 0.95) if e > mountain_level + 0.12 else Color(0.45, 0.44, 0.42)
+		return Biome.PEAK if e > mountain_level + 0.12 else Biome.MOUNTAIN
+
+	var m := moisture_at(space, cell)
 	if m < 0.35:
-		return Color(0.68, 0.62, 0.32)  # dry grassland
+		return Biome.DRY_GRASSLAND
 	if m < 0.62:
-		return Color(0.29, 0.52, 0.24)  # grassland
-	return Color(0.14, 0.36, 0.18)  # forest
+		return Biome.GRASSLAND
+	return Biome.FOREST
+
+
+## Biome colour for the preview and the terrain mesh — a pure function of
+## biome_at(), so the picture and the simulation always agree.
+func biome_color(space: TorusSpace, cell: Vector2i) -> Color:
+	match biome_at(space, cell):
+		Biome.DEEP_WATER:
+			return Color(0.05, 0.14, 0.35)
+		Biome.WATER:
+			return Color(0.12, 0.32, 0.55)
+		Biome.BEACH:
+			return Color(0.78, 0.72, 0.48)
+		Biome.PEAK:
+			return Color(0.92, 0.92, 0.95)
+		Biome.MOUNTAIN:
+			return Color(0.45, 0.44, 0.42)
+		Biome.DRY_GRASSLAND:
+			return Color(0.68, 0.62, 0.32)
+		Biome.GRASSLAND:
+			return Color(0.29, 0.52, 0.24)
+		_:
+			return Color(0.14, 0.36, 0.18)  # forest
