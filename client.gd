@@ -240,7 +240,7 @@ func _process(delta: float) -> void:
 	_service_network()
 	_pan_camera(delta)
 
-	if _state.welcomed and not _terrain_built:
+	if _state.welcomed and _state.has_map() and not _terrain_built:
 		_build_terrain()
 		_terrain_built = true
 
@@ -380,7 +380,11 @@ func _build_terrain() -> void:
 	var space := _state.space
 	if space == null:
 		return
-	var terrain := TerrainGen.new()
+	# From the SERVER's settings, not local defaults (D-049). The two
+	# sides agreeing about where the water is used to rest on both
+	# constructing a default TerrainGen — an implicit contract that could
+	# not survive terrain becoming tunable.
+	var terrain := _state.terrain_from_settings()
 	var chunk_size := 16
 	var grid := TerrainChunk.chunk_grid(space, chunk_size)
 
@@ -1598,7 +1602,10 @@ func _build_lobby_ui() -> void:
 	add_child(_lobby_layer)
 
 	var backdrop := ColorRect.new()
-	backdrop.color = Color(0.06, 0.07, 0.10, 0.97)
+	# Fully opaque: there is no world behind the lobby yet, because the
+	# map is not generated until the match starts (D-049). A translucent
+	# backdrop implied a place that did not exist.
+	backdrop.color = Color(0.055, 0.065, 0.095, 1.0)
 	backdrop.anchor_right = 1.0
 	backdrop.anchor_bottom = 1.0
 	_lobby_layer.add_child(backdrop)
@@ -1629,6 +1636,12 @@ func _build_lobby_ui() -> void:
 	var spacer2 := Control.new()
 	spacer2.custom_minimum_size = Vector2(0.0, 18.0)
 	root.add_child(spacer2)
+
+	_build_map_panel(root)
+
+	var spacer3 := Control.new()
+	spacer3.custom_minimum_size = Vector2(0.0, 14.0)
+	root.add_child(spacer3)
 
 	_lobby_help = Label.new()
 	_lobby_help.add_theme_font_size_override("font_size", 15)
@@ -1685,8 +1698,11 @@ func _refresh_lobby() -> void:
 			cell.modulate = tint
 			_lobby_rows.add_child(cell)
 
+	_refresh_map_panel()
+
 	var lines := [
 		"UP/DOWN select seat  ·  LEFT/RIGHT change civilisation (your seat, or AI if you are admin)",
+		"TAB switch to map settings  ·  when on map settings, UP/DOWN pick a setting and LEFT/RIGHT change it",
 	]
 	if _state.is_admin():
 		lines.append("A add AI  ·  DELETE remove selected AI  ·  ENTER start the match")
@@ -1756,14 +1772,28 @@ func _handle_lobby_input(event: InputEvent) -> bool:
 
 	var seats: Array = _state.lobby.get("seats", [])
 	match (event as InputEventKey).keycode:
+		KEY_TAB:
+			_lobby_focus_map = not _lobby_focus_map
 		KEY_UP:
-			_lobby_cursor = posmod(_lobby_cursor - 1, maxi(seats.size(), 1))
+			if _lobby_focus_map:
+				_map_cursor = posmod(_map_cursor - 1, MAP_OPTIONS.size())
+			else:
+				_lobby_cursor = posmod(_lobby_cursor - 1, maxi(seats.size(), 1))
 		KEY_DOWN:
-			_lobby_cursor = posmod(_lobby_cursor + 1, maxi(seats.size(), 1))
+			if _lobby_focus_map:
+				_map_cursor = posmod(_map_cursor + 1, MAP_OPTIONS.size())
+			else:
+				_lobby_cursor = posmod(_lobby_cursor + 1, maxi(seats.size(), 1))
 		KEY_LEFT:
-			_cycle_seat_civ(-1)
+			if _lobby_focus_map:
+				_adjust_map_option(-1)
+			else:
+				_cycle_seat_civ(-1)
 		KEY_RIGHT:
-			_cycle_seat_civ(1)
+			if _lobby_focus_map:
+				_adjust_map_option(1)
+			else:
+				_cycle_seat_civ(1)
 		KEY_A:
 			_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, String(CivRoster.RANDOM))
 		KEY_DELETE:
@@ -1797,3 +1827,155 @@ func _seat_capture_ai() -> void:
 		# so the screenshot shows what a mixed lobby looks like.
 		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
 		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)
+
+
+# --- map settings panel (D-049) ---------------------------------------
+
+## Which pane the arrow keys drive. The lobby has two lists and one set
+## of arrow keys, so something has to own them.
+var _lobby_focus_map := false
+var _map_cursor := 0
+var _map_panel: VBoxContainer
+var _map_title: Label
+
+## The settings the admin can reach, in display order.
+##
+## Every row is (key, label, step). The key is what travels to the server
+## — a new setting is a new row here plus a new case in
+## MatchState.set_map_option, and no new packet type (see LOBBY_SET_OPTION).
+const MAP_OPTIONS := [
+	{"key": "preset", "label": "Terrain", "step": 1.0},
+	{"key": "size", "label": "Map size", "step": 1.0},
+	{"key": "player_slots", "label": "Starting positions", "step": 1.0},
+	{"key": "seed", "label": "Seed", "step": 1.0},
+	{"key": "sea_level", "label": "Sea level", "step": 0.02},
+	{"key": "mountain_level", "label": "Mountain line", "step": 0.02},
+	{"key": "elevation_frequency", "label": "Landmass count", "step": 0.25},
+	{"key": "height_scale", "label": "Relief", "step": 0.2},
+]
+
+
+func _build_map_panel(parent: Control) -> void:
+	_map_panel = VBoxContainer.new()
+	_map_panel.add_theme_constant_override("separation", 6)
+	parent.add_child(_map_panel)
+
+	_map_title = Label.new()
+	_map_title.add_theme_font_size_override("font_size", 21)
+	_map_panel.add_child(_map_title)
+
+
+## A slider drawn in text: the bar shows where a value sits in its range,
+## because a bare number tells a player nothing about whether 0.56 is a
+## lot of water or a little.
+func _bar(value: float, low: float, high: float, width: int = 14) -> String:
+	var t := clampf((value - low) / maxf(high - low, 0.0001), 0.0, 1.0)
+	var filled := int(round(t * float(width)))
+	return "[%s%s]" % ["#".repeat(filled), "·".repeat(width - filled)]
+
+
+func _map_option_text(option: Dictionary) -> String:
+	var s: Dictionary = _state.lobby.get("settings", {})
+	match String(option["key"]):
+		"preset":
+			var preset := TerrainPresetRoster.by_id(StringName(s.get("preset", "")))
+			return preset.display_name if preset != null else String(s.get("preset", "?"))
+		"size":
+			return "%d x %d  (%d cells)" % [
+				int(s.get("width", 0)), int(s.get("height", 0)),
+				int(s.get("width", 0)) * int(s.get("height", 0))]
+		"player_slots":
+			return "%d" % int(s.get("player_slots", 0))
+		"seed":
+			return "%d" % int(s.get("seed", 0))
+		"sea_level":
+			return "%s  %.2f" % [_bar(float(s.get("sea_level", 0.0)), 0.05, 0.9),
+				float(s.get("sea_level", 0.0))]
+		"mountain_level":
+			return "%s  %.2f" % [_bar(float(s.get("mountain_level", 0.0)), 0.1, 0.98),
+				float(s.get("mountain_level", 0.0))]
+		"elevation_frequency":
+			return "%s  %.2f" % [_bar(float(s.get("elevation_frequency", 0.0)), 0.5, 8.0),
+				float(s.get("elevation_frequency", 0.0))]
+		"height_scale":
+			return "%s  %.1f" % [_bar(float(s.get("height_scale", 0.0)), 0.5, 6.0),
+				float(s.get("height_scale", 0.0))]
+	return ""
+
+
+func _refresh_map_panel() -> void:
+	if _map_panel == null:
+		return
+	var settings: Dictionary = _state.lobby.get("settings", {})
+	if settings.is_empty():
+		_map_title.text = "MAP — waiting for the server"
+		return
+
+	var preset := TerrainPresetRoster.by_id(StringName(settings.get("preset", "")))
+	_map_title.text = "MAP SETTINGS%s" % ("  ◀ editing" if _lobby_focus_map else "")
+
+	for child in _map_panel.get_children():
+		if child != _map_title:
+			child.queue_free()
+
+	for i in range(MAP_OPTIONS.size()):
+		var row := Label.new()
+		row.add_theme_font_size_override("font_size", 17)
+		row.text = "%s %-20s %s" % [
+			"▶" if (_lobby_focus_map and i == _map_cursor) else " ",
+			String(MAP_OPTIONS[i]["label"]),
+			_map_option_text(MAP_OPTIONS[i]),
+		]
+		row.modulate = Color(0.86, 0.88, 0.94) if (_lobby_focus_map and i == _map_cursor) \
+			else Color(0.62, 0.66, 0.74)
+		_map_panel.add_child(row)
+
+	if preset != null and preset.summary != "":
+		var blurb := Label.new()
+		blurb.add_theme_font_size_override("font_size", 15)
+		blurb.modulate = Color(0.58, 0.66, 0.60)
+		blurb.custom_minimum_size = Vector2(560.0, 0.0)
+		blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		blurb.text = preset.summary
+		_map_panel.add_child(blurb)
+
+	if not _state.is_admin():
+		var note := Label.new()
+		note.add_theme_font_size_override("font_size", 15)
+		note.modulate = Color(0.55, 0.57, 0.62)
+		note.text = "Only the admin can change these."
+		_map_panel.add_child(note)
+
+
+## Nudge the selected setting. Sent as "key=value" so a new slider needs
+## no new packet type.
+func _adjust_map_option(direction: int) -> void:
+	if _map_cursor < 0 or _map_cursor >= MAP_OPTIONS.size():
+		return
+	var option: Dictionary = MAP_OPTIONS[_map_cursor]
+	var key := String(option["key"])
+	var settings: Dictionary = _state.lobby.get("settings", {})
+	var step := float(option["step"]) * float(direction)
+	var value := 0.0
+
+	match key:
+		"preset":
+			var ids := TerrainPresetRoster.ids()
+			var current := ids.find(StringName(settings.get("preset", "")))
+			value = float(posmod(current + direction, maxi(ids.size(), 1)))
+		"size":
+			var sizes := MapSettings.sizes()
+			var current := 0
+			for i in range(sizes.size()):
+				if int(sizes[i]["width"]) == int(settings.get("width", 0)):
+					current = i
+					break
+			value = float(posmod(current + direction, sizes.size()))
+		"seed":
+			value = float(int(settings.get("seed", 0)) + direction * 1)
+		"player_slots":
+			value = float(int(settings.get("player_slots", 2)) + direction)
+		_:
+			value = float(settings.get(key, 0.0)) + step
+
+	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])

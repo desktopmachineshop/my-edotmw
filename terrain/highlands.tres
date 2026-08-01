@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="TerrainPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://terrain_preset.gd" id="1_tp"]
+
+[resource]
+script = ExtResource("1_tp")
+id = &"highlands"
+display_name = "Highlands"
+summary = "Rock everywhere. Passable ground is narrow and winding, and the flow field earns its keep."
+sea_level = 0.30
+beach_level = 0.36
+mountain_level = 0.52
+elevation_frequency = 3.2
+moisture_frequency = 4.0
+height_scale = 3.4

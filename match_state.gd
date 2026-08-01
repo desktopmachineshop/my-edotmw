@@ -348,3 +348,58 @@ func describe() -> String:
 			return "running (%d active of %d)" % [active_players().size(), _players.size()]
 		_:
 			return "finished (winner=%d)" % winner
+
+
+# --- map settings, chosen in the lobby (D-049) -------------------------
+
+## The world this lobby is about to generate. Admin-only to change, and
+## meaningless once the match has started.
+var map_settings := MapSettings.new()
+
+
+## Adjust one setting. Returns true if anything actually changed.
+##
+## Admin-only and validated HERE: a slider is a suggestion from an
+## untrusted client (D-002), and a sea level above the mountain line
+## would generate a world with no passable ground at all — every squad
+## stranded, every flow field empty. The UI greying out a control is not
+## a rule.
+func set_map_option(by_player: int, key: String, value: float) -> bool:
+	if phase != Phase.LOBBY or not is_admin(by_player):
+		return false
+
+	var before := map_settings.to_dict()
+	match key:
+		"size":
+			var sizes := MapSettings.sizes()
+			var index := clampi(int(value), 0, sizes.size() - 1)
+			map_settings.width = int(sizes[index]["width"])
+			map_settings.height = int(sizes[index]["height"])
+		"player_slots":
+			map_settings.player_slots = clampi(int(value), 2, 24)
+		"seed":
+			map_settings.seed = int(value)
+		"preset":
+			var ids := TerrainPresetRoster.ids()
+			if ids.is_empty():
+				return false
+			map_settings.apply_preset(
+				TerrainPresetRoster.by_id(ids[posmod(int(value), ids.size())]))
+		"sea_level":
+			map_settings.sea_level = clampf(value, 0.05, 0.9)
+		"mountain_level":
+			map_settings.mountain_level = clampf(value, 0.1, 0.98)
+		"elevation_frequency":
+			map_settings.elevation_frequency = clampf(value, 0.5, 8.0)
+		"height_scale":
+			map_settings.height_scale = clampf(value, 0.5, 6.0)
+		_:
+			return false
+
+	# Refuse the change rather than the match: an unplayable combination
+	# is rejected at the moment it is made, so nobody discovers it by
+	# pressing start.
+	if not map_settings.is_valid():
+		map_settings = MapSettings.from_dict(before)
+		return false
+	return map_settings.to_dict() != before

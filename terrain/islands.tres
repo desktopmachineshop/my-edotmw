@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="TerrainPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://terrain_preset.gd" id="1_tp"]
+
+[resource]
+script = ExtResource("1_tp")
+id = &"islands"
+display_name = "Islands"
+summary = "Most of the map is water. Land breaks into many small masses, so who reaches whom is decided by the coastline."
+sea_level = 0.56
+beach_level = 0.60
+mountain_level = 0.82
+elevation_frequency = 4.5
+moisture_frequency = 4.0
+height_scale = 2.0

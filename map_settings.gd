@@ -1,0 +1,144 @@
+extends RefCounted
+class_name MapSettings
+
+## The world the lobby is about to generate (D-049).
+##
+## Everything here is chosen BEFORE the map exists. That is the whole
+## point and the reason terrain generation moved to match start: the
+## client used to build terrain when it connected, which was before
+## anybody had picked a size, a seed or a shape. There was nothing wrong
+## with the terrain it drew except that it was answering a question
+## nobody had asked yet.
+##
+## ## Concrete numbers travel, not preset names
+##
+## A preset FILLS these values in the lobby; only the values are sent.
+## The client therefore never has to know what "islands" means — it is
+## handed a sea level. `server.gd` predicted this exact requirement back
+## in M3: "the moment terrain parameters become tunable they have to
+## become map data and travel on the wire, or the two sides will quietly
+## disagree about which cells a squad may enter". Sending the preset id
+## instead would leave two implementations of that meaning, one per side,
+## free to drift.
+
+## Torus dimensions. Height must stay even (D-008's row parity), which
+## `sizes()` guarantees and `validate()` rechecks.
+var width: int = 128
+var height: int = 64
+
+## How many starting positions the map offers (D-039).
+var player_slots: int = 8
+
+## Terrain noise seed. Rolled per match unless someone pins it, so two
+## matches on the same settings are still different places.
+var seed: int = 1337
+
+## Which preset was last applied. Carried for DISPLAY only — the numbers
+## below are the authority, and a slider nudge leaves this pointing at
+## the preset it started from.
+var preset: StringName = &"continents"
+
+var sea_level: float = 0.38
+var beach_level: float = 0.44
+var mountain_level: float = 0.74
+var elevation_frequency: float = 2.5
+var moisture_frequency: float = 4.0
+var height_scale: float = 2.0
+
+
+## The map sizes the lobby offers. Every height is even (D-008), and the
+## cell counts span the range M4 measured: 2,048 through 32,768, where
+## the worst tick stayed flat once field building was amortised (D-040).
+static func sizes() -> Array:
+	return [
+		{"width": 64, "height": 32, "name": "Skirmish"},
+		{"width": 128, "height": 64, "name": "Standard"},
+		{"width": 192, "height": 96, "name": "Large"},
+		{"width": 256, "height": 128, "name": "Huge"},
+	]
+
+
+func apply_preset(preset_def: TerrainPreset) -> void:
+	if preset_def == null:
+		return
+	preset = preset_def.id
+	sea_level = preset_def.sea_level
+	beach_level = preset_def.beach_level
+	mountain_level = preset_def.mountain_level
+	elevation_frequency = preset_def.elevation_frequency
+	moisture_frequency = preset_def.moisture_frequency
+	height_scale = preset_def.height_scale
+
+
+## Build the generator these settings describe.
+##
+## The ONE place a MapSettings becomes a TerrainGen, used by both sides.
+## Two conversions would be two chances to forget a field, and forgetting
+## one means the server routes squads around water the client never drew.
+func to_terrain() -> TerrainGen:
+	var terrain := TerrainGen.new()
+	terrain.noise_seed = seed
+	terrain.sea_level = sea_level
+	terrain.beach_level = beach_level
+	terrain.mountain_level = mountain_level
+	terrain.elevation_frequency = elevation_frequency
+	terrain.moisture_frequency = moisture_frequency
+	terrain.height_scale = height_scale
+	return terrain
+
+
+func to_space() -> TorusSpace:
+	return TorusSpace.new(width, height, 1.0)
+
+
+func to_dict() -> Dictionary:
+	return {
+		"width": width, "height": height, "player_slots": player_slots,
+		"seed": seed, "preset": String(preset),
+		"sea_level": sea_level, "beach_level": beach_level,
+		"mountain_level": mountain_level,
+		"elevation_frequency": elevation_frequency,
+		"moisture_frequency": moisture_frequency,
+		"height_scale": height_scale,
+	}
+
+
+static func from_dict(data: Dictionary) -> MapSettings:
+	var out := MapSettings.new()
+	out.width = int(data.get("width", out.width))
+	out.height = int(data.get("height", out.height))
+	out.player_slots = int(data.get("player_slots", out.player_slots))
+	out.seed = int(data.get("seed", out.seed))
+	out.preset = StringName(data.get("preset", out.preset))
+	out.sea_level = float(data.get("sea_level", out.sea_level))
+	out.beach_level = float(data.get("beach_level", out.beach_level))
+	out.mountain_level = float(data.get("mountain_level", out.mountain_level))
+	out.elevation_frequency = float(data.get("elevation_frequency", out.elevation_frequency))
+	out.moisture_frequency = float(data.get("moisture_frequency", out.moisture_frequency))
+	out.height_scale = float(data.get("height_scale", out.height_scale))
+	return out
+
+
+## Returns "" if these settings describe a playable world.
+##
+## Checked on the SERVER when the admin starts, not only in the UI: a
+## slider is a suggestion from an untrusted client (D-002), and a sea
+## level above the mountain level would produce a map with no passable
+## ground at all — every squad stranded, every flow field empty.
+func validate() -> String:
+	var space_error := to_space().validate()
+	if space_error != "":
+		return space_error
+	if player_slots < 2:
+		return "a match needs at least two starting positions"
+	if sea_level >= mountain_level:
+		return "sea level is at or above the mountain line, leaving nowhere to walk"
+	if beach_level < sea_level or beach_level > mountain_level:
+		return "the beach line must sit between sea and mountain"
+	if elevation_frequency <= 0.0 or moisture_frequency <= 0.0:
+		return "noise frequency must be positive"
+	return ""
+
+
+func is_valid() -> bool:
+	return validate() == ""

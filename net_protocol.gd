@@ -628,9 +628,10 @@ const LOBBY_SET_CIV := 0
 const LOBBY_ADD_AI := 1
 const LOBBY_REMOVE_AI := 2
 const LOBBY_START := 3
+const LOBBY_SET_OPTION := 4
 
 
-static func encode_lobby(admin_player: int, seats: Array) -> PackedByteArray:
+static func encode_lobby(admin_player: int, seats: Array, settings := {}) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u32(admin_player)
@@ -640,6 +641,8 @@ static func encode_lobby(admin_player: int, seats: Array) -> PackedByteArray:
 		buf.put_u32(int(seat["player"]))
 		_put_string(buf, String(seat["civ"]))
 		_put_string(buf, String(seat["name"]))
+	var json := JSON.stringify(settings)
+	_put_string(buf, json)
 	return buf.data_array
 
 
@@ -659,7 +662,13 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 			"kind": "ai" if is_ai else "human",
 			"player": player, "civ": civ, "name": name,
 		})
-	return {"admin": admin, "seats": seats}
+	var settings := {}
+	var json := _get_string(buf)
+	if json != "":
+		var parsed = JSON.parse_string(json)
+		if parsed is Dictionary:
+			settings = parsed
+	return {"admin": admin, "seats": seats, "settings": settings}
 
 
 static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:
@@ -691,3 +700,46 @@ static func _get_string(buf: StreamPeerBuffer) -> String:
 	var length := buf.get_u16()
 	var bytes: PackedByteArray = buf.get_data(length)[1]
 	return bytes.get_string_from_utf8()
+
+
+## MAP_SETTINGS (D-049) — the concrete world the match is about to use.
+##
+## Sent at match start, before any welcome, so a client can generate
+## terrain identical to the server's. CONCRETE NUMBERS, never a preset
+## name: `server.gd` warned in M3 that "the moment terrain parameters
+## become tunable they have to become map data and travel on the wire, or
+## the two sides will quietly disagree about which cells a squad may
+## enter". Sending "islands" would leave two implementations of what that
+## means, one per side, free to drift apart.
+const S2C_MAP_SETTINGS := 20
+
+
+static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_MAP_SETTINGS)
+	buf.put_u32(int(settings["width"]))
+	buf.put_u32(int(settings["height"]))
+	buf.put_u32(int(settings["player_slots"]))
+	buf.put_32(int(settings["seed"]))
+	_put_string(buf, String(settings["preset"]))
+	for key in ["sea_level", "beach_level", "mountain_level",
+			"elevation_frequency", "moisture_frequency", "height_scale"]:
+		buf.put_float(float(settings[key]))
+	return buf.data_array
+
+
+static func decode_map_settings(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var out := {
+		"width": int(buf.get_u32()),
+		"height": int(buf.get_u32()),
+		"player_slots": int(buf.get_u32()),
+		"seed": int(buf.get_32()),
+		"preset": _get_string(buf),
+	}
+	for key in ["sea_level", "beach_level", "mountain_level",
+			"elevation_frequency", "moisture_frequency", "height_scale"]:
+		out[key] = buf.get_float()
+	return out

@@ -79,6 +79,9 @@ var _passable := PackedByteArray()
 ## is filled in.
 var _spawn_points: Array[Vector2i] = []
 
+## What the world is, or will be once the lobby settles (D-049).
+var _settings: MapSettings
+
 ## How near a squad must be to found a building, in cells. A player
 ## should not be able to plant a town hall across the map from the
 ## founders who are supposedly building it.
@@ -159,7 +162,51 @@ func _ready() -> void:
 		get_tree().quit(1)
 		return
 
-	var space := _config.to_space()
+	# What the world WILL be. Seeded from the map file, then edited in the
+	# lobby (D-049).
+	_settings = MapSettings.new()
+	_settings.width = _config.width
+	_settings.height = _config.height
+	_settings.player_slots = _config.player_slots
+	_settings.seed = int(args.get("seed", 1337))
+	_settings.apply_preset(TerrainPresetRoster.by_id(_settings.preset))
+
+	_match = MatchState.new()
+	_match.players_expected = maxi(1, int(args.get("players", 1)))
+	_match.require_admin_start = int(args.get("lobby", 0)) != 0
+	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
+	_match.squad_cap = _config.squad_cap
+	_match.map_settings = _settings
+
+	# In lobby mode the world does NOT exist yet, and cannot: its size,
+	# seed and shape are all still being chosen (D-049). This is why
+	# terrain generation moved out of startup — the old code built a map
+	# the moment the server booted, which was before anybody had asked for
+	# one, and the client did the same on connect. The lobby has nothing
+	# behind it because there is genuinely nothing there yet.
+	if not _match.require_admin_start:
+		_build_world()
+
+	_host = ENetConnection.new()
+	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
+	if err != OK:
+		push_error("server: could not bind UDP %d (error %d)" % [_port, err])
+		get_tree().quit(1)
+		return
+
+	print("server: listening on 0.0.0.0:%d — map %s, tick %d Hz%s" % [
+		_port, _config.id, int(SquadSim.TICK_HZ),
+		" (lobby)" if _match.require_admin_start else ""])
+	if _run_seconds > 0.0:
+		print("server: will stop after %.1f simulated seconds" % _run_seconds)
+
+
+## Generate the world the settings describe. Called at startup when there
+## is no lobby, and when the admin starts a match when there is (D-049).
+func _build_world() -> void:
+	if _sim != null:
+		return
+	var space := _settings.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
 
 	# Terrain is real to the SIMULATION, not just to the renderer.
@@ -183,7 +230,7 @@ func _ready() -> void:
 	# One TerrainGen for the whole server: passability, and the resource
 	# field derived from the same biomes (D-037). Two instances would be
 	# two sources of truth about the same ground.
-	var terrain := TerrainGen.new()
+	var terrain := _settings.to_terrain()
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
 
@@ -194,8 +241,18 @@ func _ready() -> void:
 	# points. Recomputing is deterministic and would agree anyway, but only
 	# as long as nobody passes a different `passable`, which is exactly the
 	# kind of drift that is cheaper to make impossible.
-	_spawn_points = _config.spawn_points(_passable)
-	var seating := _config.validate_spawns(_passable)
+	# Spawn placement follows the LOBBY's chosen slot count and map size
+	# (D-049), not the map file's — the file is only the starting point
+	# those settings were seeded from.
+	var spawn_config := MapConfig.new()
+	spawn_config.width = _settings.width
+	spawn_config.height = _settings.height
+	spawn_config.player_slots = _settings.player_slots
+	spawn_config.min_spawn_spacing = _config.min_spawn_spacing
+	spawn_config.spawn_seed = _config.spawn_seed + _settings.seed
+	_spawn_points = spawn_config.spawn_points(_passable)
+
+	var seating := spawn_config.validate_spawns(_passable)
 	if seating != "":
 		# Not fatal: a short-seated map still plays, players just share
 		# starts. Fatal would take down a running server over a map tuning
@@ -204,8 +261,9 @@ func _ready() -> void:
 		# meant to be measuring.
 		push_warning("server: %s" % seating)
 		print("server: WARNING — %s" % seating)
-	print("server: %d spawn points, min spacing %d" % [
-		_spawn_points.size(), _config.min_spawn_spacing])
+	print("server: world %dx%d, preset %s, seed %d — %d spawn points" % [
+		_settings.width, _settings.height, _settings.preset, _settings.seed,
+		_spawn_points.size()])
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
@@ -216,7 +274,7 @@ func _ready() -> void:
 	# the map's symmetry order, so all four starts hold equal resources
 	# without anything here reasoning about fairness (D-036).
 	_economy = Economy.new(space)
-	_economy.generate(terrain, _config.symmetry_order)
+	_economy.generate(terrain, 1)
 	# Fairness on an asymmetric map is a post-pass now, not a property of
 	# the generator (D-036 revised): every start is guaranteed a minimum
 	# of each resource within reach.
@@ -225,27 +283,13 @@ func _ready() -> void:
 	_sim.economy = _economy
 	print("server: %d resource nodes generated" % _economy.node_count())
 
-	# Match lifecycle (D-033). Defaults to 1 so the single-client
-	# development flows (`run-client`, `test-client`) behave exactly as
-	# they did before matches existed: the match starts on the first join
-	# and the victory rule never fires with fewer than two players.
-	_match = MatchState.new()
-	_match.players_expected = maxi(1, int(args.get("players", 1)))
-	# A real lobby waits for its admin (D-048). Off by default so
-	# `run-client` and `test-client` — which have nobody to press start —
-	# behave exactly as they did before the lobby existed.
-	_match.require_admin_start = int(args.get("lobby", 0)) != 0
-	# Seeded from the map, never wall-clock, so a Random civ draw
-	# reproduces on replay (D-016).
-	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
-	_match.squad_cap = _config.squad_cap
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
 	# (D-024) — MapConfig has no dedicated seed field, so this derives one
 	# deterministically from fields it already has. Same map, same seed,
 	# every run: that is what lets a replay reproduce the exact battle
 	# that happened rather than a different one (D-016).
-	_sim.combat_seed = NetProtocol.seed_from(String(_config.id), _config.width, _config.height)
+	_sim.combat_seed = NetProtocol.seed_from(String(_config.id), _settings.width, _settings.height) + _settings.seed
 
 	_replay = ReplayLog.new()
 	# Replays are the curve log (D-016), written from M1 onward.
@@ -253,18 +297,6 @@ func _ready() -> void:
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % replay_path)
-
-	_host = ENetConnection.new()
-	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
-	if err != OK:
-		push_error("server: could not bind UDP %d (error %d)" % [_port, err])
-		get_tree().quit(1)
-		return
-
-	print("server: listening on 0.0.0.0:%d — map %s (%dx%d), tick %d Hz" % [
-		_port, _config.id, _config.width, _config.height, int(SquadSim.TICK_HZ)])
-	if _run_seconds > 0.0:
-		print("server: will stop after %.1f simulated seconds" % _run_seconds)
 
 
 func _exit_tree() -> void:
@@ -291,6 +323,11 @@ func _process(delta: float) -> void:
 		return
 
 	_service_network()
+
+	# No world, no ticks. In lobby mode the simulation does not exist yet
+	# (D-049), and everything below this line assumes it does.
+	if _sim == null:
+		return
 
 	# Fixed-timestep accumulator (D-023). Whole ticks are consumed and the
 	# remainder carried, so the sim rate is independent of frame rate.
@@ -462,7 +499,7 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	_match.add_player(player)
 	if _match.phase == MatchState.Phase.LOBBY:
 		_broadcast_lobby()
-		peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height,
+		peer.send(0, NetProtocol.encode_welcome(player, _settings.width, _settings.height,
 			PackedInt32Array(), _spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
 		_peak_clients = maxi(_peak_clients, _clients.size())
 		return
@@ -589,6 +626,8 @@ func _broadcast_squad_info() -> void:
 ## (D-036). Sent so no client has to reimplement spawn placement to know
 ## where anyone starts.
 func _spawn_cell_indices() -> Array:
+	if _sim == null:
+		return []
 	var out := []
 	for point in _spawn_points:
 		out.append(_sim.space.index(point))
@@ -1110,6 +1149,15 @@ func _handle_lobby_command(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 			ok = _match.remove_ai(player, int(command["seat"]))
 			if not ok:
 				_notify(peer, "Only the lobby admin can remove AI players")
+		NetProtocol.LOBBY_SET_OPTION:
+			# The civ field carries "key=value" — the lobby command is a
+			# tiny generic message rather than one opcode per slider, so a
+			# new setting is a new key rather than a new packet type.
+			var parts := String(command["civ"]).split("=", true, 1)
+			if parts.size() == 2:
+				ok = _match.set_map_option(player, parts[0], float(parts[1]))
+			if not ok:
+				_notify(peer, "Only the admin can change map settings, and not to an unplayable one")
 		NetProtocol.LOBBY_START:
 			ok = _match.request_start(player)
 			if not ok:
@@ -1130,12 +1178,24 @@ func _handle_lobby_command(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## roster a player may build from, their opening stockpile — can be
 ## settled before now.
 func _on_match_started() -> void:
+	# The world is generated HERE, from the settings the lobby settled on
+	# (D-049). Nothing before this point could have built it: the size,
+	# seed and shape were still being chosen.
+	_build_world()
+
 	# Civs are only real now — a seat could have said "Random" a moment
 	# ago — so this has to happen before anything that reads a roster or
 	# an opening stockpile.
 	for seat in _match.seats:
 		_civs[int(seat["player"])] = StringName(seat["civ"])
 	print("server: match started — %s" % _seat_summary())
+
+	# The world's concrete numbers, before anybody is admitted: a client
+	# has to be able to generate the SAME terrain, and it cannot do that
+	# from a preset name (D-049).
+	var settings_packet := NetProtocol.encode_map_settings(_settings.to_dict())
+	for peer in _clients:
+		(peer as ENetPacketPeer).send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
 
 	for seat in _match.seats:
 		var player := int(seat["player"])
@@ -1161,6 +1221,9 @@ func _seat_summary() -> String:
 
 
 func _broadcast_lobby() -> void:
-	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats)
+	# The lobby is the authority on settings while it is up, so the
+	# server mirrors its choices before describing them.
+	_settings = _match.map_settings
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats, _settings.to_dict())
 	for peer in _clients:
 		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
