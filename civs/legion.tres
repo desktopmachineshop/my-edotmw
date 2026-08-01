@@ -7,6 +7,7 @@ script = ExtResource("1_civ")
 id = &"legion"
 display_name = "Legion"
 summary = "Quality over numbers. Expensive, slow to field, and very hard to break once it is. Heavy foot and disciplined archers; no light cavalry."
+colour = Color(0.35, 0.52, 0.82, 1)
 starting_food = 220
 starting_wood = 220
 starting_gold = 40

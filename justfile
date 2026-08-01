@@ -626,7 +626,7 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
 # than a battlefield. Docker only, same software-GL reasoning as
 # test-client.
 [doc("Screenshot the lobby screen into artifacts/lobby.png")]
-lobby-shot SECONDS="8" AI="2": _import
+lobby-shot SECONDS="8" AI="2" PRESET="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "{{runtime}}" != "docker" ]; then
@@ -651,6 +651,7 @@ lobby-shot SECONDS="8" AI="2": _import
         --resolution 1280x720 \
         -- --address=edotmw-lobby-server --run-seconds={{SECONDS}} \
         --lobby-ai={{AI}} \
+        --lobby-preset-steps={{PRESET}} \
         --screenshot=res://artifacts/lobby.png \
         > "$log" 2>&1 || status=$?
 

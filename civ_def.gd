@@ -32,6 +32,11 @@ class_name CivDef
 ## knows what they are picking.
 @export_multiline var summary: String = ""
 
+## The civ's colour, used for its swatch and emblem in the lobby.
+## Data, like everything else about a civ — a new .tres brings its own
+## identity and no script learns a new name (D-046 criterion 3).
+@export var colour: Color = Color(0.6, 0.65, 0.75)
+
 ## What a player of this civ starts with (D-028's reasoning: a player
 ## starting empty could never begin, because gatherers cost food and food
 ## comes from gatherers).

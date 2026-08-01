@@ -7,6 +7,7 @@ script = ExtResource("1_civ")
 id = &"northmen"
 display_name = "Northmen"
 summary = "Numbers over quality. Cheap troops, fielded fast and in strength, that lose any even fight and are rarely asked to take one. Raiders and skirmishers; no heavy foot at all."
+colour = Color(0.78, 0.42, 0.28, 1)
 starting_food = 300
 starting_wood = 180
 starting_gold = 0

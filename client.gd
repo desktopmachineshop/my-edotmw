@@ -186,6 +186,7 @@ func _ready() -> void:
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
 	# lobby with something in it rather than one empty seat.
 	_lobby_ai_wanted = int(args.get("lobby-ai", 0))
+	_lobby_preset_steps = int(args.get("lobby-preset-steps", 0))
 
 	_unit_def = UnitRoster.first()
 
@@ -1575,28 +1576,89 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 	return parsed
 
 
-# --- lobby screen (D-048) ---------------------------------------------
+# --- lobby screen (D-048, D-049) --------------------------------------
+#
+# Laid out the way the genre does it — Age of Empires and Empires: Dawn
+# of the Modern World both put a slot table on the left, a MAP PREVIEW
+# with the game settings beside it, and the start control under the lot.
+# That layout is conventional because it answers the three questions a
+# player has before a match: who am I playing, as whom, and where.
+#
+# All of it is procedural. D-011 puts this project on the primitive art
+# tier, so there is no chrome to import: panels are StyleBoxFlat, civ
+# emblems are their own colours, and the map preview is GENERATED from
+# the terrain settings rather than being an authored thumbnail.
 
 var _hud_layer: CanvasLayer
 var _lobby_layer: CanvasLayer
-var _lobby_rows: GridContainer
+var _lobby_seat_rows: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
 var _lobby_cursor := 0
 
+## Which pane the arrow keys drive. Two lists, one set of arrow keys, so
+## something has to own them.
+var _lobby_focus_map := false
+var _map_cursor := 0
+var _map_rows: VBoxContainer
+var _map_preview: TextureRect
+var _map_blurb: Label
+var _lobby_start_hint: Label
 
-## Built once, shown only while the server says we are in a lobby.
-##
-## Deliberately its own CanvasLayer rather than part of the HUD: the lobby
-## is a different screen, not an overlay on the game, and giving it its
-## own layer means showing or hiding it is one flag instead of a dozen
-## visibility rules that can disagree.
+## The settings the map preview was last built from. Regenerating is
+## O(cells) and settings change on every keypress, so the preview is
+## rebuilt only when something it depends on actually moved.
+var _preview_key := ""
+
+const MAP_OPTIONS := [
+	{"key": "preset", "label": "Terrain", "step": 1.0},
+	{"key": "size", "label": "Map size", "step": 1.0},
+	{"key": "player_slots", "label": "Starting positions", "step": 1.0},
+	{"key": "seed", "label": "Seed", "step": 1.0},
+	{"key": "sea_level", "label": "Sea level", "step": 0.02},
+	{"key": "mountain_level", "label": "Mountain line", "step": 0.02},
+	{"key": "elevation_frequency", "label": "Landmass count", "step": 0.25},
+	{"key": "height_scale", "label": "Relief", "step": 0.2},
+]
+
+
+## A framed panel with a header — the repeated unit of this screen.
+func _lobby_panel(title: String, parent: Control) -> VBoxContainer:
+	var frame := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.10, 0.12, 0.17, 1.0)
+	style.border_color = Color(0.28, 0.34, 0.45, 1.0)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(4)
+	style.content_margin_left = 14
+	style.content_margin_right = 14
+	style.content_margin_top = 10
+	style.content_margin_bottom = 12
+	frame.add_theme_stylebox_override("panel", style)
+	parent.add_child(frame)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	frame.add_child(column)
+
+	var header := Label.new()
+	header.text = title
+	header.add_theme_font_size_override("font_size", 16)
+	header.modulate = Color(0.55, 0.66, 0.85)
+	column.add_child(header)
+
+	var rule := ColorRect.new()
+	rule.color = Color(0.24, 0.30, 0.40, 1.0)
+	rule.custom_minimum_size = Vector2(0.0, 2.0)
+	column.add_child(rule)
+	return column
+
+
 func _build_lobby_ui() -> void:
 	_lobby_layer = CanvasLayer.new()
-	# Above the HUD, not merely after it: CanvasLayers draw in layer order,
-	# so a backdrop on the same layer let the game HUD show straight
-	# through the lobby — which the first screenshot caught immediately and
-	# no assertion would have.
+	# Above the HUD, not merely after it: CanvasLayers draw in layer
+	# order, so a backdrop on the same layer let the game HUD show
+	# straight through the lobby.
 	_lobby_layer.layer = 10
 	_lobby_layer.visible = false
 	add_child(_lobby_layer)
@@ -1605,48 +1667,92 @@ func _build_lobby_ui() -> void:
 	# Fully opaque: there is no world behind the lobby yet, because the
 	# map is not generated until the match starts (D-049). A translucent
 	# backdrop implied a place that did not exist.
-	backdrop.color = Color(0.055, 0.065, 0.095, 1.0)
+	backdrop.color = Color(0.045, 0.055, 0.08, 1.0)
 	backdrop.anchor_right = 1.0
 	backdrop.anchor_bottom = 1.0
 	_lobby_layer.add_child(backdrop)
 
 	var root := VBoxContainer.new()
-	root.position = Vector2(64.0, 48.0)
-	root.add_theme_constant_override("separation", 10)
+	root.position = Vector2(40.0, 26.0)
+	root.add_theme_constant_override("separation", 12)
 	_lobby_layer.add_child(root)
 
 	_lobby_title = Label.new()
-	_lobby_title.add_theme_font_size_override("font_size", 30)
+	_lobby_title.add_theme_font_size_override("font_size", 28)
 	root.add_child(_lobby_title)
 
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 18)
+	root.add_child(columns)
+
+	# Left: who is playing.
+	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(620.0, 0.0)
+	columns.add_child(left)
+	_lobby_seat_rows = _lobby_panel("PLAYERS", left)
+
+	# Right: where, and how.
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 12)
+	columns.add_child(right)
+
+	var preview_column := _lobby_panel("MAP", right)
+	_map_preview = TextureRect.new()
+	_map_preview.custom_minimum_size = Vector2(380.0, 168.0)
+	_map_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_map_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	preview_column.add_child(_map_preview)
+
+	_map_blurb = Label.new()
+	_map_blurb.add_theme_font_size_override("font_size", 13)
+	_map_blurb.modulate = Color(0.60, 0.68, 0.62)
+	_map_blurb.custom_minimum_size = Vector2(380.0, 32.0)
+	_map_blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	preview_column.add_child(_map_blurb)
+
+	_map_rows = _lobby_panel("GAME SETTINGS", right)
+
+	# Start prompt and key help live under the PLAYERS panel, in the space
+	# the seat list leaves empty. Below the whole layout they pushed the
+	# settings panel past the bottom of a 720p window — which the first
+	# capture showed instantly, and which no assertion about the text
+	# would ever have noticed.
 	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0.0, 12.0)
-	root.add_child(spacer)
+	spacer.custom_minimum_size = Vector2(0.0, 10.0)
+	left.add_child(spacer)
 
-	# A grid, not padded strings. The first version aligned columns with
-	# "%-10s" and the font is proportional, so every row was ragged — the
-	# kind of thing that is obvious in a screenshot and invisible to any
-	# check that only asks whether the text is right.
-	_lobby_rows = GridContainer.new()
-	_lobby_rows.columns = 4
-	_lobby_rows.add_theme_constant_override("h_separation", 28)
-	_lobby_rows.add_theme_constant_override("v_separation", 8)
-	root.add_child(_lobby_rows)
-
-	var spacer2 := Control.new()
-	spacer2.custom_minimum_size = Vector2(0.0, 18.0)
-	root.add_child(spacer2)
-
-	_build_map_panel(root)
-
-	var spacer3 := Control.new()
-	spacer3.custom_minimum_size = Vector2(0.0, 14.0)
-	root.add_child(spacer3)
+	_lobby_start_hint = Label.new()
+	_lobby_start_hint.add_theme_font_size_override("font_size", 20)
+	left.add_child(_lobby_start_hint)
 
 	_lobby_help = Label.new()
-	_lobby_help.add_theme_font_size_override("font_size", 15)
-	_lobby_help.modulate = Color(0.72, 0.76, 0.84)
-	root.add_child(_lobby_help)
+	_lobby_help.add_theme_font_size_override("font_size", 13)
+	_lobby_help.modulate = Color(0.55, 0.60, 0.70)
+	_lobby_help.custom_minimum_size = Vector2(600.0, 0.0)
+	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_lobby_help)
+
+
+## A coloured block standing in for a civ emblem. The colour comes from
+## the CivDef, so a civ added as a .tres arrives with its own identity
+## and no script learns its name (D-046 criterion 3).
+func _swatch(colour: Color, size: Vector2) -> Control:
+	var holder := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = colour
+	style.set_corner_radius_all(3)
+	style.border_color = colour.lightened(0.35)
+	style.set_border_width_all(1)
+	holder.add_theme_stylebox_override("panel", style)
+	holder.custom_minimum_size = size
+	return holder
+
+
+func _civ_colour(civ: String) -> Color:
+	if StringName(civ) == CivRoster.RANDOM:
+		return Color(0.42, 0.44, 0.52)
+	var def := CivRoster.by_id(StringName(civ))
+	return def.colour if def != null else Color(0.5, 0.5, 0.5)
 
 
 func _refresh_lobby() -> void:
@@ -1661,55 +1767,89 @@ func _refresh_lobby() -> void:
 
 	var seats: Array = _state.lobby.get("seats", [])
 	_lobby_cursor = clampi(_lobby_cursor, 0, maxi(seats.size() - 1, 0))
+	_lobby_title.text = "MULTIPLAYER LOBBY"
 
-	_lobby_title.text = "LOBBY — %s   (%d seated)" % [
-		_config_name(), seats.size()]
-
-	for child in _lobby_rows.get_children():
-		child.queue_free()
-
+	# Index 0 and 1 are the panel's header and rule, which stay.
+	for child in _lobby_seat_rows.get_children():
+		if child.get_index() > 1:
+			child.queue_free()
 	for i in range(seats.size()):
-		var seat: Dictionary = seats[i]
-		var mine := String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
-		var is_ai := String(seat["kind"]) == "ai"
-
-		# The seat you can act on has to read as yours at a glance.
-		var tint := Color(0.78, 0.82, 0.90)
-		if mine:
-			tint = Color(0.62, 0.92, 0.70)
-		elif is_ai:
-			tint = Color(0.84, 0.78, 0.58)
-
-		var tags := ""
-		if int(seat["player"]) == int(_state.lobby.get("admin", 0)):
-			tags += "  [admin]"
-		if mine:
-			tags += "  (you)"
-
-		for text in [
-			("▶" if i == _lobby_cursor else ""),
-			("AI" if is_ai else "Human"),
-			String(seat["name"]),
-			_civ_label(String(seat["civ"])) + tags,
-		]:
-			var cell := Label.new()
-			cell.add_theme_font_size_override("font_size", 19)
-			cell.text = text
-			cell.modulate = tint
-			_lobby_rows.add_child(cell)
+		_lobby_seat_rows.add_child(_seat_row(seats[i], i))
 
 	_refresh_map_panel()
 
-	var lines := [
-		"UP/DOWN select seat  ·  LEFT/RIGHT change civilisation (your seat, or AI if you are admin)",
-		"TAB switch to map settings  ·  when on map settings, UP/DOWN pick a setting and LEFT/RIGHT change it",
-	]
 	if _state.is_admin():
-		lines.append("A add AI  ·  DELETE remove selected AI  ·  ENTER start the match")
+		_lobby_start_hint.text = "[ ENTER ]   START MATCH"
+		_lobby_start_hint.modulate = Color(0.55, 0.90, 0.60)
 	else:
-		lines.append("Waiting for the admin to start the match.")
-	lines.append("Civilisations: %s" % _civ_menu_text())
-	_lobby_help.text = "\n".join(lines)
+		_lobby_start_hint.text = "Waiting for the host to start…"
+		_lobby_start_hint.modulate = Color(0.66, 0.68, 0.74)
+
+	var help := "UP/DOWN choose  ·  LEFT/RIGHT change  ·  TAB switch between players and settings"
+	if _state.is_admin():
+		help += "  ·  A add AI  ·  DELETE remove AI"
+	_lobby_help.text = help
+
+
+func _seat_row(seat: Dictionary, index: int) -> Control:
+	var mine: bool = String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
+	var is_ai: bool = String(seat["kind"]) == "ai"
+	var selected: bool = (not _lobby_focus_map) and index == _lobby_cursor
+	var civ := String(seat["civ"])
+
+	var frame := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.16, 0.19, 0.26, 1.0) if selected else Color(0.115, 0.135, 0.185, 1.0)
+	style.set_corner_radius_all(3)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 7
+	style.content_margin_bottom = 7
+	if selected:
+		style.border_color = Color(0.45, 0.62, 0.85, 1.0)
+		style.set_border_width_all(2)
+	frame.add_theme_stylebox_override("panel", style)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	frame.add_child(row)
+
+	# Colour block, the way a lobby shows player colour at a glance.
+	row.add_child(_swatch(_civ_colour(civ), Vector2(26.0, 26.0)))
+
+	var kind := Label.new()
+	kind.text = "AI" if is_ai else "HUMAN"
+	kind.add_theme_font_size_override("font_size", 13)
+	kind.modulate = Color(0.74, 0.66, 0.48) if is_ai else Color(0.56, 0.72, 0.92)
+	kind.custom_minimum_size = Vector2(58.0, 0.0)
+	row.add_child(kind)
+
+	var name_label := Label.new()
+	name_label.text = String(seat["name"])
+	name_label.add_theme_font_size_override("font_size", 17)
+	name_label.custom_minimum_size = Vector2(140.0, 0.0)
+	name_label.modulate = Color(0.70, 0.95, 0.75) if mine else Color(0.85, 0.87, 0.92)
+	row.add_child(name_label)
+
+	var civ_label := Label.new()
+	civ_label.text = _civ_label(civ)
+	civ_label.add_theme_font_size_override("font_size", 17)
+	civ_label.custom_minimum_size = Vector2(150.0, 0.0)
+	civ_label.modulate = _civ_colour(civ).lightened(0.4)
+	row.add_child(civ_label)
+
+	var tags := ""
+	if int(seat["player"]) == int(_state.lobby.get("admin", 0)):
+		tags += "HOST   "
+	if mine:
+		tags += "YOU"
+	var tag_label := Label.new()
+	tag_label.text = tags
+	tag_label.add_theme_font_size_override("font_size", 13)
+	tag_label.modulate = Color(0.86, 0.76, 0.46)
+	row.add_child(tag_label)
+
+	return frame
 
 
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
@@ -1728,26 +1868,15 @@ func _civ_label(civ: String) -> String:
 	return def.display_name if def != null else civ
 
 
-func _civ_menu_text() -> String:
-	var names := ["Random"]
-	for id in CivRoster.ids():
-		names.append(_civ_label(String(id)))
-	return "  ".join(names)
-
-
-func _config_name() -> String:
-	return "%dx%d" % [_state.space.width, _state.space.height] if _state.space != null else "?"
-
-
-## Cycle the selected seat's civ. The server re-checks whether this client
-## is entitled to (D-002) — this only avoids sending an order we already
-## know is not ours to give.
+## Cycle the selected seat's civ. The server re-checks whether this
+## client is entitled to (D-002) — this only avoids sending an order we
+## already know is not ours to give.
 func _cycle_seat_civ(direction: int) -> void:
 	var seats: Array = _state.lobby.get("seats", [])
 	if _lobby_cursor < 0 or _lobby_cursor >= seats.size():
 		return
 	var seat: Dictionary = seats[_lobby_cursor]
-	var mine := String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
+	var mine: bool = String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
 	if not (mine or (String(seat["kind"]) == "ai" and _state.is_admin())):
 		return
 
@@ -1762,6 +1891,175 @@ func _send_lobby(action: int, seat: int, civ: String) -> void:
 		return
 	_peer.send(0, NetProtocol.encode_lobby_command(action, seat, civ),
 		ENetPacketPeer.FLAG_RELIABLE)
+
+
+# --- map preview and settings (D-049) ---------------------------------
+
+## Render the map the settings describe.
+##
+## Generated from the SAME TerrainGen the match will use, so this is a
+## truthful picture rather than decoration — choose islands and you see
+## islands. It is emphatically NOT the world: one pixel per cell, no
+## simulation behind it, and the playable map is still built only when
+## the match starts. A preview is a photograph of a place that does not
+## exist yet.
+func _rebuild_map_preview(settings: Dictionary) -> void:
+	var key := JSON.stringify(settings)
+	if key == _preview_key:
+		return
+	_preview_key = key
+
+	var map := MapSettings.from_dict(settings)
+	var space := map.to_space()
+	var terrain := map.to_terrain()
+
+	var image := Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
+	for y in range(space.height):
+		for x in range(space.width):
+			image.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
+
+	# Where people start, the way a lobby preview shows player positions.
+	# MapConfig.spawn_points is the SHARED implementation the server uses
+	# (D-039), so this is the same answer rather than a second guess at it.
+	var spawn_config := MapConfig.new()
+	spawn_config.width = space.width
+	spawn_config.height = space.height
+	spawn_config.player_slots = map.player_slots
+	spawn_config.spawn_seed = map.seed
+	for cell in spawn_config.spawn_points(terrain.passability(space)):
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				image.set_pixel(
+					posmod(cell.x + dx, space.width),
+					posmod(cell.y + dy, space.height),
+					Color(1.0, 0.93, 0.55))
+
+	_map_preview.texture = ImageTexture.create_from_image(image)
+
+
+## A drawn bar, not characters.
+##
+## The first version spelled these with "|" and "." — legible, and
+## obviously the odd thing out on a screen made of panels and swatches.
+## A slider should look like a slider.
+func _bar_control(value: float, low: float, high: float, selected: bool) -> Control:
+	var t := clampf((value - low) / maxf(high - low, 0.0001), 0.0, 1.0)
+
+	# Two sized rectangles side by side, NOT an anchored child inside a
+	# panel. The first attempt anchored a fill to a fraction of a
+	# PanelContainer — and a Container overrides its children's anchors and
+	# forces them to fill, so every bar rendered identically full while the
+	# numbers beside them all differed. Nothing but looking at it would
+	# have caught that: the values were right, the bars were wrong.
+	const TRACK_WIDTH := 120.0
+	const TRACK_HEIGHT := 12.0
+
+	var track := HBoxContainer.new()
+	track.add_theme_constant_override("separation", 0)
+
+	var fill := ColorRect.new()
+	fill.color = Color(0.55, 0.72, 0.95, 1.0) if selected else Color(0.36, 0.48, 0.66, 1.0)
+	fill.custom_minimum_size = Vector2(TRACK_WIDTH * t, TRACK_HEIGHT)
+	track.add_child(fill)
+
+	var rest := ColorRect.new()
+	rest.color = Color(0.13, 0.15, 0.20, 1.0)
+	rest.custom_minimum_size = Vector2(TRACK_WIDTH * (1.0 - t), TRACK_HEIGHT)
+	track.add_child(rest)
+	return track
+
+
+## The ranges each slider spans, matching the clamps MatchState enforces
+## server-side. One table, so the bar cannot show a value at the end of
+## its track that the server would still accept more of.
+const MAP_RANGES := {
+	"sea_level": [0.05, 0.9],
+	"mountain_level": [0.1, 0.98],
+	"elevation_frequency": [0.5, 8.0],
+	"height_scale": [0.5, 6.0],
+}
+
+
+func _map_option_text(option: Dictionary, s: Dictionary) -> String:
+	var key := String(option["key"])
+	match key:
+		"preset":
+			var preset := TerrainPresetRoster.by_id(StringName(s.get("preset", "")))
+			return preset.display_name if preset != null else String(s.get("preset", "?"))
+		"size":
+			return "%d x %d" % [int(s.get("width", 0)), int(s.get("height", 0))]
+		"player_slots":
+			return "%d" % int(s.get("player_slots", 0))
+		"seed":
+			return "%d" % int(s.get("seed", 0))
+	if MAP_RANGES.has(key):
+		return "%.2f" % float(s.get(key, 0.0))
+	return ""
+
+
+func _refresh_map_panel() -> void:
+	if _map_rows == null:
+		return
+	var settings: Dictionary = _state.lobby.get("settings", {})
+	if settings.is_empty():
+		return
+
+	_rebuild_map_preview(settings)
+	var preset := TerrainPresetRoster.by_id(StringName(settings.get("preset", "")))
+	_map_blurb.text = preset.summary if preset != null else ""
+
+	for child in _map_rows.get_children():
+		if child.get_index() > 1:
+			child.queue_free()
+
+	for i in range(MAP_OPTIONS.size()):
+		var selected: bool = _lobby_focus_map and i == _map_cursor
+		var frame := PanelContainer.new()
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(0.17, 0.20, 0.27, 1.0) if selected else Color(0, 0, 0, 0)
+		style.set_corner_radius_all(3)
+		style.content_margin_left = 8
+		style.content_margin_right = 8
+		style.content_margin_top = 3
+		style.content_margin_bottom = 3
+		frame.add_theme_stylebox_override("panel", style)
+
+		# Two labels with a fixed-width first column, NOT one padded
+		# string: the font is proportional, and "%-20s" produced ragged
+		# columns twice in this file already.
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		frame.add_child(row)
+
+		var key := String(MAP_OPTIONS[i]["key"])
+
+		var label := Label.new()
+		label.text = String(MAP_OPTIONS[i]["label"])
+		label.add_theme_font_size_override("font_size", 14)
+		label.custom_minimum_size = Vector2(140.0, 0.0)
+		label.modulate = Color(0.88, 0.90, 0.95) if selected else Color(0.62, 0.66, 0.74)
+		row.add_child(label)
+
+		if MAP_RANGES.has(key):
+			var span: Array = MAP_RANGES[key]
+			row.add_child(_bar_control(
+				float(settings.get(key, 0.0)), float(span[0]), float(span[1]), selected))
+
+		var value := Label.new()
+		value.text = _map_option_text(MAP_OPTIONS[i], settings)
+		value.add_theme_font_size_override("font_size", 14)
+		value.custom_minimum_size = Vector2(96.0, 0.0)
+		value.modulate = Color(0.95, 0.90, 0.65) if selected else Color(0.72, 0.76, 0.84)
+		row.add_child(value)
+
+		_map_rows.add_child(frame)
+
+	if not _state.is_admin():
+		var note := Label.new()
+		note.add_theme_font_size_override("font_size", 13)
+		note.modulate = Color(0.52, 0.55, 0.60)
+		note.text = "Only the host can change these."
+		_map_rows.add_child(note)
 
 
 func _handle_lobby_input(event: InputEvent) -> bool:
@@ -1806,15 +2104,12 @@ func _handle_lobby_input(event: InputEvent) -> bool:
 	return true
 
 
-## Capture-mode only: how many AI seats to ask for once we are admin.
-## Zero during `run-client`, which is a human at the wheel.
+## Capture-only: how many AI seats to ask for once we are admin. Zero
+## during `run-client`, which is a human at the wheel.
 var _lobby_ai_wanted := 0
 var _lobby_ai_asked := false
 
 
-## Seat the AI the capture asked for, once, as soon as we know we are the
-## admin. Deliberately not retried: a refusal means we are not admin, and
-## hammering the server would turn one wrong assumption into a flood.
 func _seat_capture_ai() -> void:
 	if _lobby_ai_asked or _lobby_ai_wanted <= 0:
 		return
@@ -1824,131 +2119,16 @@ func _seat_capture_ai() -> void:
 	var civs := CivRoster.ids()
 	for i in range(_lobby_ai_wanted):
 		# Spread the AI across civs rather than leaving them all Random,
-		# so the screenshot shows what a mixed lobby looks like.
+		# so the capture shows what a mixed lobby looks like.
 		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
 		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)
+	# The server takes a preset INDEX, so one command is enough. Sent as an
+	# index rather than a name so this file names no preset and the
+	# capture keeps working whatever /terrain happens to hold.
+	if _lobby_preset_steps > 0:
+		_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "preset=%d" % _lobby_preset_steps)
 
 
-# --- map settings panel (D-049) ---------------------------------------
-
-## Which pane the arrow keys drive. The lobby has two lists and one set
-## of arrow keys, so something has to own them.
-var _lobby_focus_map := false
-var _map_cursor := 0
-var _map_panel: VBoxContainer
-var _map_title: Label
-
-## The settings the admin can reach, in display order.
-##
-## Every row is (key, label, step). The key is what travels to the server
-## — a new setting is a new row here plus a new case in
-## MatchState.set_map_option, and no new packet type (see LOBBY_SET_OPTION).
-const MAP_OPTIONS := [
-	{"key": "preset", "label": "Terrain", "step": 1.0},
-	{"key": "size", "label": "Map size", "step": 1.0},
-	{"key": "player_slots", "label": "Starting positions", "step": 1.0},
-	{"key": "seed", "label": "Seed", "step": 1.0},
-	{"key": "sea_level", "label": "Sea level", "step": 0.02},
-	{"key": "mountain_level", "label": "Mountain line", "step": 0.02},
-	{"key": "elevation_frequency", "label": "Landmass count", "step": 0.25},
-	{"key": "height_scale", "label": "Relief", "step": 0.2},
-]
-
-
-func _build_map_panel(parent: Control) -> void:
-	_map_panel = VBoxContainer.new()
-	_map_panel.add_theme_constant_override("separation", 6)
-	parent.add_child(_map_panel)
-
-	_map_title = Label.new()
-	_map_title.add_theme_font_size_override("font_size", 21)
-	_map_panel.add_child(_map_title)
-
-
-## A slider drawn in text: the bar shows where a value sits in its range,
-## because a bare number tells a player nothing about whether 0.56 is a
-## lot of water or a little.
-func _bar(value: float, low: float, high: float, width: int = 14) -> String:
-	var t := clampf((value - low) / maxf(high - low, 0.0001), 0.0, 1.0)
-	var filled := int(round(t * float(width)))
-	return "[%s%s]" % ["#".repeat(filled), "·".repeat(width - filled)]
-
-
-func _map_option_text(option: Dictionary) -> String:
-	var s: Dictionary = _state.lobby.get("settings", {})
-	match String(option["key"]):
-		"preset":
-			var preset := TerrainPresetRoster.by_id(StringName(s.get("preset", "")))
-			return preset.display_name if preset != null else String(s.get("preset", "?"))
-		"size":
-			return "%d x %d  (%d cells)" % [
-				int(s.get("width", 0)), int(s.get("height", 0)),
-				int(s.get("width", 0)) * int(s.get("height", 0))]
-		"player_slots":
-			return "%d" % int(s.get("player_slots", 0))
-		"seed":
-			return "%d" % int(s.get("seed", 0))
-		"sea_level":
-			return "%s  %.2f" % [_bar(float(s.get("sea_level", 0.0)), 0.05, 0.9),
-				float(s.get("sea_level", 0.0))]
-		"mountain_level":
-			return "%s  %.2f" % [_bar(float(s.get("mountain_level", 0.0)), 0.1, 0.98),
-				float(s.get("mountain_level", 0.0))]
-		"elevation_frequency":
-			return "%s  %.2f" % [_bar(float(s.get("elevation_frequency", 0.0)), 0.5, 8.0),
-				float(s.get("elevation_frequency", 0.0))]
-		"height_scale":
-			return "%s  %.1f" % [_bar(float(s.get("height_scale", 0.0)), 0.5, 6.0),
-				float(s.get("height_scale", 0.0))]
-	return ""
-
-
-func _refresh_map_panel() -> void:
-	if _map_panel == null:
-		return
-	var settings: Dictionary = _state.lobby.get("settings", {})
-	if settings.is_empty():
-		_map_title.text = "MAP — waiting for the server"
-		return
-
-	var preset := TerrainPresetRoster.by_id(StringName(settings.get("preset", "")))
-	_map_title.text = "MAP SETTINGS%s" % ("  ◀ editing" if _lobby_focus_map else "")
-
-	for child in _map_panel.get_children():
-		if child != _map_title:
-			child.queue_free()
-
-	for i in range(MAP_OPTIONS.size()):
-		var row := Label.new()
-		row.add_theme_font_size_override("font_size", 17)
-		row.text = "%s %-20s %s" % [
-			"▶" if (_lobby_focus_map and i == _map_cursor) else " ",
-			String(MAP_OPTIONS[i]["label"]),
-			_map_option_text(MAP_OPTIONS[i]),
-		]
-		row.modulate = Color(0.86, 0.88, 0.94) if (_lobby_focus_map and i == _map_cursor) \
-			else Color(0.62, 0.66, 0.74)
-		_map_panel.add_child(row)
-
-	if preset != null and preset.summary != "":
-		var blurb := Label.new()
-		blurb.add_theme_font_size_override("font_size", 15)
-		blurb.modulate = Color(0.58, 0.66, 0.60)
-		blurb.custom_minimum_size = Vector2(560.0, 0.0)
-		blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		blurb.text = preset.summary
-		_map_panel.add_child(blurb)
-
-	if not _state.is_admin():
-		var note := Label.new()
-		note.add_theme_font_size_override("font_size", 15)
-		note.modulate = Color(0.55, 0.57, 0.62)
-		note.text = "Only the admin can change these."
-		_map_panel.add_child(note)
-
-
-## Nudge the selected setting. Sent as "key=value" so a new slider needs
-## no new packet type.
 func _adjust_map_option(direction: int) -> void:
 	if _map_cursor < 0 or _map_cursor >= MAP_OPTIONS.size():
 		return
@@ -1979,3 +2159,9 @@ func _adjust_map_option(direction: int) -> void:
 			value = float(settings.get(key, 0.0)) + step
 
 	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])
+
+
+## Capture-only: how many times to advance the terrain preset before the
+## screenshot. Expressed as STEPS rather than a preset name, so this file
+## still names no preset and the capture works whatever /terrain holds.
+var _lobby_preset_steps := 0
