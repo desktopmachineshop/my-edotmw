@@ -45,10 +45,27 @@ class_name MapConfig
 ## is a map-generation change rather than a config tweak.
 @export var symmetry_order: int = 1
 
-## How the starting positions are laid out across the map — 2x2 seats
-## four players. Independent of `symmetry_order`, which now only affects
-## terrain generation.
-@export var spawn_grid: Vector2i = Vector2i(2, 2)
+## How many starting positions the map offers. Players take them in join
+## order and wrap, so a 4-player match uses the first four of these.
+@export var player_slots: int = 20
+
+## Closest two starting positions may be, in cells.
+##
+## Spawns are scattered RANDOMLY rather than laid out on a grid, so that
+## who ends up next to whom differs every match and the map grows natural
+## flashpoints — two players sharing a valley, someone isolated behind
+## mountains. A grid gave every match the same neighbours at the same
+## distances, which made the opening the same conversation every time.
+##
+## The minimum spacing is what keeps "random" from meaning "two players
+## on top of each other". It is the only guarantee spacing gives;
+## resource fairness is separately handled by
+## Economy.balance_for_spawns.
+@export var min_spawn_spacing: int = 12
+
+## Fixed so a map's spawns are the same every run — replays depend on it
+## (D-016), and so does a client being told where players start.
+@export var spawn_seed: int = 20260801
 
 ## How far from a spawn resources must be topped up, and how many of each
 ## kind a start is guaranteed (D-036 revised). This is what replaces
@@ -56,13 +73,6 @@ class_name MapConfig
 ## sure nobody starts with no wood in reach.
 @export var fairness_radius: int = 14
 @export var fairness_quota: int = 3
-
-## Where a player spawns *within its quadrant*. The actual spawn points
-## are derived from this by tiling it across the quadrants (see
-## spawn_points), so all players necessarily start at the same relative
-## position on identical terrain. Authoring four points separately would
-## let them drift apart; deriving them cannot.
-@export var spawn_offset: Vector2i = Vector2i(16, 8)
 
 # What a player starts with (D-028). Non-zero on purpose: gatherers cost
 # food, and food comes from gatherers, so a player starting empty could
@@ -80,30 +90,82 @@ func to_space() -> TorusSpace:
 
 ## How many players this map seats.
 func player_capacity() -> int:
-	return spawn_grid.x * spawn_grid.y
+	return player_slots
 
 
-## The starting cell for each player, spread evenly over the map.
+## The starting cell for each player: scattered at random, no two closer
+## than `min_spawn_spacing` (D-039).
 ##
-## Spawn placement is now INDEPENDENT of terrain symmetry (D-036,
-## revised). It used to be one spawn per identical quadrant, which made
-## fairness exact — and made every map the same map four times. With
-## terrain generated freely, spawns are simply spread evenly and fairness
-## comes from `Economy.balance_for_spawns` guaranteeing each start a
-## minimum of every resource within reach.
+## Spawn placement is INDEPENDENT of terrain symmetry (D-036, revised),
+## and as of D-039 it is not a grid either. A grid gave every match the
+## same neighbours at the same distances; random placement means who you
+## end up beside — and who ends up sharing a resource hotspot with you —
+## differs every match. That is the point: the flashpoints should come
+## from the map, not from a layout decided once.
 ##
-## Even spacing still matters: it keeps players a comparable distance
-## apart, which is the part of fairness that terrain cannot fix.
-func spawn_points() -> Array[Vector2i]:
+## Fairness survives this in two pieces that are deliberately separate:
+## `min_spawn_spacing` here bounds how close anyone can be placed, and
+## `Economy.balance_for_spawns` guarantees each start a minimum of every
+## resource within reach. Neither tries to do the other's job.
+##
+## Pass `passable` (indexed by TorusSpace.index) to keep starts off water
+## and mountain. A grid never needed this — it could be authored onto
+## known-good ground. Random placement cannot, so an unpassable spawn is
+## a live failure mode rather than a hypothetical one, and the caller
+## that has the terrain is the one that must supply it.
+##
+## Deterministic: same `spawn_seed` and same terrain give the same
+## points, every run. Replays (D-016) depend on that.
+func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
-	var step_x := width / maxi(spawn_grid.x, 1)
-	var step_y := height / maxi(spawn_grid.y, 1)
-	for gy in range(spawn_grid.y):
-		for gx in range(spawn_grid.x):
-			out.append(Vector2i(
-				spawn_offset.x + gx * step_x,
-				spawn_offset.y + gy * step_y))
+	if player_slots <= 0:
+		return out
+
+	var space := to_space()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = spawn_seed
+
+	# Rejection sampling. The attempt ceiling is what stops an
+	# over-constrained map (too many slots, too much spacing, too little
+	# dry land) from spinning forever — it returns fewer points instead,
+	# and `validate_spawns` is what turns that into a visible error
+	# rather than a silently short-seated match.
+	var attempts := 0
+	var ceiling := player_slots * 500
+	while out.size() < player_slots and attempts < ceiling:
+		attempts += 1
+		var cell := Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
+
+		if not passable.is_empty():
+			var index := space.index(cell)
+			if index >= 0 and index < passable.size() and passable[index] == 0:
+				continue
+
+		var far_enough := true
+		for existing in out:
+			# Toroidal distance, so spacing holds across the seam too —
+			# otherwise two players either side of the wrap would read as
+			# a map apart while standing next to each other.
+			if space.distance(existing, cell) < min_spawn_spacing:
+				far_enough = false
+				break
+		if far_enough:
+			out.append(cell)
+
 	return out
+
+
+## Returns "" if the map can actually seat everyone it claims to.
+##
+## Separate from validate() because it needs terrain, which the resource
+## alone does not have. Kept explicit so a short seating is reported at
+## startup rather than discovered as players quietly sharing a cell.
+func validate_spawns(passable := PackedByteArray()) -> String:
+	var got := spawn_points(passable).size()
+	if got < player_slots:
+		return "map seats %d of %d players at spacing %d — lower min_spawn_spacing, lower player_slots, or enlarge the map" % [
+			got, player_slots, min_spawn_spacing]
+	return ""
 
 
 ## Returns "" if valid, else the reason. Delegates the geometry rules to
@@ -134,17 +196,23 @@ func validate() -> String:
 	if (height / symmetry_order) % 2 != 0:
 		return "height / symmetry_order (%d) must be even for row parity (D-008)" % (height / symmetry_order)
 
-	if spawn_grid.x < 1 or spawn_grid.y < 1:
-		return "spawn_grid must be at least 1x1 (got %s)" % spawn_grid
-	if width % spawn_grid.x != 0 or height % spawn_grid.y != 0:
-		return "spawn_grid %s must divide the map (%dx%d), or starts are unevenly spaced" % [
-			spawn_grid, width, height]
+	if player_slots < 1:
+		return "player_slots must be at least 1 (got %d)" % player_slots
+	if min_spawn_spacing < 1:
+		return "min_spawn_spacing must be at least 1 (got %d)" % min_spawn_spacing
 
-	if spawn_offset.x < 0 or spawn_offset.y < 0:
-		return "spawn_offset must be non-negative (got %s)" % spawn_offset
-	if spawn_offset.x >= width / spawn_grid.x or spawn_offset.y >= height / spawn_grid.y:
-		return "spawn_offset %s must lie inside one spawn cell (%dx%d)" % [
-			spawn_offset, width / spawn_grid.x, height / spawn_grid.y]
+	# Whether random placement can *actually* satisfy the spacing is a
+	# packing question, and rejection sampling answers it by failing to
+	# terminate usefully rather than by saying so. This is the cheap
+	# necessary condition, checked up front: disjoint hex disks of half
+	# the spacing, one per slot, must fit in the map at all. It cannot
+	# prove a layout exists, but it catches the configuration that asks
+	# for one that cannot.
+	var radius := min_spawn_spacing / 2
+	var disk := 3 * radius * radius + 3 * radius + 1
+	if player_slots * disk > width * height:
+		return "%d spawns at spacing %d cannot fit a %dx%d map (needs ~%d cells of %d)" % [
+			player_slots, min_spawn_spacing, width, height, player_slots * disk, width * height]
 
 	if fairness_quota < 0 or fairness_radius < 1:
 		return "fairness_radius must be positive and fairness_quota non-negative"

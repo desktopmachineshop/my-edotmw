@@ -53,6 +53,10 @@ var _buildings: BuildingSim
 var _economy: Economy
 var _passable := PackedByteArray()
 
+## Sampled once at map load and never recomputed — see the note where it
+## is filled in.
+var _spawn_points: Array[Vector2i] = []
+
 ## How near a squad must be to found a building, in cells. A player
 ## should not be able to plant a town hall across the map from the
 ## founders who are supposedly building it.
@@ -120,6 +124,26 @@ func _ready() -> void:
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
 
+	# Spawns are scattered randomly with a minimum spacing (D-039), so they
+	# are sampled ONCE here and reused. Two reasons that matters: sampling
+	# is rejection-based and no longer free, and every consumer — spawning,
+	# resource fairness, the welcome message — must agree on the same
+	# points. Recomputing is deterministic and would agree anyway, but only
+	# as long as nobody passes a different `passable`, which is exactly the
+	# kind of drift that is cheaper to make impossible.
+	_spawn_points = _config.spawn_points(_passable)
+	var seating := _config.validate_spawns(_passable)
+	if seating != "":
+		# Not fatal: a short-seated map still plays, players just share
+		# starts. Fatal would take down a running server over a map tuning
+		# mistake. But it must be said out loud — silently seating twenty
+		# players on four points is precisely the failure this run is
+		# meant to be measuring.
+		push_warning("server: %s" % seating)
+		print("server: WARNING — %s" % seating)
+	print("server: %d spawn points, min spacing %d" % [
+		_spawn_points.size(), _config.min_spawn_spacing])
+
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
 	_buildings = BuildingSim.new(space)
@@ -133,7 +157,7 @@ func _ready() -> void:
 	# Fairness on an asymmetric map is a post-pass now, not a property of
 	# the generator (D-036 revised): every start is guaranteed a minimum
 	# of each resource within reach.
-	_economy.balance_for_spawns(_config.spawn_points(), _passable,
+	_economy.balance_for_spawns(_spawn_points, _passable,
 		_config.fairness_radius, _config.fairness_quota)
 	_sim.economy = _economy
 	print("server: %d resource nodes generated" % _economy.node_count())
@@ -422,7 +446,7 @@ func _broadcast_squad_info() -> void:
 ## where anyone starts.
 func _spawn_cell_indices() -> Array:
 	var out := []
-	for point in _config.spawn_points():
+	for point in _spawn_points:
 		out.append(_sim.space.index(point))
 	return out
 
@@ -679,10 +703,9 @@ func _spawn_squads_for(player: int) -> Array:
 	# balancing a map, and client.gd had duplicated the whole formula to
 	# *guess* where a neighbour spawned, with a comment noting the guess
 	# would go stale if this ever changed. Deriving spawns from
-	# MapConfig.spawn_points() makes them data, and makes them provably
-	# fair — every point is the same offset into a quadrant, and the
-	# quadrants are bit-identical terrain (D-036).
-	var points := _config.spawn_points()
+	# MapConfig.spawn_points() makes them data — randomly scattered with a
+	# guaranteed minimum spacing as of D-039, and sampled once at startup.
+	var points := _spawn_points
 
 	# Players are numbered from 1, spawn points from 0. Wrapping rather
 	# than refusing keeps an extra connection working on a full map: the

@@ -12,4 +12,6 @@ hex_size = 1.0
 squads_per_player = 12
 squad_cap = 15
 symmetry_order = 1
-spawn_offset = Vector2i(16, 8)
+player_slots = 20
+min_spawn_spacing = 12
+spawn_seed = 20260801

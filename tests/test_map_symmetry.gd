@@ -114,33 +114,38 @@ func test_symmetry_does_not_flatten_the_map() -> void:
 		"A symmetric map must still have real terrain relief, not one flat value repeated four times")
 
 
-# --- derived spawn points (D-036) -------------------------------------
+# --- random spawn points with minimum spacing (D-039) ------------------
 
 func _config() -> MapConfig:
 	var c := MapConfig.new()
 	c.width = 128
 	c.height = 64
 	c.symmetry_order = 2
-	c.spawn_offset = Vector2i(16, 8)
+	c.player_slots = 20
+	c.min_spawn_spacing = 12
 	return c
 
 
-func test_spawn_points_are_one_per_quadrant_at_the_same_offset() -> void:
+func test_the_map_seats_every_slot_it_claims() -> void:
 	var config := _config()
+	assert_eq(config.spawn_points().size(), 20,
+		"Rejection sampling gave up before seating everyone — 20 players would share starts")
+	assert_eq(config.player_capacity(), 20)
+
+
+func test_no_two_spawns_are_closer_than_the_minimum_spacing() -> void:
+	# The one guarantee random placement makes. Measured toroidally, so a
+	# pair either side of the seam counts as the neighbours they are.
+	var config := _config()
+	var space := config.to_space()
 	var points := config.spawn_points()
 
-	assert_eq(points.size(), 4, "A symmetry_order of 2 seats four players")
-	assert_eq(config.player_capacity(), 4)
-
-	# Every spawn must sit at the same position WITHIN its quadrant —
-	# that, plus identical quadrant terrain, is the whole fairness claim.
-	var quadrant_width := config.width / config.symmetry_order
-	var quadrant_height := config.height / config.symmetry_order
-	for point in points:
-		assert_eq(point.x % quadrant_width, config.spawn_offset.x,
-			"Spawn %s is not at the configured offset within its quadrant" % point)
-		assert_eq(point.y % quadrant_height, config.spawn_offset.y,
-			"Spawn %s is not at the configured offset within its quadrant" % point)
+	for i in range(points.size()):
+		for j in range(i + 1, points.size()):
+			var d: float = space.distance(points[i], points[j])
+			assert_gte(d, float(config.min_spawn_spacing),
+				"Spawns %s and %s are %.1f apart, inside the %d minimum" % [
+					points[i], points[j], d, config.min_spawn_spacing])
 
 
 func test_spawn_points_are_distinct() -> void:
@@ -150,19 +155,64 @@ func test_spawn_points_are_distinct() -> void:
 		seen[point] = true
 
 
-func test_spawn_terrain_is_identical_for_every_player() -> void:
-	# The claim that actually matters, tested end to end rather than
-	# inferred from the two properties separately: whatever the terrain is
-	# under player 0's start, it is the same under everyone else's.
+func test_spawn_layout_is_deterministic_for_a_given_seed() -> void:
+	# Replays (D-016) and every client's idea of where people start both
+	# depend on this. Random must mean "varies between maps", never
+	# "varies between runs of the same map".
+	assert_eq(_config().spawn_points(), _config().spawn_points(),
+		"Two samplings of the same map disagreed — replays would not reconstruct")
+
+
+func test_a_different_seed_gives_a_different_layout() -> void:
+	# The half of "random" the spacing test cannot see: without this, a
+	# generator that returned one fixed well-spaced arrangement forever
+	# would pass everything above while giving every match the same
+	# neighbours — the exact thing the grid was replaced to stop doing.
+	var a := _config()
+	var b := _config()
+	b.spawn_seed = a.spawn_seed + 1
+	assert_ne(a.spawn_points(), b.spawn_points(),
+		"Changing the seed did not change where anyone starts")
+
+
+func test_spawns_never_land_on_impassable_ground() -> void:
+	# A grid could be authored onto known-good cells. Random placement
+	# cannot, so this is a live failure mode: a start inside a lake is a
+	# player who cannot move.
 	var config := _config()
 	var space := config.to_space()
-	var terrain := _terrain(config.symmetry_order)
-	var points := config.spawn_points()
 
-	var reference := terrain.elevation_at(space, points[0])
-	for i in range(1, points.size()):
-		assert_almost_eq(terrain.elevation_at(space, points[i]), reference, 0.0001,
-			"Player %d starts on different ground than player 0" % i)
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(config.height):
+		for x in range(config.width):
+			# Drown the left quarter of the map.
+			passable[space.index(Vector2i(x, y))] = 0 if x < 32 else 1
+
+	var points := config.spawn_points(passable)
+	assert_gt(points.size(), 0, "Nothing was placed at all, so the check below proves nothing")
+	for point in points:
+		assert_eq(passable[space.index(point)], 1,
+			"Spawn %s sits on impassable terrain" % point)
+
+
+func test_short_seating_is_reported_rather_than_silently_shared() -> void:
+	# The failure this whole change came out of: twenty players wrapped
+	# onto four grid seats and stood five-deep, and nothing said so.
+	var config := _config()
+	var space := config.to_space()
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(config.height):
+		for x in range(config.width):
+			# One habitable strip — far too little land for 20 starts 12 apart.
+			passable[space.index(Vector2i(x, y))] = 1 if y < 4 else 0
+
+	assert_ne(config.validate_spawns(passable), "",
+		"A map that cannot seat its players must say so")
+	assert_eq(config.validate_spawns(), "",
+		"With no terrain constraint the same map seats everyone")
 
 
 # --- map validation ----------------------------------------------------
@@ -191,14 +241,18 @@ func test_squad_cap_cannot_be_below_the_starting_allotment() -> void:
 	assert_false(config.is_valid(), "A player would spawn already over its own cap")
 
 
-func test_spawn_offset_must_lie_inside_one_quadrant() -> void:
+func test_spacing_that_cannot_possibly_fit_is_refused_up_front() -> void:
+	# Caught by arithmetic at load, not by rejection sampling quietly
+	# returning six points for twenty players.
 	var config := _config()
-	config.spawn_offset = Vector2i(64, 8)  # exactly one quadrant wide
-	assert_false(config.is_valid(), "An offset outside the quadrant would not tile symmetrically")
+	config.min_spawn_spacing = 40
+	assert_false(config.is_valid(),
+		"20 starts 40 cells apart do not fit an 8,192-cell map and the config should say so")
 
 
 func test_the_shipped_default_map_is_valid() -> void:
 	var config: MapConfig = load("res://maps/default.tres")
 	assert_not_null(config, "maps/default.tres should load as a MapConfig")
 	assert_eq(config.validate(), "", "The shipped map must satisfy its own rules")
-	assert_eq(config.spawn_points().size(), 4, "The shipped map should seat four players (D-015)")
+	assert_eq(config.spawn_points().size(), 20,
+		"The shipped map should seat twenty players (D-018's target concurrency)")
