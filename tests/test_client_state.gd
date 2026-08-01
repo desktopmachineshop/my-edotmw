@@ -102,6 +102,48 @@ func test_welcome_establishes_the_clients_view_of_the_map() -> void:
 	assert_false(state.owns(99), "A client should not think it owns a squad it wasn't given")
 
 
+func test_a_squad_wiped_out_stops_being_one_this_client_owns() -> void:
+	# Ownership has to shrink, not only grow. It did not, and the symptom
+	# was invisible for a long time because the server refused the orders
+	# anyway: the GUI kept offering dead squads for selection, and the
+	# load-test bots kept ordering corpses instead of noticing they had
+	# nothing left and training more.
+	#
+	# The founding party makes this ordinary rather than exotic — it is
+	# consumed the moment it is committed to a town hall (D-031), so every
+	# player reaches zero owned squads in the first minute of a match.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	assert_true(state.owns(id), "The client should start owning what the welcome gave it")
+
+	state.handle_packet(NetProtocol.encode_squad_combat(
+		sim.tick_count, [{"id": id, "alive": 0, "routed": false}]))
+
+	assert_false(state.owns(id), "A squad with no soldiers left is not one this client can order")
+	assert_eq(state.encode_order(id, Vector2i(3, 3)).size(), 0,
+		"The client should stop sending orders for a squad it just watched die")
+
+
+func test_a_squad_merely_bloodied_is_still_ours() -> void:
+	# The other side of the boundary, so the check above cannot pass by
+	# dropping squads on any casualty at all.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(_roster_def(), 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	state.handle_packet(NetProtocol.encode_squad_combat(
+		sim.tick_count, [{"id": id, "alive": 1, "routed": true}]))
+
+	assert_true(state.owns(id), "One surviving soldier is still a squad we command")
+
+
 func test_orders_are_refused_for_squads_the_client_does_not_own() -> void:
 	var state := ClientState.new()
 	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [4]))

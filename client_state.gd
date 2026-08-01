@@ -265,6 +265,17 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
+		# A squad that reaches zero is no longer ours to command. Without
+		# this, `owns()` keeps saying yes for the rest of the match: the
+		# GUI offers a dead squad for selection, and the bots go on
+		# ordering corpses. The server refuses either way — it reads
+		# ownership from the sim — but a client that knows better should
+		# not be sending the order at all.
+		if new_alive <= 0:
+			var index := squads.find(id)
+			if index >= 0:
+				squads.remove_at(index)
+
 
 ## SQUAD_CONCEAL (D-025 part 3): explicit notice that a squad left this
 ## client's vision this tick. The squad's current composition moves

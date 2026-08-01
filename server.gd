@@ -32,7 +32,7 @@ const MAX_CATCHUP_TICKS := 10
 const STATE_HASH_EVERY_TICKS := 10
 
 var _host: ENetConnection
-# ENetPacketPeer -> { "player": int, "squads": Array[int],
+# ENetPacketPeer -> { "player": int,
 # "visible": Dictionary[int, bool] }. "visible" is this client's
 # reveal/conceal baseline — the squad ids it was visible to as of the
 # last tick this server diffed against (D-025 part 2/3) — kept here,
@@ -347,8 +347,12 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	var player := _next_player
 	_next_player += 1
 
+	# The returned ids go to the client so it knows what it starts with.
+	# They are deliberately NOT cached on the connection record: ownership
+	# lives in the sim (see _validated_squad), and a second copy here is
+	# what silently stopped every produced squad from taking orders.
 	var squads := _spawn_squads_for(player)
-	_clients[peer] = {"player": player, "squads": squads, "visible": {}}
+	_clients[peer] = {"player": player, "visible": {}}
 	_peak_clients = maxi(_peak_clients, _clients.size())
 
 	# The new player's own squads need a vision stamp before anything asks
@@ -507,19 +511,38 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 ##
 ## Factored out rather than repeated per handler: the checks ARE the
 ## authority, and three copies is how one of them eventually loses one.
-## A client may only order squads it owns, only squads that exist, and
-## only while a match is actually running (D-033) — none of which is
-## trusted from the client, because the client is not trusted.
+## A client may only order squads it owns, only squads that exist and are
+## still alive, and only while a match is actually running (D-033) — none
+## of which is trusted from the client, because the client is not trusted.
+##
+## Ownership is read from the SIM, not from a list cached per connection.
+## The cached list was written once at join and never again, so every
+## squad a player *produced* was refused as one it did not own — the
+## founding party got spent on a town hall, and from then on nothing that
+## player built could be given an order. It cost a whole 20-player run,
+## which reported the interesting-looking "zero movement" while the real
+## story was 2,700 refusals in the server log.
+##
+## That is the failure this function's own comment predicted, one line
+## up, about three copies of a check. The lesson is narrower than the
+## comment: it was not a copy of the *check* that drifted, it was a copy
+## of the *data*. There is one owner of ownership now.
 func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
 	var record = _clients.get(peer, null)
 	if record == null:
 		return -1
 	if not _match.is_running():
 		return -1
-	if not (record["squads"] as Array).has(squad):
+	# Bounds first: owner_of/alive_of index packed arrays directly.
+	if squad < 0 or squad >= _sim.squad_count():
+		return -1
+	if _sim.owner_of(squad) != int(record["player"]):
 		push_error("server: player %d tried to order squad %d it does not own" % [record["player"], squad])
 		return -1
-	if squad < 0 or squad >= _sim.squad_count():
+	if _sim.alive_of(squad) <= 0:
+		# Not an error: a squad can die between a client deciding to order
+		# it and the order arriving. Dropping it silently is correct —
+		# logging would make ordinary lag look like a fault.
 		return -1
 	return squad
 

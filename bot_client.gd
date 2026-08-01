@@ -39,27 +39,26 @@ const CONNECT_TIMEOUT_SECONDS := 10.0
 # audit warns against trusting.
 #
 # So a handful of squads per player are sent somewhere they are near-
-# certain to make contact: SPAWN_X_STEP/SPAWN_Y_STEP/SPAWN_INDEX_STEP below
-# duplicate the constants in server.gd's _spawn_squads_for (5, 7, 2) to
-# ESTIMATE where a specific neighbouring player's squad #SCOUT_SQUADS_PER_BOT
-# actually sits — a squad no bot ever rallies, so it stays put at exactly
-# that computed cell for the whole run. This is a deliberate, documented
-# coupling to server.gd's spawn formula, acceptable here because it only
-# shapes a LOAD-TEST SCENARIO (which squads go where), not any correctness
-# assertion — the vision field, combat resolution, and casualties that
-# follow are all the real system responding to a real order, not a
-# fabricated result. If server.gd's spawn formula ever changes, this
-# rendezvous point goes stale; per the standing rule, that would show up
-# as casualties_applied/reveal_events/conceal_events falling to zero and
-# the verdict going red — loudly, not silently.
+# certain to make contact: a neighbouring player's STARTING CELL, read
+# from the spawn table the welcome message carries (D-036). Players form
+# a ring, so every adjacent pair is approached from at least one side.
+#
+# This used to mirror server.gd's spawn arithmetic (5, 7, 2) to compute
+# where a neighbour's squads sat — a documented duplication, with a note
+# saying it would go stale loudly if the formula changed. D-039 changed
+# it, and the note was half right: spawns are random now, so a formula
+# cannot predict them at all. Reading the server's own table is not a
+# tighter coupling than the constants were, it is a looser one — the
+# server is already telling every client this.
+#
+# It still only shapes a LOAD-TEST SCENARIO (which squads go where), not
+# any correctness assertion; the vision field, combat resolution and
+# casualties that follow are the real system responding to a real order.
 #
 # The remaining squads per player never move on this schedule, which is
 # what keeps D-026 criterion 6's "even the most-informed bot knows fewer
 # squads than the server simulates" true even while this is happening —
 # see _max_known_squads() below.
-const SPAWN_X_STEP := 5
-const SPAWN_Y_STEP := 7
-const SPAWN_INDEX_STEP := 2
 const SCOUT_SQUADS_PER_BOT := 3
 const RALLY_AT_SECONDS := 0.0
 const RECALL_AT_SECONDS := 8.0
@@ -93,6 +92,11 @@ class VirtualClient:
 
 	var _next_order_at := 1.0
 	var _orders_issued := 0
+
+	## How many times _issue_order has run, whether or not this bot had a
+	## squad to order. Production is paced off this so it keeps running
+	## while the bot owns nothing — which is precisely when it must.
+	var _order_ticks := 0
 	var _rng := RandomNumberGenerator.new()
 
 	# Rally/recall scripting (see the constants above) — a bounded, one-shot
@@ -173,19 +177,20 @@ class VirtualClient:
 	func curve_packets_received() -> int:
 		return state.curve_packets_received
 
-	## Where player `target_player`'s squad #SCOUT_SQUADS_PER_BOT actually
-	## sits, per server.gd's `_spawn_squads_for` formula (`lane = (player *
-	## 7) % height`, `cell = ((player * 5 + i * 2) % width, (lane + i) %
-	## height)`) mirrored here deliberately — see the header comment on the
-	## constants above. Index SCOUT_SQUADS_PER_BOT is never a scout (every
-	## bot only rallies indices 0..SCOUT_SQUADS_PER_BOT-1), so it stays put
-	## at exactly this cell for the whole run, making it a reliable
-	## rendezvous target rather than a guess at a moving squad.
-	func _estimated_squad_cell(target_player: int, squad_index: int, width: int, height: int) -> Vector2i:
-		var lane := (target_player * SPAWN_Y_STEP) % height
-		var x := (target_player * SPAWN_X_STEP + squad_index * SPAWN_INDEX_STEP) % width
-		var y := (lane + squad_index) % height
-		return Vector2i(x, y)
+	## Where player `target_player` starts.
+	##
+	## Read from the welcome message's spawn table, not reconstructed. It
+	## used to mirror server.gd's `_spawn_squads_for` arithmetic here — a
+	## deliberate duplication, with a comment saying so — and D-039 made
+	## that arithmetic obsolete: spawns are scattered at random now, so a
+	## formula cannot predict them and a bot marching on the answer it
+	## computed would walk to empty ground.
+	##
+	## The server has sent every spawn point since D-036 precisely so no
+	## client has to guess. A guess that was merely fragile before is
+	## simply wrong now.
+	func _spawn_cell_of(target_player: int) -> Vector2i:
+		return state.spawn_cell_of(target_player)
 
 	## Send a handful of this bot's squads to march directly on a
 	## neighbouring player's known (stationary) squad, guaranteeing contact
@@ -205,8 +210,9 @@ class VirtualClient:
 			_scout_squads.append(state.squads[i])
 
 		var neighbour_player := (state.player % player_count) + 1
-		var rally_cell := _estimated_squad_cell(
-			neighbour_player, SCOUT_SQUADS_PER_BOT, state.space.width, state.space.height)
+		var rally_cell := _spawn_cell_of(neighbour_player)
+		if rally_cell.x < 0:
+			return
 		for squad in _scout_squads:
 			_home_cell[squad] = state.squad_cell(squad, now)
 			var order := state.encode_order(squad, rally_cell)
@@ -228,8 +234,60 @@ class VirtualClient:
 			if not order.is_empty():
 				peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 
+	## Train at every finished building this bot owns.
+	##
+	## Spends the starting stockpile on gatherers — the economic opening a
+	## real player makes, and what puts the production path (cost, squad
+	## cap, queue, spawn) under the load test rather than leaving it to
+	## unit tests.
+	##
+	## Every other order, not every fourth. Squad count is the axis
+	## D-018's budget is stated in, and the load test could not reach a
+	## count comparable to M2's 48-squad measurement while bots recruited
+	## more slowly than this — leaving D-027 criterion 17 measurable but
+	## not COMPARABLE.
+	## Paced by `_order_ticks`, NOT `_orders_issued`. The latter only
+	## advances on the squad path below, so a bot with no squads would
+	## freeze it — and gating production on a counter that stops moving
+	## exactly when a bot has nothing to move is the same deadlock this
+	## function was just lifted out of, one level down.
+	func _issue_production() -> void:
+		if _order_ticks % 2 != 0:
+			return
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) != state.player or bool(info["destroyed"]):
+				continue
+			if float(info["progress"]) < 1.0:
+				continue
+			peer.send(0, NetProtocol.encode_order_produce(int(wire_id), "gatherers"),
+				ENetPacketPeer.FLAG_RELIABLE)
+			break
+
+
 	func _issue_order() -> void:
-		if state.space == null or state.squads.is_empty():
+		if state.space == null:
+			return
+		_order_ticks += 1
+
+		# Training needs a BUILDING, not a squad, so it runs before the
+		# "no squads" guard below.
+		#
+		# It used to sit after that guard, which was harmless while a bot
+		# always owned something, and became a deadlock the moment the
+		# founding party started being consumed at order time (D-031): a
+		# bot with a finished town hall and no squads stopped issuing
+		# every kind of order — including the one order that would have
+		# given it squads again. Twenty players each built a hall and
+		# then trained nothing for two minutes.
+		#
+		# What hid it for a while was the client keeping dead squads in
+		# its owned list, so this guard stayed false and production kept
+		# running past a squad that no longer existed. Two bugs whose
+		# symptoms cancelled; fixing the honest one exposed this.
+		_issue_production()
+
+		if state.squads.is_empty():
 			return
 		var squad := state.squads[_rng.randi_range(0, state.squads.size() - 1)]
 
@@ -267,26 +325,6 @@ class VirtualClient:
 				var build := state.encode_build(squad, "town_centre", home)
 				if not build.is_empty():
 					peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
-
-		# Once the hall is up, spend the starting stockpile on gatherers —
-		# the economic opening a real player makes, and what puts the
-		# production path (cost, squad cap, queue, spawn) under the load
-		# test rather than leaving it to unit tests.
-		# Every other order, not every fourth. Squad count is the axis
-		# D-018's budget is stated in, and the load test could not reach a
-		# count comparable to M2's 48-squad measurement while bots
-		# recruited this slowly — leaving D-027 criterion 17 measurable but
-		# not COMPARABLE.
-		if _orders_issued > 0 and _orders_issued % 2 == 0:
-			for wire_id in state.buildings:
-				var info: Dictionary = state.buildings[wire_id]
-				if int(info["owner"]) != state.player or bool(info["destroyed"]):
-					continue
-				if float(info["progress"]) < 1.0:
-					continue
-				peer.send(0, NetProtocol.encode_order_produce(int(wire_id), "gatherers"),
-					ENetPacketPeer.FLAG_RELIABLE)
-				break
 
 		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
 		# Orders go out every 3 seconds while the contested middle is a
