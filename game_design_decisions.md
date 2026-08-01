@@ -107,6 +107,58 @@ LOD has something to save.
 under a tick at the chosen map size, revisit GDExtension for that kernel
 specifically — and only that kernel.
 
+**Corrected 2026-08-01, same day.** The map sweep above used a workload
+that defeated the thing it was measuring, and the correction makes the
+finding worse rather than better. Recorded in full because the mistake is
+instructive.
+
+**The flawed workload.** Every squad was ordered to its own random
+destination. D-007's entire scaling claim is that ONE field serves every
+squad heading to the same place — so giving 250 squads 250 destinations
+measured a case the design explicitly does not optimise for, and the
+"1,112 builds for 250 squads" figure was an artifact of the harness, not
+a finding about the game. Players order groups.
+
+**Re-measured with group ordering** (250 squads, 8 shared rally points):
+
+| cells | µs per field | fields built | ms avg tick | **ms WORST tick** |
+|---|---|---|---|---|
+| 2,048 | 4,323 | 215 | 8.6 | **127.5** |
+| 8,192 | 18,492 | 186 | 20.1 | **437.0** |
+| 18,432 | 37,653 | 142 | 26.6 | **393.1** |
+| 32,768 | 70,595 | 125 | 155.5 | **905.5** |
+
+Sharing works — builds fall by more than half. **And the worst tick is
+catastrophic anyway**: 437 ms at the current map size, against a 100 ms
+budget. An order wave creates several NEW destinations at once, so
+several full BFS solves land in the same tick. This is D-003's
+invalidation storm, and it is 4.4x over budget on the map being shipped.
+
+The average hid it completely — 20 ms — which is the second time in this
+milestone that measuring the average alone would have produced a
+comfortable and wrong conclusion.
+
+**A budget on builds-per-tick was tried and made things worse.** Capped
+at 2, deferred squads retried on every following tick: 31,413 deferrals
+and a worst tick that went UP. A throttle that costs more than the work
+it throttles. It survives as `SquadSim.fields_per_tick`, defaulting to 0
+(unlimited), because it is the right shape for a genuine storm and the
+wrong default.
+
+**So D-021's trigger is now armed with evidence, and the flow-field
+solver is the kernel.** But the fix to try first is still algorithmic
+rather than native: a single build is ~2 µs/cell in GDScript, and no
+language makes 32,768 cells free — the problem is doing a whole solve
+inside one tick. Incremental solving (spread one BFS over several ticks,
+serve squads the partial field) attacks the actual shape of the problem.
+GDExtension would buy a constant factor against a cost that is
+structurally too large in one slice.
+
+**Consequently Q8's answer stands but for a sharper reason:** map size is
+bounded by how much BFS lands in one tick, and at every size measured
+that already exceeds the budget under a realistic order wave. Map size
+is not the dial that fixes this — amortisation is.
+
 ---
 
 ### D-027 · 2026-07-30 · Accepted

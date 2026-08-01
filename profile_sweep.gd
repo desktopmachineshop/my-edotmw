@@ -68,10 +68,15 @@ const MAP_SIZES := [
 ]
 const MAP_SWEEP_SQUADS := 250
 
+## How many distinct destinations an order wave produces. A player orders
+## groups, not individuals — D-007 shares one field across every squad
+## heading to the same place, and that sharing IS the scaling claim.
+const RALLY_POINTS := 8
+
 
 func _map_sweep() -> void:
 	print("profile: --- map size sweep (Q8), %d squads ---" % MAP_SWEEP_SQUADS)
-	print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick")
+	print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick,ms_worst_tick,deferred")
 
 	for size in MAP_SIZES:
 		var space := TorusSpace.new(size.x, size.y, 1.0)
@@ -87,21 +92,33 @@ func _map_sweep() -> void:
 				rng.randi_range(0, space.width - 1),
 				rng.randi_range(0, space.height - 1)))
 
+		# Worst tick, not just the average. The average hid the problem
+		# entirely: a map where one field build costs two thirds of a tick
+		# still averages comfortably, because most ticks build nothing.
+		var worst_usec := 0
 		for tick in range(TICKS):
 			if tick % MOVE_EVERY_TICKS == 0:
+				# Squads are ordered in GROUPS to shared rally points, the
+				# way a player orders an army. Giving each squad its own
+				# random destination defeats D-007 sharing entirely and
+				# measures a case the design never claimed to handle.
+				var rallies := []
+				for r in range(RALLY_POINTS):
+					rallies.append(Vector2i(rng.randi_range(0, space.width - 1), rng.randi_range(0, space.height - 1)))
 				for squad in range(sim.squad_count()):
-					sim.order_move(squad, Vector2i(
-						rng.randi_range(0, space.width - 1),
-						rng.randi_range(0, space.height - 1)))
+					sim.order_move(squad, rallies[squad % RALLY_POINTS])
 			sim.tick()
+			worst_usec = maxi(worst_usec, sim.last_tick_usec)
 
 		var per_field := 0.0
 		if sim.fields_built > 0:
 			per_field = float(sim.total_field_usec) / float(sim.fields_built)
-		print("profile: %d,%.1f,%d,%.2f,%.3f" % [
+		print("profile: %d,%.1f,%d,%.2f,%.3f,%.1f,%d" % [
 			space.cell_count(), per_field, sim.fields_built,
 			sim.mean_usec_per_squad_update(),
 			float(sim.total_tick_usec) / float(TICKS) / 1000.0,
+			float(worst_usec) / 1000.0,
+			sim.field_builds_deferred,
 		])
 
 

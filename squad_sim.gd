@@ -406,9 +406,48 @@ func _apply_move_order(squad: int, destination: Vector2i) -> void:
 
 
 ## Shared per-destination flow field, built on demand (D-007).
+## How many NEW flow fields may be solved in one tick (D-038).
+##
+## A build is a wrap-aware BFS over every cell — about 2 µs per cell, so
+## 17 ms on the current 8,192-cell map and 67 ms at 32,768. One is
+## affordable; several in the same tick is D-003's invalidation storm with
+## a number attached, and a large engagement re-paths many squads at once.
+##
+## Budgeting them bounds the spike without touching the algorithm. A squad
+## that cannot get a field this tick keeps walking its existing curve and
+## retries — it already tolerates a tick of latency before its curve is
+## extended, which is exactly the slack this spends.
+## 0 means unlimited, which is the DEFAULT because measurement said so.
+##
+## Budgeting to 2/tick was tried and made things markedly worse: with
+## every squad heading somewhere different, 250 squads competed for 2
+## builds, and each deferred squad retried on every subsequent tick. Worst
+## tick went from 41 ms to 58 ms and 31,413 deferrals accumulated — a
+## thundering herd, where the throttle cost more than the work it was
+## throttling.
+##
+## Kept as a safety valve rather than deleted, because it is the right
+## shape for a genuine storm; it is simply not the right default. The
+## actual mitigation is destination SHARING (D-007) — one field serves
+## every squad heading to the same place, and a player ordering a group
+## somewhere produces exactly one build.
+var fields_per_tick: int = 0
+var _fields_built_this_tick: int = 0
+
+## Squads that wanted a field and did not get one. Counted rather than
+## silently dropped: if this stays high, the budget is too tight and the
+## symptom would otherwise be squads mysteriously slow to turn.
+var field_builds_deferred: int = 0
+
+
 func _field_for(destination_index: int) -> FlowField:
 	if _fields.has(destination_index):
 		return _fields[destination_index]
+
+	if fields_per_tick > 0 and _fields_built_this_tick >= fields_per_tick:
+		field_builds_deferred += 1
+		return null
+	_fields_built_this_tick += 1
 	# Timed separately because this is the one kernel D-021 names as its
 	# GDExtension candidate: a wrap-aware BFS over every cell, rebuilt per
 	# destination. Whether it needs escaping to native code is an M4
@@ -434,6 +473,12 @@ func _rebuild_curve(squad: int) -> void:
 	var speed := _speed[squad]
 	if speed > 0.0 and _destination[squad] != current:
 		var field := _field_for(_destination[squad])
+		# No field this tick (budgeted — see fields_per_tick). Leave the
+		# existing curve alone and try again next tick, rather than
+		# stranding the squad with a one-keyframe curve it would then
+		# rebuild every tick forever.
+		if field == null:
+			return
 		var seconds_per_cell := 1.0 / speed
 		var max_steps := maxi(1, ceili(curve_lookahead_seconds * speed))
 
@@ -497,6 +542,9 @@ func tick() -> void:
 			push_error("SquadSim: %s" % invalid)
 
 	var started := Time.get_ticks_usec()
+
+	# Fresh field-build budget each tick (D-038).
+	_fields_built_this_tick = 0
 
 	time += 1.0 / TICK_HZ
 	tick_count += 1
