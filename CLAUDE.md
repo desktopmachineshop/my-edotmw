@@ -58,14 +58,18 @@ down before the code the same way D-022 was for M1 — read it before
 treating anything above as settled, since "landed" and "meets D-026" are
 different claims.
 
-**M3 is in progress** — exit criteria are D-027, sliced into (1) map
-foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **192 tests**.
+**M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
+(1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
+buildings, (5) economy. `just test-unit` is green at **266 tests**.
 
-*Slice 1, landed:* the map is 128×64, generation is quadrant-symmetric so
-four spawns are fair by construction (D-036), biome is simulation data
-rather than colour (D-037), and spawn points come from `MapConfig`
-instead of a formula duplicated between server and client.
+*Slice 1, landed:* the map is 128×64, biome is simulation data rather
+than colour (D-037), and spawn points come from `MapConfig` instead of a
+formula duplicated between server and client. Terrain generation was
+briefly quadrant-symmetric, for provably fair spawns — that was dropped
+(D-036 revised) because it made every map the same map four times.
+Fairness is a resource post-pass now, and as of **D-039 spawns are
+scattered randomly at a minimum spacing** rather than placed on a grid,
+so adjacency differs every match.
 
 *Slice 2, sim half landed:* combat rounds resolve **simultaneously** —
 attacks read a start-of-round snapshot, so squad id no longer confers a
@@ -107,13 +111,41 @@ fight better than line infantry, and only they can build a town hall —
 expressed in `BuildingDef.built_by`, which is also how they are barred
 from building anything else. Everything else is produced.
 
-**Use `just test-load 4 40`, not `4 12`.** Symmetric spawns are a full
-quadrant apart, so on a 128×64 map four armies cannot reach each other
-inside 12 seconds — the run fails with `casualties_applied=0
-conceal_events=0 reveal_events=0`, which is the verdict correctly
-reporting that combat and fog never happened rather than passing
-vacuously. Bots now converge on the middle of the map deliberately, but
-they still need time to get there.
+**Use `just test-load 4 40`, not `4 12`.** Spawns are far apart on a
+128×64 map, so four armies cannot reach each other inside 12 seconds —
+the run fails with `casualties_applied=0 conceal_events=0
+reveal_events=0`, which is the verdict correctly reporting that combat
+and fog never happened rather than passing vacuously. Bots converge on
+the middle of the map deliberately, but they still need time to get
+there.
+
+**M4 (scale + performance) is in progress.** Measurements live in D-038.
+The four that exist so far, all at D-018's target of 20 players:
+
+- **bandwidth 595 B/client/s**, zero budget overruns — not close to a
+  problem, which is D-003's curve sync doing its job
+- **server 42.5 MB** at 120 squads; **~1.4 MB per virtual client**
+- **40.8 µs/squad at 120 squads** live, inside D-020's ~50 µs — but read
+  the squad-count caveat above before comparing it to anything
+- the sweep (`just profile`) remains the authority on scaling, since a
+  live match cannot reach 1,000 squads: **74 µs/squad at 1,000**, fitting
+  a 100 ms tick with ~26% headroom
+
+**The open item is the flow-field spike, not throughput.** An order wave
+lands several whole BFS solves in one tick: **323 ms worst tick** at
+8,192 cells against a 100 ms budget, after routing quantisation already
+took a third off it. Average tick cost is a comfortable 20 ms and hides
+this completely — the second time in this project that measuring the
+average alone would have given a confident wrong answer. Amortising the
+solver is the next move, and D-021's GDExtension hatch stays shut until
+that is tried.
+
+**Before theorising about an anomalous run, read the server log.** The
+first 20-player run reported "zero movement" and invited theories about
+spawn placement. The cause was 2,700 lines of "tried to order squad N it
+does not own": ownership was cached per connection at join, so every
+*produced* squad was refused. Fixing it exposed two more defects whose
+symptoms had been cancelling each other out. See D-038's amendment.
 
 Measured after that change: **72.4 µs per squad-update at 48 squads —
 vision 14.0, combat 42.7**, on 128×64. Quadrupling the map area cost

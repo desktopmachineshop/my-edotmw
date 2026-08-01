@@ -194,6 +194,110 @@ one anybody designed. Player orders were carefully shared; the cost came
 from an emergency behaviour written for correctness with no thought about
 how many destinations it minted.
 
+**Amended 2026-08-01 — the 20-player live measurements.** The sweep above
+drives the simulation directly. This is the same scale played through the
+real server, the real protocol and the real client code: 20 bots, 120
+seconds, `just test-load 20 120`, verdict green.
+
+| measurement | result | against |
+|---|---|---|
+| bandwidth | **595 B/client/s** | budget_overruns=0 |
+| server memory | **42.5 MB** at 120 squads | — |
+| client memory | **28.4 MB** for 20 virtual clients (~1.4 MB each) | D-018's N-in-one-process budget |
+| per-squad cost | **40.8 µs** at 120 squads | D-020's ~50 µs |
+
+Bandwidth is the headline and it is not close: 0.6 KB/s per client, from
+curve-based sync doing what D-003 said it would. Nothing about this
+number is at risk at 20 players.
+
+**The per-squad figure needs its caveat read.** 40.8 µs at 120 squads is
+under budget, and CLAUDE.md's standing warning applies in the flattering
+direction here — per-tick fixed overhead is divided across more squads
+than M2's 48, so this is not directly comparable to the 53.5 µs above.
+The sweep, not the match, remains the authority on scaling; a live match
+cannot reach 1,000 squads.
+
+**None of it was measurable until a two-line ownership bug was found**,
+and the way it hid is the part worth keeping. The first 20-player run
+reported "zero movement" — a symptom that invited theories about spawn
+stacking and vision. The actual cause was in the server log: 2,700
+refusals of the form "player N tried to order squad M it does not own",
+because per-connection ownership was cached at join and every *produced*
+squad was rejected. The measurement was not wrong, it was measuring a
+match in which nothing happened.
+
+Then fixing it exposed two more bugs stacked behind it, one of which had
+been *cancelling* another: the client never dropped dead squads from its
+owned list, which kept a bot's "do I have squads?" guard true, which was
+the only reason its production code was still being reached after its
+founding party was consumed. Making the client honest broke the bots. Two
+defects whose symptoms had been hiding each other for the whole of M3.
+
+The lesson generalises past this instance: **an anomalous measurement is
+a bug report about the harness first and the system second.** Three
+sessions of theorising about spawn placement would not have found this;
+reading the server's own error log did, immediately.
+
+---
+
+### D-039 · 2026-08-01 · Accepted — random spawn placement with minimum spacing
+**Decision:** Starting positions are scattered randomly across the map,
+subject to a minimum toroidal spacing (`min_spawn_spacing`, 12 cells on
+the shipped 128x64 map) and to standing on passable ground. They are no
+longer laid out on a grid. The shipped map offers 20 slots, matching
+D-018's target concurrency.
+
+Placement is rejection sampling seeded from `spawn_seed`, so it is
+deterministic: the same map gives the same layout every run, which
+D-016's replays require.
+
+**Rationale:** A grid gave every match the same neighbours at the same
+distances. The opening was therefore the same conversation every time,
+and the map's own features — where the wood is, which valley is
+defensible — never changed who had to fight whom. Random placement makes
+adjacency a property of the match rather than of the layout, so hotspots
+and the clashes around them emerge instead of being designed.
+
+Fairness is deliberately split into two mechanisms that do not overlap.
+`min_spawn_spacing` bounds how close anyone can be placed; it is the only
+thing spacing guarantees. Resource fairness stays where D-036 put it, in
+`Economy.balance_for_spawns`, which tops up each start to a minimum of
+every resource within reach. Neither tries to do the other's job, and
+neither silently compensates for the other failing.
+
+**What random placement needs that a grid did not:**
+
+1. **Terrain awareness.** A grid could be authored onto known-good
+   ground. Sampling cannot, so `spawn_points()` takes a passability array
+   and the caller holding the terrain supplies it. A start inside a lake
+   is a live failure mode now, not a hypothetical one.
+2. **An admission of failure.** Rejection sampling answers "these
+   constraints are unsatisfiable" by quietly returning fewer points.
+   `validate_spawns()` turns that into a message; `validate()` catches the
+   arithmetically impossible cases up front with a packing bound. Silent
+   short seating is exactly the failure that produced the 20-player
+   anomaly, where twenty players wrapped onto four grid seats.
+
+**Rejected alternatives:** Keeping the grid and simply adding more seats
+(rejected — fixes the seating count and none of the sameness). Poisson-disc
+sampling proper (rejected — rejection sampling is a dozen lines and the
+constraint is loose enough that it terminates immediately; the fancier
+algorithm would buy nothing measurable). Rejecting seeds by scoring
+layouts for balance (rejected — an implicit fairness model nobody could
+state, on top of an explicit one that already exists).
+
+**Consequences:** `spawn_grid` and `spawn_offset` are gone from
+`MapConfig`. `bot_client.gd` no longer mirrors server spawn arithmetic to
+guess where a neighbour starts — a duplication that was documented as
+fragile and is now simply impossible — and reads the spawn table the
+welcome message has carried since D-036. Player capacity is a map field
+rather than a function of terrain symmetry.
+
+**Revisit trigger:** If matches show a systematic advantage correlated
+with spawn position — someone consistently isolated, or a pair
+consistently forced into an opening fight neither chose — the answer is a
+fairness post-pass on the sampled layout, not a return to the grid.
+
 ---
 
 ### D-027 · 2026-07-30 · Accepted
@@ -2023,7 +2127,13 @@ items resolved as:
   angular `u`/`v`, so doubling both makes the noise repeat twice per axis
   and the four quadrants come out bit-identical *by construction* — no
   scoring heuristic, no seed rejection. Fairness becomes a property of
-  the generator. See D-036.
+  the generator. See D-036. **Superseded twice since:** D-036 revised
+  dropped symmetric generation (it made every map the same map four
+  times) in favour of free terrain plus a resource-fairness post-pass,
+  and D-039 replaced the grid of spawn points with random placement at a
+  minimum spacing. Fairness now lives entirely in
+  `Economy.balance_for_spawns`, and spacing is the only thing placement
+  guarantees.
 - ~~Population cap?~~ → **Hard per-player squad cap**, sized to D-015's
   12–15 squads, bounding the match on the axis the architecture is
   actually sensitive to. **Gatherer squads count against the same cap**
