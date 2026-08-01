@@ -358,7 +358,7 @@ func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
-	_apply_move_order(squad, destination)
+	_apply_move_order(squad, destination, true)
 
 
 ## Advance, but halt on contact (D-034). Combat clears the stance when it
@@ -367,7 +367,7 @@ func order_move(squad: int, destination: Vector2i) -> void:
 func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
-	_apply_move_order(squad, destination)
+	_apply_move_order(squad, destination, true)
 	_attack_move[squad] = 1
 
 
@@ -397,8 +397,32 @@ func force_move(squad: int, destination: Vector2i) -> void:
 	_apply_move_order(squad, destination)
 
 
-func _apply_move_order(squad: int, destination: Vector2i) -> void:
-	var dest_index := space.index(destination)
+## Snap a destination to a coarse grid (D-038).
+##
+## Two orders a few cells apart would otherwise solve two entire flow
+## fields. Snapped, they share one, and D-007's per-destination sharing
+## does the rest — this converts field builds from per-CLICK to
+## per-REGION, which is the cheap attack on the 437 ms order-wave spike.
+##
+## The squad ends up at the bucket's cell rather than the exact click.
+## For a squad whose soldiers already spread over several cells that is
+## imperceptible; it is a trade of a little path precision for a large
+## amount of peak cost.
+func _quantise(cell: Vector2i) -> Vector2i:
+	if destination_quantum <= 1:
+		return cell
+	var c := space.normalize(cell)
+	return Vector2i(
+		(c.x / destination_quantum) * destination_quantum,
+		(c.y / destination_quantum) * destination_quantum)
+
+
+## `quantise` is false for orders that must land EXACTLY where asked.
+## Stop means stop where you stand — snapping it would shove the squad to
+## a bucket corner. Gathering must reach the node's own cell or the squad
+## never registers as arrived and never starts work.
+func _apply_move_order(squad: int, destination: Vector2i, quantise := false) -> void:
+	var dest_index := space.index(_quantise(destination) if quantise else destination)
 	if _destination[squad] == dest_index:
 		return
 	_destination[squad] = dest_index
@@ -432,6 +456,27 @@ func _apply_move_order(squad: int, destination: Vector2i) -> void:
 ## every squad heading to the same place, and a player ordering a group
 ## somewhere produces exactly one build.
 var fields_per_tick: int = 0
+
+## Grid size destinations snap to before pathing (D-038).
+##
+## **1 (disabled) is the default, because measurement said the trade was
+## not worth it.** Snapping to a 4-cell grid was tried against the
+## order-wave spike and bought about 18% of the worst tick at the shipped
+## map size (457 ms → 375 ms) — nowhere near the 4.4x needed — while
+## costing something real: a squad stops arriving where it was ordered,
+## which broke two tests that were right to break.
+##
+## Field BUILD COUNT barely moved (186 → 198), which is the informative
+## part: if merging nearby destinations does not reduce builds, then most
+## builds are not coming from nearby player orders at all. The suspect is
+## routing — `Combat._check_rout` sends each broken squad fleeing to its
+## own computed cell via force_move, so a rout produces one unique
+## destination PER SQUAD, which is precisely the pattern D-007's sharing
+## cannot help with.
+##
+## Kept, disabled, because it is cheap to switch on if a future workload
+## is genuinely dominated by clustered player orders.
+var destination_quantum: int = 1
 var _fields_built_this_tick: int = 0
 
 ## Squads that wanted a field and did not get one. Counted rather than

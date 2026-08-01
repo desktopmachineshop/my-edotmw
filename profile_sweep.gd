@@ -75,13 +75,20 @@ const RALLY_POINTS := 8
 
 
 func _map_sweep() -> void:
-	print("profile: --- map size sweep (Q8), %d squads ---" % MAP_SWEEP_SQUADS)
-	print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick,ms_worst_tick,deferred")
+	# Run each map size with quantisation OFF and ON, so the comparison is
+	# a measurement rather than an argument.
+	for quantum in [1, 4]:
+		print("profile: --- map sweep, %d squads, destination_quantum=%d ---" % [MAP_SWEEP_SQUADS, quantum])
+		print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick,ms_worst_tick")
+		_map_sweep_at(int(quantum))
 
+
+func _map_sweep_at(quantum: int) -> void:
 	for size in MAP_SIZES:
 		var space := TorusSpace.new(size.x, size.y, 1.0)
 		var sim := SquadSim.new(space, CurveReplicator.new())
 		sim.set_passable(TerrainGen.new().passability(space))
+		sim.destination_quantum = quantum
 
 		var defs := [UnitRoster.by_id(&"militia"), UnitRoster.by_id(&"archers")]
 		var rng := RandomNumberGenerator.new()
