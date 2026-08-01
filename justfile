@@ -617,3 +617,46 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
     fi
     "$godot" --headless --path . --import
     "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}
+
+# Screenshot the LOBBY (D-048), so its layout can actually be looked at.
+#
+# Separate from `test-client` because it wants the opposite setup: a
+# server that STAYS in the lobby (`--lobby=1`, so it waits for an admin
+# who never presses start) and a client that renders the seat list rather
+# than a battlefield. Docker only, same software-GL reasoning as
+# test-client.
+[doc("Screenshot the lobby screen into artifacts/lobby.png")]
+lobby-shot SECONDS="8" AI="2": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "lobby-shot requires the docker runtime (it needs the software-GL image)." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/lobby.png"
+    log="{{artifacts_dir}}/lobby-shot.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down' EXIT INT TERM
+
+    docker compose -p edotmw run --rm --no-deps -d --name edotmw-lobby-server \
+        server --headless --path . server.tscn -- --lobby=1 --players=8 > /dev/null
+    sleep 3
+
+    status=0
+    timeout 180 docker compose -p edotmw run --rm --no-deps client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution 1280x720 \
+        -- --address=edotmw-lobby-server --run-seconds={{SECONDS}} \
+        --lobby-ai={{AI}} \
+        --screenshot=res://artifacts/lobby.png \
+        > "$log" 2>&1 || status=$?
+
+    docker rm -f edotmw-lobby-server > /dev/null 2>&1 || true
+    if [ ! -f "$shot" ]; then
+        echo "lobby-shot: no screenshot written (see $log)" >&2
+        exit 1
+    fi
+    echo "lobby-shot: wrote $shot"

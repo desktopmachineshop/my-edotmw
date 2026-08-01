@@ -610,3 +610,84 @@ static func seed_from(text: String, a: int, b: int) -> int:
 	h = _hash_int(h, a)
 	h = _hash_int(h, b)
 	return h
+
+
+## LOBBY (D-048). The whole seat list, sent on any change.
+##
+## Sent whole rather than as diffs: a lobby changes when somebody clicks
+## something, which is thousands of times rarer than a curve update, and
+## the entire state is a few hundred bytes. D-003's incremental machinery
+## exists because squad state changes ten times a second — spending that
+## complexity here would be paying a cost the problem does not have.
+const S2C_LOBBY := 18
+const C2S_LOBBY := 19
+
+## What a client can ask the lobby to do. The server checks every one of
+## them against MatchState's rules; these are requests, not commands.
+const LOBBY_SET_CIV := 0
+const LOBBY_ADD_AI := 1
+const LOBBY_REMOVE_AI := 2
+const LOBBY_START := 3
+
+
+static func encode_lobby(admin_player: int, seats: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_LOBBY)
+	buf.put_u32(admin_player)
+	buf.put_u32(seats.size())
+	for seat in seats:
+		buf.put_u8(1 if String(seat["kind"]) == "ai" else 0)
+		buf.put_u32(int(seat["player"]))
+		_put_string(buf, String(seat["civ"]))
+		_put_string(buf, String(seat["name"]))
+	return buf.data_array
+
+
+static func decode_lobby(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var admin := int(buf.get_u32())
+	var count := int(buf.get_u32())
+	var seats := []
+	for _i in range(count):
+		var is_ai := buf.get_u8() == 1
+		var player := int(buf.get_u32())
+		var civ := _get_string(buf)
+		var name := _get_string(buf)
+		seats.append({
+			"kind": "ai" if is_ai else "human",
+			"player": player, "civ": civ, "name": name,
+		})
+	return {"admin": admin, "seats": seats}
+
+
+static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_LOBBY)
+	buf.put_u8(action)
+	buf.put_u32(seat)
+	_put_string(buf, civ)
+	return buf.data_array
+
+
+static func decode_lobby_command(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var action := int(buf.get_u8())
+	var seat := int(buf.get_u32())
+	var civ := _get_string(buf)
+	return {"action": action, "seat": seat, "civ": civ}
+
+
+static func _put_string(buf: StreamPeerBuffer, text: String) -> void:
+	var bytes := text.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+
+
+static func _get_string(buf: StreamPeerBuffer) -> String:
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return bytes.get_string_from_utf8()

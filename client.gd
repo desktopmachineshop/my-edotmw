@@ -183,6 +183,9 @@ func _ready() -> void:
 	var port := int(args.get("port", DEFAULT_SERVER_PORT))
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	_screenshot_path = String(args.get("screenshot", ""))
+	# Capture-only: seat this many AI so `just lobby-shot` photographs a
+	# lobby with something in it rather than one empty seat.
+	_lobby_ai_wanted = int(args.get("lobby-ai", 0))
 
 	_unit_def = UnitRoster.first()
 
@@ -210,6 +213,7 @@ func _ready() -> void:
 	add_child(_terrain_root)
 
 	_build_hud()
+	_build_lobby_ui()
 
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
@@ -244,6 +248,8 @@ func _process(delta: float) -> void:
 	_refresh_buildings()
 	_update_hud()
 	_update_minimap()
+	_seat_capture_ai()
+	_refresh_lobby()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -876,6 +882,7 @@ var _minimap_updated_at := -1.0
 ## included. A CanvasLayer puts it in screen space above the 3D view.
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
+	_hud_layer = layer
 	add_child(layer)
 
 	var panel := VBoxContainer.new()
@@ -1187,6 +1194,15 @@ func _plot_minimap(image: Image, cell: Vector2i, colour: Color) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The lobby eats input first and exclusively. While it is up there is
+	# no world to click on, and letting a stray right-click fall through
+	# to "order the selection somewhere" would be ordering an army that
+	# does not exist yet.
+	if _handle_lobby_input(event):
+		return
+	if _state.in_lobby():
+		return
+
 	if event is InputEventMouseButton:
 		_handle_mouse_button(event)
 	elif event is InputEventMouseMotion and _dragging:
@@ -1553,3 +1569,231 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 			if kv.size() == 2:
 				parsed[kv[0]] = kv[1]
 	return parsed
+
+
+# --- lobby screen (D-048) ---------------------------------------------
+
+var _hud_layer: CanvasLayer
+var _lobby_layer: CanvasLayer
+var _lobby_rows: GridContainer
+var _lobby_title: Label
+var _lobby_help: Label
+var _lobby_cursor := 0
+
+
+## Built once, shown only while the server says we are in a lobby.
+##
+## Deliberately its own CanvasLayer rather than part of the HUD: the lobby
+## is a different screen, not an overlay on the game, and giving it its
+## own layer means showing or hiding it is one flag instead of a dozen
+## visibility rules that can disagree.
+func _build_lobby_ui() -> void:
+	_lobby_layer = CanvasLayer.new()
+	# Above the HUD, not merely after it: CanvasLayers draw in layer order,
+	# so a backdrop on the same layer let the game HUD show straight
+	# through the lobby — which the first screenshot caught immediately and
+	# no assertion would have.
+	_lobby_layer.layer = 10
+	_lobby_layer.visible = false
+	add_child(_lobby_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.06, 0.07, 0.10, 0.97)
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	_lobby_layer.add_child(backdrop)
+
+	var root := VBoxContainer.new()
+	root.position = Vector2(64.0, 48.0)
+	root.add_theme_constant_override("separation", 10)
+	_lobby_layer.add_child(root)
+
+	_lobby_title = Label.new()
+	_lobby_title.add_theme_font_size_override("font_size", 30)
+	root.add_child(_lobby_title)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0.0, 12.0)
+	root.add_child(spacer)
+
+	# A grid, not padded strings. The first version aligned columns with
+	# "%-10s" and the font is proportional, so every row was ragged — the
+	# kind of thing that is obvious in a screenshot and invisible to any
+	# check that only asks whether the text is right.
+	_lobby_rows = GridContainer.new()
+	_lobby_rows.columns = 4
+	_lobby_rows.add_theme_constant_override("h_separation", 28)
+	_lobby_rows.add_theme_constant_override("v_separation", 8)
+	root.add_child(_lobby_rows)
+
+	var spacer2 := Control.new()
+	spacer2.custom_minimum_size = Vector2(0.0, 18.0)
+	root.add_child(spacer2)
+
+	_lobby_help = Label.new()
+	_lobby_help.add_theme_font_size_override("font_size", 15)
+	_lobby_help.modulate = Color(0.72, 0.76, 0.84)
+	root.add_child(_lobby_help)
+
+
+func _refresh_lobby() -> void:
+	if _lobby_layer == null:
+		return
+	var showing := _state.in_lobby()
+	if _hud_layer != null:
+		_hud_layer.visible = not showing
+	_lobby_layer.visible = showing
+	if not showing:
+		return
+
+	var seats: Array = _state.lobby.get("seats", [])
+	_lobby_cursor = clampi(_lobby_cursor, 0, maxi(seats.size() - 1, 0))
+
+	_lobby_title.text = "LOBBY — %s   (%d seated)" % [
+		_config_name(), seats.size()]
+
+	for child in _lobby_rows.get_children():
+		child.queue_free()
+
+	for i in range(seats.size()):
+		var seat: Dictionary = seats[i]
+		var mine := String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
+		var is_ai := String(seat["kind"]) == "ai"
+
+		# The seat you can act on has to read as yours at a glance.
+		var tint := Color(0.78, 0.82, 0.90)
+		if mine:
+			tint = Color(0.62, 0.92, 0.70)
+		elif is_ai:
+			tint = Color(0.84, 0.78, 0.58)
+
+		var tags := ""
+		if int(seat["player"]) == int(_state.lobby.get("admin", 0)):
+			tags += "  [admin]"
+		if mine:
+			tags += "  (you)"
+
+		for text in [
+			("▶" if i == _lobby_cursor else ""),
+			("AI" if is_ai else "Human"),
+			String(seat["name"]),
+			_civ_label(String(seat["civ"])) + tags,
+		]:
+			var cell := Label.new()
+			cell.add_theme_font_size_override("font_size", 19)
+			cell.text = text
+			cell.modulate = tint
+			_lobby_rows.add_child(cell)
+
+	var lines := [
+		"UP/DOWN select seat  ·  LEFT/RIGHT change civilisation (your seat, or AI if you are admin)",
+	]
+	if _state.is_admin():
+		lines.append("A add AI  ·  DELETE remove selected AI  ·  ENTER start the match")
+	else:
+		lines.append("Waiting for the admin to start the match.")
+	lines.append("Civilisations: %s" % _civ_menu_text())
+	_lobby_help.text = "\n".join(lines)
+
+
+## Every civ, plus Random. Read from the roster so a civ added as a .tres
+## appears here with no code change (D-046 criterion 3).
+func _civ_choices() -> Array:
+	var out: Array = [CivRoster.RANDOM]
+	for id in CivRoster.ids():
+		out.append(id)
+	return out
+
+
+func _civ_label(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "Random"
+	var def := CivRoster.by_id(StringName(civ))
+	return def.display_name if def != null else civ
+
+
+func _civ_menu_text() -> String:
+	var names := ["Random"]
+	for id in CivRoster.ids():
+		names.append(_civ_label(String(id)))
+	return "  ".join(names)
+
+
+func _config_name() -> String:
+	return "%dx%d" % [_state.space.width, _state.space.height] if _state.space != null else "?"
+
+
+## Cycle the selected seat's civ. The server re-checks whether this client
+## is entitled to (D-002) — this only avoids sending an order we already
+## know is not ours to give.
+func _cycle_seat_civ(direction: int) -> void:
+	var seats: Array = _state.lobby.get("seats", [])
+	if _lobby_cursor < 0 or _lobby_cursor >= seats.size():
+		return
+	var seat: Dictionary = seats[_lobby_cursor]
+	var mine := String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
+	if not (mine or (String(seat["kind"]) == "ai" and _state.is_admin())):
+		return
+
+	var choices := _civ_choices()
+	var current := choices.find(StringName(seat["civ"]))
+	var next: StringName = choices[posmod(current + direction, choices.size())]
+	_send_lobby(NetProtocol.LOBBY_SET_CIV, _lobby_cursor, String(next))
+
+
+func _send_lobby(action: int, seat: int, civ: String) -> void:
+	if not _connected:
+		return
+	_peer.send(0, NetProtocol.encode_lobby_command(action, seat, civ),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+func _handle_lobby_input(event: InputEvent) -> bool:
+	if not _state.in_lobby():
+		return false
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return false
+
+	var seats: Array = _state.lobby.get("seats", [])
+	match (event as InputEventKey).keycode:
+		KEY_UP:
+			_lobby_cursor = posmod(_lobby_cursor - 1, maxi(seats.size(), 1))
+		KEY_DOWN:
+			_lobby_cursor = posmod(_lobby_cursor + 1, maxi(seats.size(), 1))
+		KEY_LEFT:
+			_cycle_seat_civ(-1)
+		KEY_RIGHT:
+			_cycle_seat_civ(1)
+		KEY_A:
+			_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, String(CivRoster.RANDOM))
+		KEY_DELETE:
+			_send_lobby(NetProtocol.LOBBY_REMOVE_AI, _lobby_cursor, "")
+		KEY_ENTER, KEY_KP_ENTER:
+			_send_lobby(NetProtocol.LOBBY_START, 0, "")
+		_:
+			return false
+	_refresh_lobby()
+	return true
+
+
+## Capture-mode only: how many AI seats to ask for once we are admin.
+## Zero during `run-client`, which is a human at the wheel.
+var _lobby_ai_wanted := 0
+var _lobby_ai_asked := false
+
+
+## Seat the AI the capture asked for, once, as soon as we know we are the
+## admin. Deliberately not retried: a refusal means we are not admin, and
+## hammering the server would turn one wrong assumption into a flood.
+func _seat_capture_ai() -> void:
+	if _lobby_ai_asked or _lobby_ai_wanted <= 0:
+		return
+	if not (_state.in_lobby() and _state.is_admin()):
+		return
+	_lobby_ai_asked = true
+	var civs := CivRoster.ids()
+	for i in range(_lobby_ai_wanted):
+		# Spread the AI across civs rather than leaving them all Random,
+		# so the screenshot shows what a mixed lobby looks like.
+		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
+		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)

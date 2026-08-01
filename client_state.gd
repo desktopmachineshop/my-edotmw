@@ -158,6 +158,10 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+		NetProtocol.S2C_LOBBY:
+			# The whole seat list, replacing whatever was held before — the
+			# server sends it entire on any change (see encode_lobby).
+			lobby = NetProtocol.decode_lobby(data)
 		NetProtocol.S2C_NOTICE:
 			last_notice = NetProtocol.decode_notice(data)
 			notices_received += 1
@@ -604,3 +608,28 @@ func encode_stop(squad: int) -> PackedByteArray:
 	if not owns(squad):
 		return PackedByteArray()
 	return NetProtocol.encode_order_stop(squad)
+
+
+# --- lobby (D-048) ----------------------------------------------------
+
+## The lobby as the server last described it: {admin: int, seats: Array}.
+## Empty until the first S2C_LOBBY arrives, which is also how the client
+## knows whether it is in a lobby at all.
+var lobby := {}
+
+
+func in_lobby() -> bool:
+	return not lobby.is_empty() and not lobby.get("seats", []).is_empty()
+
+
+## This client's own seat index, or -1.
+func my_seat() -> int:
+	var seats: Array = lobby.get("seats", [])
+	for i in range(seats.size()):
+		if String(seats[i]["kind"]) == "human" and int(seats[i]["player"]) == player:
+			return i
+	return -1
+
+
+func is_admin() -> bool:
+	return player > 0 and int(lobby.get("admin", 0)) == player

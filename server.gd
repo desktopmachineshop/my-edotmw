@@ -231,6 +231,13 @@ func _ready() -> void:
 	# and the victory rule never fires with fewer than two players.
 	_match = MatchState.new()
 	_match.players_expected = maxi(1, int(args.get("players", 1)))
+	# A real lobby waits for its admin (D-048). Off by default so
+	# `run-client` and `test-client` — which have nobody to press start —
+	# behave exactly as they did before the lobby existed.
+	_match.require_admin_start = int(args.get("lobby", 0)) != 0
+	# Seeded from the map, never wall-clock, so a Random civ draw
+	# reproduces on replay (D-016).
+	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
 	_match.squad_cap = _config.squad_cap
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
@@ -446,13 +453,38 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	var player := _next_player
 	_next_player += 1
 
+	# In lobby mode nothing is spawned yet, because nothing CAN be: a seat
+	# may still say "Random", so this player has no civ, no roster and no
+	# opening stockpile until the admin starts (D-048). Spawning first and
+	# correcting later would mean a founding party existing before the
+	# civilisation that raised it.
+	_clients[peer] = {"player": player, "visible": {}}
+	_match.add_player(player)
+	if _match.phase == MatchState.Phase.LOBBY:
+		_broadcast_lobby()
+		peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height,
+			PackedInt32Array(), _spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
+		_peak_clients = maxi(_peak_clients, _clients.size())
+		return
+
 	# The returned ids go to the client so it knows what it starts with.
 	# They are deliberately NOT cached on the connection record: ownership
 	# lives in the sim (see _validated_squad), and a second copy here is
 	# what silently stopped every produced squad from taking orders.
-	var squads := _spawn_squads_for(player)
-	_clients[peer] = {"player": player, "visible": {}}
 	_peak_clients = maxi(_peak_clients, _clients.size())
+	_admit_player(peer, player)
+
+
+## Give a player their opening — squads, stockpile, and everything a
+## client needs to draw the world.
+##
+## Shared by the two ways a match can begin: joining an already-running
+## server, and the admin starting a lobby (D-048). It has to be one
+## function, because "what a player starts with" is exactly the kind of
+## thing that drifts when written twice — the same reasoning that made
+## ownership read from the sim rather than a per-connection copy.
+func _admit_player(peer: ENetPacketPeer, player: int) -> void:
+	var squads := _spawn_squads_for(player)
 
 	# The new player's own squads need a vision stamp before anything asks
 	# visible_to() about them — own squads are always visible regardless
@@ -512,9 +544,9 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
-	if _match.add_player(player):
-		print("server: MATCH_START — %s" % _match.describe())
-
+	# Registration happened at the top of _on_connect, before the lobby
+	# branch — a player has to be seated before anyone can decide whether
+	# there is a lobby to wait in.
 	print("server: player %d joined with %d squads (%d connected) — match %s" % [
 		player, squads.size(), _clients.size(), _match.describe()])
 
@@ -610,6 +642,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
 				_handle_order_gather(peer, data)
+			NetProtocol.C2S_LOBBY:
+				_handle_lobby_command(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -1039,3 +1073,94 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 			if kv.size() == 2:
 				parsed[kv[0]] = kv[1]
 	return parsed
+
+
+# --- lobby (D-048) ----------------------------------------------------
+
+## Next player id handed to an AI seat. AI players occupy the same id
+## space as humans deliberately: everything downstream — ownership,
+## vision, the economy, elimination — already reasons about "a player",
+## and giving AI a parallel identity would mean teaching all of it a
+## second concept.
+var _next_ai_player := 1000
+
+
+func _handle_lobby_command(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var record = _clients.get(peer, null)
+	if record == null:
+		return
+	var player := int(record["player"])
+	var command := NetProtocol.decode_lobby_command(data)
+	var action := int(command["action"])
+	var ok := false
+
+	match action:
+		NetProtocol.LOBBY_SET_CIV:
+			ok = _match.set_civ(player, int(command["seat"]), StringName(command["civ"]))
+			if not ok:
+				_notify(peer, "You cannot choose that seat's civilisation")
+		NetProtocol.LOBBY_ADD_AI:
+			var seat := _match.add_ai(player, StringName(command["civ"]), _next_ai_player)
+			ok = seat >= 0
+			if ok:
+				_next_ai_player += 1
+			else:
+				_notify(peer, "Only the lobby admin can add AI players")
+		NetProtocol.LOBBY_REMOVE_AI:
+			ok = _match.remove_ai(player, int(command["seat"]))
+			if not ok:
+				_notify(peer, "Only the lobby admin can remove AI players")
+		NetProtocol.LOBBY_START:
+			ok = _match.request_start(player)
+			if not ok:
+				_notify(peer, "Only the admin can start, and a lobby of one is not a match")
+			else:
+				_on_match_started()
+		_:
+			push_error("server: unknown lobby action %d" % action)
+
+	if ok:
+		_broadcast_lobby()
+
+
+## Everything that has to happen once the seats are final.
+##
+## Civs are only real at this point: a seat may have said "Random" right
+## up until the start (D-048), so nothing that depends on a civ — the
+## roster a player may build from, their opening stockpile — can be
+## settled before now.
+func _on_match_started() -> void:
+	# Civs are only real now — a seat could have said "Random" a moment
+	# ago — so this has to happen before anything that reads a roster or
+	# an opening stockpile.
+	for seat in _match.seats:
+		_civs[int(seat["player"])] = StringName(seat["civ"])
+	print("server: match started — %s" % _seat_summary())
+
+	for seat in _match.seats:
+		var player := int(seat["player"])
+		var peer := _peer_of(player)
+		if peer != null:
+			_admit_player(peer, player)
+
+
+func _peer_of(player: int) -> ENetPacketPeer:
+	for peer in _clients:
+		if int(_clients[peer]["player"]) == player:
+			return peer
+	return null
+
+
+func _seat_summary() -> String:
+	var parts := []
+	for seat in _match.seats:
+		parts.append("%s=%s%s" % [
+			seat["name"], seat["civ"],
+			" (admin)" if int(seat["player"]) == _match.admin_player else ""])
+	return ", ".join(parts)
+
+
+func _broadcast_lobby() -> void:
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats)
+	for peer in _clients:
+		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
