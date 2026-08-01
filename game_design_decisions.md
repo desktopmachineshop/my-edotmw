@@ -239,6 +239,46 @@ M1 and M2 were both declared done and then found incomplete, and the
 honest reading of this checklist is that M3 is one playtest and one doc
 pass away rather than finished.
 
+**A playtest did happen, 2026-07-31/08-01 — one human against three
+bots.** Recorded because it is the only part of that criterion which has
+been discharged, and because what it found is the argument for the
+criterion existing at all.
+
+It produced four defects in about twenty minutes, none of which 260
+passing tests had caught:
+
+1. **The minimap hit-test swallowed every click.** Hit-testing asked the
+   `TextureRect` for its own rectangle; when that reported larger than
+   intended, every click on screen counted as a minimap jump — so
+   selection AND ordering died together. A guard had silently expanded to
+   cover everything it was meant to exclude.
+2. **A player with a standing base was declared defeated.** Elimination
+   tested squads only, and founders are consumed by the hall they found,
+   so making the *correct opening move* ended your match — after which
+   the server refused every order you sent.
+3. **Founders were consumed on completion rather than on order**, leaving
+   a 40-second window in which one founding party could found unlimited
+   town halls. The playtest founded three in about five seconds.
+4. **Refused orders were silent.** A build nine cells from its founders,
+   against a three-cell reach, did nothing and said nothing — a refused
+   order was indistinguishable from a broken key.
+
+Each is fixed with a regression test. The pattern across all four:
+**bots do each thing once, in the expected order, and never press the
+same key three times in five seconds.** Every automated run exercised
+only the path on which the defect is invisible. That is not a gap in the
+suite's thoroughness — it is the difference between verifying a system
+and using one, and it is exactly why D-027's verification section named a
+human session as the criterion no automated check substitutes for.
+
+**What remains undischarged is narrower than "a playtest": it is the
+judgement.** Whether founding somewhere feels like a decision, whether
+losing the founders lands as a fair price at the moment it happens,
+whether fog at 128x64 hides too much, whether the counter triangle reads
+at the speed a fight actually happens. Four human players, and an
+opinion. Nothing in this repository can produce that, and a milestone
+named "launchable MVP" should not be closed without it.
+
 **Amended 2026-07-30, when the seven open items closed** (see section 2).
 Four resolved as recommended and change nothing here. Three did not, and
 these criteria change with them:
