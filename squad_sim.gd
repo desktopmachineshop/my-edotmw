@@ -159,8 +159,11 @@ func squad_count() -> int:
 
 func set_passable(p: PackedByteArray) -> void:
 	_passable = p
-	# Any cached field was solved against the old terrain.
+	# Any cached field was solved against the old terrain — including any
+	# still mid-solve, whose frontier holds a reference to the array that
+	# just went stale (D-040).
 	_fields.clear()
+	_pending_fields.clear()
 
 
 ## Add a squad and return its id (also its index in every packed array).
@@ -508,6 +511,99 @@ var _fields_built_this_tick: int = 0
 var field_builds_deferred: int = 0
 
 
+## How many BFS frontier cells may be expanded per tick, across ALL
+## in-flight fields (D-040). -1 disables amortisation entirely and every
+## field completes in the tick it is requested.
+##
+## 4,096 is half a ship-map field, so an ordinary single order paths in
+## two ticks (0.2 s) — below noticing — and an eight-destination wave
+## drains over about a second with the FIRST group moving immediately,
+## because the queue is FIFO.
+##
+## Chosen by measurement, not by argument. At 1,000 squads on the ship
+## map, the worst tick was 1,226 ms unamortised, 103 ms at a budget of
+## 12,288, and **72.8 ms at 4,096** — the first value that fits D-020's
+## 100 ms tick at D-018's full scale, with ~27% headroom. The cost is
+## about 9% on average tick time, which is the right way round: the
+## budget being blown was always a latency spike, never throughput.
+const DEFAULT_FIELD_CELLS_PER_TICK := 4096
+var field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
+
+## Destination indices whose fields are still expanding, oldest first.
+##
+## FIFO rather than "nearest first" or "most squads waiting first": every
+## ordering heuristic tried here would need a squad-to-field index to
+## evaluate, and the queue is only ever a handful deep because a wave
+## drains in a few ticks. Finishing the oldest first also bounds the worst
+## wait, which is the number that matters — the spike was never about
+## throughput.
+var _pending_fields: Array[int] = []
+
+## Cells expanded so far this tick, against `field_cells_per_tick`.
+var _field_cells_this_tick: int = 0
+
+## Per-phase cost of the LAST tick, for attributing a spike to a phase
+## instead of guessing at one. `last_combat_usec` covers combat, building
+## advance/production and hauling together; `last_economy_usec` is the
+## hauling part of that, broken out separately because it is the phase
+## most likely to scale with something nobody budgeted.
+var last_curves_usec: int = 0
+var last_economy_usec: int = 0
+var last_squad_combat_usec: int = 0
+var last_buildings_usec: int = 0
+var last_production_usec: int = 0
+
+## How many ticks ended with at least one field still expanding. If this
+## sits near zero the budget is never binding; if it climbs with squad
+## count, the budget is too tight and squads are waiting to path.
+var ticks_with_pending_fields: int = 0
+
+## Squads that could not path this tick because their field had not
+## reached them yet. The honest cost of amortisation, counted rather than
+## assumed to be small.
+var field_waits: int = 0
+
+
+## Spend this tick's expansion budget on fields still being built.
+##
+## Called at the START of tick, so a field begun on a previous tick makes
+## progress before any squad asks it for a direction.
+func _expand_pending_fields() -> void:
+	_field_cells_this_tick = 0
+	if _pending_fields.is_empty():
+		return
+
+	var started := Time.get_ticks_usec()
+	var still_pending: Array[int] = []
+	for destination_index in _pending_fields:
+		var field: FlowField = _fields.get(destination_index, null)
+		if field == null or field.is_complete():
+			continue
+		var remaining := _field_budget_remaining()
+		if remaining == 0:
+			# Out of budget: keep it queued, untouched, for next tick.
+			still_pending.append(destination_index)
+			continue
+		var before := field.expanded_cells()
+		if not field.expand(remaining):
+			still_pending.append(destination_index)
+		# Charge what was actually expanded, not the budget offered — a
+		# field that finishes early must not consume the whole allowance
+		# and starve the next one in the same wave.
+		_field_cells_this_tick += field.expanded_cells() - before
+	_pending_fields = still_pending
+	total_field_usec += Time.get_ticks_usec() - started
+
+	if not _pending_fields.is_empty():
+		ticks_with_pending_fields += 1
+
+
+func _field_budget_remaining() -> int:
+	if field_cells_per_tick < 0:
+		return -1
+	return maxi(0, field_cells_per_tick - _field_cells_this_tick)
+
+
 func _field_for(destination_index: int) -> FlowField:
 	if _fields.has(destination_index):
 		return _fields[destination_index]
@@ -522,7 +618,14 @@ func _field_for(destination_index: int) -> FlowField:
 	# question with a number attached, not a matter of opinion.
 	var started := Time.get_ticks_usec()
 	var field := FlowField.new()
-	field.build(space, space.from_index(destination_index), _passable)
+	field.begin(space, space.from_index(destination_index), _passable)
+	# Expand into whatever budget this tick has left. In a quiet tick that
+	# is the whole field and the amortisation is invisible; in a wave, the
+	# later fields get little or nothing here and finish over the next few
+	# ticks.
+	if not field.expand(_field_budget_remaining()):
+		_pending_fields.append(destination_index)
+	_field_cells_this_tick += field.expanded_cells()
 	total_field_usec += Time.get_ticks_usec() - started
 
 	_fields[destination_index] = field
@@ -547,6 +650,21 @@ func _rebuild_curve(squad: int) -> void:
 		# rebuild every tick forever.
 		if field == null:
 			return
+
+		# The field exists but its wavefront has not reached this squad yet
+		# (D-040). Leave the curve alone and try again next tick — the
+		# squad keeps moving on whatever path it already had.
+		#
+		# This MUST come before the give-up rule at the bottom of this
+		# function. That rule reads "the field cannot move this squad" as
+		# "the destination is unreachable" and cancels the order, which is
+		# right for a finished field and catastrophic for an unfinished
+		# one: every squad in an order wave would have its order silently
+		# dropped in the tick it was issued.
+		if not field.covers(current) and not field.is_complete():
+			field_waits += 1
+			return
+
 		var seconds_per_cell := 1.0 / speed
 		var max_steps := maxi(1, ceili(curve_lookahead_seconds * speed))
 
@@ -614,9 +732,15 @@ func tick() -> void:
 	# Fresh field-build budget each tick (D-038).
 	_fields_built_this_tick = 0
 
+	# Push in-flight BFS solves forward before anything asks a field for a
+	# direction (D-040). Also resets this tick's cell budget, so it must
+	# run even when nothing is pending.
+	_expand_pending_fields()
+
 	time += 1.0 / TICK_HZ
 	tick_count += 1
 
+	var curves_started := Time.get_ticks_usec()
 	for squad in range(_cell.size()):
 		var curve := _curves[squad]
 
@@ -633,6 +757,8 @@ func tick() -> void:
 		# exactly at the end would leave a gap at the horizon.
 		if time >= curve.end_time() - (1.0 / TICK_HZ):
 			_rebuild_curve(squad)
+
+	last_curves_usec = Time.get_ticks_usec() - curves_started
 
 	# Vision (D-025) recomputes against THIS tick's freshly-derived
 	# positions, at its own slower cadence — see
@@ -654,6 +780,8 @@ func tick() -> void:
 	# dressed up as a message.
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
+	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
+	var buildings_started := Time.get_ticks_usec()
 
 	# Buildings advance and shoot after the squad round (D-029). Their
 	# casualty events merge into the same list, so they replicate through
@@ -667,6 +795,7 @@ func tick() -> void:
 		# Spawned next to the building that made them, which is why this
 		# lives here rather than in BuildingSim — that class has no
 		# SquadSim to put a squad into.
+		var production_started := Time.get_ticks_usec()
 		for finished in buildings.advance_production(1.0 / TICK_HZ):
 			var produced := UnitRoster.by_id(StringName(finished["def_id"]))
 			if produced == null:
@@ -674,15 +803,19 @@ func tick() -> void:
 				continue
 			var at: int = int(finished["building"])
 			add_squad(produced, buildings.owner_of(at), buildings.cell_of(at) + Vector2i(1, 0))
+		last_production_usec = Time.get_ticks_usec() - production_started
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
 
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).
+	last_buildings_usec = Time.get_ticks_usec() - buildings_started
 	last_wallet_changes = []
+	var economy_started := Time.get_ticks_usec()
 	if economy != null:
 		last_wallet_changes = economy.tick(self, buildings, 1.0 / TICK_HZ)
+	last_economy_usec = Time.get_ticks_usec() - economy_started
 	last_combat_usec = Time.get_ticks_usec() - combat_started
 	total_combat_usec += last_combat_usec
 	_log_combat_events(last_combat_events)

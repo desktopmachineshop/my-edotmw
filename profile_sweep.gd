@@ -44,10 +44,12 @@ func _initialize() -> void:
 
 	print("profile: %s (%dx%d), %d ticks per count" % [
 		config.id, config.width, config.height, TICKS])
-	print("profile: count,us_per_squad,us_vision,us_combat,ms_per_tick,fields_built")
-
-	for count in COUNTS:
-		_run(config, int(count))
+	for amortised in [true, false]:
+		print("profile: --- count sweep, amortised=%s ---" % ("yes" if amortised else "no"))
+		print("profile: count,us_per_squad,us_vision,us_combat,ms_per_tick,ms_worst_tick,fields_built")
+		for count in COUNTS:
+			_run(config, int(count),
+				SquadSim.DEFAULT_FIELD_CELLS_PER_TICK if amortised else -1)
 
 	_map_sweep()
 	quit(0)
@@ -75,20 +77,28 @@ const RALLY_POINTS := 8
 
 
 func _map_sweep() -> void:
-	# Run each map size with quantisation OFF and ON, so the comparison is
-	# a measurement rather than an argument.
-	for quantum in [1, 4]:
-		print("profile: --- map sweep, %d squads, destination_quantum=%d ---" % [MAP_SWEEP_SQUADS, quantum])
-		print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick,ms_worst_tick")
-		_map_sweep_at(int(quantum))
+	# Run each map size with amortisation ON and OFF (D-040), so the
+	# comparison is a measurement rather than an argument — and in the SAME
+	# process, so host load cannot masquerade as the effect.
+	#
+	# This replaces the old quantisation A/B, which D-038 already settled:
+	# snapping destinations bought ~18% and cost exact arrival, and it
+	# stays off. Running it every sweep was paying for an answer already
+	# written down.
+	for amortised in [true, false]:
+		print("profile: --- map sweep, %d squads, amortised=%s ---" % [
+			MAP_SWEEP_SQUADS, "yes" if amortised else "no"])
+		print("profile: cells,us_per_field,fields_built,us_per_squad,ms_per_tick,ms_worst_tick,builds_deferred,squad_waits")
+		_map_sweep_at(1, SquadSim.DEFAULT_FIELD_CELLS_PER_TICK if amortised else -1)
 
 
-func _map_sweep_at(quantum: int) -> void:
+func _map_sweep_at(quantum: int, cells_per_tick: int) -> void:
 	for size in MAP_SIZES:
 		var space := TorusSpace.new(size.x, size.y, 1.0)
 		var sim := SquadSim.new(space, CurveReplicator.new())
 		sim.set_passable(TerrainGen.new().passability(space))
 		sim.destination_quantum = quantum
+		sim.field_cells_per_tick = cells_per_tick
 
 		var defs := [UnitRoster.by_id(&"militia"), UnitRoster.by_id(&"archers")]
 		var rng := RandomNumberGenerator.new()
@@ -120,19 +130,21 @@ func _map_sweep_at(quantum: int) -> void:
 		var per_field := 0.0
 		if sim.fields_built > 0:
 			per_field = float(sim.total_field_usec) / float(sim.fields_built)
-		print("profile: %d,%.1f,%d,%.2f,%.3f,%.1f,%d" % [
+		print("profile: %d,%.1f,%d,%.2f,%.3f,%.1f,%d,%d" % [
 			space.cell_count(), per_field, sim.fields_built,
 			sim.mean_usec_per_squad_update(),
 			float(sim.total_tick_usec) / float(TICKS) / 1000.0,
 			float(worst_usec) / 1000.0,
 			sim.field_builds_deferred,
+			sim.field_waits,
 		])
 
 
-func _run(config: MapConfig, squad_count: int) -> void:
+func _run(config: MapConfig, squad_count: int, cells_per_tick: int) -> void:
 	var space := config.to_space()
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	sim.set_passable(TerrainGen.new().passability(space))
+	sim.field_cells_per_tick = cells_per_tick
 
 	# Two sides, so combat actually engages rather than every squad
 	# peacefully ignoring every other.
@@ -146,22 +158,35 @@ func _run(config: MapConfig, squad_count: int) -> void:
 			rng.randi_range(0, space.height - 1))
 		sim.add_squad(defs[i % defs.size()], 1 + (i % 4), cell)
 
+	# GROUP ordering, matching the map sweep. This used to give every squad
+	# its own random destination — the workload D-038's correction already
+	# identified as defeating D-007's sharing and measuring a case the
+	# design explicitly does not optimise for. The correction was applied
+	# to the map sweep and not to this one, so the published count table
+	# kept measuring the flawed case for another milestone. Numbers from
+	# before this change are not comparable to numbers after it.
+	var worst_usec := 0
 	for tick in range(TICKS):
 		if tick % MOVE_EVERY_TICKS == 0:
-			for squad in range(sim.squad_count()):
-				sim.order_move(squad, Vector2i(
+			var rallies := []
+			for r in range(RALLY_POINTS):
+				rallies.append(Vector2i(
 					rng.randi_range(0, space.width - 1),
 					rng.randi_range(0, space.height - 1)))
+			for squad in range(sim.squad_count()):
+				sim.order_move(squad, rallies[squad % RALLY_POINTS])
 		sim.tick()
+		worst_usec = maxi(worst_usec, sim.last_tick_usec)
 
 	var per_squad := sim.mean_usec_per_squad_update()
 	var ms_per_tick := float(sim.total_tick_usec) / float(TICKS) / 1000.0
-	print("profile: %d,%.2f,%.2f,%.2f,%.3f,%d" % [
+	print("profile: %d,%.2f,%.2f,%.2f,%.3f,%.1f,%d" % [
 		squad_count,
 		per_squad,
 		float(sim.total_vision_usec) / float(TICKS * squad_count),
 		float(sim.total_combat_usec) / float(TICKS * squad_count),
 		ms_per_tick,
+		float(worst_usec) / 1000.0,
 		sim.fields_built,
 	])
 

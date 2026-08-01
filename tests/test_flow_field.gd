@@ -211,3 +211,92 @@ func test_one_field_serves_many_squads() -> void:
 			"Squad starting at %s should reach the shared destination" % s)
 		assert_eq(path.size() - 1, t.distance(s, dest),
 			"Squad starting at %s should take the wrapped-shortest path" % s)
+
+
+# --- amortised (incremental) building, D-040 --------------------------
+
+func test_a_partial_field_is_correct_wherever_it_is_defined() -> void:
+	# The property the whole amortisation rests on: BFS gives a cell its
+	# final distance the first time it reaches it, so a half-built field
+	# is not an approximation to be corrected later — it is a complete
+	# answer over a smaller region.
+	#
+	# If this were false, squads would path on numbers that changed under
+	# them and the bug would look like intermittent bad pathing rather
+	# than anything to do with budgeting.
+	var t := _space()
+	var dest := Vector2i(5, 5)
+	var complete := _field(dest)
+
+	var partial := FlowField.new()
+	partial.begin(t, dest)
+	assert_false(partial.expand(20), "20 cells should not finish a %d-cell map" % t.cell_count())
+
+	var covered := 0
+	for cell in range(t.cell_count()):
+		if not partial.covers(cell):
+			continue
+		covered += 1
+		assert_eq(partial.distance_at(cell), complete.distance_at(cell),
+			"Cell %d has a different distance mid-build than when finished" % cell)
+		assert_eq(partial.direction_at(cell), complete.direction_at(cell),
+			"Cell %d points somewhere different mid-build than when finished" % cell)
+
+	assert_gt(covered, 0, "Nothing was covered, so the comparison above proves nothing")
+	assert_lt(covered, t.cell_count(), "The field finished, so this was not a partial build at all")
+
+
+func test_expanding_to_completion_matches_a_one_shot_build() -> void:
+	# Amortisation must not change the answer, only when it arrives.
+	var t := _space()
+	var dest := Vector2i(3, 8)
+	var passable := _all_passable(t)
+	passable[t.index(Vector2i(4, 8))] = 0
+	passable[t.index(Vector2i(4, 7))] = 0
+	passable[t.index(Vector2i(4, 9))] = 0
+
+	var complete := _field(dest, passable)
+
+	var stepped := FlowField.new()
+	stepped.begin(t, dest, passable)
+	var rounds := 0
+	while not stepped.expand(7):
+		rounds += 1
+		assert_lt(rounds, 1000, "Incremental expansion never finished")
+	assert_gt(rounds, 1, "The budget was so generous this did not actually amortise")
+
+	for cell in range(t.cell_count()):
+		assert_eq(stepped.distance_at(cell), complete.distance_at(cell),
+			"Cell %d disagrees after incremental expansion" % cell)
+		assert_eq(stepped.direction_at(cell), complete.direction_at(cell),
+			"Cell %d points elsewhere after incremental expansion" % cell)
+
+
+func test_an_unfinished_field_does_not_claim_a_cell_is_unreachable() -> void:
+	# The one way a caller can misread a partial field: UNREACHABLE means
+	# "not yet" mid-build and "no path" once complete. Reading the first
+	# as the second cancels perfectly good orders.
+	var t := _space()
+	var partial := FlowField.new()
+	partial.begin(t, Vector2i(0, 0))
+	partial.expand(3)
+
+	assert_false(partial.is_complete(), "This test needs an unfinished field")
+	var far := t.index(Vector2i(8, 6))
+	assert_false(partial.covers(far), "The far corner should not be reached after 3 cells")
+	assert_false(partial.is_reachable(far),
+		"is_reachable is about coverage, so it is false here — and callers must check is_complete")
+
+
+func test_a_blocked_destination_is_complete_immediately() -> void:
+	# There is nothing to expand, so a caller budgeting work must not be
+	# left waiting on a field that will never progress.
+	var t := _space()
+	var passable := _all_passable(t)
+	var dest := Vector2i(2, 2)
+	passable[t.index(dest)] = 0
+
+	var f := FlowField.new()
+	f.begin(t, dest, passable)
+	assert_true(f.is_complete(), "A field with a blocked destination has no frontier to expand")
+	assert_eq(f.pending_cells(), 0)

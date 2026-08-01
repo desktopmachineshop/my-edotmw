@@ -9,12 +9,43 @@ class_name UnitRoster
 
 const UNITS_DIR := "res://units"
 
+## The roster, loaded once per process.
+##
+## This used to re-scan the directory and re-load every .tres on EVERY
+## call, and `by_id` calls it once per lookup. That is a filesystem walk
+## in the middle of the simulation tick: `SquadSim.tick` resolves a
+## UnitDef for each squad a building finishes, so a tick in which twenty
+## players each completed a unit spent **858 ms** — over eight whole tick
+## budgets — inside `load_all`.
+##
+## It hid for a whole milestone because it is invisible to every workload
+## that resolves its defs up front. The profiling sweep does exactly that,
+## so `just profile` reported a healthy ~29 ms worst tick for the same
+## code that spiked to 866 ms in a live match. Only the live server ever
+## called by_id at 10 Hz.
+##
+## The roster is static data — /units is read-only at runtime — so caching
+## it is not an optimisation with a correctness cost, it is what the
+## original should have done.
+static var _cache: Array[UnitDef] = []
+static var _by_id := {}
+
+
+## Drop the cache. Only for tests that write .tres files at runtime; the
+## running game never needs it, because /units does not change.
+static func reload() -> void:
+	_cache = []
+	_by_id = {}
+
 
 ## Every UnitDef in /units, sorted by id so iteration order is stable.
 ## Stability matters: the server picks a default unit from this list, and
 ## a replay is only reproducible if that pick doesn't depend on filesystem
 ## enumeration order.
 static func load_all() -> Array[UnitDef]:
+	if not _cache.is_empty():
+		return _cache
+
 	var out: Array[UnitDef] = []
 	var dir := DirAccess.open(UNITS_DIR)
 	if dir == null:
@@ -35,6 +66,11 @@ static func load_all() -> Array[UnitDef]:
 			push_error("UnitRoster: %s/%s did not load as a UnitDef" % [UNITS_DIR, name])
 			continue
 		out.append(def)
+
+	_cache = out
+	_by_id = {}
+	for def in out:
+		_by_id[def.id] = def
 	return out
 
 
@@ -50,7 +86,5 @@ static func first() -> UnitDef:
 
 
 static func by_id(id: StringName) -> UnitDef:
-	for def in load_all():
-		if def.id == id:
-			return def
-	return null
+	load_all()  # populates _by_id on the first call, then costs a branch
+	return _by_id.get(id, null)

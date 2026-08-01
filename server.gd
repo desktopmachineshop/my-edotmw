@@ -75,6 +75,12 @@ var _run_seconds := -1.0  # negative = run until stopped
 var _status_every_ticks := 100
 var _shutting_down := false
 var _ticks_dropped := 0
+var _worst_tick_usec := 0
+var _worst_tick_index := 0
+var _ticks_over_budget := 0
+
+## D-020's 100 ms tick, in microseconds.
+const TICK_BUDGET_USEC := 100_000
 var _reported_drop := false
 
 
@@ -231,6 +237,32 @@ func _process(delta: float) -> void:
 		_accumulator -= step
 		guard += 1
 		_sim.tick()
+		# The WORST tick, not just the mean. D-038 measured an order wave at
+		# 323 ms against a 100 ms budget while the average sat at a
+		# comfortable 20 ms — twice in this project the average alone would
+		# have given a confident wrong answer, so the live server reports
+		# both or neither.
+		if _sim.last_tick_usec > _worst_tick_usec:
+			_worst_tick_usec = _sim.last_tick_usec
+			_worst_tick_index = _sim.tick_count
+		# Say WHEN, not just how bad. A worst-tick number with no context
+		# is a number to theorise about; the profile sweep shows ~29-73 ms
+		# for this workload, so a live spike an order of magnitude larger
+		# is happening for a reason that is not the order wave, and the
+		# only way to tell which is to see what else was going on.
+		if _sim.last_tick_usec > TICK_BUDGET_USEC:
+			_ticks_over_budget += 1
+			if _ticks_over_budget <= 8:
+				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
+					_sim.tick_count, float(_sim.last_tick_usec) / 1000.0,
+					_sim.squad_count(), _clients.size(),
+					_sim.fields_built, _sim.field_waits,
+					float(_sim.last_curves_usec) / 1000.0,
+					float(_sim.last_vision_usec) / 1000.0,
+					float(_sim.last_squad_combat_usec) / 1000.0,
+					float(_sim.last_buildings_usec) / 1000.0,
+					float(_sim.last_production_usec) / 1000.0,
+					float(_sim.last_economy_usec) / 1000.0])
 		_advance_match()
 		_replicate()
 
@@ -288,7 +320,7 @@ func _print_summary(reason: String) -> void:
 		float(OS.get_static_memory_usage()) / 1048576.0,
 	])
 
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (vision=%.3f combat=%.3f) vision_rebuilds=%d" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (vision=%.3f combat=%.3f) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
@@ -296,7 +328,12 @@ func _print_summary(reason: String) -> void:
 		_sim.mean_vision_usec_per_squad_update(),
 		_sim.mean_combat_usec_per_squad_update(),
 		_sim.vision_rebuilds,
+		float(_worst_tick_usec) / 1000.0,
+		_sim.field_waits,
 	])
+	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
+		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
+		float(_worst_tick_usec) / 1000.0, _worst_tick_index])
 
 	# A distinct, structured marker — not a substring of the line above —
 	# for `just test-load` to compare against the bots' collectively-known

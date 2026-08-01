@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **266 tests**.
+buildings, (5) economy. `just test-unit` is green at **275 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
@@ -127,18 +127,41 @@ The four that exist so far, all at D-018's target of 20 players:
 - **server 42.5 MB** at 120 squads; **~1.4 MB per virtual client**
 - **40.8 µs/squad at 120 squads** live, inside D-020's ~50 µs — but read
   the squad-count caveat above before comparing it to anything
-- the sweep (`just profile`) remains the authority on scaling, since a
-  live match cannot reach 1,000 squads: **74 µs/squad at 1,000**, fitting
-  a 100 ms tick with ~26% headroom
+- **0 ticks over D-020's 100 ms budget** in a 20-player match, worst tick
+  38.1 ms
+- the sweep (`just profile`) remains the authority on *scaling*, since a
+  live match cannot reach 1,000 squads — but see the blind-spot warning
+  below before trusting it alone: **33 µs/squad and a 73.4 ms worst tick
+  at 1,000 squads**, inside the 100 ms tick
 
-**The open item is the flow-field spike, not throughput.** An order wave
-lands several whole BFS solves in one tick: **323 ms worst tick** at
-8,192 cells against a 100 ms budget, after routing quantisation already
-took a third off it. Average tick cost is a comfortable 20 ms and hides
-this completely — the second time in this project that measuring the
-average alone would have given a confident wrong answer. Amortising the
-solver is the next move, and D-021's GDExtension hatch stays shut until
-that is tried.
+**The flow-field spike is fixed (D-040), and the tick budget is met.**
+A BFS is now spread across ticks under a per-tick CELL budget
+(`field_cells_per_tick`, 4,096). Worst tick at 8,192 cells went **344 ms
+→ 28.6 ms**, and at D-018's full 1,000 squads **1,211 ms → 73.4 ms**,
+inside D-020's 100 ms with ~27% headroom. Worst tick is now *flat in map
+size* — 32,768 cells costs the same spike as 2,048 — so **Q8's map-size
+bound is no longer the solver**. D-021's GDExtension hatch stays shut and
+its one named candidate is retired: the solver never needed native code,
+it needed to stop doing a whole solve in one slice.
+
+Two things to carry forward. A partially expanded field is **correct
+wherever it is defined** (BFS finalises a cell the first time it reaches
+it) — but UNREACHABLE means "not reached yet" until `is_complete()`, and
+reading it as "no path" would silently cancel every order in a wave.
+Budgeting **cells** works where D-038's budget on **builds** failed,
+because partial progress is kept instead of discarded.
+
+**A green `just profile` is not a green server.** The sweep reported a
+healthy ~29 ms worst tick while a live 20-player match spiked to 866 ms.
+The cause was `UnitRoster.by_id` re-scanning `/units` from disk on every
+call — and `SquadSim.tick` calls it once per squad a building finishes,
+so twenty simultaneous completions spent **858 ms in a filesystem walk**.
+A sweep resolves its UnitDefs once at setup and structurally cannot see
+this. Where the sweep and a live run disagree, believe the live run.
+
+The server now reports `worst_tick`, how many ticks exceeded budget, and
+a **per-phase breakdown on any over-budget tick**. That is what found it;
+every hypothesis formed before instrumenting was wrong.
 
 **Before theorising about an anomalous run, read the server log.** The
 first 20-player run reported "zero movement" and invited theories about

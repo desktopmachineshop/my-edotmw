@@ -334,3 +334,77 @@ func test_composition_hash_tracks_casualties() -> void:
 	sim.set_alive(id, sim.alive_of(id) - 1)
 	assert_ne(sim.composition_hash([id]), before,
 		"Losing a soldier must change the composition hash")
+
+
+# --- amortised flow-field builds, D-040 -------------------------------
+
+func test_an_order_wave_under_a_tight_budget_still_arrives() -> void:
+	# The whole point of amortisation: spreading a BFS across ticks may
+	# delay a squad, and must never lose its order.
+	#
+	# The failure mode this is written against is specific and was a real
+	# risk in the implementation: _rebuild_curve's give-up rule reads "the
+	# field cannot move this squad" as "the destination is unreachable"
+	# and cancels the order. On an UNFINISHED field that is true of every
+	# squad the wavefront has not reached yet, so a single misordered
+	# check would silently cancel an entire order wave.
+	var sim := _sim()
+	sim.field_cells_per_tick = 30  # a small fraction of one 512-cell field
+
+	var destinations := [
+		Vector2i(28, 2), Vector2i(4, 13), Vector2i(20, 9),
+		Vector2i(12, 3), Vector2i(1, 8), Vector2i(25, 14),
+	]
+	var squads := []
+	for i in range(destinations.size()):
+		squads.append(sim.add_squad(_def(), 1, Vector2i(i * 2, 0)))
+	for i in range(squads.size()):
+		sim.order_move(squads[i], destinations[i])
+
+	_tick_for(sim, 30.0)
+
+	for i in range(squads.size()):
+		assert_eq(sim.cell_of(squads[i]), destinations[i],
+			"Squad %d never arrived — its order was dropped, not merely delayed" % i)
+	assert_gt(sim.field_waits, 0,
+		"No squad ever waited, so the tight budget was not actually exercised")
+
+
+func test_a_quiet_tick_builds_its_field_outright() -> void:
+	# Amortisation must be invisible in ordinary play. One new destination
+	# with the default budget finishes in the tick it is asked for, so a
+	# single squad given an order paths immediately, exactly as before.
+	var sim := _sim()
+	var squad := sim.add_squad(_def(), 1, Vector2i(0, 0))
+	sim.order_move(squad, Vector2i(20, 10))
+	sim.tick()
+
+	assert_eq(sim.field_waits, 0, "A lone order should not have to wait for its field")
+	assert_true(sim.curve_of(squad).key_count() > 1,
+		"The squad should have a real path after one tick, not a single keyframe")
+
+
+func test_a_walled_off_destination_is_still_given_up_on() -> void:
+	# The give-up rule must survive amortisation. "Not reached yet" and
+	# "no path" are different, and the new wait must not swallow the
+	# second one — a squad re-pathing forever was a real defect (D-038).
+	var sim := _sim()
+	var passable := PackedByteArray()
+	passable.resize(sim.space.cell_count())
+	passable.fill(1)
+	# Wall the destination in on every side.
+	var dest := Vector2i(10, 6)
+	var dest_index := sim.space.index(dest)
+	for dir in range(6):
+		passable[sim.space.neighbor_index(dest_index, dir)] = 0
+	sim.set_passable(passable)
+
+	var squad := sim.add_squad(_def(), 1, Vector2i(0, 0))
+	sim.order_move(squad, dest)
+	_tick_for(sim, 3.0)
+
+	assert_ne(sim.cell_of(squad), dest, "The destination is walled off; nothing should reach it")
+	var rebuilt := sim.curves_rebuilt
+	_tick_for(sim, 3.0)
+	assert_eq(sim.curves_rebuilt, rebuilt,
+		"The squad is still re-pathing every tick — the give-up rule stopped firing")
