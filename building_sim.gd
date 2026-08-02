@@ -344,3 +344,39 @@ func composition_entries(ids: Array) -> Array:
 
 func composition_hash(ids: Array) -> int:
 	return NetProtocol.composition_hash(composition_entries(ids))
+
+
+## Every shipped BuildingDef, sorted by id so iteration order is stable
+## (the same reason UnitRoster.load_all sorts).
+##
+## Cached: the AI asks what it could build on a decision tick, and
+## `by_id` above hits ResourceLoader every call. A directory walk inside
+## a think loop is the shape of defect that cost a whole tick budget in
+## D-043 — /buildings is read-only at runtime, so this is memoisation
+## with no correctness cost.
+static var _all_cache: Array[BuildingDef] = []
+
+
+static func all_defs() -> Array[BuildingDef]:
+	if not _all_cache.is_empty():
+		return _all_cache
+
+	var out: Array[BuildingDef] = []
+	var dir := DirAccess.open("res://buildings")
+	if dir == null:
+		push_error("BuildingSim: res://buildings is missing or unreadable")
+		return out
+
+	var names := []
+	for file_name in dir.get_files():
+		var normalised := String(file_name).trim_suffix(".remap")
+		if normalised.ends_with(".tres"):
+			names.append(normalised)
+	names.sort()
+
+	for name in names:
+		var def := load("res://buildings/%s" % name) as BuildingDef
+		if def != null:
+			out.append(def)
+	_all_cache = out
+	return out

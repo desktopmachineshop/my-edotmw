@@ -212,7 +212,11 @@ status:
     fi
 
 # Manual dev loop: run the server in the foreground.
-run-server: _import
+# AI is how many computer opponents to seat (D-051). They take ordinary
+# player slots, read the world through a client like you do, and are held
+# to every rule you are.
+[doc("Headless server. AI=N seats N computer opponents")]
+run-server AI="0" MAP="res://maps/default.tres": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ ! -f "{{server_scene}}" ]; then
@@ -220,10 +224,13 @@ run-server: _import
         exit 1
     fi
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p edotmw run --rm --service-ports server
+        docker compose -p edotmw run --rm --service-ports server \
+            --headless --path . "{{server_scene}}" -- \
+            --ai={{AI}} --map={{MAP}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --path . "{{server_scene}}"
+        "$godot" --headless --path . "{{server_scene}}" -- \
+            --ai={{AI}} --map={{MAP}}
     fi
 
 # Manual dev loop: run a client. Always native — needs a GPU (D-014), so
