@@ -54,6 +54,10 @@ const ROUT_FLEE_MULTIPLIER := 3
 var _buckets := {}
 var _buckets_tick := -1
 
+# Squads that found an enemy SQUAD to fight this tick, so the siege pass
+# can leave them to it. Cleared at the top of each round.
+var _engaged := {}
+
 const _FNV_OFFSET_BASIS := 2166136261
 const _FNV_PRIME := 16777619
 
@@ -96,6 +100,7 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	var round_routed := sim.routed_snapshot()
 
 	var buckets := _build_buckets(sim)
+	_engaged.clear()
 
 	# Kept for the buildings pass, which runs later in the same tick and
 	# would otherwise rebuild an identical map. Wiring the two passes
@@ -113,6 +118,11 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 		var target := _find_target(sim, buckets, attacker, attacker_def)
 		if target == -1:
 			continue
+
+		# Recorded for the siege pass below: a squad with a defender in
+		# front of it is busy, and must not spend the same attack on a
+		# wall. See resolve_squads_vs_buildings.
+		_engaged[attacker] = true
 
 		# Attack-move halts on contact (D-034). This is the one place that
 		# knows contact has happened, so it is where the stance is spent —
@@ -184,6 +194,125 @@ func resolve_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Arra
 		if sim.alive_of(i) != before_alive[i]:
 			events.append({"id": i, "alive": sim.alive_of(i), "routed": sim.is_routed(i)})
 	return events
+
+
+## Squads shoot BACK at buildings — the other half of resolve_buildings,
+## and until now the missing one.
+##
+## `BuildingSim.damage()` existed, was fully written, set `_dirty` so
+## destruction would replicate, and was called by nothing outside its own
+## tests for two milestones. Buildings were therefore indestructible, and
+## the consequences were larger than they sound: a match can only be
+## decided by eliminating a player (D-033), an eliminated player is one
+## with nothing left, and a town centre that cannot be destroyed keeps
+## producing replacements forever. Every AI ladder match ended in a draw
+## at the time cap, and it was read as an AI weakness through several
+## rounds of AI work. It was not. Nobody could win.
+##
+## That is the third time this project has shipped a declared-and-unread
+## mechanic — `UnitDef.cost` went unread for two milestones, then
+## `BuildingDef.cost`. The pattern is a field or method with no caller,
+## and the reason it survives so long is that nothing fails: the game runs
+## and simply lacks a rule.
+##
+## Two rules worth keeping in mind here:
+##
+## 1. **Defenders come first.** A squad that found an enemy squad this
+##    tick is skipped entirely. Soldiers hammering a wall while being cut
+##    down behind them would be a bug wearing a siege costume, and it also
+##    makes defence meaningless — an attacker could ignore the garrison.
+##
+##    Two things enforce this and EITHER ALONE IS SUFFICIENT, which was
+##    discovered by perturbing them: `_engaged` below, and the fact that
+##    `_should_attack` stamps `_last_attack_tick` in the squad pass, so a
+##    squad that has already swung is on cooldown when this pass reaches
+##    it. Removing one leaves the test green; only removing both turns it
+##    red. `_engaged` is kept anyway, and deliberately: the cooldown
+##    version is implicit and holds only while both passes share one
+##    attack clock, which stops being true the moment anything wants a
+##    separate rate against buildings — a fairly obvious future want, and
+##    a silent regression when it lands.
+## 2. **Damage is continuous, not a casualty roll.** A building has
+##    `max_health` as a float and no `alive` count, so there is no
+##    fractional carry to keep: D-024's accumulator exists because
+##    casualties must be whole soldiers, and that problem does not arise
+##    here. `bonus_vs` is skipped for the same kind of reason — a
+##    BuildingDef has no `armour_class`, so the counter triangle (D-032)
+##    has nothing to key on and a missing lookup would silently read 1.0
+##    rather than mean anything.
+##
+## Returns the LOCAL ids of buildings destroyed this tick.
+func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Array:
+	if buildings == null or buildings.building_count() == 0:
+		return []
+
+	var destroyed := []
+	for attacker in range(sim.squad_count()):
+		if _engaged.has(attacker):
+			continue
+		if sim.alive_of(attacker) <= 0 or sim.is_routed(attacker):
+			continue
+		var def := sim.def_of(attacker)
+		if def == null or def.damage <= 0.0:
+			continue
+
+		var target := _find_building_near(sim, buildings,
+			sim.cell_index_of(attacker), sim.owner_of(attacker),
+			_range_in_cells(sim.space, def.attack_range))
+		if target == -1:
+			continue
+
+		# Attack-move halts on contact (D-034), exactly as it does against
+		# a squad — an army ordered onto a town should stop and besiege it,
+		# not walk through and out the far side.
+		if sim.is_attack_moving(attacker):
+			sim.stop(attacker)
+
+		if not _should_attack(sim, attacker, tick, def):
+			continue
+
+		# Same counter-based roll as _resolve_attack, so a siege is a pure
+		# function of (seed, tick, squad) and reproduces in a replay.
+		var roll := _roll_unit(sim.combat_seed, tick, attacker)
+		var variance := clampf(def.damage_variance, 0.0, 1.0)
+		var multiplier := (1.0 - variance) + 2.0 * variance * roll
+		var total := def.damage * float(sim.alive_of(attacker)) * multiplier
+		if buildings.damage(target, total):
+			destroyed.append(target)
+	return destroyed
+
+
+## Nearest enemy building to a cell, within range, or -1. The building
+## mirror of _find_squad_near, down to the deterministic lower-id
+## tiebreak — but it cannot share that function's bucket map, because
+## buildings live in their own id space (BuildingSim's header explains
+## why mixing the two is the one genuinely dangerous thing here).
+##
+## Scans buildings directly rather than bucketing them: there are orders
+## of magnitude fewer buildings than squads, and a per-tick bucket rebuild
+## would cost more than the scan it saves.
+func _find_building_near(sim: SquadSim, buildings: BuildingSim, origin_index: int,
+		owner: int, range_cells: float) -> int:
+	var origin := sim.space.from_index(origin_index)
+	var best := -1
+	var best_distance := 0
+
+	for building in range(buildings.building_count()):
+		if buildings.is_destroyed(building):
+			continue
+		# A building SITE is a legitimate target — a half-raised tower is a
+		# real thing standing on the map, and BuildingSim.damage() already
+		# takes that view. Denying an opponent a building under
+		# construction is the counter to walling forward.
+		if sim.are_allied(buildings.owner_of(building), owner):
+			continue
+		var d := sim.space.distance(origin, buildings.cell_of(building))
+		if float(d) > range_cells:
+			continue
+		if best == -1 or d < best_distance or (d == best_distance and building < best):
+			best = building
+			best_distance = d
+	return best
 
 
 ## Nearest enemy squad to a cell, within range. Mirrors _find_target's

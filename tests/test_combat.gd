@@ -566,3 +566,124 @@ func test_enemies_on_no_team_still_fight() -> void:
 
 	assert_lt(sim.alive_of(a) + sim.alive_of(b), before,
 		"Two players with no team set should be enemies (free-for-all is the default)")
+
+
+# --- squads vs buildings (the half that was missing) -------------------
+#
+# `BuildingSim.damage()` was written, marked buildings dirty so
+# destruction would replicate, and was called by nothing outside its own
+# tests for two milestones. Buildings were indestructible, so a match
+# could not be won: D-033 ends a match by elimination, and a town centre
+# that survives everything keeps producing replacements. Every AI ladder
+# match drew at the time cap and it was read as an AI weakness through
+# several rounds of AI work.
+#
+# These four tests are what would have caught it. Each was observed to
+# fail before being trusted, by reverting the pass in combat.gd and
+# watching them go red (D-022's standing rule).
+
+
+func _armed_building_def(id: StringName = &"combat_test_hall") -> BuildingDef:
+	var d := BuildingDef.new()
+	d.id = id
+	d.max_health = 120.0
+	d.build_time = 1.0
+	d.vision_range = 8.0
+	return d
+
+
+func test_a_squad_destroys_an_enemy_building() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+
+	for _i in range(200):
+		sim.tick()
+		if buildings.is_destroyed(hall):
+			break
+
+	assert_true(buildings.is_destroyed(hall),
+		"A squad stood next to an enemy building and never damaged it")
+
+
+func test_a_squad_leaves_its_own_buildings_alone() -> void:
+	# The other side of the boundary. Without it, "buildings can be
+	# destroyed" would be satisfied by an army that razes its own town.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 1, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+
+	for _i in range(200):
+		sim.tick()
+
+	assert_false(buildings.is_destroyed(hall),
+		"A squad demolished a building belonging to its own player")
+	assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+		"An own building took damage from a friendly squad")
+
+
+func test_a_squad_out_of_range_cannot_reach_a_building() -> void:
+	# _attacker_def's range reaches distance 1 and not distance 2, the
+	# same line the squad-vs-squad range tests sit on.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 7))
+
+	for _i in range(200):
+		sim.tick()
+
+	assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+		"A building took damage from a squad two cells away, out of range")
+
+
+func test_a_squad_fighting_a_squad_does_not_also_hit_a_building() -> void:
+	# Defenders come first. A squad that spends its attack on a wall while
+	# being cut down behind it is a bug in a siege costume, and it would
+	# make a garrison pointless — an attacker could ignore it entirely.
+	#
+	# Worth knowing before trusting this one: TWO redundant guards enforce
+	# the rule (see resolve_squads_vs_buildings), and this test only goes
+	# red when BOTH are removed. Perturbing either alone leaves it green —
+	# which is not the test failing to guard anything, but it does mean it
+	# cannot tell you which mechanism is carrying the rule.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	var attacker := sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+	# A defender standing with the attacker, so it has a squad target in
+	# range for as long as the defender lives.
+	var defender := sim.add_squad(_defender_def(), 2, Vector2i(5, 6))
+
+	# Checked EVERY tick while the garrison holds, rather than once at the
+	# end. The first version of this test ticked a fixed 40 times and
+	# failed — correctly: the defender dies part-way through, after which
+	# hitting the building is exactly right. Asserting at the end measured
+	# the wrong window and would have reported a working rule as broken.
+	var ticks_with_a_defender := 0
+	for _i in range(60):
+		if sim.alive_of(defender) <= 0 or sim.is_routed(defender):
+			break
+		sim.tick()
+		if sim.alive_of(attacker) <= 0:
+			break
+		ticks_with_a_defender += 1
+		assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+			"A squad ignored the enemy squad in front of it to hit a building")
+
+	assert_gt(ticks_with_a_defender, 0,
+		"The garrison never survived a single tick, so nothing was actually tested")

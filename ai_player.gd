@@ -473,6 +473,7 @@ func set_time(now: float) -> void:
 var peak_squads: int = 0
 var peak_workers: int = 0
 var buildings_raised: int = 0
+var peak_enemy_buildings_known: int = 0
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
@@ -489,19 +490,33 @@ func _record_stats() -> void:
 	peak_workers = maxi(peak_workers, workers)
 
 	var mine := 0
+	var theirs := 0
 	for wire_id in state.buildings:
 		var info: Dictionary = state.buildings[wire_id]
-		if int(info["owner"]) == player and not bool(info["destroyed"]):
+		if bool(info["destroyed"]):
+			continue
+		if int(info["owner"]) == player:
 			mine += 1
+		else:
+			theirs += 1
 	buildings_raised = maxi(buildings_raised, mine)
+
+	# Has it ever LAID EYES on an opponent's base? Making buildings the
+	# attack objective changed the ladder by literally nothing — every
+	# stat identical to three significant figures, which is not a small
+	# effect but no effect, so the branch cannot be running. This is the
+	# measurement that says whether that is because it never finds one.
+	# Buildings are persistent-explored (D-030), so once seen this only
+	# ever grows and a peak is the honest summary.
+	peak_enemy_buildings_known = maxi(peak_enemy_buildings_known, theirs)
 
 
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d attacks=%d first_attack=%.1f" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
-		attacks_launched, first_attack_at]
+		peak_enemy_buildings_known, attacks_launched, first_attack_at]
 
 
 # --- what it is thinking (D-054) --------------------------------------
@@ -542,14 +557,41 @@ func _forget_dead_assignments() -> void:
 			_assigned.erase(squad)
 
 
-## The nearest enemy squad or building it can currently SEE, or (-1,-1).
+## Where to send the army, or (-1,-1) if it has seen nothing.
 ##
-## Buildings count as targets too: a town that cannot be attacked makes
-## the match unwinnable, and D-033 ends a match on squads AND buildings.
+## An enemy BUILDING outranks any enemy squad, however far away, and that
+## ordering is the whole point rather than a tie-break.
+##
+## The first version simply took the nearest enemy thing. Every ladder
+## match then ended in a draw at the time cap while the AI attacked
+## eighteen to twenty-one times: a scout wandering near its base always
+## scored better than the opponent's town, so the army chased skirmishers
+## back and forth across the map forever. Killing squads also settles
+## nothing on its own — the buildings behind them keep producing
+## replacements, so an AI that only ever fights squads is fighting a
+## respawning enemy by choice.
+##
+## Buildings are the objective for the reason a human would give: they do
+## not run away, they are where the replacements come from, and D-033
+## ends a match on squads AND buildings. Marching at one engages whatever
+## defends it on the way, because this is an attack-MOVE — the skirmishers
+## still get fought, they just stop setting the agenda.
 func _enemy_target() -> Vector2i:
+	var from := state.spawn_cell_of(player)
+
 	var best := Vector2i(-1, -1)
 	var best_distance := 1 << 30
-	var from := state.spawn_cell_of(player)
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) == player or bool(info["destroyed"]):
+			continue
+		var cell := state.space.from_index(int(info["cell"]))
+		var d := state.space.distance(from, cell)
+		if d < best_distance:
+			best_distance = d
+			best = cell
+	if best.x >= 0:
+		return best
 
 	for id in state.composition:
 		if int(state.composition[id].get("owner", 0)) == player:
@@ -557,16 +599,6 @@ func _enemy_target() -> Vector2i:
 		if state.alive_of(id) <= 0:
 			continue
 		var cell := state.squad_cell(id, state_time())
-		var d := state.space.distance(from, cell)
-		if d < best_distance:
-			best_distance = d
-			best = cell
-
-	for wire_id in state.buildings:
-		var info: Dictionary = state.buildings[wire_id]
-		if int(info["owner"]) == player or bool(info["destroyed"]):
-			continue
-		var cell := state.space.from_index(int(info["cell"]))
 		var d := state.space.distance(from, cell)
 		if d < best_distance:
 			best_distance = d

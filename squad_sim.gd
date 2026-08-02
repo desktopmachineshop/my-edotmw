@@ -116,6 +116,12 @@ var _attack_move := PackedByteArray()
 ## hash for that tick.
 var last_combat_events: Array = []
 
+## Local BuildingSim ids destroyed by squads on the most recent tick.
+## Not a wire message: BuildingSim.damage() already marks the building
+## dirty, and the server replicates building state from take_dirty(). This
+## is for the match rules and the log.
+var destroyed_buildings: Array = []
+
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
 var _fields := {}
@@ -807,6 +813,15 @@ func tick() -> void:
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
+
+		# ...and squads shoot back. Needs no event list of its own:
+		# BuildingSim.damage() marks the building dirty, and take_dirty()
+		# is already what the server replicates building state from, so a
+		# destruction reaches clients through the path that already
+		# existed for it. `destroyed_buildings` is published for the match
+		# rules and the log, not for the wire.
+		destroyed_buildings = combat.resolve_squads_vs_buildings(
+			self, buildings, tick_count)
 
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).
