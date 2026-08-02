@@ -1580,45 +1580,51 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 #
 # Laid out the way the genre does it — Age of Empires and Empires: Dawn
 # of the Modern World both put a slot table on the left, a MAP PREVIEW
-# with the game settings beside it, and the start control under the lot.
+# with the game settings beside it, and a start button under the lot.
 # That layout is conventional because it answers the three questions a
 # player has before a match: who am I playing, as whom, and where.
 #
-# All of it is procedural. D-011 puts this project on the primitive art
-# tier, so there is no chrome to import: panels are StyleBoxFlat, civ
-# emblems are their own colours, and the map preview is GENERATED from
-# the terrain settings rather than being an authored thumbnail.
+# All procedural. D-011 puts this project on the primitive art tier, so
+# there is no chrome to import: panels are StyleBoxFlat, civ emblems are
+# their own colours, bars are drawn, and the map preview is GENERATED
+# from the terrain settings rather than being an authored thumbnail.
+#
+# ## Why this rebuilds on change and not per frame
+#
+# It used to rebuild every row every frame, which was fine for labels and
+# fatal for controls: a dropdown would be freed the instant it opened, so
+# nothing could ever be clicked. The screen is rebuilt only when the
+# server's description of the lobby actually changes — which is when
+# somebody acts, not sixty times a second.
 
 var _hud_layer: CanvasLayer
 var _lobby_layer: CanvasLayer
 var _lobby_seat_rows: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
-var _lobby_cursor := 0
-
-## Which pane the arrow keys drive. Two lists, one set of arrow keys, so
-## something has to own them.
-var _lobby_focus_map := false
-var _map_cursor := 0
 var _map_rows: VBoxContainer
 var _map_preview: TextureRect
 var _map_blurb: Label
-var _lobby_start_hint: Label
+var _start_button: Button
+var _add_ai_button: Button
+
+## What the screen was last built from. Rebuilding is what would destroy
+## an open dropdown, so it happens only when this changes.
+var _lobby_signature := ""
 
 ## The settings the map preview was last built from. Regenerating is
-## O(cells) and settings change on every keypress, so the preview is
-## rebuilt only when something it depends on actually moved.
+## O(cells), so it is separate from the signature above.
 var _preview_key := ""
 
 const MAP_OPTIONS := [
-	{"key": "preset", "label": "Terrain", "step": 1.0},
-	{"key": "size", "label": "Map size", "step": 1.0},
-	{"key": "player_slots", "label": "Starting positions", "step": 1.0},
-	{"key": "seed", "label": "Seed", "step": 1.0},
-	{"key": "sea_level", "label": "Sea level", "step": 0.02},
-	{"key": "mountain_level", "label": "Mountain line", "step": 0.02},
-	{"key": "elevation_frequency", "label": "Landmass count", "step": 0.25},
-	{"key": "height_scale", "label": "Relief", "step": 0.2},
+	{"key": "preset", "label": "Terrain", "kind": "choice"},
+	{"key": "size", "label": "Map size", "kind": "choice"},
+	{"key": "player_slots", "label": "Starting positions", "kind": "int", "min": 2, "max": 24},
+	{"key": "seed", "label": "Seed", "kind": "int", "min": 0, "max": 999999},
+	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
+	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
+	{"key": "elevation_frequency", "label": "Landmass count", "kind": "slider", "min": 0.5, "max": 8.0},
+	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 6.0},
 ]
 
 
@@ -1654,6 +1660,34 @@ func _lobby_panel(title: String, parent: Control) -> VBoxContainer:
 	return column
 
 
+## Buttons get their own styling because the default Godot theme looks
+## nothing like the rest of this screen.
+func _styled_button(text: String, accent: Color) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.add_theme_font_size_override("font_size", 15)
+	button.focus_mode = Control.FOCUS_NONE
+
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var style := StyleBoxFlat.new()
+		style.bg_color = accent.darkened(0.55)
+		if state == "hover":
+			style.bg_color = accent.darkened(0.35)
+		elif state == "pressed":
+			style.bg_color = accent.darkened(0.2)
+		elif state == "disabled":
+			style.bg_color = Color(0.14, 0.15, 0.19, 1.0)
+		style.border_color = accent if state != "disabled" else Color(0.24, 0.26, 0.30)
+		style.set_border_width_all(2)
+		style.set_corner_radius_all(3)
+		style.content_margin_left = 14
+		style.content_margin_right = 14
+		style.content_margin_top = 7
+		style.content_margin_bottom = 7
+		button.add_theme_stylebox_override(state, style)
+	return button
+
+
 func _build_lobby_ui() -> void:
 	_lobby_layer = CanvasLayer.new()
 	# Above the HUD, not merely after it: CanvasLayers draw in layer
@@ -1665,19 +1699,19 @@ func _build_lobby_ui() -> void:
 
 	var backdrop := ColorRect.new()
 	# Fully opaque: there is no world behind the lobby yet, because the
-	# map is not generated until the match starts (D-049). A translucent
-	# backdrop implied a place that did not exist.
+	# map is not generated until the match starts (D-049).
 	backdrop.color = Color(0.045, 0.055, 0.08, 1.0)
 	backdrop.anchor_right = 1.0
 	backdrop.anchor_bottom = 1.0
 	_lobby_layer.add_child(backdrop)
 
 	var root := VBoxContainer.new()
-	root.position = Vector2(40.0, 26.0)
+	root.position = Vector2(40.0, 24.0)
 	root.add_theme_constant_override("separation", 12)
 	_lobby_layer.add_child(root)
 
 	_lobby_title = Label.new()
+	_lobby_title.text = "MULTIPLAYER LOBBY"
 	_lobby_title.add_theme_font_size_override("font_size", 28)
 	root.add_child(_lobby_title)
 
@@ -1685,13 +1719,32 @@ func _build_lobby_ui() -> void:
 	columns.add_theme_constant_override("separation", 18)
 	root.add_child(columns)
 
-	# Left: who is playing.
 	var left := VBoxContainer.new()
 	left.custom_minimum_size = Vector2(620.0, 0.0)
+	left.add_theme_constant_override("separation", 10)
 	columns.add_child(left)
 	_lobby_seat_rows = _lobby_panel("PLAYERS", left)
 
-	# Right: where, and how.
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 12)
+	left.add_child(actions)
+
+	_add_ai_button = _styled_button("+  Add AI player", Color(0.55, 0.62, 0.78))
+	_add_ai_button.pressed.connect(_on_add_ai_pressed)
+	actions.add_child(_add_ai_button)
+
+	_start_button = _styled_button("START MATCH", Color(0.42, 0.78, 0.48))
+	_start_button.add_theme_font_size_override("font_size", 18)
+	_start_button.pressed.connect(_on_start_pressed)
+	actions.add_child(_start_button)
+
+	_lobby_help = Label.new()
+	_lobby_help.add_theme_font_size_override("font_size", 13)
+	_lobby_help.modulate = Color(0.55, 0.60, 0.70)
+	_lobby_help.custom_minimum_size = Vector2(600.0, 0.0)
+	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_lobby_help)
+
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 12)
 	columns.add_child(right)
@@ -1711,26 +1764,6 @@ func _build_lobby_ui() -> void:
 	preview_column.add_child(_map_blurb)
 
 	_map_rows = _lobby_panel("GAME SETTINGS", right)
-
-	# Start prompt and key help live under the PLAYERS panel, in the space
-	# the seat list leaves empty. Below the whole layout they pushed the
-	# settings panel past the bottom of a 720p window — which the first
-	# capture showed instantly, and which no assertion about the text
-	# would ever have noticed.
-	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0.0, 10.0)
-	left.add_child(spacer)
-
-	_lobby_start_hint = Label.new()
-	_lobby_start_hint.add_theme_font_size_override("font_size", 20)
-	left.add_child(_lobby_start_hint)
-
-	_lobby_help = Label.new()
-	_lobby_help.add_theme_font_size_override("font_size", 13)
-	_lobby_help.modulate = Color(0.55, 0.60, 0.70)
-	_lobby_help.custom_minimum_size = Vector2(600.0, 0.0)
-	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left.add_child(_lobby_help)
 
 
 ## A coloured block standing in for a civ emblem. The colour comes from
@@ -1755,101 +1788,11 @@ func _civ_colour(civ: String) -> Color:
 	return def.colour if def != null else Color(0.5, 0.5, 0.5)
 
 
-func _refresh_lobby() -> void:
-	if _lobby_layer == null:
-		return
-	var showing := _state.in_lobby()
-	if _hud_layer != null:
-		_hud_layer.visible = not showing
-	_lobby_layer.visible = showing
-	if not showing:
-		return
-
-	var seats: Array = _state.lobby.get("seats", [])
-	_lobby_cursor = clampi(_lobby_cursor, 0, maxi(seats.size() - 1, 0))
-	_lobby_title.text = "MULTIPLAYER LOBBY"
-
-	# Index 0 and 1 are the panel's header and rule, which stay.
-	for child in _lobby_seat_rows.get_children():
-		if child.get_index() > 1:
-			child.queue_free()
-	for i in range(seats.size()):
-		_lobby_seat_rows.add_child(_seat_row(seats[i], i))
-
-	_refresh_map_panel()
-
-	if _state.is_admin():
-		_lobby_start_hint.text = "[ ENTER ]   START MATCH"
-		_lobby_start_hint.modulate = Color(0.55, 0.90, 0.60)
-	else:
-		_lobby_start_hint.text = "Waiting for the host to start…"
-		_lobby_start_hint.modulate = Color(0.66, 0.68, 0.74)
-
-	var help := "UP/DOWN choose  ·  LEFT/RIGHT change  ·  TAB switch between players and settings"
-	if _state.is_admin():
-		help += "  ·  A add AI  ·  DELETE remove AI"
-	_lobby_help.text = help
-
-
-func _seat_row(seat: Dictionary, index: int) -> Control:
-	var mine: bool = String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
-	var is_ai: bool = String(seat["kind"]) == "ai"
-	var selected: bool = (not _lobby_focus_map) and index == _lobby_cursor
-	var civ := String(seat["civ"])
-
-	var frame := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.16, 0.19, 0.26, 1.0) if selected else Color(0.115, 0.135, 0.185, 1.0)
-	style.set_corner_radius_all(3)
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 7
-	style.content_margin_bottom = 7
-	if selected:
-		style.border_color = Color(0.45, 0.62, 0.85, 1.0)
-		style.set_border_width_all(2)
-	frame.add_theme_stylebox_override("panel", style)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	frame.add_child(row)
-
-	# Colour block, the way a lobby shows player colour at a glance.
-	row.add_child(_swatch(_civ_colour(civ), Vector2(26.0, 26.0)))
-
-	var kind := Label.new()
-	kind.text = "AI" if is_ai else "HUMAN"
-	kind.add_theme_font_size_override("font_size", 13)
-	kind.modulate = Color(0.74, 0.66, 0.48) if is_ai else Color(0.56, 0.72, 0.92)
-	kind.custom_minimum_size = Vector2(58.0, 0.0)
-	row.add_child(kind)
-
-	var name_label := Label.new()
-	name_label.text = String(seat["name"])
-	name_label.add_theme_font_size_override("font_size", 17)
-	name_label.custom_minimum_size = Vector2(140.0, 0.0)
-	name_label.modulate = Color(0.70, 0.95, 0.75) if mine else Color(0.85, 0.87, 0.92)
-	row.add_child(name_label)
-
-	var civ_label := Label.new()
-	civ_label.text = _civ_label(civ)
-	civ_label.add_theme_font_size_override("font_size", 17)
-	civ_label.custom_minimum_size = Vector2(150.0, 0.0)
-	civ_label.modulate = _civ_colour(civ).lightened(0.4)
-	row.add_child(civ_label)
-
-	var tags := ""
-	if int(seat["player"]) == int(_state.lobby.get("admin", 0)):
-		tags += "HOST   "
-	if mine:
-		tags += "YOU"
-	var tag_label := Label.new()
-	tag_label.text = tags
-	tag_label.add_theme_font_size_override("font_size", 13)
-	tag_label.modulate = Color(0.86, 0.76, 0.46)
-	row.add_child(tag_label)
-
-	return frame
+func _civ_label(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "Random"
+	var def := CivRoster.by_id(StringName(civ))
+	return def.display_name if def != null else civ
 
 
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
@@ -1861,29 +1804,147 @@ func _civ_choices() -> Array:
 	return out
 
 
-func _civ_label(civ: String) -> String:
-	if StringName(civ) == CivRoster.RANDOM:
-		return "Random"
-	var def := CivRoster.by_id(StringName(civ))
-	return def.display_name if def != null else civ
+func _refresh_lobby() -> void:
+	if _lobby_layer == null:
+		return
+	var showing := _state.in_lobby()
+	if _hud_layer != null:
+		_hud_layer.visible = not showing
+	_lobby_layer.visible = showing
+	if not showing:
+		_lobby_signature = ""
+		return
 
+	# Rebuilding frees every control, so it happens only when the server's
+	# description actually changed. Doing it per frame closed dropdowns
+	# faster than anyone could use them.
+	var signature := JSON.stringify(_state.lobby) + str(_state.player)
+	if signature == _lobby_signature:
+		return
+	_lobby_signature = signature
 
-## Cycle the selected seat's civ. The server re-checks whether this
-## client is entitled to (D-002) — this only avoids sending an order we
-## already know is not ours to give.
-func _cycle_seat_civ(direction: int) -> void:
 	var seats: Array = _state.lobby.get("seats", [])
-	if _lobby_cursor < 0 or _lobby_cursor >= seats.size():
-		return
-	var seat: Dictionary = seats[_lobby_cursor]
-	var mine: bool = String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
-	if not (mine or (String(seat["kind"]) == "ai" and _state.is_admin())):
-		return
+	for child in _lobby_seat_rows.get_children():
+		if child.get_index() > 1:
+			child.queue_free()
+	for i in range(seats.size()):
+		_lobby_seat_rows.add_child(_seat_row(seats[i], i))
 
+	var admin := _state.is_admin()
+	_add_ai_button.disabled = not admin
+	_start_button.disabled = not admin or seats.size() < 2
+	_start_button.text = "START MATCH" if admin else "WAITING FOR HOST"
+
+	if admin:
+		_lobby_help.text = "Click a civilisation to change it. Only you can seat AI players and start the match."
+	else:
+		_lobby_help.text = "Choose your civilisation. The host starts the match."
+
+	_refresh_map_panel()
+
+
+func _seat_row(seat: Dictionary, index: int) -> Control:
+	var mine: bool = String(seat["kind"]) == "human" and int(seat["player"]) == _state.player
+	var is_ai: bool = String(seat["kind"]) == "ai"
+	var civ := String(seat["civ"])
+	# A human owns their own seat; the host also owns the AI seats. The
+	# server re-checks this (D-002) — disabling the control here only
+	# avoids sending an order we already know is not ours to give.
+	var editable: bool = mine or (is_ai and _state.is_admin())
+
+	var frame := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.135, 0.155, 0.21, 1.0) if mine else Color(0.115, 0.135, 0.185, 1.0)
+	style.set_corner_radius_all(3)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	if mine:
+		style.border_color = Color(0.40, 0.70, 0.48, 1.0)
+		style.set_border_width_all(2)
+	frame.add_theme_stylebox_override("panel", style)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	frame.add_child(row)
+
+	row.add_child(_swatch(_civ_colour(civ), Vector2(24.0, 24.0)))
+
+	var kind := Label.new()
+	kind.text = "AI" if is_ai else "HUMAN"
+	kind.add_theme_font_size_override("font_size", 13)
+	kind.modulate = Color(0.74, 0.66, 0.48) if is_ai else Color(0.56, 0.72, 0.92)
+	kind.custom_minimum_size = Vector2(56.0, 0.0)
+	row.add_child(kind)
+
+	var name_label := Label.new()
+	name_label.text = String(seat["name"])
+	name_label.add_theme_font_size_override("font_size", 16)
+	name_label.custom_minimum_size = Vector2(120.0, 0.0)
+	name_label.modulate = Color(0.70, 0.95, 0.75) if mine else Color(0.85, 0.87, 0.92)
+	row.add_child(name_label)
+
+	# The civ picker itself — a real dropdown rather than a label you have
+	# to know a keyboard shortcut to change.
+	var picker := OptionButton.new()
+	picker.add_theme_font_size_override("font_size", 15)
+	picker.custom_minimum_size = Vector2(160.0, 0.0)
+	picker.focus_mode = Control.FOCUS_NONE
+	picker.disabled = not editable
 	var choices := _civ_choices()
-	var current := choices.find(StringName(seat["civ"]))
-	var next: StringName = choices[posmod(current + direction, choices.size())]
-	_send_lobby(NetProtocol.LOBBY_SET_CIV, _lobby_cursor, String(next))
+	for c in choices:
+		picker.add_item(_civ_label(String(c)))
+	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	if editable:
+		picker.item_selected.connect(_on_civ_picked.bind(index))
+	row.add_child(picker)
+
+	var tags := Label.new()
+	tags.text = ("HOST" if int(seat["player"]) == int(_state.lobby.get("admin", 0)) else "")
+	tags.add_theme_font_size_override("font_size", 13)
+	tags.modulate = Color(0.86, 0.76, 0.46)
+	tags.custom_minimum_size = Vector2(48.0, 0.0)
+	row.add_child(tags)
+
+	# Only AI seats can be removed, and only by the host. A player leaves
+	# by disconnecting — eviction is a moderation feature nobody asked for.
+	if is_ai and _state.is_admin():
+		var remove := _styled_button("Remove", Color(0.78, 0.44, 0.42))
+		remove.add_theme_font_size_override("font_size", 13)
+		remove.pressed.connect(_on_remove_ai_pressed.bind(index))
+		row.add_child(remove)
+
+	return frame
+
+
+# --- what the controls do ---------------------------------------------
+
+func _on_civ_picked(choice: int, seat_index: int) -> void:
+	var choices := _civ_choices()
+	if choice < 0 or choice >= choices.size():
+		return
+	_send_lobby(NetProtocol.LOBBY_SET_CIV, seat_index, String(choices[choice]))
+
+
+func _on_add_ai_pressed() -> void:
+	_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, String(CivRoster.RANDOM))
+
+
+func _on_remove_ai_pressed(seat_index: int) -> void:
+	_send_lobby(NetProtocol.LOBBY_REMOVE_AI, seat_index, "")
+
+
+func _on_start_pressed() -> void:
+	_send_lobby(NetProtocol.LOBBY_START, 0, "")
+
+
+func _on_map_choice(choice: int, key: String) -> void:
+	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%d" % [key, choice])
+
+
+func _on_map_value(value: float, key: String) -> void:
+	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])
 
 
 func _send_lobby(action: int, seat: int, civ: String) -> void:
@@ -1900,9 +1961,9 @@ func _send_lobby(action: int, seat: int, civ: String) -> void:
 ## Generated from the SAME TerrainGen the match will use, so this is a
 ## truthful picture rather than decoration — choose islands and you see
 ## islands. It is emphatically NOT the world: one pixel per cell, no
-## simulation behind it, and the playable map is still built only when
-## the match starts. A preview is a photograph of a place that does not
-## exist yet.
+## simulation behind it, and the playable map is still built only when the
+## match starts. A preview is a photograph of a place that does not exist
+## yet.
 func _rebuild_map_preview(settings: Dictionary) -> void:
 	var key := JSON.stringify(settings)
 	if key == _preview_key:
@@ -1937,64 +1998,11 @@ func _rebuild_map_preview(settings: Dictionary) -> void:
 	_map_preview.texture = ImageTexture.create_from_image(image)
 
 
-## A drawn bar, not characters.
-##
-## The first version spelled these with "|" and "." — legible, and
-## obviously the odd thing out on a screen made of panels and swatches.
-## A slider should look like a slider.
-func _bar_control(value: float, low: float, high: float, selected: bool) -> Control:
-	var t := clampf((value - low) / maxf(high - low, 0.0001), 0.0, 1.0)
-
-	# Two sized rectangles side by side, NOT an anchored child inside a
-	# panel. The first attempt anchored a fill to a fraction of a
-	# PanelContainer — and a Container overrides its children's anchors and
-	# forces them to fill, so every bar rendered identically full while the
-	# numbers beside them all differed. Nothing but looking at it would
-	# have caught that: the values were right, the bars were wrong.
-	const TRACK_WIDTH := 120.0
-	const TRACK_HEIGHT := 12.0
-
-	var track := HBoxContainer.new()
-	track.add_theme_constant_override("separation", 0)
-
-	var fill := ColorRect.new()
-	fill.color = Color(0.55, 0.72, 0.95, 1.0) if selected else Color(0.36, 0.48, 0.66, 1.0)
-	fill.custom_minimum_size = Vector2(TRACK_WIDTH * t, TRACK_HEIGHT)
-	track.add_child(fill)
-
-	var rest := ColorRect.new()
-	rest.color = Color(0.13, 0.15, 0.20, 1.0)
-	rest.custom_minimum_size = Vector2(TRACK_WIDTH * (1.0 - t), TRACK_HEIGHT)
-	track.add_child(rest)
-	return track
-
-
-## The ranges each slider spans, matching the clamps MatchState enforces
-## server-side. One table, so the bar cannot show a value at the end of
-## its track that the server would still accept more of.
-const MAP_RANGES := {
-	"sea_level": [0.05, 0.9],
-	"mountain_level": [0.1, 0.98],
-	"elevation_frequency": [0.5, 8.0],
-	"height_scale": [0.5, 6.0],
-}
-
-
-func _map_option_text(option: Dictionary, s: Dictionary) -> String:
-	var key := String(option["key"])
-	match key:
-		"preset":
-			var preset := TerrainPresetRoster.by_id(StringName(s.get("preset", "")))
-			return preset.display_name if preset != null else String(s.get("preset", "?"))
-		"size":
-			return "%d x %d" % [int(s.get("width", 0)), int(s.get("height", 0))]
-		"player_slots":
-			return "%d" % int(s.get("player_slots", 0))
-		"seed":
-			return "%d" % int(s.get("seed", 0))
-	if MAP_RANGES.has(key):
-		return "%.2f" % float(s.get(key, 0.0))
-	return ""
+func _size_labels() -> Array:
+	var out: Array = []
+	for entry in MapSettings.sizes():
+		out.append("%s  (%d x %d)" % [entry["name"], entry["width"], entry["height"]])
+	return out
 
 
 func _refresh_map_panel() -> void:
@@ -2012,49 +2020,11 @@ func _refresh_map_panel() -> void:
 		if child.get_index() > 1:
 			child.queue_free()
 
-	for i in range(MAP_OPTIONS.size()):
-		var selected: bool = _lobby_focus_map and i == _map_cursor
-		var frame := PanelContainer.new()
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.17, 0.20, 0.27, 1.0) if selected else Color(0, 0, 0, 0)
-		style.set_corner_radius_all(3)
-		style.content_margin_left = 8
-		style.content_margin_right = 8
-		style.content_margin_top = 3
-		style.content_margin_bottom = 3
-		frame.add_theme_stylebox_override("panel", style)
+	var admin := _state.is_admin()
+	for option in MAP_OPTIONS:
+		_map_rows.add_child(_map_row(option, settings, admin))
 
-		# Two labels with a fixed-width first column, NOT one padded
-		# string: the font is proportional, and "%-20s" produced ragged
-		# columns twice in this file already.
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 12)
-		frame.add_child(row)
-
-		var key := String(MAP_OPTIONS[i]["key"])
-
-		var label := Label.new()
-		label.text = String(MAP_OPTIONS[i]["label"])
-		label.add_theme_font_size_override("font_size", 14)
-		label.custom_minimum_size = Vector2(140.0, 0.0)
-		label.modulate = Color(0.88, 0.90, 0.95) if selected else Color(0.62, 0.66, 0.74)
-		row.add_child(label)
-
-		if MAP_RANGES.has(key):
-			var span: Array = MAP_RANGES[key]
-			row.add_child(_bar_control(
-				float(settings.get(key, 0.0)), float(span[0]), float(span[1]), selected))
-
-		var value := Label.new()
-		value.text = _map_option_text(MAP_OPTIONS[i], settings)
-		value.add_theme_font_size_override("font_size", 14)
-		value.custom_minimum_size = Vector2(96.0, 0.0)
-		value.modulate = Color(0.95, 0.90, 0.65) if selected else Color(0.72, 0.76, 0.84)
-		row.add_child(value)
-
-		_map_rows.add_child(frame)
-
-	if not _state.is_admin():
+	if not admin:
 		var note := Label.new()
 		note.add_theme_font_size_override("font_size", 13)
 		note.modulate = Color(0.52, 0.55, 0.60)
@@ -2062,51 +2032,101 @@ func _refresh_map_panel() -> void:
 		_map_rows.add_child(note)
 
 
+func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
+	var key := String(option["key"])
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+
+	var label := Label.new()
+	label.text = String(option["label"])
+	label.add_theme_font_size_override("font_size", 14)
+	label.custom_minimum_size = Vector2(140.0, 0.0)
+	label.modulate = Color(0.70, 0.74, 0.82)
+	row.add_child(label)
+
+	match String(option["kind"]):
+		"choice":
+			var picker := OptionButton.new()
+			picker.add_theme_font_size_override("font_size", 14)
+			picker.custom_minimum_size = Vector2(212.0, 0.0)
+			picker.focus_mode = Control.FOCUS_NONE
+			picker.disabled = not admin
+			if key == "preset":
+				var ids := TerrainPresetRoster.ids()
+				for id in ids:
+					var def := TerrainPresetRoster.by_id(id)
+					picker.add_item(def.display_name if def != null else String(id))
+				picker.selected = maxi(ids.find(StringName(settings.get("preset", ""))), 0)
+			else:
+				var sizes := MapSettings.sizes()
+				for text in _size_labels():
+					picker.add_item(String(text))
+				for i in range(sizes.size()):
+					if int(sizes[i]["width"]) == int(settings.get("width", 0)):
+						picker.selected = i
+						break
+			if admin:
+				picker.item_selected.connect(_on_map_choice.bind(key))
+			row.add_child(picker)
+
+		"int":
+			var spin := SpinBox.new()
+			spin.min_value = float(option["min"])
+			spin.max_value = float(option["max"])
+			spin.step = 1.0
+			spin.value = float(settings.get(key, 0))
+			spin.custom_minimum_size = Vector2(212.0, 0.0)
+			spin.editable = admin
+			spin.get_line_edit().focus_mode = Control.FOCUS_NONE
+			if admin:
+				spin.value_changed.connect(_on_map_value.bind(key))
+			row.add_child(spin)
+
+		"slider":
+			var slider := HSlider.new()
+			slider.min_value = float(option["min"])
+			slider.max_value = float(option["max"])
+			slider.step = 0.01
+			slider.value = float(settings.get(key, 0.0))
+			slider.custom_minimum_size = Vector2(150.0, 18.0)
+			slider.focus_mode = Control.FOCUS_NONE
+			slider.editable = admin
+			if admin:
+				slider.value_changed.connect(_on_map_value.bind(key))
+			row.add_child(slider)
+
+			var value := Label.new()
+			value.text = "%.2f" % float(settings.get(key, 0.0))
+			value.add_theme_font_size_override("font_size", 14)
+			value.custom_minimum_size = Vector2(52.0, 0.0)
+			value.modulate = Color(0.85, 0.88, 0.94)
+			row.add_child(value)
+
+	return row
+
+
+## Keyboard remains as a fallback for starting, so the screen is usable
+## without a mouse. Everything else is now clickable.
 func _handle_lobby_input(event: InputEvent) -> bool:
 	if not _state.in_lobby():
 		return false
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return false
-
-	var seats: Array = _state.lobby.get("seats", [])
 	match (event as InputEventKey).keycode:
-		KEY_TAB:
-			_lobby_focus_map = not _lobby_focus_map
-		KEY_UP:
-			if _lobby_focus_map:
-				_map_cursor = posmod(_map_cursor - 1, MAP_OPTIONS.size())
-			else:
-				_lobby_cursor = posmod(_lobby_cursor - 1, maxi(seats.size(), 1))
-		KEY_DOWN:
-			if _lobby_focus_map:
-				_map_cursor = posmod(_map_cursor + 1, MAP_OPTIONS.size())
-			else:
-				_lobby_cursor = posmod(_lobby_cursor + 1, maxi(seats.size(), 1))
-		KEY_LEFT:
-			if _lobby_focus_map:
-				_adjust_map_option(-1)
-			else:
-				_cycle_seat_civ(-1)
-		KEY_RIGHT:
-			if _lobby_focus_map:
-				_adjust_map_option(1)
-			else:
-				_cycle_seat_civ(1)
-		KEY_A:
-			_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, String(CivRoster.RANDOM))
-		KEY_DELETE:
-			_send_lobby(NetProtocol.LOBBY_REMOVE_AI, _lobby_cursor, "")
 		KEY_ENTER, KEY_KP_ENTER:
-			_send_lobby(NetProtocol.LOBBY_START, 0, "")
+			_on_start_pressed()
+		KEY_A:
+			_on_add_ai_pressed()
 		_:
 			return false
-	_refresh_lobby()
 	return true
 
 
-## Capture-only: how many AI seats to ask for once we are admin. Zero
-## during `run-client`, which is a human at the wheel.
+## Capture-only: how many AI seats to ask for once we are admin, and
+## which terrain preset to select. Zero during `run-client`, which is a
+## human at the wheel.
 var _lobby_ai_wanted := 0
+var _lobby_preset_steps := 0
 var _lobby_ai_asked := false
 
 
@@ -2122,46 +2142,7 @@ func _seat_capture_ai() -> void:
 		# so the capture shows what a mixed lobby looks like.
 		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
 		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)
-	# The server takes a preset INDEX, so one command is enough. Sent as an
-	# index rather than a name so this file names no preset and the
-	# capture keeps working whatever /terrain happens to hold.
+	# An INDEX rather than a name, so this file names no preset and the
+	# capture keeps working whatever /terrain holds.
 	if _lobby_preset_steps > 0:
 		_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "preset=%d" % _lobby_preset_steps)
-
-
-func _adjust_map_option(direction: int) -> void:
-	if _map_cursor < 0 or _map_cursor >= MAP_OPTIONS.size():
-		return
-	var option: Dictionary = MAP_OPTIONS[_map_cursor]
-	var key := String(option["key"])
-	var settings: Dictionary = _state.lobby.get("settings", {})
-	var step := float(option["step"]) * float(direction)
-	var value := 0.0
-
-	match key:
-		"preset":
-			var ids := TerrainPresetRoster.ids()
-			var current := ids.find(StringName(settings.get("preset", "")))
-			value = float(posmod(current + direction, maxi(ids.size(), 1)))
-		"size":
-			var sizes := MapSettings.sizes()
-			var current := 0
-			for i in range(sizes.size()):
-				if int(sizes[i]["width"]) == int(settings.get("width", 0)):
-					current = i
-					break
-			value = float(posmod(current + direction, sizes.size()))
-		"seed":
-			value = float(int(settings.get("seed", 0)) + direction * 1)
-		"player_slots":
-			value = float(int(settings.get("player_slots", 2)) + direction)
-		_:
-			value = float(settings.get(key, 0.0)) + step
-
-	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])
-
-
-## Capture-only: how many times to advance the terrain preset before the
-## screenshot. Expressed as STEPS rather than a preset name, so this file
-## still names no preset and the capture works whatever /terrain holds.
-var _lobby_preset_steps := 0
