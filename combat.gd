@@ -247,6 +247,10 @@ func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: in
 		return []
 
 	var destroyed := []
+	# Built once and shared by every attacker — that sharing is the whole
+	# saving, so do not move it inside the loop.
+	var building_buckets := _build_building_buckets(buildings)
+
 	for attacker in range(sim.squad_count()):
 		if _engaged.has(attacker):
 			continue
@@ -256,7 +260,7 @@ func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: in
 		if def == null or def.damage <= 0.0:
 			continue
 
-		var target := _find_building_near(sim, buildings,
+		var target := _find_building_near(sim, buildings, building_buckets,
 			sim.cell_index_of(attacker), sim.owner_of(attacker),
 			_range_in_cells(sim.space, def.attack_range))
 		if target == -1:
@@ -288,31 +292,65 @@ func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: in
 ## buildings live in their own id space (BuildingSim's header explains
 ## why mixing the two is the one genuinely dangerous thing here).
 ##
-## Scans buildings directly rather than bucketing them: there are orders
-## of magnitude fewer buildings than squads, and a per-tick bucket rebuild
-## would cost more than the scan it saves.
-func _find_building_near(sim: SquadSim, buildings: BuildingSim, origin_index: int,
-		owner: int, range_cells: float) -> int:
+## Scans the attacker's own hex disk against a bucket map, NOT every
+## building per squad. The first version did the latter, on the reasoning
+## that buildings are far rarer than squads so a scan would beat a bucket
+## rebuild. Measured at 20 players it was wrong: 120 squads x 64 buildings
+## is ~7,700 `distance()` calls per tick, and `test-load 20 120` put the
+## siege pass at ~15 us/squad — combat's share went 5.99 -> 24.24 us.
+##
+## This is the fourth time the same defect has appeared here: a
+## `distance()` call per candidate cell in vision (232 -> 15 us/squad,
+## M2), `UnitRoster.by_id` walking the filesystem per produced squad
+## (858 ms in one tick, M4), terrain noise sampled per soldier per frame
+## (M5). A hex disk is translation-invariant on a torus, so
+## `TorusSpace.disk_offsets` is the cached answer, and any radius-scanning
+## system should reach for it before it reaches for `distance()`.
+##
+## The bucket map is rebuilt once per tick and shared by every attacker,
+## so its cost is O(buildings) against the O(squads x buildings) it
+## replaces.
+func _find_building_near(sim: SquadSim, buildings: BuildingSim, buckets: Dictionary,
+		origin_index: int, owner: int, range_cells: float) -> int:
 	var origin := sim.space.from_index(origin_index)
 	var best := -1
 	var best_distance := 0
 
+	for offset in TorusSpace.disk_offsets(floori(range_cells)):
+		var idx := sim.space.index(origin + offset)
+		if not buckets.has(idx):
+			continue
+		for building in buckets[idx]:
+			if sim.are_allied(buildings.owner_of(building), owner):
+				continue
+			var d := TorusSpace.hex_length(offset)
+			# Deterministic tiebreak (lower id wins), the same rule
+			# _find_squad_near uses, so target choice never depends on
+			# dictionary iteration order.
+			if best == -1 or d < best_distance or (d == best_distance and building < best):
+				best = building
+				best_distance = d
+	return best
+
+
+## Cell index -> Array of live building ids. Destroyed buildings are left
+## out entirely rather than filtered later, so the scan above never sees
+## rubble.
+##
+## A building SITE is deliberately included — a half-raised tower is a
+## real thing standing on the map, and `BuildingSim.damage()` already
+## takes that view. Denying an opponent a building under construction is
+## the counter to walling forward.
+func _build_building_buckets(buildings: BuildingSim) -> Dictionary:
+	var buckets := {}
 	for building in range(buildings.building_count()):
 		if buildings.is_destroyed(building):
 			continue
-		# A building SITE is a legitimate target — a half-raised tower is a
-		# real thing standing on the map, and BuildingSim.damage() already
-		# takes that view. Denying an opponent a building under
-		# construction is the counter to walling forward.
-		if sim.are_allied(buildings.owner_of(building), owner):
-			continue
-		var d := sim.space.distance(origin, buildings.cell_of(building))
-		if float(d) > range_cells:
-			continue
-		if best == -1 or d < best_distance or (d == best_distance and building < best):
-			best = building
-			best_distance = d
-	return best
+		var cell := buildings.cell_index_of(building)
+		if not buckets.has(cell):
+			buckets[cell] = []
+		buckets[cell].append(building)
+	return buckets
 
 
 ## Nearest enemy squad to a cell, within range. Mirrors _find_target's
