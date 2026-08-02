@@ -224,9 +224,10 @@ run-server AI="0" MAP="res://maps/default.tres": _import
         exit 1
     fi
     if [ "{{runtime}}" = "docker" ]; then
+        # Replaces the service's default command, so it has to restate it
+        # in full. The image ENTRYPOINT already supplies --headless.
         docker compose -p edotmw run --rm --service-ports server \
-            --headless --path . "{{server_scene}}" -- \
-            --ai={{AI}} --map={{MAP}}
+            --path . "{{server_scene}}" -- --ai={{AI}} --map={{MAP}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --path . "{{server_scene}}" -- \
@@ -730,6 +731,19 @@ ai-ladder MATCHES="10" SECONDS="240" AI="2": _import
         printf '.'
     done
     echo
+
+    # The ladder reports averages, and an average cannot report a fault.
+    # An AI seat was silently never sent composition for its own squads
+    # for a whole milestone: it played on, the numbers all looked
+    # plausible, and the ONLY thing that ever said so was a push_error in
+    # ClientState that no recipe read. `test-load` has scanned for this
+    # since M1 (line 423) — the ladder is the newer harness and simply
+    # did not inherit it.
+    if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log"; then
+        echo "ai-ladder: FAILED — engine diagnostics during the matches:" >&2
+        grep -EIn '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log" >&2 | head -20
+        exit 1
+    fi
 
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
     awk '

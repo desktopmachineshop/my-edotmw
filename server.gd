@@ -668,8 +668,9 @@ func _dict_from_ids(ids: Array) -> Dictionary:
 ## is what lets replay-info report a final strength for a squad that
 ## never fought and so never appears in a SQUAD_COMBAT event.
 func _broadcast_squad_info() -> void:
-	for peer in _clients:
-		_send_squad_info(peer, int(_clients[peer]["player"]))
+	var recipients := _recipients()
+	for peer in recipients:
+		_send_squad_info(peer, int(recipients[peer]["player"]))
 
 	if _replay != null and _replay.is_open():
 		var entries := _sim.squad_info_entries(_all_squad_ids())
@@ -1080,8 +1081,7 @@ func _replicate() -> void:
 	# knowledge is a subset of its vision by construction rather than by
 	# promise. Giving the AI privileged access to SquadSim would have been
 	# less code and impossible to trust.
-	var recipients := _clients.duplicate()
-	recipients.merge(_ai_clients)
+	var recipients := _recipients()
 	for peer in recipients:
 		var record = recipients[peer]
 		var player := int(record["player"])
@@ -1311,6 +1311,29 @@ func _seat_ai(player: int, civ: StringName) -> void:
 	_ai_players.append(brain)
 	_admit_player(peer, player)
 	print("server: AI seated as player %d (%s)" % [player, civ])
+
+
+## EVERY peer that receives simulation state — sockets and AI seats alike.
+##
+## D-051 says an AI receives byte-identical packets through byte-identical
+## code, and that guarantee only holds if there is ONE definition of who
+## "everybody" is. There were two: `_replicate` merged in `_ai_clients`,
+## `_broadcast_squad_info` iterated `_clients` alone. So an AI was never
+## sent composition for its own starting squads — and `_admit_player`
+## then seeded its reveal baseline to "already knows everything visible",
+## which meant the next tick's reveal diff found nothing new to send and
+## the gap never healed.
+##
+## It surfaced only when the founding party was consumed by the town it
+## founded (D-031): a casualty event arrived for a squad the AI had never
+## been described, and ClientState said so. Nothing else complained,
+## because an AI orders squads by the ids in its WELCOME packet and those
+## were fine — it simply had no idea how strong anything was, including
+## its own army, for the entire match.
+func _recipients() -> Dictionary:
+	var out := _clients.duplicate()
+	out.merge(_ai_clients)
+	return out
 
 
 ## A client record, whether the sender is a socket or an AI seat in this
