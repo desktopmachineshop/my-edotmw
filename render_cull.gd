@@ -35,13 +35,23 @@ class_name RenderCull
 ## Returns the offset to ADD to a canonical world position, so the caller
 ## can place the squad's node there.
 ##
-## Testing only the nearest copy — rather than all nine — is sound
-## because the client caps zoom so that less than one full copy of the map
-## is ever on screen (`client.gd`'s `_camera_max_height`, D-035). If that
-## cap is ever lifted far enough to show a whole copy plus part of
-## another, this becomes wrong in a way that looks like squads popping at
-## the far seam, and the fix is to test every offset rather than the
-## nearest.
+## Correct only while ONE lattice copy is on screen, which is what
+## `max_camera_height` now enforces. See `visible_offset` for the
+## belt-and-braces version.
+##
+## Worth recording how this was diagnosed, because the first answer was
+## wrong. "Half the screen will not render units" was reported from a real
+## game and read as a culling bug. Scanning every cell against both
+## strategies said otherwise:
+##
+##     target (64,32): wrongly_culled=0  misplaced=529
+##     target (2,32):  wrongly_culled=0  misplaced=1218
+##
+## Nearest-only almost never culls something visible — it picks a
+## DIFFERENT visible copy. And the real fault was upstream of both: terrain
+## is drawn nine times and each entity once, so a view spanning two terrain
+## copies leaves one of them bare. No choice of offset fixes that; only
+## keeping the second copy off screen does.
 static func nearest_offset(offsets: Array[Vector3], centre: Vector3,
 		reference: Vector3) -> Vector3:
 	var best := Vector3.ZERO
@@ -52,6 +62,61 @@ static func nearest_offset(offsets: Array[Vector3], centre: Vector3,
 			best_distance = d
 			best = offset
 	return best
+
+
+## The offset at which `centre` is actually ON SCREEN, or `null` if no
+## copy of it is — which is the real culling question.
+##
+## Tests every lattice copy rather than only the nearest, because "nearest
+## to what the camera looks at" and "the one you can see" are different
+## questions whenever more than one copy is in view, and on a torus that
+## is shallower than it is wide they routinely are (see nearest_offset).
+##
+## `offsets` puts the centre copy first (TorusSpace.lattice_offsets), and
+## this returns on the first hit, so an unwrapped squad — the common case
+## — costs one test. A squad that is genuinely off screen pays for all
+## nine, and that is the right trade: nine projections is far less than
+## deriving forty soldiers, which is exactly the work culling exists to
+## avoid (D-045).
+static func visible_offset(camera: Camera3D, offsets: Array[Vector3],
+		centre: Vector3, margin: float, size: Vector2):
+	for offset in offsets:
+		if is_on_screen(camera, centre + offset, margin, size):
+			return offset
+	return null
+
+
+## How far the camera may zoom out before a SECOND terrain copy enters
+## the view — the actual fix for "half the screen will not render units".
+##
+## Terrain is drawn nine times (D-035) but every squad, building and
+## resource node is drawn ONCE. So the moment the view spans a second
+## copy, that copy is bare ground: real terrain, no units on it. It is not
+## a culling bug and no choice of lattice offset addresses it.
+##
+## Derived from the SHALLOWER of the two lattice periods. The previous
+## version used a quarter of the map's WIDTH, and the binding dimension is
+## depth: a 128x64 map sounds like 2:1 and in world units is 221 x 96,
+## because a hex row is 1.5 deep and a column SQRT_3 (~1.73) wide.
+##
+## The 0.33 is measured, not chosen. On 128x64 at 1280x720 the forward
+## ground reach is ~1.9x camera height, and the camera sits 0.6h behind
+## what it looks at, so the on-screen z span is ~2.6h. The old cap of 55
+## showed 106 units of a 96-unit period.
+##
+## The cost is real and worth stating: max zoom-out on the shipped map
+## drops from ~55 to ~31. Buying it back means drawing entities at every
+## visible copy — up to nine times the per-entity work D-045 exists to
+## cut — or making maps less oblong, since height * 1.5 = width * SQRT_3
+## needs height ~ 1.155 * width and the shipped map is half that.
+##
+## Lives here rather than in client.gd so it can be tested at all: the
+## client needs a GPU and cannot be (D-014).
+static func max_camera_height(space: TorusSpace, floor_height: float,
+		ceiling_height: float) -> float:
+	var x_period := float(space.width) * space.hex_size * TorusSpace.SQRT_3
+	var z_period := float(space.height) * 1.5 * space.hex_size
+	return clampf(minf(x_period, z_period) * 0.33, floor_height, ceiling_height)
 
 
 ## Whether `point` is on screen, with `margin` extra pixels of slack.

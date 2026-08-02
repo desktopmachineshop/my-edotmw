@@ -469,11 +469,30 @@ func _build_terrain() -> void:
 		for x in range(space.width):
 			_minimap_base.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
 
-	# Half the map's width, converted to a camera height that shows about
-	# that much ground. Beyond this the tiled copies become visible.
-	_camera_max_height = clampf(
-		float(space.width) * space.hex_size * TorusSpace.SQRT_3 * 0.25,
-		CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT)
+	# Derived from the SHALLOWER of the two lattice periods, not from
+	# width — and this is the fix for "half the screen will not render
+	# units as visible".
+	#
+	# Terrain is drawn nine times (D-035) but every squad, building and
+	# resource node is drawn ONCE. So the moment the view spans a second
+	# terrain copy, that copy is bare ground: real terrain, no units. It
+	# reads exactly like a rendering failure.
+	#
+	# The old cap took a quarter of the map's WIDTH. A 128x64 map sounds
+	# like 2:1 and in WORLD units is 221 x 96 — 2.3:1 — because a hex row
+	# is 1.5 deep and a column SQRT_3 ~ 1.73 wide. So the binding
+	# dimension is depth and the cap was computed from the other one.
+	#
+	# Measured, on 128x64 at 1280x720: forward ground reach is about 1.9x
+	# camera height, and the camera also sits 0.6h behind its target, so
+	# the on-screen z span is roughly 2.6h. The old cap of 55 showed 106
+	# units of a 96-unit period — comfortably more than one copy.
+	#
+	# 0.33 keeps 2.6h inside the period with margin. Raising it back is
+	# not a free win: it needs entities drawn at every visible copy, which
+	# is up to nine times the per-entity work D-045 exists to cut.
+	_camera_max_height = RenderCull.max_camera_height(
+		space, CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT)
 	_camera_height = minf(_camera_height, _camera_max_height)
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
@@ -521,8 +540,13 @@ func _refresh_squads() -> void:
 		# One curve sample to place the squad, against ~40 to derive its
 		# soldiers — so the cheap question is asked first.
 		var centre := _state.squad_world_position(squad_id, _now)
-		var offset := RenderCull.nearest_offset(offsets, centre, _camera_target)
-		if not RenderCull.is_on_screen(_camera, centre + offset, CULL_MARGIN_PIXELS, viewport_size):
+		# Every lattice copy, not just the nearest to the look-at point.
+		# The torus is shallower in z than it is wide, so more than one
+		# copy is routinely on screen and "nearest" picks the wrong one —
+		# which showed up in play as half the screen rendering no units.
+		var offset = RenderCull.visible_offset(
+			_camera, offsets, centre, CULL_MARGIN_PIXELS, viewport_size)
+		if offset == null:
 			unit.visible = false
 			continue
 		unit.visible = true
@@ -547,6 +571,22 @@ func _refresh_squads() -> void:
 
 		var unit := _squad_node(squad_id, String(ghost["def_id"]))
 		_set_ghost_look(unit, true)
+
+		# Ghosts need placing and showing exactly as live squads do, and
+		# this pass did neither: it reused the shared node from
+		# `_squad_node` and left `position` and `visible` at whatever the
+		# LIVE pass had last set. A squad culled while visible therefore
+		# stayed invisible after it became a ghost, permanently, and a
+		# ghost across the seam drew at its canonical position — a whole
+		# map away from where the player last saw it.
+		var ghost_centre := _state.squad_world_position(squad_id, _now)
+		var ghost_offset = RenderCull.visible_offset(
+			_camera, offsets, ghost_centre, CULL_MARGIN_PIXELS, viewport_size)
+		if ghost_offset == null:
+			unit.visible = false
+			continue
+		unit.visible = true
+		unit.position = ghost_offset
 
 		# Derived straight from Formation, like ClientState.soldier_transforms
 		# does for a live squad — but reading the GHOST's last-known alive/
@@ -1065,6 +1105,24 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 var _node_meshes := {}
 
 
+## Where to draw a STATIC thing that stands on the tiled world.
+##
+## Prefers the copy that is genuinely on screen, and falls back to the one
+## nearest the camera when none is — a building off screen still needs a
+## sensible position, and Godot culls it from there for free.
+##
+## Buildings and resource nodes were both drawn at canonical coordinates
+## only, so anything past the seam appeared a whole map away: the terrain
+## tiles nine times (D-035) and the things standing on it did not.
+func _lattice_offset_for(world: Vector3) -> Vector3:
+	var offsets := _state.space.lattice_offsets()
+	var visible = RenderCull.visible_offset(_camera, offsets, world,
+		CULL_MARGIN_PIXELS, get_viewport().get_visible_rect().size)
+	if visible != null:
+		return visible
+	return RenderCull.nearest_offset(offsets, world, _camera_target)
+
+
 ## Draw resource nodes IN THE WORLD, not only on the minimap.
 ##
 ## They were minimap pixels and nothing else, so on the actual map there
@@ -1120,7 +1178,7 @@ func _refresh_resource_nodes() -> void:
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
 		world.y += 0.55
-		marker.position = world
+		marker.position = world + _lattice_offset_for(world)
 
 
 func _refresh_buildings() -> void:
@@ -1163,7 +1221,11 @@ func _refresh_buildings() -> void:
 			world.y = _state.terrain_sampler.call(world.x, world.z)
 		# Sit the box ON the ground rather than half-sunk into it.
 		world.y += 1.5 * progress
-		instance.position = world
+		# Drawn at the lattice copy the camera can actually see (D-035).
+		# Buildings were placed at their canonical position only, so one
+		# across the seam appeared a whole map from where it stands —
+		# terrain tiles nine times and the things standing on it did not.
+		instance.position = world + _lattice_offset_for(world)
 
 
 func _update_hud() -> void:
@@ -1390,21 +1452,39 @@ func _plot_view_bounds(image: Image) -> void:
 	if _camera == null or _state.space == null:
 		return
 
+	# Corners taken from a BOUNDED band of the screen, not its true top.
+	#
+	# The old version raycast the four literal screen corners to the
+	# ground. The top two point at the horizon on a tilted camera, so they
+	# either land absurdly far away — wrapping the torus and scrambling the
+	# box across the minimap — or miss the ground plane entirely and return
+	# (-1,-1), at which point the edge was silently dropped and the box was
+	# left open. Reported from a real game as the view box being a weird
+	# shape and clipping; both halves of that were this.
+	#
+	# Sampling at 35% down the screen instead of 0% keeps every ray hitting
+	# ground at a sane distance. The box then slightly understates what you
+	# can see, which is the honest direction to be wrong in: it never
+	# claims you can see somewhere you cannot.
 	var view := get_viewport().get_visible_rect().size
+	var top := view.y * 0.35
 	var corners := [
-		_cell_under(Vector2(0.0, 0.0)),
-		_cell_under(Vector2(view.x, 0.0)),
+		_cell_under(Vector2(0.0, top)),
+		_cell_under(Vector2(view.x, top)),
 		_cell_under(Vector2(view.x, view.y)),
 		_cell_under(Vector2(0.0, view.y)),
 	]
 
+	# All four or none. A partial box is what "clipping" looked like, and
+	# an outline missing one side reads as a rendering fault rather than as
+	# the camera pointing somewhere unusual.
+	for corner in corners:
+		if corner.x < 0:
+			return
+
 	var colour := Color(1.0, 1.0, 1.0, 1.0)
 	for i in range(4):
-		var from: Vector2i = corners[i]
-		var to: Vector2i = corners[(i + 1) % 4]
-		if from.x < 0 or to.x < 0:
-			continue
-		_plot_minimap_segment(image, from, to, colour)
+		_plot_minimap_segment(image, corners[i], corners[(i + 1) % 4], colour)
 
 
 ## A line between two cells, taken the SHORT way around the torus — the
