@@ -318,6 +318,16 @@ func _finish_capture() -> void:
 		and squads_drawn > 0
 		and soldiers > 0
 		and (_screenshot_path == "" or (_shot_taken and distinct >= MIN_DISTINCT_COLOURS))
+		# The WORLD has to be there, not just the units standing on it.
+		#
+		# This capture once passed with no terrain at all — the client was
+		# waiting for map settings that a non-lobby server never sent
+		# (D-049) — and every other number in this verdict was identical
+		# to a healthy run: same soldier count, same distinct colour
+		# count, zero desyncs. The frame was background, HUD and a few
+		# specks. Only opening the PNG found it, which is the same lesson
+		# as the frame that derived every soldier at y=0.
+		and _terrain_built
 		and _state.casualties_applied > 0
 		and _state.conceal_events > 0
 	)
@@ -329,9 +339,9 @@ func _finish_capture() -> void:
 	# rendered distinctly rather than as though still live (see
 	# _set_ghost_look) — neither of which the pre-M2 verdict could say
 	# anything about at all.
-	print("client: VERDICT %s — connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
+	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
 		"ok" if ok else "failed",
-		str(_state.welcomed), squads_drawn, live_squads, ghosts, soldiers,
+		str(_terrain_built), str(_state.welcomed), squads_drawn, live_squads, ghosts, soldiers,
 		_state.curves.size(), _state.desync_count, distinct,
 		_state.casualties_applied, _state.conceal_events, _state.reveal_events, _state.ghosts_peak])
 

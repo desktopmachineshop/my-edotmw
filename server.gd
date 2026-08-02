@@ -553,6 +553,20 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 ## `peer` is deliberately untyped: it is an ENetPacketPeer for a human
 ## and a LoopbackPeer for an AI seat (D-051), and both answer send().
 func _admit_player(peer, player: int) -> void:
+	# The world's concrete numbers FIRST, because the client cannot build
+	# terrain without them (D-049) and will sit on an empty scene until
+	# they arrive.
+	#
+	# Sent here rather than only at match start: a match begins two ways —
+	# an admin pressing start in a lobby, or a player connecting to a
+	# server that has no lobby — and hanging this off the first meant
+	# every non-lobby client drew no terrain at all. Every counter still
+	# passed (squads drawn, soldiers derived, zero desyncs, colours in the
+	# frame) because the HUD and the soldiers were fine. Only the world
+	# was missing, and only looking at the picture found it.
+	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
+		ENetPacketPeer.FLAG_RELIABLE)
+
 	var squads := _spawn_squads_for(player)
 
 	# The new player's own squads need a vision stamp before anything asks

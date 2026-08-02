@@ -470,6 +470,56 @@ deliberately, and amend this entry rather than pretending the rule held.
 
 ---
 
+**Audited 2026-08-02 — 13 of 14 met; the last one needs a human.**
+
+| # | Verdict | Evidence |
+|---|---|---|
+| 1 | Met | `CivDef` in `/civs/*.tres`, `CivRoster` loads them |
+| 2 | Met | Northmen field skirmishers and no heavy foot; Legion field heavy foot and no cavalry; shared archetypes tuned apart |
+| 3 | **Met** | no `.gd` outside `tests/` names a civ; observed failing by putting one id in a comment |
+| 4 | Met, and structurally | the wire carries an ARCHETYPE, so a client cannot name another civ's unit at all |
+| 5 | Met | seats with kind, civ, team |
+| 6 | Met | first human is admin, passes to the lowest remaining |
+| 7 | Met | server-side; a player changing another seat's civ is refused |
+| 8 | Met | uniform over 4,000 draws, seeded, resolved at start |
+| 9 | **Met, and structurally** | AI is a client without a socket (D-051) |
+| 10 | Met | `CIVS_FIELDED 2 of 2 — legion=50, northmen=70` at 20 players; observed failing when forced to one civ |
+| 11 | Met | `replay-info` reports `Player 1 = legion, Player 2 = northmen…` |
+| 12 | Met | 339 tests; `test-load 20 120` clean, 0 of 1,323 ticks over budget; `test-client` clean **and the PNG opened** |
+| 13 | Met | every new check perturbed and watched to fail |
+| 14 | **Outstanding** | needs a human at the wheel |
+
+**Criterion 12 is the one worth reading twice, because it nearly passed
+while broken.** The capture reported `ok` — 96 soldiers, 97 distinct
+colours, zero desyncs — over a frame containing **no terrain at all**.
+D-049 made the client wait for map settings before generating the world,
+and those were only sent when an admin started a lobby; a server without
+a lobby never sent them. Every number was identical to a healthy run,
+because the HUD and the soldiers were genuinely fine. Only the world was
+missing.
+
+Two things came out of it. The settings are now sent from
+`_admit_player`, which both ways of starting a match go through. And the
+capture's verdict asserts the terrain was actually built — a check whose
+failing state was not simulated but *observed*, since the previous run
+produced exactly it.
+
+The lesson is one this project keeps paying for and had written down
+already: **"a green run is not the same as a run that happened", and a
+green verdict is not the same as a correct picture.** The recipe's own
+docstring says the PNG "is meant to be looked at, not just asserted
+about" — and it was not looked at for three commits, which is precisely
+how long the regression survived.
+
+**Two things deliberately not done**, recorded so they are choices rather
+than oversights: seats cannot be opened or closed (a slot is a human who
+joined or an AI the host added), and the AI is not good — it founds,
+gathers, trains and attacks the nearest enemy it can see, with no
+scouting, no expansion and no use of the counter triangle it is subject
+to.
+
+---
+
 ### D-045 · 2026-08-02 · Accepted — client render architecture, and the LOD the numbers actually asked for
 **Decision:** The client culls before deriving, samples terrain from a
 precomputed field, and thins distant squads with a camera-keyed,

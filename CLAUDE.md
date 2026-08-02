@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **337 tests**.
+buildings, (5) economy. `just test-unit` is green at **339 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
