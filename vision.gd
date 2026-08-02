@@ -64,13 +64,19 @@ var _coverage := {}
 ## be a second source of truth to keep synchronised for no real saving at
 ## these counts.
 func rebuild(sim: SquadSim, buildings: BuildingSim = null) -> void:
+	# Allies share sight (D-050). Coverage is keyed by SIDE rather than by
+	# player, so a team stamps once into one field and the lookup below
+	# stays a single dictionary hit — D-025 part 1's cost claim survives
+	# sharing. Unioning per query instead would have made every lookup
+	# O(allies), which is exactly what that claim rules out.
+	_teams = sim.teams.duplicate()
 	_coverage = {}
 	for squad in range(sim.squad_count()):
 		if sim.alive_of(squad) <= 0:
 			continue
 		var def := sim.def_of(squad)
 		if def != null:
-			_stamp(sim.space, sim.owner_of(squad), sim.cell_index_of(squad), def.vision_range)
+			_stamp(sim.space, _group_of(sim.owner_of(squad)), sim.cell_index_of(squad), def.vision_range)
 
 	# Buildings see too (D-029). Coverage is about CELLS and does not care
 	# what put a cell in it, so they stamp into the same per-player field
@@ -86,7 +92,7 @@ func rebuild(sim: SquadSim, buildings: BuildingSim = null) -> void:
 				continue
 			var building_def := buildings.def_of(building)
 			if building_def != null:
-				_stamp(buildings.space, buildings.owner_of(building),
+				_stamp(buildings.space, _group_of(buildings.owner_of(building)),
 					buildings.cell_index_of(building), building_def.vision_range)
 
 
@@ -94,7 +100,7 @@ func rebuild(sim: SquadSim, buildings: BuildingSim = null) -> void:
 ## This — not a scan over the player's squads — is D-025 part 1's actual
 ## cost claim; `rebuild()` pays the scan once, this pays nothing per call.
 func is_visible(player: int, cell_index: int) -> bool:
-	var coverage = _coverage.get(player, null)
+	var coverage = _coverage.get(_group_of(player), null)
 	if coverage == null:
 		return false
 	return coverage.has(cell_index)
@@ -105,7 +111,7 @@ func is_visible(player: int, cell_index: int) -> bool:
 ## brute-force reference); `SquadSim.visible_to()` should use
 ## `is_visible()`, not this.
 func coverage_of(player: int) -> Dictionary:
-	return _coverage.get(player, {})
+	return _coverage.get(_group_of(player), {})
 
 
 ## Stamp one seeing thing's coverage. Takes a cell and a range rather than
@@ -148,3 +154,21 @@ static func _range_in_cells(space: TorusSpace, vision_range: float) -> float:
 	if hex_width <= 0.0:
 		return 0.0
 	return vision_range / hex_width
+
+
+# --- shared sight (D-050) ---------------------------------------------
+
+## player -> team, copied from the sim at rebuild so a lookup here needs
+## no reference back to it.
+var _teams := {}
+
+
+## The coverage bucket a player reads and writes.
+##
+## Teams share one bucket; a player with no team gets their own. Team keys
+## are NEGATIVE so they cannot collide with player ids, which are always
+## positive — including the AI seats, which are numbered from 1000 and
+## would otherwise be a plausible team number one day.
+func _group_of(player: int) -> int:
+	var team := int(_teams.get(player, 0))
+	return -team if team != 0 else player

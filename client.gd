@@ -1096,7 +1096,11 @@ func _update_explored() -> void:
 	if hex_width <= 0.0:
 		return
 
-	for squad in _state.squads:
+	# Allied squads reveal ground too (D-050). Without this the server
+	# would gate on the team's shared sight while the client painted fog
+	# from its own squads alone — allies' units standing in black,
+	# perfectly visible and apparently in the dark.
+	for squad in _state.friendly_squads():
 		if not _state.curves.has(squad) or not _state.composition.has(squad):
 			continue
 		if _state.alive_of(squad) <= 0:

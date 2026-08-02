@@ -237,6 +237,11 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"alive": int(entry["alive"]),
 			"shape": def.formation_shape,
 			"spacing": def.formation_spacing,
+			# Kept so the client can tell an ally's squad from an enemy's
+			# (D-050). Deliberately NOT part of composition_hash, which
+			# builds its own entry list from named fields — adding a key
+			# here cannot drift into what the desync check compares.
+			"owner": int(entry.get("owner", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -667,3 +672,34 @@ func _handle_chat(data: PackedByteArray) -> void:
 	chat_log.append(message)
 	if chat_log.size() > CHAT_HISTORY:
 		chat_log = chat_log.slice(chat_log.size() - CHAT_HISTORY)
+
+
+## Squads on this player's side — its own, plus any ally's it can see
+## (D-050).
+##
+## Derived from the lobby's seat list, which the client already holds and
+## which keeps its teams after the match starts. That avoids a second
+## message carrying the same fact, and avoids the client inventing its own
+## idea of who is allied with whom.
+func friendly_squads() -> Array:
+	var out := []
+	for squad in squads:
+		out.append(squad)
+	if lobby.is_empty():
+		return out
+
+	var my_team := _team_of(player)
+	if my_team == 0:
+		return out
+	for id in composition:
+		var owner := int(composition[id].get("owner", 0))
+		if owner != player and _team_of(owner) == my_team and not out.has(id):
+			out.append(id)
+	return out
+
+
+func _team_of(who: int) -> int:
+	for seat in lobby.get("seats", []):
+		if int(seat["player"]) == who:
+			return int(seat.get("team", 0))
+	return 0

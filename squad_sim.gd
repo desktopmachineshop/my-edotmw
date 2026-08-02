@@ -930,7 +930,9 @@ func eliminate_player(player: int) -> Array:
 func visible_to(player: int) -> Array:
 	var ids := []
 	for i in range(_cell.size()):
-		if _owner[i] == player or vision.is_visible(player, _cell[i]):
+		# You always see your allies' squads, not merely whatever their
+		# vision happens to cover (D-050).
+		if are_allied(_owner[i], player) or vision.is_visible(player, _cell[i]):
 			ids.append(i)
 	return ids
 
