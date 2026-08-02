@@ -91,6 +91,26 @@ class_name UnitDef
 @export_enum("infantry", "cavalry", "missile") var armour_class: String = "infantry"
 @export var bonus_vs: Dictionary = {}
 
+## Fraction of this squad's damage that lands on a BUILDING. Schema
+## addition 2026-08-02 (M6, against D-010), recorded in D-056.
+##
+## Soldiers are not siege engines. Without this, siege damage was the full
+## `damage * alive` a squad deals to flesh, and measurement said a single
+## 36-strong militia squad razed a 900 HP town centre in **2.1 seconds** —
+## so once any army arrived, a base evaporated and the match was over.
+##
+## A separate field rather than an entry in `bonus_vs`, deliberately.
+## `bonus_vs` reads 1.0 for a missing key, which is the right default for
+## a counter table (no bonus = generalist) and exactly the wrong one here:
+## forgetting the entry on a new unit would silently restore the
+## three-second base. This field's default is the SAFE end of the range,
+## so a new .tres that never mentions it is conservative rather than
+## catastrophic.
+##
+## Raise it for units that are meant to break walls — that is the hook a
+## future siege archetype hangs on, and it needs no code change.
+@export var damage_vs_buildings: float = 0.15
+
 @export_enum("capsule", "box", "cylinder", "hull") var mesh_primitive: String = "capsule"
 @export var mesh_color: Color = Color.WHITE
 

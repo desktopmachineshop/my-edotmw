@@ -687,3 +687,48 @@ func test_a_squad_fighting_a_squad_does_not_also_hit_a_building() -> void:
 
 	assert_gt(ticks_with_a_defender, 0,
 		"The garrison never survived a single tick, so nothing was actually tested")
+
+
+func test_soldiers_are_not_siege_engines() -> void:
+	# D-056. Unscaled, a single 36-strong militia squad razed a 900 HP town
+	# centre in 2.1 SECONDS (measured), so a base evaporated the moment any
+	# army reached it and matches decided in about three minutes against a
+	# 1-2 hour target.
+	#
+	# The bound is deliberately generous rather than pinned to today's
+	# tuning — this guards the RULE (a lone squad cannot flatten a town
+	# hall in seconds), not a balance number somebody should be free to
+	# tune. Perturbed by removing the damage_vs_buildings factor in
+	# combat.gd, which takes it from ~57s to ~2s and turns it red.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	assert_not_null(hall, "town_centre.tres is missing, so nothing was tested")
+	var id := buildings.add_building(hall, 2, Vector2i(5, 5), true)
+
+	# The roster's heaviest hitter against buildings, so this measures the
+	# best case for the attacker rather than a convenient one.
+	var worst: UnitDef = null
+	for def in UnitRoster.load_all():
+		if def.carry_capacity > 0:
+			continue  # villagers are not the question
+		var rate := def.damage * float(def.squad_size) * def.damage_vs_buildings \
+			/ maxf(def.attack_interval, 0.001)
+		if worst == null or rate > worst.damage * float(worst.squad_size) \
+				* worst.damage_vs_buildings / maxf(worst.attack_interval, 0.001):
+			worst = def
+	assert_not_null(worst, "no fighting units in the roster")
+
+	sim.add_squad(worst, 1, Vector2i(5, 6))
+	var ticks := 0
+	while ticks < 6000 and not buildings.is_destroyed(id):
+		sim.tick()
+		ticks += 1
+
+	var seconds := float(ticks) / SquadSim.TICK_HZ
+	assert_gt(seconds, 20.0,
+		"%s razed a town centre in %.1fs — a lone squad should not flatten a base in seconds" % [
+			worst.id, seconds])

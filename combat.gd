@@ -280,7 +280,12 @@ func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: in
 		var roll := _roll_unit(sim.combat_seed, tick, attacker)
 		var variance := clampf(def.damage_variance, 0.0, 1.0)
 		var multiplier := (1.0 - variance) + 2.0 * variance * roll
-		var total := def.damage * float(sim.alive_of(attacker)) * multiplier
+		# Scaled by damage_vs_buildings (D-056): soldiers are not siege
+		# engines. Unscaled, a 36-strong militia squad razed a 900 HP town
+		# centre in 2.1 seconds, measured — so a base evaporated the moment
+		# any army reached it and matches decided in about three minutes.
+		var total := def.damage * float(sim.alive_of(attacker)) * multiplier \
+			* maxf(def.damage_vs_buildings, 0.0)
 		if buildings.damage(target, total):
 			destroyed.append(target)
 	return destroyed

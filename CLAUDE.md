@@ -282,6 +282,24 @@ a rule. No test can see it, because the code under test is correct. This
 is the one defect class this project's testing discipline is blind to by
 construction.
 
+**Target match length is 1–2 hours, and the game is nowhere near it**
+(D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
+one 36-strong militia squad razed a 900 HP town centre in **2.1 seconds**
+— a base evaporated the moment any army arrived, and that number was
+introduced by D-055 the same day it made buildings damageable at all.
+
+Two data changes toward it: `UnitDef.damage_vs_buildings` (default 0.15,
+a schema addition against D-010) and roughly tripled building health, plus
+**`squad_cap` 15 → 40** against D-018's ~50/player target — an "army" was
+about six squads once gatherers were paid for.
+
+**Neither reaches 1–2 hours, and is not meant to.** The structural cause
+is that **there is no progression at all** — four buildings and four
+units per civ, no ages, no tech, no upgrades — so after roughly three
+minutes there is nothing to do but fight. That is **its own planning
+milestone**, deferred deliberately (owner's call, 2026-08-02); see Q15.
+Don't try to reach an hour by tuning health.
+
 **And a fourth instance of the `distance()`-per-candidate defect** landed
 in the same change and was caught by `test-load`: scanning every building
 per squad cost ~15 µs/squad, bucketing it cost ~1.3. After vision (M2),
@@ -552,7 +570,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 158 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 350 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

@@ -20,6 +20,69 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-056 · 2026-08-02 · Provisional — match pacing, and what it is NOT solved by
+**Decision:** Target match length is **1–2 hours** (stated by the project
+owner, 2026-08-02). Two changes toward it, both data:
+
+1. **`UnitDef.damage_vs_buildings`** (schema addition against D-010),
+   default **0.15**. A squad's siege output is its ordinary damage scaled
+   by this. Soldiers are not siege engines.
+2. **Building health roughly tripled** — town centre 900 → 3000, barracks
+   600 → 1600, tower 450 → 1400, storehouse 300 → 700 — and **`squad_cap`
+   15 → 40** on both shipped maps.
+
+**Rationale:** matches were deciding at ~200–230 s. Measured cause, one
+squad against a 900 HP town centre with no modifier:
+
+| | time to raze |
+|---|---|
+| legion_militia (36 × 9.5) | **2.1 s** |
+| legion_heavy (24 × 15.0) | 2.9 s |
+| northmen_militia (44 × 6.5) | 3.1 s |
+
+A base evaporated the instant any army reached it. **That number was
+introduced by D-055 the same day**: siege damage was written as
+`damage * alive`, mirroring squad-vs-squad, because there was no prior
+building balance to mirror — buildings had never been damageable at all.
+
+`squad_cap` was 15 against D-018's target of **~50 squads/player**. About
+9 go to gatherers, so an "army" was ~6 squads. The architecture is built
+for 3× more army than the maps permitted, and M4 already showed the sim
+carrying 120 squads at 20 players inside D-020's tick budget — this was a
+data ceiling, never a performance one.
+
+**A separate field rather than an entry in `bonus_vs`.** `bonus_vs` reads
+1.0 for a missing key, which is right for a counter table (no entry =
+generalist) and exactly wrong here: forgetting it on a new unit would
+silently restore the three-second base. `damage_vs_buildings` defaults to
+the SAFE end, so an unaware .tres is conservative rather than
+catastrophic. It is also the hook a future siege archetype hangs on, with
+no code change.
+
+**Rejected alternatives:**
+- *Tune building HP alone.* Would need absurd numbers (a 6-squad army at
+  full damage is ~1,800 HP/second) and would make towers unkillable in
+  the same stroke.
+- *A constant in `combat.gd`.* Violates D-010, and forecloses siege units.
+
+**Consequences and the honest limit:** this does **not** reach 1–2 hours,
+and is not expected to. It stops bases evaporating and lets armies be
+armies. **The structural reason an hour is unreachable is that there is
+no progression at all** — four buildings and four units per civ, no ages,
+no tech, no upgrades — so after roughly three minutes there is nothing to
+do but fight. *Empires: DotMW* and *AoE* both stretch matches with epochs
+to climb, and that machinery does not exist here.
+
+**That is deliberately deferred to its own planning milestone** (project
+owner's call, 2026-08-02): get the basics working first, plan age/tech
+progression in a separate session. See Q15 in the open questions.
+
+**Revisit trigger:** the age/tech milestone landing, which will re-derive
+these numbers from a phase-by-phase account of what a 1–2 hour match is
+made of, rather than from stopping the worst behaviour.
+
+---
+
 ### D-055 · 2026-08-02 · Accepted — squads besiege buildings, and the game became winnable
 **Decision:** Squads damage enemy buildings, via
 `Combat.resolve_squads_vs_buildings` — the mirror of the
@@ -3336,3 +3399,27 @@ items resolved as:
 - **Q14 — Terminology: what does "seamless" mean here** — no loading
   screens between regions, or one contiguous map? Implies very different
   streaming work.
+- **Q15 — Age/tech progression, and what a 1–2 hour match is made of.**
+  **Owner has scheduled this as its own planning milestone** (2026-08-02)
+  — the basics first, this planned separately.
+
+  The target is 1–2 hours (D-056). Matches currently decide in about
+  three minutes, and D-056's tuning addresses only the worst of that.
+  **The structural cause is that there is no progression to climb**: four
+  buildings and four units per civ, no ages, no tech, no upgrades, so
+  after roughly three minutes there is nothing to do but fight. No amount
+  of health or squad-cap tuning reaches an hour from there.
+
+  What the planning session has to settle, at minimum:
+  - Ages/epochs: how many, what gates advancing, what each unlocks.
+  - Whether progression is per-civ (D-047 says civs are data and no
+    script may name one, so a tech tree must be declarative too).
+  - What a 1–2 hour match is made of, phase by phase — opening,
+    expansion, mid-war, late — because D-056's numbers should be DERIVED
+    from that account rather than tuned until the symptom stops.
+  - Economy scale: `NODE_STOCK` is 900 per node with a node every 11
+    cells; an hour-long match at 40 squads/player may exhaust the map,
+    which is either a designed pressure or a bug depending on the answer.
+  - Interaction with D-018's scale target and D-020's tick budget: more
+    ages means more squads alive later, and the 1,000-squad figure is
+    already the ceiling the architecture was sized for.
