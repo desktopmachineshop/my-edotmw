@@ -457,6 +457,16 @@ func _print_summary(reason: String) -> void:
 		_peak_rtt_ms, _peak_loss_fraction * 100.0,
 		_min_throttle if _min_throttle < 1e8 else 1.0])
 
+	var fielded := _civs_fielded()
+	var civ_parts := []
+	for civ in fielded:
+		civ_parts.append("%s=%d" % [civ, fielded[civ]])
+	civ_parts.sort()
+	# A structured marker, not prose: `just test-load` fails the run if
+	# fewer than two civs ever fielded a squad (D-046 criterion 10).
+	print("server: CIVS_FIELDED %d of %d — %s" % [
+		fielded.size(), CivRoster.ids().size(), ", ".join(civ_parts)])
+
 	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
 		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
 		float(_worst_tick_usec) / 1000.0, _worst_tick_index])
@@ -1022,6 +1032,7 @@ func _advance_match() -> void:
 
 
 func _replicate() -> void:
+	_record_seats_once()
 	var send_hash := _sim.tick_count % STATE_HASH_EVERY_TICKS == 0
 
 	# This tick's combat, plus anything produced outside a tick (a
@@ -1338,3 +1349,56 @@ func _handle_chat(peer, data: PackedByteArray) -> void:
 	for other in _clients:
 		(other as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 	print("server: chat <%s> %s" % [speaker, text])
+
+
+## Write who played as whom into the replay, once (D-046 criterion 11).
+##
+## Guarded and driven from the tick rather than hung off one start path,
+## because a match can begin two ways: an admin pressing start in a lobby
+## (D-048), or a player simply connecting to a server that has no lobby.
+## Hanging it off the first would have recorded nothing for every load
+## test, which is exactly where a replay is most useful.
+##
+## Civ comes from `_civ_of`, the same authority production uses, rather
+## than the seat's own field — a seat may have said "Random" until the
+## moment it started, and the replay should record what was PLAYED.
+var _seats_recorded := false
+
+
+func _record_seats_once() -> void:
+	if _seats_recorded or _replay == null or _match == null:
+		return
+	if _match.phase != MatchState.Phase.RUNNING:
+		return
+	_seats_recorded = true
+
+	var seats := []
+	for seat in _match.seats:
+		var player := int(seat["player"])
+		seats.append({
+			"player": player,
+			"team": int(seat.get("team", 0)),
+			"civ": String(_civ_of(player)),
+			"name": String(seat["name"]),
+		})
+	_replay.record_seats(_sim.time, seats)
+
+
+## Which civs actually put a squad on the field this match (D-046
+## criterion 10).
+##
+## Counted from the SIM rather than from the lobby's seat list: a seat
+## says who intended to play a civ, and this says who actually fielded
+## one. A match where a civ was chosen and then never produced anything
+## would satisfy the first and prove nothing about the second — which is
+## the whole failure mode M6's verdict is meant to catch, since the point
+## of two civs is that BOTH are exercised.
+func _civs_fielded() -> Dictionary:
+	var out := {}
+	if _sim == null:
+		return out
+	for squad in range(_sim.squad_count()):
+		var civ := _civ_of(_sim.owner_of(squad))
+		if civ != &"":
+			out[String(civ)] = int(out.get(String(civ), 0)) + 1
+	return out

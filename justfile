@@ -390,6 +390,23 @@ test-load N DURATION:
     fi
     echo "test-load: fog gated at least $((total_squads - known_squads_max)) of $total_squads simulated squads even from the most-informed bot (known_squads_max=$known_squads_max)"
 
+    # Both civilisations must actually have fielded something (D-046
+    # criterion 10). A run where everyone happened to draw the same civ
+    # exercises half the roster and proves nothing about the other half —
+    # and it would pass every other check in this recipe, which is exactly
+    # the vacuous-pass shape D-022's audit exists to catch.
+    civs_fielded="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $2}')"
+    civs_total="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $4}')"
+    if [ -z "${civs_fielded:-}" ]; then
+        echo "test-load: no CIVS_FIELDED marker in the server log — can't check both civs played" >&2
+        exit 1
+    fi
+    if [ "$civs_fielded" -lt 2 ]; then
+        echo "test-load: only $civs_fielded of $civs_total civilisations ever fielded a squad — the match exercised one roster (D-046 criterion 10)" >&2
+        exit 1
+    fi
+    echo "test-load: $civs_fielded of $civs_total civilisations fielded squads"
+
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
     # failed a perfectly good run because the success line said

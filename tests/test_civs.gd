@@ -217,3 +217,68 @@ func test_an_unknown_choice_falls_back_rather_than_failing() -> void:
 	rng.seed = 3
 	var picked := CivRoster.resolve(&"not_a_civ", rng)
 	assert_not_null(CivRoster.by_id(picked), "An unknown civ choice left the player with nothing")
+
+
+# --- replays record who played as whom (D-046 criterion 11) -----------
+
+func test_a_replay_records_seats_with_civ_and_team() -> void:
+	# With asymmetric civs (D-047), "who won" is most of "what happened".
+	# A replay that reconstructed only the motion could not answer it.
+	var seats := [
+		{"player": 1, "team": 1, "civ": String(CivRoster.ids()[0]), "name": "Player 1"},
+		{"player": 2, "team": 2, "civ": String(CivRoster.ids()[1]), "name": "AI 1000"},
+	]
+	var decoded := ReplayLog.decode_seats(_encoded_seats(seats))
+
+	assert_eq(decoded.size(), 2)
+	assert_eq(int(decoded[0]["player"]), 1)
+	assert_eq(String(decoded[0]["civ"]), String(CivRoster.ids()[0]))
+	assert_eq(int(decoded[1]["team"]), 2, "The side a player fought on is part of the record")
+	assert_eq(String(decoded[1]["name"]), "AI 1000")
+
+
+## Round-trips a seat list through the real writer and reader, so this
+## tests the format rather than a re-implementation of it.
+func _encoded_seats(seats: Array) -> PackedByteArray:
+	var path := "user://test-seats-replay.edmw"
+	var writer := ReplayLog.new()
+	assert_eq(writer.open_for_write(path, 10.0, TorusSpace.new(16, 8, 1.0)), OK)
+	writer.record_seats(0.0, seats)
+	writer.close()
+
+	var replay := ReplayLog.read(path)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	for record in replay["records"]:
+		if int(record["kind"]) == ReplayLog.Kind.SEATS:
+			# Re-encode so the assertions above run against the decoder,
+			# not against the dictionary that went in.
+			var buf := StreamPeerBuffer.new()
+			buf.put_u32(record["seats"].size())
+			for seat in record["seats"]:
+				buf.put_u32(int(seat["player"]))
+				buf.put_u8(int(seat["team"]))
+				var civ := String(seat["civ"]).to_utf8_buffer()
+				buf.put_u16(civ.size())
+				buf.put_data(civ)
+				var name := String(seat["name"]).to_utf8_buffer()
+				buf.put_u16(name.size())
+				buf.put_data(name)
+			return buf.data_array
+	assert_true(false, "No SEATS record survived the round trip")
+	return PackedByteArray()
+
+
+func test_an_old_replay_without_seats_is_still_readable() -> void:
+	# SEATS is a new record kind. A reader skips unknown kinds by their
+	# length prefix, so adding one must not strand replays written before
+	# it existed — which is the reason it was added as a kind rather than
+	# folded into the header.
+	var path := "user://test-noseats-replay.edmw"
+	var writer := ReplayLog.new()
+	assert_eq(writer.open_for_write(path, 10.0, TorusSpace.new(16, 8, 1.0)), OK)
+	writer.record_squad_info(0.0, NetProtocol.encode_squad_info([]))
+	writer.close()
+
+	var replay := ReplayLog.read(path)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	assert_gt(int(replay["records"].size()), 0, "A replay with no seats record should still read")
