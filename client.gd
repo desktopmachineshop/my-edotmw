@@ -250,6 +250,7 @@ func _process(delta: float) -> void:
 	_update_hud()
 	_update_minimap()
 	_seat_capture_ai()
+	_refresh_chat()
 	_refresh_lobby()
 
 	if _run_seconds > 0.0:
@@ -1745,6 +1746,26 @@ func _build_lobby_ui() -> void:
 	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left.add_child(_lobby_help)
 
+	# Chat sits under the player list, where the genre puts it.
+	var chat_column := _lobby_panel("CHAT", left)
+	_chat_log_label = Label.new()
+	_chat_log_label.add_theme_font_size_override("font_size", 14)
+	_chat_log_label.custom_minimum_size = Vector2(590.0, 96.0)
+	_chat_log_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	_chat_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_chat_log_label.modulate = Color(0.78, 0.82, 0.88)
+	chat_column.add_child(_chat_log_label)
+
+	_chat_entry = LineEdit.new()
+	_chat_entry.placeholder_text = "Say something…"
+	_chat_entry.add_theme_font_size_override("font_size", 14)
+	_chat_entry.max_length = NetProtocol.CHAT_MAX_CHARS
+	_chat_entry.custom_minimum_size = Vector2(590.0, 0.0)
+	# Submitting is the only way to send: there is no send button, because
+	# Enter is what everyone already presses.
+	_chat_entry.text_submitted.connect(_on_chat_submitted)
+	chat_column.add_child(_chat_entry)
+
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 12)
 	columns.add_child(right)
@@ -1900,11 +1921,25 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)
 
+	# Team, with the same permissions as the civ picker (D-050).
+	var team_picker := OptionButton.new()
+	team_picker.add_theme_font_size_override("font_size", 14)
+	team_picker.custom_minimum_size = Vector2(96.0, 0.0)
+	team_picker.focus_mode = Control.FOCUS_NONE
+	team_picker.disabled = not editable
+	team_picker.add_item("No team")
+	for t in range(1, MatchState.MAX_TEAMS + 1):
+		team_picker.add_item("Team %d" % t)
+	team_picker.selected = clampi(int(seat.get("team", 0)), 0, MatchState.MAX_TEAMS)
+	if editable:
+		team_picker.item_selected.connect(_on_team_picked.bind(index))
+	row.add_child(team_picker)
+
 	var tags := Label.new()
 	tags.text = ("HOST" if int(seat["player"]) == int(_state.lobby.get("admin", 0)) else "")
 	tags.add_theme_font_size_override("font_size", 13)
 	tags.modulate = Color(0.86, 0.76, 0.46)
-	tags.custom_minimum_size = Vector2(48.0, 0.0)
+	tags.custom_minimum_size = Vector2(44.0, 0.0)
 	row.add_child(tags)
 
 	# Only AI seats can be removed, and only by the host. A player leaves
@@ -1925,6 +1960,13 @@ func _on_civ_picked(choice: int, seat_index: int) -> void:
 	if choice < 0 or choice >= choices.size():
 		return
 	_send_lobby(NetProtocol.LOBBY_SET_CIV, seat_index, String(choices[choice]))
+
+
+func _on_team_picked(choice: int, seat_index: int) -> void:
+	# The team number travels in the command's text field, the same way
+	# map options do — one small generic message rather than an opcode per
+	# control.
+	_send_lobby(NetProtocol.LOBBY_SET_TEAM, seat_index, str(choice))
 
 
 func _on_add_ai_pressed() -> void:
@@ -2146,3 +2188,55 @@ func _seat_capture_ai() -> void:
 	# capture keeps working whatever /terrain holds.
 	if _lobby_preset_steps > 0:
 		_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "preset=%d" % _lobby_preset_steps)
+
+	# Put the capture in a state worth photographing: sides chosen, and
+	# something in the chat window. A screenshot of empty controls says
+	# nothing about whether they work.
+	_send_lobby(NetProtocol.LOBBY_SET_TEAM, 0, "1")
+	for i in range(_lobby_ai_wanted):
+		_send_lobby(NetProtocol.LOBBY_SET_TEAM, i + 1, str(2 if i == 0 else 1))
+	if _connected:
+		_peer.send(0, NetProtocol.encode_chat_send("good luck, everyone"),
+			ENetPacketPeer.FLAG_RELIABLE)
+
+
+# --- chat (D-050) -----------------------------------------------------
+
+var _chat_log_label: Label
+var _chat_entry: LineEdit
+
+## What the chat panel was last drawn from, so the log is only rebuilt
+## when a message actually arrives — the same reason the seat list is not
+## rebuilt per frame.
+var _chat_shown := 0
+
+
+func _on_chat_submitted(text: String) -> void:
+	var trimmed := text.strip_edges()
+	if trimmed == "" or not _connected:
+		return
+	_peer.send(0, NetProtocol.encode_chat_send(trimmed), ENetPacketPeer.FLAG_RELIABLE)
+	_chat_entry.text = ""
+
+
+## Redraw the backlog if it grew.
+##
+## Deliberately outside the lobby's change-signature rebuild: a message
+## arriving must not rebuild the seat rows, because that would close a
+## dropdown somebody had open. Chat is the one part of this screen that
+## updates on its own schedule.
+func _refresh_chat() -> void:
+	if _chat_log_label == null:
+		return
+	if _state.chat_log.size() == _chat_shown:
+		return
+	_chat_shown = _state.chat_log.size()
+
+	var lines := []
+	for message in _state.chat_log:
+		lines.append("%s:  %s" % [message["speaker"], message["text"]])
+	# Only the tail fits the panel, and the newest lines are the ones
+	# anyone wants.
+	if lines.size() > 6:
+		lines = lines.slice(lines.size() - 6)
+	_chat_log_label.text = "\n".join(lines)

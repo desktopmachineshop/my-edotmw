@@ -629,6 +629,7 @@ const LOBBY_ADD_AI := 1
 const LOBBY_REMOVE_AI := 2
 const LOBBY_START := 3
 const LOBBY_SET_OPTION := 4
+const LOBBY_SET_TEAM := 5
 
 
 static func encode_lobby(admin_player: int, seats: Array, settings := {}) -> PackedByteArray:
@@ -638,6 +639,7 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}) -> Pac
 	buf.put_u32(seats.size())
 	for seat in seats:
 		buf.put_u8(1 if String(seat["kind"]) == "ai" else 0)
+		buf.put_u8(int(seat.get("team", 0)))
 		buf.put_u32(int(seat["player"]))
 		_put_string(buf, String(seat["civ"]))
 		_put_string(buf, String(seat["name"]))
@@ -655,12 +657,13 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 	var seats := []
 	for _i in range(count):
 		var is_ai := buf.get_u8() == 1
+		var team := int(buf.get_u8())
 		var player := int(buf.get_u32())
 		var civ := _get_string(buf)
 		var name := _get_string(buf)
 		seats.append({
 			"kind": "ai" if is_ai else "human",
-			"player": player, "civ": civ, "name": name,
+			"player": player, "civ": civ, "team": team, "name": name,
 		})
 	var settings := {}
 	var json := _get_string(buf)
@@ -742,4 +745,66 @@ static func decode_map_settings(data: PackedByteArray) -> Dictionary:
 	for key in ["sea_level", "beach_level", "mountain_level",
 			"elevation_frequency", "moisture_frequency", "height_scale"]:
 		out[key] = buf.get_float()
+	return out
+
+
+## CHAT (D-050). Player-authored text, relayed by the server.
+##
+## The server is the only thing that decides who said what: a client sends
+## text and nothing else, and the server attaches the speaker. Letting a
+## client name its own speaker would let it put words in someone's mouth,
+## which is the same "the client is not trusted" rule (D-002) that governs
+## orders — it is just less obvious when the payload is prose.
+const S2C_CHAT := 21
+const C2S_CHAT := 22
+
+## Longest message accepted. Bounded because it arrives on the same
+## reliable channel as everything else (D-042), so an unbounded message
+## is an unbounded stall for every packet queued behind it.
+const CHAT_MAX_CHARS := 240
+
+
+static func encode_chat(speaker: String, text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_CHAT)
+	_put_string(buf, speaker)
+	_put_string(buf, text)
+	return buf.data_array
+
+
+static func decode_chat(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"speaker": _get_string(buf), "text": _get_string(buf)}
+
+
+static func encode_chat_send(text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHAT)
+	_put_string(buf, text)
+	return buf.data_array
+
+
+static func decode_chat_send(data: PackedByteArray) -> String:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return _get_string(buf)
+
+
+## Strip anything that would let a message rewrite the chat log rather
+## than appear in it — newlines and control characters — and cap length.
+##
+## Applied on the SERVER before the message is relayed, so one client
+## cannot fake extra lines in everyone else's window.
+static func sanitise_chat(text: String) -> String:
+	var out := ""
+	for i in range(text.length()):
+		var c := text[i]
+		if c.unicode_at(0) >= 32:
+			out += c
+	out = out.strip_edges()
+	if out.length() > CHAT_MAX_CHARS:
+		out = out.substr(0, CHAT_MAX_CHARS)
 	return out

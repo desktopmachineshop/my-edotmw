@@ -158,6 +158,8 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+		NetProtocol.S2C_CHAT:
+			_handle_chat(data)
 		NetProtocol.S2C_MAP_SETTINGS:
 			map_settings = NetProtocol.decode_map_settings(data)
 		NetProtocol.S2C_LOBBY:
@@ -652,3 +654,16 @@ func has_map() -> bool:
 ## sides cannot disagree about where the water is.
 func terrain_from_settings() -> TerrainGen:
 	return MapSettings.from_dict(map_settings).to_terrain()
+
+
+## Chat backlog, oldest first (D-050). Bounded, because a long match
+## should not grow this without limit.
+var chat_log: Array = []
+const CHAT_HISTORY := 40
+
+
+func _handle_chat(data: PackedByteArray) -> void:
+	var message := NetProtocol.decode_chat(data)
+	chat_log.append(message)
+	if chat_log.size() > CHAT_HISTORY:
+		chat_log = chat_log.slice(chat_log.size() - CHAT_HISTORY)

@@ -162,3 +162,106 @@ func test_nothing_can_be_changed_once_the_match_is_running() -> void:
 	assert_false(m.set_civ(2, m.seat_of(2), CivRoster.ids()[0]),
 		"A civ was changed mid-match")
 	assert_eq(m.add_ai(1, CivRoster.ids()[0], 4), -1, "An AI was seated mid-match")
+
+
+# --- teams (D-050) ----------------------------------------------------
+
+func test_a_player_may_choose_only_their_own_team() -> void:
+	var m := _two_humans()
+	assert_true(m.set_team(2, m.seat_of(2), 1), "A player should pick their own side")
+	assert_false(m.set_team(2, m.seat_of(1), 1),
+		"A player changed somebody else's team — the client is not trusted (D-002)")
+
+
+func test_the_host_allocates_ai_teams() -> void:
+	var m := _two_humans()
+	var ai_seat := m.add_ai(1, CivRoster.RANDOM, 3)
+	assert_true(m.set_team(1, ai_seat, 2), "The host allocates AI teams")
+	assert_false(m.set_team(2, ai_seat, 2), "A non-host set an AI's team")
+
+
+func test_an_out_of_range_team_is_refused() -> void:
+	var m := _two_humans()
+	assert_false(m.set_team(2, m.seat_of(2), 99), "A client can send anything")
+	assert_false(m.set_team(2, m.seat_of(2), -1))
+
+
+func test_no_team_means_free_for_all_not_one_big_alliance() -> void:
+	# The trap: if 0 counted as a team, every player who left the setting
+	# alone would be allied with every other, and nobody could ever fight.
+	var m := _two_humans()
+	assert_false(m.are_allied(1, 2),
+		"Two players with no team set should be enemies, not allies")
+
+
+func test_players_on_the_same_team_are_allied() -> void:
+	var m := _two_humans()
+	m.set_team(1, m.seat_of(1), 2)
+	m.set_team(2, m.seat_of(2), 2)
+	assert_true(m.are_allied(1, 2))
+	assert_true(m.are_allied(1, 1), "A player is always allied with itself")
+
+
+func test_a_team_can_win_rather_than_only_a_lone_player() -> void:
+	# Without this a 2v2 never ends: two surviving allies are still two
+	# active players, so the match would run forever with nobody left to
+	# fight.
+	var m := _lobby()
+	for p in [1, 2, 3]:
+		m.add_player(p)
+	m.set_team(1, m.seat_of(1), 1)
+	m.set_team(2, m.seat_of(2), 1)
+	m.set_team(3, m.seat_of(3), 2)
+	m.request_start(1)
+
+	var space := TorusSpace.new(24, 12, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.first()
+	sim.add_squad(def, 1, Vector2i(2, 2))
+	sim.add_squad(def, 2, Vector2i(6, 2))
+	var doomed := sim.add_squad(def, 3, Vector2i(10, 2))
+
+	m.update(sim)
+	assert_eq(m.phase, MatchState.Phase.RUNNING, "Everyone is alive; nobody has won")
+
+	sim.consume_squad(doomed)
+	m.update(sim)
+	assert_eq(m.phase, MatchState.Phase.FINISHED,
+		"One team is left standing, so the match is over")
+
+
+func test_the_team_map_describes_every_seat() -> void:
+	var m := _two_humans()
+	m.set_team(1, m.seat_of(1), 3)
+	var map := m.team_map()
+	assert_eq(int(map.get(1, -1)), 3, "The simulation is told player 1's team")
+	assert_eq(int(map.get(2, -1)), 0, "…and that player 2 has none")
+
+
+# --- chat (D-050) -----------------------------------------------------
+
+func test_chat_strips_newlines_so_a_message_cannot_forge_extra_lines() -> void:
+	# A message is one line in everyone's window. Without this, "hi\nHost:
+	# I surrender" would render as two, one of them attributed to somebody
+	# else — putting words in another player's mouth, which is the same
+	# untrusted-client rule as orders (D-002).
+	var cleaned := NetProtocol.sanitise_chat("hi\nHost:  I surrender")
+	assert_false(cleaned.contains("\n"), "A newline survived into a chat message")
+	assert_true(cleaned.begins_with("hi"))
+
+
+func test_chat_is_length_capped() -> void:
+	var long_text := "x".repeat(NetProtocol.CHAT_MAX_CHARS * 3)
+	assert_eq(NetProtocol.sanitise_chat(long_text).length(), NetProtocol.CHAT_MAX_CHARS,
+		"An unbounded message stalls every packet queued behind it (D-042)")
+
+
+func test_an_empty_message_stays_empty() -> void:
+	assert_eq(NetProtocol.sanitise_chat("   \t  "), "",
+		"Whitespace-only chat should be dropped, not relayed as a blank line")
+
+
+func test_chat_roundtrips_with_its_speaker() -> void:
+	var decoded := NetProtocol.decode_chat(NetProtocol.encode_chat("Player 2", "well played"))
+	assert_eq(String(decoded["speaker"]), "Player 2")
+	assert_eq(String(decoded["text"]), "well played")

@@ -529,3 +529,40 @@ func test_replay_reconstructs_post_combat_strengths() -> void:
 		"Replay should reconstruct the attacker's final strength")
 	assert_eq(int(strengths[defender]), final_defender_alive,
 		"Replay should reconstruct the defender's final (post-casualty) strength")
+
+
+func test_allies_do_not_shoot_each_other() -> void:
+	# The whole point of teams (D-050). A team dropdown that combat
+	# ignored would be decoration.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.teams = {1: 1, 2: 1}
+
+	var def := UnitRoster.first()
+	var a := sim.add_squad(def, 1, Vector2i(5, 5))
+	var b := sim.add_squad(def, 2, Vector2i(5, 5))
+	var before := sim.alive_of(a) + sim.alive_of(b)
+
+	for _i in range(30):
+		sim.tick()
+
+	assert_eq(sim.alive_of(a) + sim.alive_of(b), before,
+		"Allied squads standing on each other fought anyway")
+
+
+func test_enemies_on_no_team_still_fight() -> void:
+	# The other side of the boundary: without it, "allies never fight"
+	# could be satisfied by nobody ever fighting.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+
+	var def := UnitRoster.first()
+	var a := sim.add_squad(def, 1, Vector2i(5, 5))
+	var b := sim.add_squad(def, 2, Vector2i(5, 5))
+	var before := sim.alive_of(a) + sim.alive_of(b)
+
+	for _i in range(30):
+		sim.tick()
+
+	assert_lt(sim.alive_of(a) + sim.alive_of(b), before,
+		"Two players with no team set should be enemies (free-for-all is the default)")

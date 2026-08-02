@@ -132,7 +132,7 @@ func _seat_human(player: int) -> void:
 			return
 	seats.append({
 		"kind": "human", "player": player,
-		"civ": CivRoster.RANDOM, "name": "Player %d" % player,
+		"civ": CivRoster.RANDOM, "team": 0, "name": "Player %d" % player,
 	})
 	if admin_player <= 0:
 		admin_player = player
@@ -152,7 +152,7 @@ func add_ai(by_player: int, civ: StringName, player_id: int) -> int:
 		return -1
 	seats.append({
 		"kind": "ai", "player": player_id,
-		"civ": civ, "name": "AI %d" % player_id,
+		"civ": civ, "team": 0, "name": "AI %d" % player_id,
 	})
 	return seats.size() - 1
 
@@ -313,10 +313,73 @@ func _check_victory() -> void:
 	if phase != Phase.RUNNING or _players.size() < 2:
 		return
 	var active := active_players()
-	if active.size() > 1:
+	if active.size() > 1 and not _all_allied(active):
 		return
+
+	# A TEAM can win, not only a lone player (D-050). Without this a 2v2
+	# never ends: two allies are still two active players, so the match
+	# would run forever with nobody left to fight.
 	phase = Phase.FINISHED
-	winner = active[0] if active.size() == 1 else -1
+	winner = active[0] if active.size() >= 1 else -1
+
+
+## Whether everyone still standing is on the same side.
+func _all_allied(players: Array) -> bool:
+	for a in players:
+		for b in players:
+			if not are_allied(int(a), int(b)):
+				return false
+	return true
+
+
+## Same rule the simulation uses (SquadSim.are_allied): team 0 is not a
+## team, so two players who both chose "none" are enemies. One definition
+## would be better than two — this one exists because MatchState decides
+## victory before the sim has been handed the teams, and both must agree.
+func are_allied(a: int, b: int) -> bool:
+	if a == b:
+		return true
+	var team_a := team_of(a)
+	var team_b := team_of(b)
+	return team_a != 0 and team_a == team_b
+
+
+func team_of(player: int) -> int:
+	for seat in seats:
+		if int(seat["player"]) == player:
+			return int(seat.get("team", 0))
+	return 0
+
+
+## player -> team, for handing to the simulation at match start.
+func team_map() -> Dictionary:
+	var out := {}
+	for seat in seats:
+		out[int(seat["player"])] = int(seat.get("team", 0))
+	return out
+
+
+## Choose a side. Same permissions as choosing a civ: your own seat, or
+## an AI seat if you are the host — and enforced here rather than by the
+## client's UI, because the client is not trusted (D-002).
+func set_team(by_player: int, seat_index: int, team: int) -> bool:
+	if phase != Phase.LOBBY:
+		return false
+	if seat_index < 0 or seat_index >= seats.size():
+		return false
+	if team < 0 or team > MAX_TEAMS:
+		return false
+	var seat: Dictionary = seats[seat_index]
+	var own: bool = seat["kind"] == "human" and int(seat["player"]) == by_player
+	var admins_ai: bool = seat["kind"] == "ai" and is_admin(by_player)
+	if not (own or admins_ai):
+		return false
+	seat["team"] = team
+	return true
+
+
+## Sides available in the lobby. 0 is "no team" — free-for-all.
+const MAX_TEAMS := 4
 
 
 ## May `player` field another squad? Counts LIVING squads, so losing an

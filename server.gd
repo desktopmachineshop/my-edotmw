@@ -681,6 +681,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
 				_handle_order_gather(peer, data)
+			NetProtocol.C2S_CHAT:
+				_handle_chat(peer, data)
 			NetProtocol.C2S_LOBBY:
 				_handle_lobby_command(peer, data)
 			_:
@@ -1149,6 +1151,10 @@ func _handle_lobby_command(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 			ok = _match.remove_ai(player, int(command["seat"]))
 			if not ok:
 				_notify(peer, "Only the lobby admin can remove AI players")
+		NetProtocol.LOBBY_SET_TEAM:
+			ok = _match.set_team(player, int(command["seat"]), int(String(command["civ"])))
+			if not ok:
+				_notify(peer, "You cannot choose that seat's team")
 		NetProtocol.LOBBY_SET_OPTION:
 			# The civ field carries "key=value" — the lobby command is a
 			# tiny generic message rather than one opcode per slider, so a
@@ -1188,6 +1194,9 @@ func _on_match_started() -> void:
 	# an opening stockpile.
 	for seat in _match.seats:
 		_civs[int(seat["player"])] = StringName(seat["civ"])
+	# Teams reach the simulation here, because combat needs them every
+	# round and nothing before this point could have known them (D-050).
+	_sim.teams = _match.team_map()
 	print("server: match started — %s" % _seat_summary())
 
 	# The world's concrete numbers, before anybody is admitted: a client
@@ -1227,3 +1236,31 @@ func _broadcast_lobby() -> void:
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats, _settings.to_dict())
 	for peer in _clients:
 		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Relay a chat message (D-050).
+##
+## The speaker is attached HERE, from the connection the message arrived
+## on. A client sends text and nothing else — letting it name its own
+## speaker would let it put words in another player's mouth, which is the
+## same untrusted-client rule as orders (D-002), just less obvious when
+## the payload is prose.
+func _handle_chat(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+	var record = _clients.get(peer, null)
+	if record == null:
+		return
+	var text := NetProtocol.sanitise_chat(NetProtocol.decode_chat_send(data))
+	if text == "":
+		return
+
+	var player := int(record["player"])
+	var speaker := "Player %d" % player
+	if _match != null:
+		var seat := _match.seat_of(player)
+		if seat >= 0:
+			speaker = String(_match.seats[seat]["name"])
+
+	var packet := NetProtocol.encode_chat(speaker, text)
+	for other in _clients:
+		(other as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+	print("server: chat <%s> %s" % [speaker, text])

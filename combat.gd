@@ -200,7 +200,8 @@ func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
 		if not buckets.has(idx):
 			continue
 		for other in buckets[idx]:
-			if sim.owner_of(other) == owner:
+			# Allies are not targets (D-050).
+			if sim.are_allied(sim.owner_of(other), owner):
 				continue
 			var d := TorusSpace.hex_length(offset)
 			# Deterministic tiebreak (lower id wins), so target choice
@@ -327,7 +328,7 @@ func _find_target(sim: SquadSim, buckets: Dictionary, attacker: int, attacker_de
 			continue
 		var d := TorusSpace.hex_length(offset)
 		for other in buckets[idx]:
-			if other == attacker or sim.owner_of(other) == owner:
+			if other == attacker or sim.are_allied(sim.owner_of(other), owner):
 				continue
 			# Deterministic tiebreak (lower id wins) so target choice
 			# never depends on bucket iteration order.

@@ -933,3 +933,28 @@ func visible_to(player: int) -> Array:
 		if _owner[i] == player or vision.is_visible(player, _cell[i]):
 			ids.append(i)
 	return ids
+
+
+# --- alliances (D-050) ------------------------------------------------
+
+## player id -> team number. 0 means "no team", which is free-for-all:
+## everyone is hostile to everyone.
+##
+## Held here rather than in MatchState because COMBAT needs it every
+## round, and combat is driven from this class. MatchState owns choosing
+## teams; this owns the consequence.
+var teams := {}
+
+
+## Whether two players are on the same side.
+##
+## A player is always allied with itself. Team 0 is deliberately NOT a
+## team — two players who both picked "none" are enemies, not allies,
+## which is what makes free-for-all the default rather than a special
+## case that has to be spelled somewhere.
+func are_allied(a: int, b: int) -> bool:
+	if a == b:
+		return true
+	var team_a := int(teams.get(a, 0))
+	var team_b := int(teams.get(b, 0))
+	return team_a != 0 and team_a == team_b
