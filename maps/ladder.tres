@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="MapConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://map_config.gd" id="1_mapcfg"]
+
+[resource]
+script = ExtResource("1_mapcfg")
+id = &"ladder"
+display_name = "Ladder"
+width = 64
+height = 32
+hex_size = 1.0
+squads_per_player = 12
+squad_cap = 15
+symmetry_order = 1
+player_slots = 4
+min_spawn_spacing = 10
+spawn_seed = 4242

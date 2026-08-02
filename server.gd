@@ -467,6 +467,11 @@ func _print_summary(reason: String) -> void:
 	print("server: CIVS_FIELDED %d of %d — %s" % [
 		fielded.size(), CivRoster.ids().size(), ", ".join(civ_parts)])
 
+	for brain in _ai_players:
+		print("server: %s" % brain.stats_line())
+	print("server: MATCH_RESULT winner=%d phase=%d" % [
+		_match.winner, int(_match.phase)])
+
 	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
 		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
 		float(_worst_tick_usec) / 1000.0, _worst_tick_index])

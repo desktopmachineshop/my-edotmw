@@ -66,6 +66,7 @@ func update(now: float) -> void:
 		return
 	_next_think = now + THINK_INTERVAL
 
+	_record_stats()
 	_found_town()
 	_train()
 	_put_gatherers_to_work()
@@ -179,6 +180,9 @@ func _fight(now: float) -> void:
 	# Attacked in a body rather than one squad at a time, so the AI
 	# arrives as an army instead of feeding itself in piecemeal.
 	_attack_at = now + THINK_INTERVAL * 8.0
+	attacks_launched += 1
+	if first_attack_at < 0.0:
+		first_attack_at = now
 	for squad in army:
 		var order := state.encode_attack_move(squad, target)
 		if not order.is_empty():
@@ -196,3 +200,44 @@ func state_time() -> float:
 
 func set_time(now: float) -> void:
 	_now = now
+
+
+# --- what the ladder measures (D-054) ---------------------------------
+#
+# Tracked by the AI itself rather than dug out of the simulation, for the
+# same reason it reads the world through a ClientState: these are the
+# numbers as the PLAYER experienced them. An economy stat pulled from
+# SquadSim would describe a game this AI could not see.
+
+var peak_squads: int = 0
+var peak_workers: int = 0
+var buildings_raised: int = 0
+var attacks_launched: int = 0
+var first_attack_at: float = -1.0
+
+
+func _record_stats() -> void:
+	var squads := _own_squads()
+	peak_squads = maxi(peak_squads, squads.size())
+
+	var workers := 0
+	for squad in squads:
+		var def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if def != null and def.carry_capacity > 0:
+			workers += 1
+	peak_workers = maxi(peak_workers, workers)
+
+	var mine := 0
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) == player and not bool(info["destroyed"]):
+			mine += 1
+	buildings_raised = maxi(buildings_raised, mine)
+
+
+## One line the ladder can parse. Structured markers, not prose — the
+## same rule the load test's verdict follows.
+func stats_line() -> String:
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d attacks=%d first_attack=%.1f" % [
+		player, civ, peak_squads, peak_workers, buildings_raised,
+		attacks_launched, first_attack_at]

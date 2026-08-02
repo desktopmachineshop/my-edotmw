@@ -678,3 +678,82 @@ lobby-shot SECONDS="8" AI="2" PRESET="0": _import
         exit 1
     fi
     echo "lobby-shot: wrote $shot"
+
+# AI ladder (D-054): headless AI-vs-AI matches, to make "smarter" a
+# measurement rather than an opinion.
+#
+# Runs the REAL server rather than a re-implementation of it. M4 paid for
+# that lesson twice: a harness is a workload, and a workload has blind
+# spots — `just profile` reported a healthy 29 ms for code that spent
+# 866 ms in a live server, because the harness resolved its UnitDefs once
+# at setup and the live one did not.
+#
+# Uses maps/ladder.tres — small, four close spawns — so opponents actually
+# meet inside a match. On the 128x64 ship map two AI can grow old without
+# ever seeing each other, which measures nothing.
+#
+# Reports the SPREAD and the sample size, not a bare win rate: ten matches
+# where one side wins six proves nothing, and this project has twice been
+# burned by a number that looked conclusive.
+[doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
+ai-ladder MATCHES="10" SECONDS="240" AI="2": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/ai-ladder.log"
+    : > "$log"
+
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{SECONDS}}s cap, map=ladder"
+    for i in $(seq 1 {{MATCHES}}); do
+        # A different seed per match: same seed every time would measure
+        # one map repeatedly and call it a win rate.
+        if [ "{{runtime}}" = "docker" ]; then
+            docker compose -p edotmw run --rm --no-deps server \
+                --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        else
+            godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+            "$godot" --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        fi
+        printf '.'
+    done
+    echo
+
+    echo "ai-ladder: --- results over {{MATCHES}} matches ---"
+    awk '
+        /MATCH_RESULT/ {
+            match($0, /winner=(-?[0-9]+)/, w)
+            if (w[1] == "-1") { draws++ } else { wins[w[1]]++ }
+            matches++
+        }
+        /AI_STATS/ {
+            match($0, /player=([0-9]+)/, p)
+            match($0, /civ=([a-z_]+)/, c)
+            match($0, /squads_peak=([0-9]+)/, s)
+            match($0, /workers_peak=([0-9]+)/, wk)
+            match($0, /buildings=([0-9]+)/, b)
+            match($0, /first_attack=(-?[0-9.]+)/, fa)
+            civ[p[1]] = c[1]
+            sq[p[1]] += s[1]; wkr[p[1]] += wk[1]; bld[p[1]] += b[1]; n[p[1]]++
+            if (fa[1] >= 0) { atk[p[1]] += fa[1]; atkn[p[1]]++ }
+        }
+        END {
+            if (matches == 0) { print "  no matches completed — see the log"; exit 1 }
+            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
+            for (k in n) {
+                printf "  player %-5s civ=%-10s wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f",
+                    k, civ[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k]
+                if (atkn[k] > 0) printf "  first_attack~%.0fs", atk[k]/atkn[k]
+                else printf "  first_attack=never"
+                printf "\n"
+            }
+            if (draws == matches) {
+                print "  EVERY match hit the time cap — the AI is not seeking combat, which is a finding, not a pass"
+            }
+        }
+    ' "$log"
