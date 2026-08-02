@@ -55,6 +55,14 @@ var _peak_clients := 0
 ## the lookup does not change, only who decides.
 var _civs := {}
 
+## LoopbackPeer -> the same record shape as _clients, for AI seats
+## (D-051). Kept OUT of _clients on purpose: several places legitimately
+## treat that dictionary's keys as real sockets (ENet statistics, the
+## lobby broadcast), and a duck-typed impostor there would be a null cast
+## waiting to happen.
+var _ai_clients := {}
+var _ai_players: Array = []
+
 
 ## This player's civ. Never a hardcoded id — the roster is the authority,
 ## and no script may name a civ (D-046 criterion 3).
@@ -186,6 +194,12 @@ func _ready() -> void:
 	# behind it because there is genuinely nothing there yet.
 	if not _match.require_admin_start:
 		_build_world()
+		# AI opponents without a lobby, so `run-client` and the load test can
+		# have real opposition (D-051).
+		var ai_wanted := int(args.get("ai", 0))
+		var civs := CivRoster.ids()
+		for i in range(ai_wanted):
+			_seat_ai(1000 + i, civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
 
 	_host = ENetConnection.new()
 	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
@@ -365,6 +379,12 @@ func _process(delta: float) -> void:
 					float(_sim.last_production_usec) / 1000.0,
 					float(_sim.last_economy_usec) / 1000.0])
 		_advance_match()
+		# AI seats think on the server's clock, after the world has moved
+		# but before it is replicated, so they act on the same tick a human
+		# would be reacting to (D-051).
+		for brain in _ai_players:
+			brain.set_time(_sim.time)
+			brain.update(_sim.time)
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
@@ -520,7 +540,9 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 ## function, because "what a player starts with" is exactly the kind of
 ## thing that drifts when written twice — the same reasoning that made
 ## ownership read from the sim rather than a per-connection copy.
-func _admit_player(peer: ENetPacketPeer, player: int) -> void:
+## `peer` is deliberately untyped: it is an ENetPacketPeer for a human
+## and a LoopbackPeer for an AI seat (D-051), and both answer send().
+func _admit_player(peer, player: int) -> void:
 	var squads := _spawn_squads_for(player)
 
 	# The new player's own squads need a vision stamp before anything asks
@@ -558,7 +580,7 @@ func _admit_player(peer: ENetPacketPeer, player: int) -> void:
 	# worst, leaving it alone means their next tick re-announces a squad
 	# that only just became visible via this broadcast — redundant, never
 	# a leak, and self-correcting within one tick.
-	_clients[peer]["visible"] = _dict_from_ids(_sim.visible_to(player))
+	_record_for(peer)["visible"] = _dict_from_ids(_sim.visible_to(player))
 
 	# Starting stockpile (D-028): gatherers cost food and food comes from
 	# gatherers, so a player starting empty could never begin.
@@ -588,7 +610,7 @@ func _admit_player(peer: ENetPacketPeer, player: int) -> void:
 		player, squads.size(), _clients.size(), _match.describe()])
 
 
-func _send_squad_info(peer: ENetPacketPeer, player: int) -> void:
+func _send_squad_info(peer, player: int) -> void:
 	var entries := _sim.squad_info_entries(_sim.visible_to(player))
 	if entries.is_empty():
 		return
@@ -642,7 +664,7 @@ func _all_squad_ids() -> Array:
 
 
 func _on_disconnect(peer: ENetPacketPeer) -> void:
-	var record = _clients.get(peer, null)
+	var record = _record_for(peer)
 	if record != null:
 		var player := int(record["player"])
 		_sim.replicator.forget_client(player)
@@ -667,6 +689,18 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 		var data := peer.get_packet()
 		if data.size() < 1:
 			continue
+		_dispatch(peer, data)
+
+
+## One place a command is acted on, whether it arrived over a socket or
+## came from an AI player sitting in this process (D-051).
+##
+## AI orders go through the SAME handlers and therefore the same checks:
+## ownership read from the sim, the squad cap, affordability, the match
+## actually running. An AI that reached into SquadSim directly could do
+## things no human could, and the difference would stay invisible until
+## somebody wondered why it never ran out of food.
+func _dispatch(peer, data: PackedByteArray) -> void:
 		var opcode := NetProtocol.opcode_of(data)
 		match opcode:
 			NetProtocol.C2S_ORDER_MOVE:
@@ -710,8 +744,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 ## up, about three copies of a check. The lesson is narrower than the
 ## comment: it was not a copy of the *check* that drifted, it was a copy
 ## of the *data*. There is one owner of ownership now.
-func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
-	var record = _clients.get(peer, null)
+func _validated_squad(peer, squad: int) -> int:
+	var record = _record_for(peer)
 	if record == null:
 		return -1
 	if not _match.is_running():
@@ -730,7 +764,7 @@ func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
 	return squad
 
 
-func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_move(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_move(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -740,7 +774,7 @@ func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	_sim.order_move(squad, _sim.space.from_index(int(order["destination"])))
 
 
-func _handle_order_attack_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_attack_move(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -752,7 +786,7 @@ func _handle_order_attack_move(peer: ENetPacketPeer, data: PackedByteArray) -> v
 ## trusted from the client (D-002): who owns the squad, whether that KIND
 ## of squad may build this kind of building, whether the ground takes a
 ## foundation, and whether the builder is anywhere near the site.
-func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_build(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_build(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -813,8 +847,8 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## building, the building makes that kind of unit, the player is under the
 ## squad cap, and the player can pay. Payment is last and is all-or-
 ## nothing, so a refused order never leaves a part-spent wallet.
-func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
-	var record = _clients.get(peer, null)
+func _handle_order_produce(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
 	if record == null or not _match.is_running():
 		return
 
@@ -857,7 +891,7 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## Put a gatherer squad to work (D-028). The economy decides whether the
 ## squad can gather and whether the cell holds anything; this only checks
 ## that the order is the player's to give.
-func _handle_order_gather(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_gather(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_gather(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -875,12 +909,12 @@ func _handle_order_gather(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## Tell one player why something did not happen. The server owns the
 ## rules, so it owns the explanation too — a client inventing its own
 ## refusal messages would be a second copy of those rules, free to drift.
-func _notify(peer: ENetPacketPeer, text: String) -> void:
+func _notify(peer, text: String) -> void:
 	peer.send(0, NetProtocol.encode_notice(text), ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Wallets go to their owner and nobody else (D-028).
-func _send_wallet(peer: ENetPacketPeer, player: int) -> void:
+func _send_wallet(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_wallet(_economy.wallet_of(player)),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -897,7 +931,7 @@ func _is_buildable(cell: Vector2i) -> bool:
 	return true
 
 
-func _handle_order_stop(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_stop(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_stop(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -1006,8 +1040,16 @@ func _replicate() -> void:
 	for player in _sim.last_wallet_changes:
 		wallet_changes[player] = true
 
-	for peer in _clients:
-		var record = _clients[peer]
+	# AI seats are fed through the SAME loop as humans (D-051). They hold a
+	# LoopbackPeer whose send() hands bytes to a ClientState, so an AI
+	# receives byte-identical packets through byte-identical code — and its
+	# knowledge is a subset of its vision by construction rather than by
+	# promise. Giving the AI privileged access to SquadSim would have been
+	# less code and impossible to trust.
+	var recipients := _clients.duplicate()
+	recipients.merge(_ai_clients)
+	for peer in recipients:
+		var record = recipients[peer]
 		var player := int(record["player"])
 		var visible := _sim.visible_to(player)
 		var visible_set := _dict_from_ids(visible)
@@ -1126,8 +1168,8 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 var _next_ai_player := 1000
 
 
-func _handle_lobby_command(peer: ENetPacketPeer, data: PackedByteArray) -> void:
-	var record = _clients.get(peer, null)
+func _handle_lobby_command(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
 	if record == null:
 		return
 	var player := int(record["player"])
@@ -1208,9 +1250,41 @@ func _on_match_started() -> void:
 
 	for seat in _match.seats:
 		var player := int(seat["player"])
+		if String(seat["kind"]) == "ai":
+			_seat_ai(player, StringName(seat["civ"]))
+			continue
 		var peer := _peer_of(player)
 		if peer != null:
 			_admit_player(peer, player)
+
+
+## Bring an AI seat to life (D-051).
+##
+## It is admitted through exactly the same `_admit_player` a human goes
+## through — same spawn, same opening stockpile, same welcome packet —
+## because "what a player starts with" must not have two implementations.
+func _seat_ai(player: int, civ: StringName) -> void:
+	var brain := AiPlayer.new(player, civ)
+	var peer := LoopbackPeer.new(brain.state)
+	# Its orders take the identical path a human's do, validation and all.
+	brain.send = func(packet: PackedByteArray) -> void:
+		_dispatch(peer, packet)
+
+	# Registered with the match like any player, so elimination and
+	# victory count an AI exactly as they count a human (D-033).
+	_match.add_player(player)
+	_ai_clients[peer] = {"player": player, "visible": {}}
+	_ai_players.append(brain)
+	_admit_player(peer, player)
+	print("server: AI seated as player %d (%s)" % [player, civ])
+
+
+## A client record, whether the sender is a socket or an AI seat in this
+## process (D-051).
+func _record_for(peer):
+	if _clients.has(peer):
+		return _clients[peer]
+	return _ai_clients.get(peer, null)
 
 
 func _peer_of(player: int) -> ENetPacketPeer:
@@ -1245,8 +1319,8 @@ func _broadcast_lobby() -> void:
 ## speaker would let it put words in another player's mouth, which is the
 ## same untrusted-client rule as orders (D-002), just less obvious when
 ## the payload is prose.
-func _handle_chat(peer: ENetPacketPeer, data: PackedByteArray) -> void:
-	var record = _clients.get(peer, null)
+func _handle_chat(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
 	if record == null:
 		return
 	var text := NetProtocol.sanitise_chat(NetProtocol.decode_chat_send(data))

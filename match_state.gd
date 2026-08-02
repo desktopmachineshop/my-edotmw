@@ -128,7 +128,9 @@ var civ_rng := RandomNumberGenerator.new()
 
 func _seat_human(player: int) -> void:
 	for seat in seats:
-		if seat["kind"] == "human" and int(seat["player"]) == player:
+		# Any seat, not just a human one: an AI registered with the match
+		# must not also acquire a human seat beside itself.
+		if int(seat["player"]) == player:
 			return
 	seats.append({
 		"kind": "human", "player": player,
