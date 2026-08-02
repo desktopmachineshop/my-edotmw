@@ -474,6 +474,15 @@ var peak_squads: int = 0
 var peak_workers: int = 0
 var buildings_raised: int = 0
 var peak_enemy_buildings_known: int = 0
+
+## Why production stopped, counted rather than reasoned about. See
+## _report_refusals for why this exists.
+var afford_refusals: int = 0
+var cap_refusals: int = 0
+## Largest total stockpile this AI ever sat on. A big idle pile alongside
+## a small army is the signature of a THROUGHPUT limit; a floor near zero
+## is the signature of a real economy limit.
+var peak_stockpile: int = 0
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
@@ -510,13 +519,19 @@ func _record_stats() -> void:
 	# ever grows and a peak is the honest summary.
 	peak_enemy_buildings_known = maxi(peak_enemy_buildings_known, theirs)
 
+	var stockpile := 0
+	for i in range(state.wallet.size()):
+		stockpile += state.wallet[i]
+	peak_stockpile = maxi(peak_stockpile, stockpile)
+
 
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d afford_refusals=%d cap_refusals=%d" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
-		peak_enemy_buildings_known, attacks_launched, first_attack_at]
+		peak_enemy_buildings_known, attacks_launched, first_attack_at,
+		peak_stockpile, afford_refusals, cap_refusals]
 
 
 # --- what it is thinking (D-054) --------------------------------------
@@ -536,6 +551,21 @@ func _report_refusals() -> void:
 		return
 	_last_notice_seen = state.last_notice
 	print("server: AI_REFUSED player=%d — %s" % [player, state.last_notice])
+
+	# Counted, not just printed, so the ladder can answer "was it short of
+	# MONEY or short of BUILD SLOTS?" with a number.
+	#
+	# That question was answered by argument once already and the argument
+	# was wrong: raising squad_cap 15 -> 40 was expected to hit an economy
+	# wall, on the reasoning that a fixed 7 gatherers could not fund 33
+	# military squads. There is no upkeep in this game — a unit costs a
+	# one-time price and nothing drains per tick — so a worker count cannot
+	# cap army SIZE at all, only the rate of buying. The real ceiling is
+	# one barracks producing serially at 5-16 s a squad.
+	if state.last_notice.contains("afford"):
+		afford_refusals += 1
+	elif state.last_notice.contains("cap") or state.last_notice.contains("limit"):
+		cap_refusals += 1
 
 	# React, not just report. "Nothing to gather there" means a node it is
 	# standing on is empty; without clearing the assignment the same
