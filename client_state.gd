@@ -627,8 +627,13 @@ func encode_stop(squad: int) -> PackedByteArray:
 var lobby := {}
 
 
+## True only while the match has not started. The seat list survives the
+## whole match (colours, teams), so its presence says nothing about the
+## phase — inferring it from that drew the lobby over a live game.
 func in_lobby() -> bool:
-	return not lobby.is_empty() and not lobby.get("seats", []).is_empty()
+	if lobby.get("seats", []).is_empty():
+		return false
+	return int(lobby.get("phase", 0)) == 0
 
 
 ## This client's own seat index, or -1.
@@ -703,3 +708,19 @@ func _team_of(who: int) -> int:
 		if int(seat["player"]) == who:
 			return int(seat.get("team", 0))
 	return 0
+
+
+## The colour that identifies a player's units and buildings (D-052).
+##
+## Derived from the SEAT ORDER the server sent, so every client agrees
+## without a message dedicated to colour — and so a player's colour is
+## stable for the whole match rather than depending on who happens to be
+## on screen.
+func colour_of(player: int) -> Color:
+	var seats: Array = lobby.get("seats", [])
+	for i in range(seats.size()):
+		if int(seats[i]["player"]) == player:
+			return PlayerColours.of_index(i)
+	# Before the seat list arrives, or for a player not in it: fall back
+	# to something stable rather than flickering as the list loads.
+	return PlayerColours.of_index(maxi(player - 1, 0))

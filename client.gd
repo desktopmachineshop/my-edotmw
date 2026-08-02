@@ -570,7 +570,7 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 		unit = PrimitiveUnit.new()
 		add_child(unit)
 		var def := UnitRoster.by_id(StringName(def_id))
-		unit.rebuild(def if def != null else _unit_def)
+		unit.rebuild(def if def != null else _unit_def, _owner_colour_of(squad_id))
 		_squad_nodes[squad_id] = unit
 	return unit
 
@@ -972,7 +972,11 @@ func _refresh_buildings() -> void:
 			var mesh := BoxMesh.new()
 			mesh.size = Vector3(2.4, 3.0, 2.4)
 			var material := StandardMaterial3D.new()
-			material.albedo_color = def.mesh_color
+			# Owner colour, like units (D-052) — a town hall you cannot
+			# attribute at a glance is worse than a squad you cannot,
+			# because it tells you whose ground you are standing on.
+			material.albedo_color = _state.colour_of(int(info["owner"])).lerp(
+				def.mesh_color, 0.25)
 			material.roughness = 0.9
 			instance = MeshInstance3D.new()
 			instance.mesh = mesh
@@ -1904,7 +1908,10 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	row.add_theme_constant_override("separation", 12)
 	frame.add_child(row)
 
-	row.add_child(_swatch(_civ_colour(civ), Vector2(24.0, 24.0)))
+	# The PLAYER's colour, not the civ's (D-052): twenty players share
+	# two civs, so a civ swatch cannot tell them apart — and this is the
+	# same colour their army will be on the field.
+	row.add_child(_swatch(PlayerColours.of_index(index), Vector2(24.0, 24.0)))
 
 	var kind := Label.new()
 	kind.text = "AI" if is_ai else "HUMAN"
@@ -2254,3 +2261,14 @@ func _refresh_chat() -> void:
 	if lines.size() > 6:
 		lines = lines.slice(lines.size() - 6)
 	_chat_log_label.text = "\n".join(lines)
+
+
+## The colour of whoever owns this squad (D-052). Falls back to a
+## neutral tint before composition arrives, rather than guessing an owner.
+func _owner_colour_of(squad_id) -> Color:
+	var entry: Dictionary = _state.composition.get(squad_id, {})
+	if entry.is_empty():
+		entry = _state.ghost_info(squad_id)
+	if entry.is_empty():
+		return Color(0, 0, 0, 0)
+	return _state.colour_of(int(entry.get("owner", 0)))

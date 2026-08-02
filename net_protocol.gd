@@ -632,9 +632,15 @@ const LOBBY_SET_OPTION := 4
 const LOBBY_SET_TEAM := 5
 
 
-static func encode_lobby(admin_player: int, seats: Array, settings := {}) -> PackedByteArray:
+## `phase` is MatchState.Phase. Carried because a client cannot infer
+## "am I in a lobby" from HAVING a seat list — it keeps the seats all
+## match, for player colours and teams (D-052). Inferring it from the
+## list being non-empty made the client draw the lobby over a running
+## game while every counter reported a healthy match.
+static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
+	buf.put_u8(phase)
 	buf.put_u32(admin_player)
 	buf.put_u32(seats.size())
 	for seat in seats:
@@ -652,6 +658,7 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = data
 	buf.get_u8()
+	var phase := int(buf.get_u8())
 	var admin := int(buf.get_u32())
 	var count := int(buf.get_u32())
 	var seats := []
@@ -671,7 +678,7 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		var parsed = JSON.parse_string(json)
 		if parsed is Dictionary:
 			settings = parsed
-	return {"admin": admin, "seats": seats, "settings": settings}
+	return {"admin": admin, "seats": seats, "settings": settings, "phase": phase}
 
 
 static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:

@@ -564,6 +564,10 @@ func _admit_player(peer, player: int) -> void:
 	# passed (squads drawn, soldiers derived, zero desyncs, colours in the
 	# frame) because the HUD and the soldiers were fine. Only the world
 	# was missing, and only looking at the picture found it.
+	# The seat list too, so the client knows every player's colour
+	# (D-052) whichever way the match began. Small, and sent once.
+	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+		_settings.to_dict(), int(_match.phase)), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -1332,7 +1336,8 @@ func _broadcast_lobby() -> void:
 	# The lobby is the authority on settings while it is up, so the
 	# server mirrors its choices before describing them.
 	_settings = _match.map_settings
-	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats, _settings.to_dict())
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+		_settings.to_dict(), int(_match.phase))
 	for peer in _clients:
 		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 

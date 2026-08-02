@@ -23,7 +23,12 @@ func _ready() -> void:
 ## Builds (or rebuilds) the MultiMesh for this squad from its UnitDef.
 ## Call again if unit_def changes or squad_size changes mid-match
 ## (reinforcement/attrition).
-func rebuild(def: UnitDef) -> void:
+## `owner_colour` identifies WHOSE squad this is (D-052). Colour used to
+## come from `UnitDef.mesh_color`, which described the unit TYPE — so
+## every spearman on the map was the same grey whoever owned him. The
+## first thing a player needs to read off a battle is whose units those
+## are; the roster is the second, and shape still carries it.
+func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 	unit_def = def
 
 	if _multimesh_instance == null:
@@ -38,7 +43,13 @@ func rebuild(def: UnitDef) -> void:
 	_multimesh_instance.multimesh = mm
 
 	var material := StandardMaterial3D.new()
-	material.albedo_color = def.mesh_color
+	# The unit's own colour survives as a tint on the player's, so two
+	# unit types are still distinguishable within one army without
+	# muddying whose army it is.
+	if owner_colour.a <= 0.0:
+		material.albedo_color = def.mesh_color
+	else:
+		material.albedo_color = owner_colour.lerp(def.mesh_color, 0.25)
 	_multimesh_instance.material_override = material
 
 
