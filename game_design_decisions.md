@@ -77,6 +77,27 @@ to climb, and that machinery does not exist here.
 owner's call, 2026-08-02): get the basics working first, plan age/tech
 progression in a separate session. See Q15 in the open questions.
 
+**Measured after the change** (`ai-ladder 2 900`), and two corrections
+worth keeping because both were confident and wrong:
+
+- Match length **~215 s → ~325 s decided**. Longer, still not the target.
+- **The economy was never the constraint.** I predicted the raised cap
+  would hit an economy wall on the reasoning that 7 gatherers could not
+  fund 33 squads. There is no upkeep, so a worker count caps the RATE of
+  buying and never the SIZE of an army. Legion banked a peak stockpile of
+  **2,480 while pinned at the squad cap**; northmen sat on 985 and
+  fielded eight squads. `AI_STATS` now reports `peak_stockpile`,
+  `afford_refusals` and `cap_refusals` so this is a number rather than an
+  argument.
+- **The cap of 15 WAS binding — for the AI.** I said it was not, which
+  was true of `test-load`'s bots (6 squads of 15) and false for the AI,
+  pinned at exactly 15–16 and reaching 41 once the cap moved. Generalised
+  from the bots without checking.
+
+**Still open, and an AI defect rather than a mechanic one:** legion held
+41 squads against northmen's 8, knew all three of its buildings, attacked
+93 times over 900 s and never finished the match.
+
 **Revisit trigger:** the age/tech milestone landing, which will re-derive
 these numbers from a phase-by-phase account of what a 1–2 hour match is
 made of, rather than from stopping the worst behaviour.
@@ -3420,6 +3441,20 @@ items resolved as:
   - Economy scale: `NODE_STOCK` is 900 per node with a node every 11
     cells; an hour-long match at 40 squads/player may exhaust the map,
     which is either a designed pressure or a bug depending on the answer.
+  - **Is an army a ratchet or a running cost?** *(raised by the owner,
+    2026-08-02.)* There is **no upkeep** today — a unit costs a one-time
+    price and nothing drains per tick — so army size only ever grows and
+    losing one costs nothing but the rebuild. Upkeep would convert it to
+    a steady state you keep paying for, which is what makes losing an
+    army hurt, makes raiding workers a real strategy, and stops the
+    endgame being two maxed doomstacks with nowhere to go. It is also the
+    difference between a late game with economic texture and one where
+    everybody accumulates until the map is bare.
+
+    Deliberately NOT bolted on now: it touches economy, AI, UI and every
+    balance number, and the phase-by-phase account of a 1–2 hour match is
+    exactly what should decide it. Note it interacts with the squad cap —
+    upkeep is a *soft* cap, and having both may be one mechanism too many.
   - Interaction with D-018's scale target and D-020's tick budget: more
     ages means more squads alive later, and the 1,000-squad figure is
     already the ceiling the architecture was sized for.
