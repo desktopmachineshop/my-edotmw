@@ -259,6 +259,44 @@ consuming the founding party reports through the casualty path. It passes
 without any fighting. Recorded in D-045; fix it when next touching the
 capture scenario.
 
+**M6 (civs, lobby, AI) — in progress.** Civs are data (D-047), the lobby
+seats humans and AI with teams and shared vision (D-048/D-050), colours
+are per player (D-052), and AI players are clients without a socket
+(D-051) held to every rule you are. `just ai-ladder` measures AI strength
+(D-054); `just run-server AI=3` seats opponents without a lobby so a
+human can play one.
+
+**The single most important thing M6 found: nothing could destroy a
+building, so no match could be won** (D-055). `BuildingSim.damage()` was
+fully written and called by nothing outside its own tests for two
+milestones. Buildings shot at squads; squads never shot back. Every AI
+ladder match drew at the time cap, and that was read as an AI weakness
+through several rounds of AI work before anyone checked. Fixing it took
+the ladder from **0 of 3 decided to 2 of 3 with no AI change at all**.
+
+**So: grep for uncalled public members.** This was the THIRD
+declared-and-unread mechanic here, after `UnitDef.cost` and
+`BuildingDef.cost`. The shape is always a field or method with no caller,
+and it survives because *nothing fails* — the game runs and quietly lacks
+a rule. No test can see it, because the code under test is correct. This
+is the one defect class this project's testing discipline is blind to by
+construction.
+
+**And a fourth instance of the `distance()`-per-candidate defect** landed
+in the same change and was caught by `test-load`: scanning every building
+per squad cost ~15 µs/squad, bucketing it cost ~1.3. After vision (M2),
+`UnitRoster.by_id` (M4) and terrain noise (M5), treat this as a standing
+rule — **any radius scan reaches for `TorusSpace.disk_offsets` before it
+reaches for `distance()`.**
+
+Two M6 numbers left honestly open. The rise from M4's **40.8 µs/squad at
+120 squads** to **~77** is *not* the siege pass (measured with it
+disabled) and is still unattributed to whichever of civs/teams/economy
+caused it. And worst-tick figures from that session are unreliable — a
+run with strictly *less* work reported 146 ms where a fuller run reported
+52 ms, because the host was building containers throughout. Zero dropped
+ticks in both.
+
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
 everything built so far: soldier position is a **pure function** of
