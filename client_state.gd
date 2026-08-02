@@ -636,6 +636,20 @@ func in_lobby() -> bool:
 	return int(lobby.get("phase", 0)) == 0
 
 
+## A player's civ as the lobby last described it, or "" if unknown.
+##
+## Needed so the HUD can name what a building will actually produce: a
+## barracks offers ARCHETYPES (D-047), and which troops those are depends
+## on who is asking. Resolving through the seat list means the client can
+## only ever name its own civ's units — it has no way to name another's,
+## which is D-046 criterion 4 holding structurally rather than by care.
+func civ_of(who: int) -> StringName:
+	for seat in lobby.get("seats", []):
+		if int(seat["player"]) == who:
+			return StringName(seat.get("civ", ""))
+	return &""
+
+
 ## This client's own seat index, or -1.
 func my_seat() -> int:
 	var seats: Array = lobby.get("seats", [])

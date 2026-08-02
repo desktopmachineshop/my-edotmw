@@ -194,6 +194,31 @@ func set_civ(by_player: int, seat_index: int, civ: StringName) -> bool:
 	return true
 
 
+## Which spawn point this player starts on, given how many exist.
+##
+## SEAT INDEX, never the player id — the same rule and the same reason as
+## D-052's colours. AI players are numbered from 1000 (D-051, sharing the
+## human id space on purpose), so `(player - 1) % point_count` collides:
+## with 20 points it sends player 1 and player 1001 to the same cell.
+## That shipped, and a human and an AI spawned on top of each other in a
+## real game.
+##
+## Seats are numbered 0..n-1 contiguously however players are numbered, so
+## keying on them makes the collision unrepresentable rather than merely
+## unlikely. Lives here rather than in server.gd because server.gd needs a
+## live ENet host to exercise and this needs to be testable.
+##
+## Falls back to the player id for an unseated player — nothing does that
+## today, but a future reconnect path might, and returning a usable start
+## beats crashing.
+func spawn_index(player: int, point_count: int) -> int:
+	if point_count <= 0:
+		return 0
+	var seat := seat_of(player)
+	var index := seat if seat >= 0 else player - 1
+	return index % point_count
+
+
 func seat_of(player: int) -> int:
 	for i in range(seats.size()):
 		if int(seats[i]["player"]) == player:

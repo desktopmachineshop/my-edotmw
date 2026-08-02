@@ -247,6 +247,7 @@ func _process(delta: float) -> void:
 
 	_refresh_squads()
 	_refresh_buildings()
+	_refresh_resource_nodes()
 	_update_hud()
 	_update_minimap()
 	_seat_capture_ai()
@@ -732,8 +733,18 @@ func _issue_scenario_rally() -> void:
 		# over rendered ground no matter which corner the encounter falls
 		# near, while still biasing the shot toward the actual action
 		# rather than ignoring it outright.
+		# Biased only slightly toward centre now, not 65% of the way.
+		#
+		# The heavy bias dates from before terrain tiled across the seams
+		# (M3 slice 3): the shot could fall off the mesh into black void,
+		# so it was pulled hard toward the middle. The cost of that was a
+		# capture looking at ground the player has never explored — no
+		# base, no army, no resource nodes, which is most of what the
+		# frame exists to show. It was hiding a fog leak in the node
+		# rendering for exactly that reason: the leak was only visible
+		# BECAUSE nodes were drawn where they should not have been.
 		var centre := _state.space.to_world(Vector2i(_state.space.width / 2, _state.space.height / 2))
-		_camera_target = rendezvous.lerp(centre, 0.65)
+		_camera_target = rendezvous.lerp(centre, 0.2)
 		_camera_height = clampf(42.0, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
 		_update_camera()
 
@@ -910,7 +921,12 @@ func _build_hud() -> void:
 	_hud_selection = Label.new()
 	_hud_notice = Label.new()
 	var hint := Label.new()
-	hint.text = "LMB select · RMB move · BUILD: B hall  N barracks  H storehouse  Y tower · G gather · TRAIN: T worker  M militia  P spearmen  R archers  C cavalry · X stop"
+	# Only what is true regardless of selection. Everything conditional
+	# moved to the "can:" line, which reads the actual selection — a fixed
+	# list of every key in the game implies all of it is always available,
+	# and most of it never is (founders may build a town hall and nothing
+	# else; gatherers cannot fight; infantry cannot build).
+	hint.text = "LMB select · drag box · shift extend · Ctrl+1-9 groups · WASD pan · wheel zoom"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -933,7 +949,13 @@ func _build_hud() -> void:
 	# minimap jump, which killed selection AND ordering at once — the
 	# whole screen became minimap. Owning the bounds here means the guard
 	# can never disagree with what is drawn.
-	_minimap_bounds = Rect2(12.0, 96.0, 256.0, 128.0)
+	# Below the text panel, not through it. The selection readout is two
+	# lines now (it names what the selection can DO, which is variable
+	# length), and at y=96 the minimap was drawn straight over the hint
+	# line — visible in the capture frame, invisible to every counter the
+	# verdict checks. Left generous room rather than exactly enough, so a
+	# longer "can:" line does not put it back.
+	_minimap_bounds = Rect2(12.0, 168.0, 256.0, 128.0)
 
 	_minimap_rect = TextureRect.new()
 	_minimap_rect.position = _minimap_bounds.position
@@ -957,6 +979,150 @@ func _build_hud() -> void:
 ##
 ## A building under construction is drawn SHORT, rising as it completes,
 ## so progress is visible in the world rather than only in a number.
+## Key -> what it does. ONE table, read by both the input handler and the
+## HUD, so the keys a player is told about are by construction the keys
+## that work. They were previously a `match` statement and a hand-written
+## hint string listing the same letters twice.
+const BUILD_KEYS := {
+	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
+}
+const TRAIN_KEYS := {
+	"T": &"gatherers", "M": &"militia", "P": &"spearmen",
+	"R": &"archers", "C": &"cavalry",
+}
+
+
+func _build_key_for(building_id: StringName) -> String:
+	for key in BUILD_KEYS:
+		if BUILD_KEYS[key] == building_id:
+			return key
+	return "?"
+
+
+func _train_key_for(archetype: StringName) -> String:
+	for key in TRAIN_KEYS:
+		if TRAIN_KEYS[key] == archetype:
+			return key
+	return "?"
+
+
+## wire id -> { "progress": float, "at": float } — the last progress the
+## SERVER stated, and when we heard it. See _derived_progress.
+var _progress_anchor := {}
+
+
+## Construction progress, carried forward between messages.
+##
+## The server replicates a building's progress only when it COMPLETES or
+## is destroyed (`BuildingSim.take_dirty` — and rightly, since streaming a
+## float every tick for forty seconds is exactly the per-tick snapshot
+## D-003 exists to avoid). The consequence on screen was a town hall that
+## sat at 0% and then snapped to finished, with nothing in between: no
+## sense of progress at all, which is what made building feel dead.
+##
+## So derive it, the same way a squad's position is derived from a curve
+## rather than streamed (D-003). The client knows the last stated progress,
+## when it heard it, and `build_time` from the BuildingDef it already
+## loads — which is everything needed to draw the forty seconds in between.
+##
+## Deliberately capped just under 1.0 until the server actually says
+## complete. A client that guessed "finished" a moment early would show a
+## finished building that cannot yet produce, and "it looks done but the
+## button does nothing" is a worse bug than the one being fixed.
+func _derived_progress(wire_id: int, info: Dictionary) -> float:
+	var stated := float(info["progress"])
+	var anchor: Dictionary = _progress_anchor.get(wire_id, {})
+
+	# Re-anchor whenever the server states something new, so this tracks
+	# the authority and never drifts away from it.
+	#
+	# `build_time` is resolved HERE, once per anchor, and never in the
+	# per-frame path. `BuildingSim.def_by_id` goes through ResourceLoader,
+	# and calling it every frame for every building is the same defect
+	# that cost a whole tick budget in D-043 (`UnitRoster.by_id` walking
+	# the filesystem per produced squad, 858 ms in one tick) and appeared
+	# again in D-055. A def lookup belongs on a state change, not in a
+	# loop that runs sixty times a second.
+	if anchor.is_empty() or not is_equal_approx(float(anchor["progress"]), stated):
+		var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		anchor = {
+			"progress": stated, "at": _now,
+			"build_time": def.build_time if def != null else 0.0,
+		}
+		_progress_anchor[wire_id] = anchor
+
+	if stated >= 1.0:
+		return 1.0
+
+	var build_time := float(anchor["build_time"])
+	if build_time <= 0.0:
+		return stated
+
+	var elapsed := _now - float(anchor["at"])
+	return minf(stated + elapsed / build_time, 0.99)
+
+
+var _node_meshes := {}
+
+
+## Draw resource nodes IN THE WORLD, not only on the minimap.
+##
+## They were minimap pixels and nothing else, so on the actual map there
+## was no way to tell a forest cell from any other grass — a player was
+## asked to send gatherers somewhere they could not see. Reported from a
+## real game as "it's impossible to see the resource nodes", which it was.
+##
+## Colour comes from the same `_node_colour` the minimap uses, so the two
+## views cannot disagree about what a node is. Drawn as a squat marker
+## rather than anything clever: the mesh pipeline is still at its
+## primitive tier (D-011) and jumping ahead of that is explicitly out of
+## bounds.
+##
+## Gated on `_explored`, exactly as the minimap is.
+##
+## The first version was not, and the capture frame showed every node on
+## the map including ground this player had never walked — a fog leak, and
+## a worse one than it looks: the minimap deliberately hides those, so the
+## two views disagreed about what the player was allowed to know. "Fog
+## governs what you know about the map, and that includes what is on it"
+## is the minimap's own comment, and it applies identically here.
+##
+## Once explored, a node stays drawn. That matches the minimap and matches
+## buildings (D-030's persistent-explored): you remember where the forest
+## was after you walk away from it.
+func _refresh_resource_nodes() -> void:
+	if _state.space == null:
+		return
+
+	for cell in _state.nodes:
+		if not _explored.has(cell):
+			continue
+		var marker: MeshInstance3D = _node_meshes.get(cell, null)
+		if marker == null:
+			var mesh := CylinderMesh.new()
+			mesh.top_radius = 0.55
+			mesh.bottom_radius = 0.85
+			mesh.height = 1.1
+			var material := StandardMaterial3D.new()
+			material.albedo_color = _node_colour(int(_state.nodes[cell]))
+			material.roughness = 0.75
+			# Slight glow so a node reads against terrain of a similar
+			# hue — food pink over sand was the worst case.
+			material.emission_enabled = true
+			material.emission = material.albedo_color * 0.35
+			marker = MeshInstance3D.new()
+			marker.mesh = mesh
+			marker.material_override = material
+			_node_meshes[cell] = marker
+			add_child(marker)
+
+		var world := _state.space.to_world(_state.space.from_index(int(cell)))
+		if _state.terrain_sampler.is_valid():
+			world.y = _state.terrain_sampler.call(world.x, world.z)
+		world.y += 0.55
+		marker.position = world
+
+
 func _refresh_buildings() -> void:
 	if _state.space == null:
 		return
@@ -989,7 +1155,7 @@ func _refresh_buildings() -> void:
 			continue
 		instance.visible = true
 
-		var progress := clampf(float(info["progress"]), 0.15, 1.0)
+		var progress := clampf(_derived_progress(wire_id, info), 0.15, 1.0)
 		instance.scale = Vector3(1.0, progress, 1.0)
 
 		var world := _state.space.to_world(_state.space.from_index(int(info["cell"])))
@@ -1028,20 +1194,89 @@ func _update_hud() -> void:
 
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var b: Dictionary = _state.buildings[_selected_building]
-		var progress := float(b["progress"])
-		_hud_selection.text = "%s selected%s · T to train a worker" % [
-			b["def_id"], "" if progress >= 1.0 else " (%d%% built)" % int(progress * 100.0)]
+		# The same derived figure the mesh uses, so the number and the
+		# picture cannot disagree with each other.
+		var progress := _derived_progress(_selected_building, b)
+		_hud_selection.text = "%s selected%s\n%s" % [
+			b["def_id"],
+			"" if progress >= 1.0 else "  [%s] %d%%" % [
+				_progress_bar(progress), int(progress * 100.0)],
+			_actions_for_building(b, progress)]
 		return
 
 	if _selected.is_empty():
-		_hud_selection.text = "nothing selected"
+		_hud_selection.text = "nothing selected — click a squad or a building"
 		return
 
 	var strength := 0
 	for squad in _selected:
 		strength += _state.alive_of(squad)
 	var kind: String = String(_state.composition.get(_selected[0], {}).get("def_id", "?"))
-	_hud_selection.text = "%d selected · %s · %d soldiers" % [_selected.size(), kind, strength]
+	_hud_selection.text = "%d selected · %s · %d soldiers\n%s" % [
+		_selected.size(), kind, strength, _actions_for_squads()]
+
+
+## A twelve-cell bar, so progress reads at a glance instead of as a number
+## to compare against the last one you remember.
+func _progress_bar(progress: float) -> String:
+	var filled := clampi(roundi(progress * 12.0), 0, 12)
+	return "#".repeat(filled) + "-".repeat(12 - filled)
+
+
+## What the SELECTED squads can actually do, derived from their UnitDef
+## and BuildingDef.built_by rather than listed statically.
+##
+## The HUD used to print one fixed line naming every key in the game,
+## whatever was selected — so it could not answer the only question a
+## player actually has, which is "what can THIS do?". Founders may build a
+## town hall and nothing else (D-031, expressed in `built_by`); gatherers
+## gather and cannot fight; line infantry can do neither. A fixed list
+## implies all of it is available all of the time, and most of it isn't.
+##
+## Read from the data for the usual reason (D-010): add a unit or a
+## building and this line is right without being edited.
+func _actions_for_squads() -> String:
+	if _selected.is_empty():
+		return ""
+	var def_id := StringName(String(_state.composition.get(_selected[0], {}).get("def_id", "")))
+	var def := UnitRoster.by_id(def_id)
+
+	var parts := ["RMB move", "A attack-move", "X stop"]
+	if def != null and def.carry_capacity > 0:
+		parts.append("G gather")
+
+	# Which buildings THIS unit may found, straight from built_by.
+	var buildable := []
+	for building in BuildingSim.all_defs():
+		if BuildingSim.can_build(building, def_id):
+			buildable.append("%s %s" % [_build_key_for(building.id), building.display_name])
+	if not buildable.is_empty():
+		parts.append("BUILD: " + "  ".join(buildable))
+	return "can: " + " · ".join(parts)
+
+
+## What a SELECTED building offers, from its `produces` list resolved
+## against this player's civ (D-047) — so it names your civ's troops
+## rather than a generic archetype, and cannot name another civ's at all.
+func _actions_for_building(info: Dictionary, progress: float) -> String:
+	if progress < 1.0:
+		return "under construction — it can do nothing until it is finished"
+	if int(info["owner"]) != _state.player:
+		return "not yours"
+
+	var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+	if def == null or def.produces.is_empty():
+		return "can: nothing to train here"
+
+	var civ := _state.civ_of(_state.player)
+	var offers := []
+	for archetype in def.produces:
+		var unit := UnitRoster.for_civ_archetype(civ, archetype)
+		if unit != null:
+			offers.append("%s %s" % [_train_key_for(archetype), unit.display_name])
+	if offers.is_empty():
+		return "can: nothing your civ fields"
+	return "can train: " + "  ".join(offers)
 
 
 ## Repaint the minimap a few times a second rather than every frame:
@@ -1394,41 +1629,21 @@ func _handle_key(event: InputEventKey) -> void:
 	# shortest path to something playable, and the hint line can list them
 	# all. A build menu is worth having when the roster outgrows a row of
 	# keys, not before.
-	match event.keycode:
-		KEY_B:
-			_build_selected("town_centre")   # founders only
-			return
-		KEY_N:
-			_build_selected("barracks")      # gatherers
-			return
-		KEY_H:
-			_build_selected("storehouse")    # gatherers
-			return
-		KEY_Y:
-			_build_selected("tower")         # gatherers
-			return
-		# Training keys. Which building can make which unit is decided by
-		# BuildingDef.produces on the server, so these are just requests —
-		# pressing M at a town hall gets a refusal that says so, rather
-		# than the client second-guessing the roster.
-		KEY_G:
-			_gather_selected()               # workers, at the cursor's node
-			return
-		KEY_T:
-			_train_selected(&"gatherers")    # town hall
-			return
-		KEY_M:
-			_train_selected(&"militia")      # barracks
-			return
-		KEY_P:
-			_train_selected(&"spearmen")     # barracks — counters cavalry
-			return
-		KEY_R:
-			_train_selected(&"archers")      # barracks — counters infantry
-			return
-		KEY_C:
-			_train_selected(&"cavalry")      # barracks — counters missile
-			return
+	# Driven from BUILD_KEYS/TRAIN_KEYS rather than a match statement, so
+	# the HUD's "can:" line and the keys that actually work are the same
+	# table. Which building can make which unit is still decided by
+	# BuildingDef.produces on the SERVER — these are only requests, and a
+	# wrong one comes back as a refusal that says why (D-034).
+	var key := OS.get_keycode_string(event.keycode)
+	if BUILD_KEYS.has(key):
+		_build_selected(String(BUILD_KEYS[key]))
+		return
+	if TRAIN_KEYS.has(key):
+		_train_selected(TRAIN_KEYS[key])
+		return
+	if event.keycode == KEY_G:
+		_gather_selected()                   # workers, at the cursor's node
+		return
 
 	# Control groups: Ctrl+N stores the selection, N recalls it.
 	if event.keycode >= KEY_1 and event.keycode <= KEY_9:

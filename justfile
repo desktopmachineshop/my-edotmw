@@ -215,8 +215,12 @@ status:
 # AI is how many computer opponents to seat (D-051). They take ordinary
 # player slots, read the world through a client like you do, and are held
 # to every rule you are.
-[doc("Headless server. AI=N seats N computer opponents")]
-run-server AI="0" MAP="res://maps/default.tres": _import
+# LOBBY=1 holds the server in the lobby (D-048): the world is NOT
+# generated until the admin presses start, because its size, seed and
+# shape are all still being chosen (D-049). The first human to connect is
+# admin and adds AI seats there — a lobby of one cannot start a match.
+[doc("Headless server. AI=N seats opponents, LOBBY=1 waits in the lobby")]
+run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ ! -f "{{server_scene}}" ]; then
@@ -227,12 +231,65 @@ run-server AI="0" MAP="res://maps/default.tres": _import
         # Replaces the service's default command, so it has to restate it
         # in full. The image ENTRYPOINT already supplies --headless.
         docker compose -p edotmw run --rm --service-ports server \
-            --path . "{{server_scene}}" -- --ai={{AI}} --map={{MAP}}
+            --path . "{{server_scene}}" -- --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --path . "{{server_scene}}" -- \
-            --ai={{AI}} --map={{MAP}}
+            --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     fi
+
+# Start a lobby server AND the GUI client, which is what "play a game"
+# actually means (D-048). One recipe rather than two, because the two have
+# to agree about the port and about lobby mode.
+#
+# Deliberately its OWN recipe instead of `run-server`'s LOBBY parameter.
+# just takes arguments POSITIONALLY, so `just run-server LOBBY=1` silently
+# parses "LOBBY=1" as the AI count, passes --ai=LOBBY=1, and int() reads
+# that as 0 — no error, no lobby, a server that looks fine and is not in
+# the mode you asked for. Exactly the silent-default class this project
+# keeps getting bitten by.
+#
+# The world is NOT generated until the admin presses start (D-049): its
+# size, seed and shape are all still being chosen, so there is genuinely
+# nothing behind the lobby.
+[doc("Play: lobby server + GUI client. You are admin; add AI seats, then Start")]
+lobby PLAYERS="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
+        echo "      Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+
+    # Whatever happens next, do not leave a server holding port 4433.
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    "{{just_executable()}}" down > /dev/null 2>&1 || true
+
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/lobby-server.log"
+    "{{just_executable()}}" _import
+    docker compose -p edotmw run --rm --service-ports -d --name edotmw-lobby \
+        server --path . "{{server_scene}}" -- \
+        --lobby=1 --players={{PLAYERS}} > /dev/null
+
+    # Wait for the port rather than sleeping a guessed number of seconds.
+    for _i in $(seq 1 60); do
+        if docker logs edotmw-lobby 2>&1 | grep -q "listening"; then break; fi
+        sleep 1
+    done
+    if ! docker logs edotmw-lobby 2>&1 | grep -q "(lobby)"; then
+        echo "FAIL: the server did not come up in LOBBY mode:" >&2
+        docker logs edotmw-lobby 2>&1 | tail -20 >&2
+        exit 1
+    fi
+    docker logs edotmw-lobby 2>&1 | grep "listening"
+
+    echo "lobby: you are the admin. Add AI seats, pick civs, then press Start."
+    "$godot" --headless --path . --import
+    "$godot" --path . client.tscn -- --address=127.0.0.1 --port=4433
+    docker logs edotmw-lobby > "$log" 2>&1 || true
 
 # Manual dev loop: run a client. Always native — needs a GPU (D-014), so
 # this recipe ignores EDOTMW_RUNTIME and refuses to pretend otherwise.

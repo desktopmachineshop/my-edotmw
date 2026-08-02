@@ -986,11 +986,24 @@ func _spawn_squads_for(player: int) -> Array:
 	# guaranteed minimum spacing as of D-039, and sampled once at startup.
 	var points := _spawn_points
 
-	# Players are numbered from 1, spawn points from 0. Wrapping rather
-	# than refusing keeps an extra connection working on a full map: the
-	# player cap belongs to the match lifecycle (D-033), which is not built
-	# yet, so sharing a start is a better failure than crashing.
-	var origin: Vector2i = points[(player - 1) % points.size()]
+	# Keyed on SEAT INDEX, not player id — the same rule and the same
+	# reason as D-052's colours.
+	#
+	# This was `points[(player - 1) % points.size()]`, and AI players are
+	# numbered from 1000 (D-051, deliberately sharing the human id space).
+	# With 20 spawn points that put player 1 at index 0 and player 1001 at
+	# 1000 % 20 = 0 as well: a human and an AI spawned on the SAME cell.
+	# Reported from an actual game, where they landed on top of each other.
+	#
+	# D-052 fixed exactly this for colours and said so in as many words —
+	# "any modulo of a player id would give" collisions once ids start at
+	# 1000. Spawn assignment simply never had the fix applied. Seats are
+	# numbered 0..n-1 contiguously however players are numbered, so keying
+	# on them makes the collision unrepresentable rather than unlikely.
+	#
+	# The fallback keeps a player with no seat (nothing does this today,
+	# but a reconnect path might) working rather than crashing.
+	var origin: Vector2i = points[_match.spawn_index(player, points.size())]
 
 	# A player starts with ONE founding party and nothing else (D-031).
 	#

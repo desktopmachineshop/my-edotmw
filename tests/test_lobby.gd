@@ -265,3 +265,54 @@ func test_chat_roundtrips_with_its_speaker() -> void:
 	var decoded := NetProtocol.decode_chat(NetProtocol.encode_chat("Player 2", "well played"))
 	assert_eq(String(decoded["speaker"]), "Player 2")
 	assert_eq(String(decoded["text"]), "well played")
+
+
+# --- spawn assignment (D-052's rule, applied where it was missed) ------
+
+func test_a_human_and_an_ai_never_share_a_spawn_point() -> void:
+	# Reported from a real game: the player and an AI spawned on top of
+	# each other. server.gd used `points[(player - 1) % points.size()]`,
+	# and AI players are numbered from 1000 (D-051, sharing the human id
+	# space on purpose). With 20 spawn points that is index 0 for player 1
+	# and 1000 % 20 = 0 for player 1001 — the same cell.
+	#
+	# D-052 fixed exactly this for colours, and said in as many words that
+	# any modulo of a player id collides once ids start at 1000. Spawn
+	# assignment never had the fix applied.
+	var m := _lobby()
+	m.add_player(1)
+	for i in range(8):
+		m.add_ai(1, CivRoster.ids()[0], 1000 + i)
+
+	var points := 20
+	var taken := {}
+	for seat in m.seats:
+		var player := int(seat["player"])
+		var index := m.spawn_index(player, points)
+		assert_false(taken.has(index),
+			"players %s and %d both spawn on point %d" % [
+				taken.get(index, "?"), player, index])
+		taken[index] = player
+
+	# Name the exact pair that was reported, so a regression says so
+	# rather than just failing somewhere in the loop above.
+	assert_ne(m.spawn_index(1, points), m.spawn_index(1001, points),
+		"player 1 and AI 1001 still share a spawn point — the id modulo is back")
+
+
+func test_spawn_points_are_shared_only_when_there_are_too_few() -> void:
+	# The other side of the boundary. Wrapping is the deliberate fallback
+	# for a short-seated map (a shared start beats a crash), so this must
+	# not be "read as" a bug by a future reader — but it must only happen
+	# when seats genuinely outnumber points.
+	var m := _lobby()
+	m.add_player(1)
+	for i in range(5):
+		m.add_ai(1, CivRoster.ids()[0], 1000 + i)
+
+	# Six seats, three points: sharing is unavoidable and expected.
+	var indices := []
+	for seat in m.seats:
+		indices.append(m.spawn_index(int(seat["player"]), 3))
+	assert_eq(indices, [0, 1, 2, 0, 1, 2],
+		"short-seated wrapping should walk the points in seat order")
