@@ -246,6 +246,29 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		buf.put_u32(int(entry["cell"]))
 		buf.put_float(float(entry["progress"]))
 		buf.put_u8(1 if bool(entry["destroyed"]) else 0)
+
+		# Health as a FRACTION, and the production queue.
+		#
+		# Added so a selected building can show what it is doing (health,
+		# what is training, what is waiting). Neither is hashed — the
+		# building composition hash covers identity, owner, kind and
+		# whether it still stands, deliberately excluding anything that
+		# varies continuously, because a client legitimately lags a tick
+		# and hashing these would report a desync on a healthy system.
+		#
+		# This message is sent on CHANGE, never per tick (BuildingSim's
+		# `take_dirty`), so an idle building still costs zero bandwidth —
+		# D-003's claim survives. `head_remaining` lets the client run the
+		# progress bar down locally between messages, the same derivation
+		# as construction progress rather than a stream of floats.
+		buf.put_float(float(entry.get("health_fraction", 1.0)))
+		buf.put_float(float(entry.get("head_remaining", 0.0)))
+		var queue: Array = entry.get("queue", [])
+		buf.put_u16(queue.size())
+		for queued in queue:
+			var queued_id := String(queued).to_utf8_buffer()
+			buf.put_u16(queued_id.size())
+			buf.put_data(queued_id)
 	return buf.data_array
 
 
@@ -259,14 +282,23 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 		var id := buf.get_u32()
 		var name_length := buf.get_u16()
 		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
-		out.append({
+		var entry := {
 			"id": id,
 			"def_id": name_bytes.get_string_from_utf8(),
 			"owner": buf.get_u32(),
 			"cell": buf.get_u32(),
 			"progress": buf.get_float(),
 			"destroyed": buf.get_u8() == 1,
-		})
+			"health_fraction": buf.get_float(),
+			"head_remaining": buf.get_float(),
+		}
+		var queue := []
+		for _q in range(buf.get_u16()):
+			var queued_length := buf.get_u16()
+			var queued_bytes: PackedByteArray = buf.get_data(queued_length)[1]
+			queue.append(queued_bytes.get_string_from_utf8())
+		entry["queue"] = queue
+		out.append(entry)
 	return out
 
 

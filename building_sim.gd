@@ -141,6 +141,9 @@ func enqueue(building: int, def: UnitDef) -> void:
 	(_queues[building] as Array).append({
 		"def_id": def.id, "remaining": maxf(def.build_time, 0.001),
 	})
+	# The queue is replicated now, so a change to it has to reach clients
+	# — otherwise a player queues a unit and the panel shows nothing.
+	_dirty[building] = true
 
 
 func queue_length(building: int) -> int:
@@ -166,6 +169,9 @@ func advance_production(dt: float) -> Array:
 		if float(head["remaining"]) <= 0.0:
 			queue.pop_front()
 			done.append({"building": building, "def_id": head["def_id"]})
+			# Queue shortened — tell clients, or the panel keeps showing a
+			# unit that already walked out of the door.
+			_dirty[building] = true
 		else:
 			queue[0] = head
 		_queues[building] = queue
@@ -197,6 +203,10 @@ func info_entries(ids: Array) -> Array:
 	for id in ids:
 		if id < 0 or id >= _cell.size():
 			continue
+		var queue: Array = _queues.get(id, [])
+		var queued_ids := []
+		for item in queue:
+			queued_ids.append(String(item["def_id"]))
 		out.append({
 			"id": wire_id(id),
 			"def_id": String(_defs[id].id),
@@ -204,13 +214,23 @@ func info_entries(ids: Array) -> Array:
 			"cell": _cell[id],
 			"progress": _progress[id],
 			"destroyed": _destroyed[id] == 1,
+			# For the selection panel. A fraction rather than an absolute,
+			# so the client needs no copy of max_health to draw a bar.
+			"health_fraction": _health[id] / maxf(_defs[id].max_health, 0.001),
+			"head_remaining": float(queue[0]["remaining"]) if not queue.is_empty() else 0.0,
+			"queue": queued_ids,
 		})
 	return out
 
 
 ## Ids whose replicated state changed since the last call, and clears the
-## list. Only completion and destruction qualify — the two things a client
-## must be told about, one of which is in the hash.
+## list. Completion, destruction, damage, and any change to the production
+## queue — the things a client must be told about, one of which is in the
+## hash and the rest of which the selection panel draws.
+##
+## Still event-driven, never per tick: a building sitting idle marks
+## nothing, so D-003's zero-bandwidth-when-idle claim holds even though
+## this now carries health and a queue.
 ##
 ## Exists so a building whose state changes AFTER a client already knows
 ## it still gets resent. Without it, destruction would silently diverge

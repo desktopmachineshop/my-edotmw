@@ -885,6 +885,17 @@ func _train_from_home_town() -> void:
 			continue
 		_peer.send(0, NetProtocol.encode_order_produce(int(wire_id), "gatherers"),
 			ENetPacketPeer.FLAG_RELIABLE)
+
+		# SELECT it, so the capture frame actually contains the selection
+		# panel — health, production, queue and action buttons (D-057).
+		#
+		# Without this the panel renders "Nothing selected" forever and the
+		# whole feature is unverified by the one check that looks at the
+		# picture. Every counter passed while the panel was empty, which is
+		# the failure mode this project keeps rediscovering.
+		_selected_building = int(wire_id)
+		_selected.clear()
+
 		# Space the orders out rather than firing one per frame at a
 		# building that can only make one thing at a time.
 		_trained_at = _now + 2.0
@@ -926,6 +937,34 @@ const DRAG_THRESHOLD_PX := 8.0
 var _selected: Array = []
 var _dragging := false
 var _drag_start := Vector2.ZERO
+## Bottom-left context panel: what is selected, its state, and what it can
+## do as CLICKABLE buttons (D-057).
+##
+## The HUD was five lines of text including a fixed list of every key in
+## the game. That cannot say what a building is producing, how hurt it is,
+## or what is queued behind the current unit — and it made the keys look
+## like the only way to act.
+const PANEL_X := 12.0
+const PANEL_Y := 470.0
+const PANEL_W := 430.0
+const PANEL_H := 238.0
+const ACTION_BUTTON_W := 128.0
+const ACTION_BUTTON_H := 34.0
+
+var _resource_bar: Panel = null
+var _resource_labels: Array[Label] = []
+var _selection_panel: Panel = null
+var _selection_title: Label = null
+var _selection_detail: Label = null
+var _health_bar_back: ColorRect = null
+var _health_bar_fill: ColorRect = null
+var _progress_bar_back: ColorRect = null
+var _progress_bar_fill: ColorRect = null
+var _progress_caption: Label = null
+var _queue_swatches: Array[ColorRect] = []
+var _queue_caption: Label = null
+var _action_buttons: Array[Button] = []
+
 var _selection_rect: ColorRect = null
 ## The drag box's four border bars: top, bottom, left, right.
 var _selection_edges: Array[ColorRect] = []
@@ -965,8 +1004,6 @@ func _layout_minimap(space: TorusSpace) -> void:
 var _control_groups := {}
 
 var _hud_status: Label = null
-var _hud_selection: Label = null
-var _hud_resources: Label = null
 var _hud_notice: Label = null
 var _notice_seen := 0
 var _notice_until := 0.0
@@ -987,34 +1024,169 @@ var _minimap_updated_at := -1.0
 
 ## client.tscn is a bare Node3D, so every node is built in code — the HUD
 ## included. A CanvasLayer puts it in screen space above the 3D view.
+## A flat panel with a border, built by hand.
+##
+## Not a PanelContainer: that overrides its children's anchors, and this
+## project has already lost an afternoon to sliders that rendered full
+## because their sized children were being re-laid-out underneath them.
+## Explicit positions inside a plain Panel do exactly what they say.
+func _panel(rect: Rect2, colour: Color) -> Panel:
+	var panel := Panel.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = colour
+	style.border_color = Color(0.45, 0.62, 0.8, 0.85)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(4)
+	panel.add_theme_stylebox_override("panel", style)
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return panel
+
+
+## An outlined label. The map underneath is pale sand and dark forest in
+## equal measure, so plain white is unreadable over half of it.
+func _hud_label(at: Vector2, size := 15) -> Label:
+	var label := Label.new()
+	label.position = at
+	label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+	label.add_theme_constant_override("outline_size", 4)
+	label.add_theme_font_size_override("font_size", size)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return label
+
+
+## A labelled bar. Two sized ColorRects — a back and a fill — for the same
+## reason `_panel` is not a PanelContainer.
+func _bar(at: Vector2, width: float, colour: Color) -> Array:
+	var back := ColorRect.new()
+	back.position = at
+	back.size = Vector2(width, 12.0)
+	back.color = Color(0.08, 0.1, 0.14, 0.9)
+	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var fill := ColorRect.new()
+	fill.position = at + Vector2(1.0, 1.0)
+	fill.size = Vector2(width - 2.0, 10.0)
+	fill.color = colour
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return [back, fill]
+
+
+func _build_selection_panel(layer: CanvasLayer) -> void:
+	_selection_panel = _panel(Rect2(PANEL_X, PANEL_Y, PANEL_W, PANEL_H),
+		Color(0.05, 0.07, 0.12, 0.86))
+	layer.add_child(_selection_panel)
+
+	_selection_title = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 8.0), 18)
+	layer.add_child(_selection_title)
+	_selection_detail = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 32.0), 13)
+	layer.add_child(_selection_detail)
+
+	var health := _bar(Vector2(PANEL_X + 12.0, PANEL_Y + 56.0), PANEL_W - 24.0,
+		Color(0.35, 0.85, 0.4))
+	_health_bar_back = health[0]
+	_health_bar_fill = health[1]
+	layer.add_child(_health_bar_back)
+	layer.add_child(_health_bar_fill)
+
+	var progress := _bar(Vector2(PANEL_X + 12.0, PANEL_Y + 88.0), PANEL_W - 24.0,
+		Color(0.4, 0.7, 1.0))
+	_progress_bar_back = progress[0]
+	_progress_bar_fill = progress[1]
+	layer.add_child(_progress_bar_back)
+	layer.add_child(_progress_bar_fill)
+	_progress_caption = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 70.0), 12)
+	layer.add_child(_progress_caption)
+
+	# The production queue, as one swatch per waiting unit. A count would
+	# not show that four spearmen are stacked behind a militia.
+	_queue_caption = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 104.0), 12)
+	layer.add_child(_queue_caption)
+	for i in range(8):
+		var swatch := ColorRect.new()
+		swatch.position = Vector2(PANEL_X + 12.0 + float(i) * 20.0, PANEL_Y + 126.0)
+		swatch.size = Vector2(16.0, 16.0)
+		swatch.color = Color(0.55, 0.75, 1.0, 0.9)
+		swatch.visible = false
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_queue_swatches.append(swatch)
+		layer.add_child(swatch)
+
+	# Action buttons, in a grid. Pooled and relabelled rather than rebuilt,
+	# because the selection changes constantly and churning Controls in
+	# _process is how a frame budget goes.
+	for i in range(6):
+		var button := Button.new()
+		button.position = Vector2(
+			PANEL_X + 12.0 + float(i % 3) * (ACTION_BUTTON_W + 8.0),
+			PANEL_Y + 152.0 + float(i / 3) * (ACTION_BUTTON_H + 6.0))
+		button.size = Vector2(ACTION_BUTTON_W, ACTION_BUTTON_H)
+		button.visible = false
+		# Styled rather than left at Godot's default grey, which reads as
+		# an unfinished editor widget sitting on top of the game.
+		for state in ["normal", "hover", "pressed", "disabled"]:
+			var style := StyleBoxFlat.new()
+			style.bg_color = {
+				"normal": Color(0.13, 0.19, 0.29, 0.95),
+				"hover": Color(0.22, 0.34, 0.5, 0.98),
+				"pressed": Color(0.3, 0.48, 0.68, 1.0),
+				"disabled": Color(0.1, 0.12, 0.16, 0.7),
+			}[state]
+			style.border_color = Color(0.45, 0.62, 0.8, 0.9)
+			style.set_border_width_all(1)
+			style.set_corner_radius_all(3)
+			style.content_margin_left = 8.0
+			button.add_theme_stylebox_override(state, style)
+		button.add_theme_color_override("font_color", Color(0.93, 0.96, 1.0))
+		button.add_theme_font_size_override("font_size", 12)
+		button.pressed.connect(_on_action_pressed.bind(i))
+		_action_buttons.append(button)
+		layer.add_child(button)
+
+
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	_hud_layer = layer
 	add_child(layer)
 
-	var panel := VBoxContainer.new()
-	panel.position = Vector2(12.0, 10.0)
-	layer.add_child(panel)
+	# A resource STRIP across the top, with a coloured swatch per resource
+	# rather than four numbers in a run-on sentence. Same shape every RTS
+	# uses, and for the same reason: you read a stockpile a hundred times a
+	# match and never want to parse a sentence to do it.
+	#
+	# Swatch colours come from `_node_colour`, the same function the
+	# minimap and the world markers use, so a pink pile on the ground and
+	# a pink counter in the bar are the same resource by construction.
+	_resource_bar = _panel(Rect2(0.0, 0.0, 1280.0, 34.0), Color(0.05, 0.07, 0.12, 0.82))
+	layer.add_child(_resource_bar)
+	var kinds := [Economy.ResourceKind.FOOD, Economy.ResourceKind.WOOD,
+		Economy.ResourceKind.GOLD, Economy.ResourceKind.STONE]
+	var names := ["Food", "Wood", "Gold", "Stone"]
+	for i in range(kinds.size()):
+		var x := 16.0 + float(i) * 150.0
+		var swatch := ColorRect.new()
+		swatch.color = _node_colour(kinds[i])
+		swatch.position = Vector2(x, 9.0)
+		swatch.size = Vector2(16.0, 16.0)
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		layer.add_child(swatch)
 
-	_hud_status = Label.new()
-	_hud_resources = Label.new()
-	_hud_selection = Label.new()
-	_hud_notice = Label.new()
-	var hint := Label.new()
-	# Only what is true regardless of selection. Everything conditional
-	# moved to the "can:" line, which reads the actual selection — a fixed
-	# list of every key in the game implies all of it is always available,
-	# and most of it never is (founders may build a town hall and nothing
-	# else; gatherers cannot fight; infantry cannot build).
-	hint.text = "LMB select · drag box · shift extend · RMB move, or RMB an enemy to attack · Ctrl+1-9 groups · WASD pan · wheel zoom"
+		var value := _hud_label(Vector2(x + 24.0, 6.0))
+		value.text = "%s —" % names[i]
+		_resource_labels.append(value)
+		layer.add_child(value)
 
-	# Outlined text because the map underneath is light sand and dark
-	# forest in equal measure; plain white is unreadable over half of it.
-	for label in [_hud_status, _hud_resources, _hud_selection, _hud_notice, hint]:
-		label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
-		label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
-		label.add_theme_constant_override("outline_size", 5)
-		panel.add_child(label)
+	_hud_status = _hud_label(Vector2(700.0, 6.0))
+	layer.add_child(_hud_status)
+
+	# Notices sit under the bar, in the middle, where a refusal is
+	# actually noticed. In the corner they were routinely missed.
+	_hud_notice = _hud_label(Vector2(460.0, 44.0))
+	_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.82, 0.45))
+	layer.add_child(_hud_notice)
+
+	_build_selection_panel(layer)
 
 	_selection_rect = ColorRect.new()
 	_selection_rect.color = Color(0.4, 0.8, 1.0, 0.18)
@@ -1117,6 +1289,15 @@ func _train_key_for(archetype: StringName) -> String:
 ## wire id -> { "progress": float, "at": float } — the last progress the
 ## SERVER stated, and when we heard it. See _derived_progress.
 var _progress_anchor := {}
+
+## Same trick for the production countdown: wire id -> {remaining, at}.
+## The server sends the queue on change, so the head's timer runs down
+## locally between messages instead of being streamed (D-003).
+var _queue_anchor := {}
+
+## What the visible action buttons currently mean, parallel to
+## `_action_buttons`. Read by `_on_action_pressed`.
+var _actions: Array = []
 
 
 ## Construction progress, carried forward between messages.
@@ -1369,113 +1550,217 @@ func _update_hud() -> void:
 	if _hud_status == null:
 		return
 
-	_hud_status.text = "player %d · %d squads known · %d ghosts · %d buildings" % [
-		_state.player, _state.curves.size(), _state.ghost_squad_ids().size(),
-		_state.buildings.size()]
+	_hud_status.text = "%d squads · %d ghosts · %d buildings" % [
+		_state.curves.size(), _state.ghost_squad_ids().size(), _state.buildings.size()]
 
-	# The four resource readouts D-027 criterion 5 asks for. Only ours
-	# exist to show: wallets are private, so the protocol never carries
+	# Only OUR four. Wallets are private, so the protocol never carries
 	# anyone else's (D-028).
-	if _state.wallet.size() >= 4:
-		_hud_resources.text = "food %d · wood %d · gold %d · stone %d" % [
-			_state.wallet[0], _state.wallet[1], _state.wallet[2], _state.wallet[3]]
-	else:
-		_hud_resources.text = "food — · wood — · gold — · stone —"
+	for i in range(_resource_labels.size()):
+		var names := ["Food", "Wood", "Gold", "Stone"]
+		if _state.wallet.size() > i:
+			_resource_labels[i].text = "%s %d" % [names[i], _state.wallet[i]]
+		else:
+			_resource_labels[i].text = "%s —" % names[i]
 
 	# Show the server's explanation for a few seconds after it arrives.
 	# Timed off the COUNTER rather than the string, so two identical
-	# refusals in a row still re-show the message — pressing B twice from
-	# the same bad spot should say so twice, not look ignored.
+	# refusals in a row still re-show the message.
 	if _state.notices_received != _notice_seen:
 		_notice_seen = _state.notices_received
 		_notice_until = _now + 5.0
 	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
 
+	_update_selection_panel()
+
+
+## Fill the context panel from whatever is selected.
+##
+## The building branch is the one this was built for: a player selecting a
+## barracks wants to know how hurt it is, what it is training, what is
+## queued behind that, and what else they can order — and none of that
+## could be expressed in the line of text this replaces.
+func _update_selection_panel() -> void:
+	var actions := []
+	_health_bar_back.visible = false
+	_health_bar_fill.visible = false
+	_progress_bar_back.visible = false
+	_progress_bar_fill.visible = false
+	_progress_caption.text = ""
+	_queue_caption.text = ""
+	for swatch in _queue_swatches:
+		swatch.visible = false
+
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
-		var b: Dictionary = _state.buildings[_selected_building]
-		# The same derived figure the mesh uses, so the number and the
-		# picture cannot disagree with each other.
-		var progress := _derived_progress(_selected_building, b)
-		_hud_selection.text = "%s selected%s\n%s" % [
-			b["def_id"],
-			"" if progress >= 1.0 else "  [%s] %d%%" % [
-				_progress_bar(progress), int(progress * 100.0)],
-			_actions_for_building(b, progress)]
+		var info: Dictionary = _state.buildings[_selected_building]
+		var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		var progress := _derived_progress(_selected_building, info)
+		_selection_title.text = def.display_name if def != null else String(info["def_id"])
+
+		var health := clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0)
+		_selection_detail.text = "Health %d%%%s" % [
+			int(health * 100.0),
+			"" if int(info["owner"]) == _state.player else "   (not yours)"]
+		_set_bar(_health_bar_back, _health_bar_fill, health,
+			Color(0.35, 0.85, 0.4) if health > 0.35 else Color(0.9, 0.4, 0.35))
+
+		if progress < 1.0:
+			_progress_caption.text = "Under construction"
+			_set_bar(_progress_bar_back, _progress_bar_fill, progress,
+				Color(0.95, 0.75, 0.3))
+		else:
+			actions = _building_actions(info, def)
+			_show_production(info)
+		_set_actions(actions)
 		return
 
 	if _selected.is_empty():
-		_hud_selection.text = "nothing selected — click a squad or a building"
+		_selection_title.text = "Nothing selected"
+		_selection_detail.text = "Click a squad or a building. Drag to box-select."
+		_set_actions([])
 		return
 
 	var strength := 0
 	for squad in _selected:
 		strength += _state.alive_of(squad)
-	var kind: String = String(_state.composition.get(_selected[0], {}).get("def_id", "?"))
-	_hud_selection.text = "%d selected · %s · %d soldiers\n%s" % [
-		_selected.size(), kind, strength, _actions_for_squads()]
-
-
-## A twelve-cell bar, so progress reads at a glance instead of as a number
-## to compare against the last one you remember.
-func _progress_bar(progress: float) -> String:
-	var filled := clampi(roundi(progress * 12.0), 0, 12)
-	return "#".repeat(filled) + "-".repeat(12 - filled)
-
-
-## What the SELECTED squads can actually do, derived from their UnitDef
-## and BuildingDef.built_by rather than listed statically.
-##
-## The HUD used to print one fixed line naming every key in the game,
-## whatever was selected — so it could not answer the only question a
-## player actually has, which is "what can THIS do?". Founders may build a
-## town hall and nothing else (D-031, expressed in `built_by`); gatherers
-## gather and cannot fight; line infantry can do neither. A fixed list
-## implies all of it is available all of the time, and most of it isn't.
-##
-## Read from the data for the usual reason (D-010): add a unit or a
-## building and this line is right without being edited.
-func _actions_for_squads() -> String:
-	if _selected.is_empty():
-		return ""
 	var def_id := StringName(String(_state.composition.get(_selected[0], {}).get("def_id", "")))
-	var def := UnitRoster.by_id(def_id)
+	var unit := UnitRoster.by_id(def_id)
+	_selection_title.text = "%s  x%d" % [
+		unit.display_name if unit != null else String(def_id), _selected.size()]
+	_selection_detail.text = "%d soldiers" % strength
 
-	var parts := ["RMB move", "RMB enemy = attack", "X stop"]
-	if def != null and def.carry_capacity > 0:
-		parts.append("G gather")
+	# Strength as a bar too: "84 soldiers" means nothing without knowing
+	# what full strength was.
+	if unit != null and unit.squad_size > 0:
+		var full := unit.squad_size * _selected.size()
+		var fraction := clampf(float(strength) / float(full), 0.0, 1.0)
+		_set_bar(_health_bar_back, _health_bar_fill, fraction,
+			Color(0.35, 0.85, 0.4) if fraction > 0.35 else Color(0.9, 0.4, 0.35))
 
-	# Which buildings THIS unit may found, straight from built_by.
-	var buildable := []
-	for building in BuildingSim.all_defs():
-		if BuildingSim.can_build(building, def_id):
-			buildable.append("%s %s" % [_build_key_for(building.id), building.display_name])
-	if not buildable.is_empty():
-		parts.append("BUILD: " + "  ".join(buildable))
-	return "can: " + " · ".join(parts)
+	_set_actions(_squad_actions(def_id))
 
 
-## What a SELECTED building offers, from its `produces` list resolved
-## against this player's civ (D-047) — so it names your civ's troops
-## rather than a generic archetype, and cannot name another civ's at all.
-func _actions_for_building(info: Dictionary, progress: float) -> String:
-	if progress < 1.0:
-		return "under construction — it can do nothing until it is finished"
-	if int(info["owner"]) != _state.player:
-		return "not yours"
+func _set_bar(back: ColorRect, fill: ColorRect, fraction: float, colour: Color) -> void:
+	back.visible = true
+	fill.visible = true
+	fill.color = colour
+	fill.size = Vector2((back.size.x - 2.0) * clampf(fraction, 0.0, 1.0), fill.size.y)
 
-	var def := BuildingSim.def_by_id(StringName(info["def_id"]))
-	if def == null or def.produces.is_empty():
-		return "can: nothing to train here"
 
+## What the building is making, and what is waiting behind it.
+##
+## The head's remaining time counts down LOCALLY between messages, the
+## same derivation as construction progress — the server sends the queue
+## on change, not a float every tick (D-003).
+func _show_production(info: Dictionary) -> void:
+	var queue: Array = info.get("queue", [])
+	if queue.is_empty():
+		_queue_caption.text = "Idle"
+		return
+
+	var head := StringName(String(queue[0]))
+	var unit := UnitRoster.by_id(head)
+	var build_time := unit.build_time if unit != null else 0.0
+	var remaining := float(info.get("head_remaining", 0.0))
+	# Anchored the same way construction is, so it ticks down smoothly.
+	var anchor: Dictionary = _queue_anchor.get(_selected_building, {})
+	if anchor.is_empty() or not is_equal_approx(float(anchor["remaining"]), remaining):
+		anchor = {"remaining": remaining, "at": _now}
+		_queue_anchor[_selected_building] = anchor
+	var left := maxf(float(anchor["remaining"]) - (_now - float(anchor["at"])), 0.0)
+	var fraction := 1.0 - (left / build_time) if build_time > 0.0 else 0.0
+
+	_progress_caption.text = "Training %s — %.0fs" % [
+		unit.display_name if unit != null else String(head), left]
+	_set_bar(_progress_bar_back, _progress_bar_fill, fraction, Color(0.4, 0.7, 1.0))
+
+	_queue_caption.text = "Queue (%d)" % queue.size()
+	for i in range(_queue_swatches.size()):
+		_queue_swatches[i].visible = i < queue.size()
+
+
+## Actions a BUILDING offers: its `produces` list resolved against this
+## player's civ (D-047), so it names your troops and structurally cannot
+## name another civ's.
+func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
+	if def == null or int(info["owner"]) != _state.player:
+		return []
+	var out := []
 	var civ := _state.civ_of(_state.player)
-	var offers := []
 	for archetype in def.produces:
 		var unit := UnitRoster.for_civ_archetype(civ, archetype)
-		if unit != null:
-			offers.append("%s %s" % [_train_key_for(archetype), unit.display_name])
-	if offers.is_empty():
-		return "can: nothing your civ fields"
-	return "can train: " + "  ".join(offers)
+		if unit == null:
+			continue
+		out.append({
+			"label": "%s\n%s" % [unit.display_name, _cost_text(
+				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
+			"kind": "train", "id": archetype,
+		})
+	return out
+
+
+## Costs with the ZEROES left out. "50 food 0 wood 0 gold 0 stone" is four
+## times as much text as the one number that matters, and the noise is
+## what stops a price being readable at a glance.
+func _cost_text(food: int, wood: int, gold: int, stone: int) -> String:
+	var parts := []
+	if food > 0:
+		parts.append("%d food" % food)
+	if wood > 0:
+		parts.append("%d wood" % wood)
+	if gold > 0:
+		parts.append("%d gold" % gold)
+	if stone > 0:
+		parts.append("%d stone" % stone)
+	return "free" if parts.is_empty() else " · ".join(parts)
+
+
+## Actions SQUADS offer, from their UnitDef and BuildingDef.built_by —
+## founders may raise a town hall and nothing else (D-031), gatherers
+## gather, line infantry do neither.
+func _squad_actions(def_id: StringName) -> Array:
+	var out := []
+	var def := UnitRoster.by_id(def_id)
+	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	if def != null and def.carry_capacity > 0:
+		out.append({"label": "Gather", "kind": "gather", "id": &""})
+	for building in BuildingSim.all_defs():
+		if BuildingSim.can_build(building, def_id):
+			out.append({
+				"label": "Build %s\n%s" % [building.display_name, _cost_text(
+					building.cost_food, building.cost_wood,
+					building.cost_gold, building.cost_stone)],
+				"kind": "build", "id": building.id,
+			})
+	return out
+
+
+## Relabel the pooled buttons. Never creates or frees Controls — selection
+## changes constantly and churning nodes in _process is how a frame budget
+## goes.
+func _set_actions(actions: Array) -> void:
+	_actions = actions
+	for i in range(_action_buttons.size()):
+		var button := _action_buttons[i]
+		if i >= actions.size():
+			button.visible = false
+			continue
+		button.visible = true
+		button.text = String(actions[i]["label"])
+
+
+func _on_action_pressed(index: int) -> void:
+	if index < 0 or index >= _actions.size():
+		return
+	var action: Dictionary = _actions[index]
+	match String(action["kind"]):
+		"train":
+			_train_selected(StringName(action["id"]))
+		"build":
+			_build_selected(String(action["id"]))
+		"gather":
+			_gather_selected()
+		"stop":
+			_stop_selected()
 
 
 ## Repaint the minimap a few times a second rather than every frame:

@@ -383,6 +383,11 @@ func _handle_building_info(data: PackedByteArray) -> void:
 			"cell": int(entry["cell"]),
 			"progress": float(entry["progress"]),
 			"destroyed": bool(entry["destroyed"]),
+			# For the selection panel (health bar, production queue).
+			# Neither is hashed — see the hash's own comment.
+			"health_fraction": float(entry.get("health_fraction", 1.0)),
+			"head_remaining": float(entry.get("head_remaining", 0.0)),
+			"queue": entry.get("queue", []),
 		}
 
 
