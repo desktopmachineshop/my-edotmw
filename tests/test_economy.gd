@@ -417,3 +417,51 @@ func test_the_shipped_gatherer_can_actually_gather() -> void:
 	var founders: UnitDef = UnitRoster.by_id(&"founders")
 	assert_eq(founders.carry_capacity, 0,
 		"Founders found towns; hauling is the gatherers' job")
+
+
+# --- node density (playtest feedback) ----------------------------------
+
+func test_resource_nodes_are_actually_sparse() -> void:
+	# NODE_EVERY's comment said "sparse on purpose: a node on every forest
+	# tile would make the map a lawn" — and at 11 it produced 467 nodes
+	# across 8,064 cells, one per seventeen, which is the lawn. Reported
+	# from a real game as resources being far too common.
+	#
+	# Bounds rather than an exact figure, because this is tuning somebody
+	# should be free to move; what must not drift is the ORDER of
+	# magnitude, which is the difference between "somewhere to go" and
+	# "everywhere you stand".
+	var config := load("res://maps/default.tres") as MapConfig
+	var settings := MapSettings.new()
+	settings.width = config.width
+	settings.height = config.height
+	var space := settings.to_space()
+	var economy := Economy.new(space)
+	economy.generate(settings.to_terrain(), 1)
+
+	var per_node := float(space.cell_count()) / maxf(float(economy.node_count()), 1.0)
+	assert_gt(per_node, 40.0,
+		"one node per %.0f cells — that is scenery, not a place worth holding" % per_node)
+	assert_lt(per_node, 200.0,
+		"one node per %.0f cells — too sparse to run an economy on" % per_node)
+
+
+func test_thinning_the_nodes_did_not_starve_the_map() -> void:
+	# The other side of the change, and the one that could quietly ruin
+	# every match: NODE_STOCK was raised in step with NODE_EVERY so the
+	# map's TOTAL resource is roughly unchanged. Fewer, richer nodes is a
+	# different map, not a poorer one. Cutting the count alone would have
+	# left the same armies with a quarter of the economy.
+	var config := load("res://maps/default.tres") as MapConfig
+	var settings := MapSettings.new()
+	settings.width = config.width
+	settings.height = config.height
+	var space := settings.to_space()
+	var economy := Economy.new(space)
+	economy.generate(settings.to_terrain(), 1)
+
+	var total := 0
+	for cell in economy.nodes:
+		total += int(economy.nodes[cell]["remaining"])
+	assert_gt(total, 250000,
+		"only %d resource on the whole map — an hour-long match would strip it bare" % total)

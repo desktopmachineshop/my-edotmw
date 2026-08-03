@@ -28,13 +28,26 @@ const RESOURCE_COUNT := 4
 ## Phases of the haul cycle (D-028's round trip).
 enum Phase { TO_NODE, GATHERING, TO_DROP_OFF }
 
-## One cell in this many becomes a node. Sparse on purpose: a node on
-## every forest tile would make the map a lawn rather than a set of places
-## worth holding.
-const NODE_EVERY := 11
+## One cell in this many becomes a node.
+##
+## This said "sparse on purpose" at 11 and was not sparse: measured on the
+## shipped 84x96 map it produced 467 nodes across 8,064 cells — one per
+## seventeen — which is the lawn the comment claimed to be avoiding.
+##
+## At 45 the same map gets about a hundred. Nodes become places you go to
+## and hold rather than scenery you happen to be standing on, which is
+## also what makes a hotspot worth fighting over (the same reasoning as
+## D-039's scattered spawns).
+const NODE_EVERY := 45
 
 ## Starting stock in a node, before `alive`-scaled gathering eats it.
-const NODE_STOCK := 900
+##
+## Raised in step with NODE_EVERY so the map's TOTAL resource is roughly
+## unchanged — about 420k either way. Fewer, richer nodes is a different
+## map, not a poorer one: the economy still supports the same army, it
+## just concentrates where that army has to walk to get it. Cutting the
+## count without this would have quietly starved every match.
+const NODE_STOCK := 3600
 
 var space: TorusSpace
 
