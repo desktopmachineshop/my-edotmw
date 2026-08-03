@@ -1470,6 +1470,21 @@ func _refresh_selection_rings() -> void:
 	# approximating a line, a wedge and a loose scatter alike. Only
 	# buildings are marked with a single footprint here.
 	var wanted := []
+	# The selected building's rally point, so "where will my troops come
+	# out" is answered on the map rather than only by watching them.
+	if _selected_building >= 0 and _state.buildings.has(_selected_building) \
+			and _state.space != null:
+		var selected: Dictionary = _state.buildings[_selected_building]
+		if int(selected["owner"]) == _state.player and not bool(selected["destroyed"]):
+			var rally := _state.space.to_world(
+				_state.space.from_index(int(selected.get("rally", 0))))
+			if _state.terrain_sampler.is_valid():
+				rally.y = _state.terrain_sampler.call(rally.x, rally.z)
+			wanted.append({
+				"at": rally + _lattice_offset_for(rally), "radius": 1.1,
+				"colour": _state.colour_of(_state.player),
+			})
+
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var instance: MeshInstance3D = _building_nodes.get(_selected_building, null)
 		if instance != null and instance.visible:
@@ -2407,6 +2422,20 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	# the nineties answers this the same way: right-click means "do the
 	# obvious thing to that", which is move for ground and attack for an
 	# enemy.
+	# With a BUILDING selected, right-click sets its rally point — where
+	# what it produces will muster. Same gesture as ordering a squad, and
+	# it is what a player will try first.
+	if _selected_building >= 0 and _state.buildings.has(_selected_building):
+		var info: Dictionary = _state.buildings[_selected_building]
+		if int(info["owner"]) == _state.player:
+			var rally_cell := _cell_under(screen_position)
+			if rally_cell.x >= 0:
+				_peer.send(0, NetProtocol.encode_order_rally(
+					_selected_building, _state.space.index(rally_cell)),
+					ENetPacketPeer.FLAG_RELIABLE)
+				print("client: rally point set to %s" % rally_cell)
+			return
+
 	var target := _enemy_cell_at(screen_position)
 
 	# Right-clicking a RESOURCE puts workers on it, the same way

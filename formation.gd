@@ -66,7 +66,7 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 		"loose":
 			return _loose_offset(index, alive, spacing)
 		"ring":
-			return _ring_offset(index, spacing)
+			return _ring_offset(index, alive, spacing)
 		_:
 			push_error("Unknown formation_shape '%s' — falling back to line" % shape)
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
@@ -157,27 +157,88 @@ static func _wedge_offset(index: int, spacing: float) -> Vector2:
 ## which is what they visibly ought to be doing, and what a spread grid
 ## never looked like.
 ##
-## Six per unit radius, matching the hex world's own ring sizes, so the
-## crew sits on the ground the way the grid underneath is shaped.
+## Ring sizes and how the crew is shared between them are `_ring_layout`'s
+## business — see it for why a crew only gains a second ring when one
+## genuinely cannot hold it.
 ##
-## Pure in (index, spacing) like every other shape, with no per-soldier
-## state anywhere (D-006 clause 1). Note it deliberately does NOT depend
-## on the haul phase: making the shape follow what the squad is doing
-## would mean Formation reading economy state, and the purity clause is
-## worth more than the extra realism.
-static func _ring_offset(index: int, spacing: float) -> Vector2:
-	var ring := 1
+## Pure in (index, alive, spacing) like every other shape, with no
+## per-soldier state anywhere (D-006 clause 1).
+static func _ring_offset(index: int, alive: int, spacing: float) -> Vector2:
+	var layout := _ring_layout(alive, spacing)
 	var consumed := 0
-	while consumed + ring * 6 <= index:
-		consumed += ring * 6
-		ring += 1
+	for k in range(layout.size()):
+		var count: int = layout[k]
+		if index < consumed + count:
+			var place := index - consumed
+			# Half-step alternate rings so the rings interleave rather
+			# than lining every soldier up on the same spokes.
+			var angle := TAU * (float(place) + 0.5 * float(k % 2)) / float(count)
+			return Vector2(cos(angle), sin(angle)) * float(k + 1) * spacing
+		consumed += count
+	return Vector2.ZERO
 
-	var in_ring := ring * 6
-	var place := index - consumed
-	# Half-step each ring round so the rings interleave instead of
-	# lining every soldier up on the same spokes.
-	var angle := TAU * (float(place) + 0.5 * float(ring % 2)) / float(in_ring)
-	return Vector2(cos(angle), sin(angle)) * float(ring) * spacing
+
+## Cache: "alive|spacing" -> Array of how many stand in each ring.
+static var _ring_layout_cache: Dictionary = {}
+
+
+## How to spread `alive` soldiers over as few rings as will hold them.
+##
+## The first version filled ring 1 to its capacity of six and started ring
+## 2 with whatever was left, so eight gatherers stood as a tight six with
+## two stranded on their own out at double the radius. Spacing was even
+## WITHIN a ring and the crew still looked wrong, because the rings were
+## unevenly loaded.
+##
+## Now: take the fewest rings whose combined capacity holds everyone, then
+## spread the crew across them in proportion to each ring's circumference.
+## Each ring is evenly divided, so angular spacing is uniform and arc
+## spacing is close to `spacing` at every radius — for a crew of any size,
+## which is what "equal spacing regardless of squad size" asks for.
+##
+## Ring k has radius k * spacing, so its circumference is TAU * k * spacing
+## and it holds floor(TAU * k) at one `spacing` apart — 6, 12, 18, and so
+## on. A crew only gains a second ring when a single one genuinely cannot
+## hold it without soldiers standing on each other.
+static func _ring_layout(alive: int, spacing: float) -> Array:
+	var key := "%d|%.3f" % [alive, spacing]
+	if _ring_layout_cache.has(key):
+		return _ring_layout_cache[key]
+
+	var layout := []
+	if alive > 0:
+		# Fewest rings that can hold the crew.
+		var rings := 1
+		while _capacity_of_rings(rings) < alive:
+			rings += 1
+
+		# Share them out by circumference, so no ring is left with a
+		# lonely pair while another is packed shoulder to shoulder.
+		var total_capacity := _capacity_of_rings(rings)
+		var placed := 0
+		for k in range(1, rings + 1):
+			var share := int(round(float(alive) * float(_ring_capacity(k)) / float(total_capacity)))
+			# The last ring takes the remainder, so rounding can never
+			# lose or invent a soldier.
+			if k == rings:
+				share = alive - placed
+			share = clampi(share, 0, alive - placed)
+			layout.append(share)
+			placed += share
+
+	_ring_layout_cache[key] = layout
+	return layout
+
+
+static func _ring_capacity(ring: int) -> int:
+	return maxi(1, floori(TAU * float(ring)))
+
+
+static func _capacity_of_rings(rings: int) -> int:
+	var total := 0
+	for k in range(1, rings + 1):
+		total += _ring_capacity(k)
+	return total
 
 
 static func _loose_offset(index: int, alive: int, spacing: float) -> Vector2:

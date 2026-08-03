@@ -363,6 +363,57 @@ func set_alive(squad: int, alive: int) -> void:
 ## A routed squad ignores this (D-024, D-019): it is fleeing under its own
 ## steam and does not take player orders again until it rallies. That is
 ## enforced here, structurally, rather than left to callers to remember.
+## `cell` if a squad can stand there, otherwise the nearest cell it can.
+##
+## Walks outward in `disk_offsets` order, which is deterministic, so two
+## squads ordered onto the same wall pick the same approach and a replay
+## reproduces it. Gives up after a few rings and returns the original —
+## somewhere sealed off is better handled by the squad failing to arrive
+## than by searching the whole map every order.
+func _approachable(cell: Vector2i) -> Vector2i:
+	if is_passable(cell):
+		return cell
+	for offset in TorusSpace.disk_offsets(3):
+		var candidate := space.normalize(cell + offset)
+		if is_passable(candidate):
+			return candidate
+	return cell
+
+
+## Whether a squad may stand on a cell: terrain only.
+##
+## Empty passability means fully open, which is what a bare SquadSim in a
+## test gets.
+func is_passable(cell: Vector2i) -> bool:
+	if _passable.is_empty():
+		return true
+	var index := space.index(cell)
+	return index < _passable.size() and _passable[index] != 0
+
+
+## A cell just outside a building, for a squad that has just been made
+## there — walkable, not underneath the building, and not inside another.
+##
+## Walks the hex ring at increasing radius, so it prefers to stand a new
+## squad right at the door and only spreads out when the door is blocked.
+## Deterministic: `disk_offsets` enumerates in a fixed order, so server and
+## replay agree about where a unit appeared.
+func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
+	var home := buildings.cell_of(building)
+	for offset in TorusSpace.disk_offsets(4):
+		if TorusSpace.hex_length(offset) < 2:
+			continue  # under the building itself
+		var candidate := space.normalize(home + offset)
+		if not is_passable(candidate):
+			continue
+		if buildings.building_at(candidate) >= 0:
+			continue
+		return candidate
+	# Hemmed in on every side: put them at the door anyway rather than
+	# losing a squad somebody paid for.
+	return space.normalize(home + Vector2i(2, 0))
+
+
 func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
@@ -454,7 +505,17 @@ func _quantise(cell: Vector2i) -> Vector2i:
 ## a bucket corner. Gathering must reach the node's own cell or the squad
 ## never registers as arrived and never starts work.
 func _apply_move_order(squad: int, destination: Vector2i, quantise := false) -> void:
-	var dest_index := space.index(_quantise(destination) if quantise else destination)
+	# An order onto ground nobody can stand on becomes an order to the
+	# nearest ground they can.
+	#
+	# Buildings block movement now, so their cells are impassable — and
+	# without this, right-clicking a town hall, or a gatherer hauling to a
+	# storehouse, would set a destination the flow field can never reach
+	# and the squad would simply never move. Handled HERE rather than at
+	# each call site because there are four of them (player orders,
+	# attack-moves, rally points, hauling) and three would have been fixed.
+	var wanted := _quantise(destination) if quantise else destination
+	var dest_index := space.index(_approachable(wanted))
 	if _destination[squad] == dest_index:
 		return
 	_destination[squad] = dest_index
@@ -808,7 +869,17 @@ func tick() -> void:
 				push_error("SquadSim: building produced unknown unit '%s'" % finished["def_id"])
 				continue
 			var at: int = int(finished["building"])
-			add_squad(produced, buildings.owner_of(at), buildings.cell_of(at) + Vector2i(1, 0))
+			# Clear of the building, then walk to its rally point.
+			#
+			# This used to be `cell + (1, 0)` — one hex from the building's
+			# centre, which is INSIDE the box drawn on top of it, because a
+			# building's mesh is wider than a hex. Units appeared standing
+			# in the wall of the thing that made them.
+			var door := _spawn_cell_near(buildings, at)
+			var spawned := add_squad(produced, buildings.owner_of(at), door)
+			var rally := buildings.rally_of(at)
+			if rally != door:
+				order_move(spawned, rally)
 		last_production_usec = Time.get_ticks_usec() - production_started
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():

@@ -386,6 +386,11 @@ func _process(delta: float) -> void:
 					float(_sim.last_buildings_usec) / 1000.0,
 					float(_sim.last_production_usec) / 1000.0,
 					float(_sim.last_economy_usec) / 1000.0])
+		# Rubble is walkable again. Cheap to check — the list is empty on
+		# almost every tick — and skipping it would leave an invisible wall
+		# where a razed town hall used to be.
+		if not _sim.destroyed_buildings.is_empty():
+			_refresh_passability()
 		_advance_pending_builds()
 		_advance_match()
 		# AI seats think on the server's clock, after the world has moved
@@ -758,6 +763,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
 				_handle_order_gather(peer, data)
+			NetProtocol.C2S_ORDER_RALLY:
+				_handle_order_rally(peer, data)
 			NetProtocol.C2S_CHAT:
 				_handle_chat(peer, data)
 			NetProtocol.C2S_LOBBY:
@@ -826,6 +833,47 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 		return
 	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Set where a building sends what it produces.
+##
+## Ownership is checked here like every other order (D-002): a client that
+## could set an opponent's rally point could walk their army off a cliff.
+func _handle_order_rally(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null or not _match.is_running():
+		return
+
+	var order := NetProtocol.decode_order_rally(data)
+	var building := BuildingSim.local_id(int(order["building"]))
+	if building < 0 or building >= _buildings.building_count():
+		return
+	if _buildings.owner_of(building) != int(record["player"]):
+		_notify(peer, "That is not yours to give orders to")
+		return
+
+	var cell := _sim.space.from_index(int(order["cell"]))
+	_buildings.set_rally(building, cell)
+	_notify(peer, "Rally point set")
+
+
+## Terrain passability with living buildings stamped out of it, so squads
+## walk AROUND a town hall instead of through it (D-007).
+##
+## Rebuilt wholesale from `_passable` rather than edited in place, because
+## a destroyed building has to give its ground back and an in-place edit
+## would need to remember what the terrain said underneath. Called only
+## when the set of buildings changes — raising one, losing one — never per
+## tick, and `SquadSim.set_passable` discards cached flow fields, which is
+## exactly right: a field solved before a wall existed routes through it.
+func _refresh_passability() -> void:
+	if _sim == null:
+		return
+	var blocked := _passable.duplicate()
+	for index in _buildings.occupied_cells():
+		if index < blocked.size():
+			blocked[index] = 0
+	_sim.set_passable(blocked)
 
 
 ## Finish any build whose builder has now walked into reach.
@@ -933,6 +981,7 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i) -> void:
 
 	var built := _buildings.add_building(def, owner, cell, false, squad)
 	_send_wallet(peer, owner)
+	_refresh_passability()
 
 	# The founding party becomes the settlement, here and now (D-031).
 	# Consuming them at completion instead left them free to queue another

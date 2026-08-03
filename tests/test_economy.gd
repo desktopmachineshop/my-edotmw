@@ -421,47 +421,87 @@ func test_the_shipped_gatherer_can_actually_gather() -> void:
 
 # --- node density (playtest feedback) ----------------------------------
 
-func test_resource_nodes_are_actually_sparse() -> void:
-	# NODE_EVERY's comment said "sparse on purpose: a node on every forest
-	# tile would make the map a lawn" — and at 11 it produced 467 nodes
-	# across 8,064 cells, one per seventeen, which is the lawn. Reported
-	# from a real game as resources being far too common.
-	#
-	# Bounds rather than an exact figure, because this is tuning somebody
-	# should be free to move; what must not drift is the ORDER of
-	# magnitude, which is the difference between "somewhere to go" and
-	# "everywhere you stand".
-	var config := load("res://maps/default.tres") as MapConfig
+## The map as a PLAYER gets it: generated, then topped up for fairness.
+##
+## The first version of these guards measured `generate()` alone and
+## reported one node per 68 cells while the shipped map had one per 39.
+## `balance_for_spawns` guarantees every spawn a quota of each resource
+## within reach, and on a small map that nearly DOUBLES the count — so
+## measuring before it is measuring a map nobody plays.
+func _generated_map(width: int, height: int) -> Economy:
 	var settings := MapSettings.new()
-	settings.width = config.width
-	settings.height = config.height
+	settings.width = width
+	settings.height = height
 	var space := settings.to_space()
+	var terrain := settings.to_terrain()
 	var economy := Economy.new(space)
-	economy.generate(settings.to_terrain(), 1)
+	economy.generate(terrain, 1)
 
-	var per_node := float(space.cell_count()) / maxf(float(economy.node_count()), 1.0)
-	assert_gt(per_node, 40.0,
-		"one node per %.0f cells — that is scenery, not a place worth holding" % per_node)
-	assert_lt(per_node, 200.0,
-		"one node per %.0f cells — too sparse to run an economy on" % per_node)
+	var config := load("res://maps/default.tres") as MapConfig
+	var passable := terrain.passability(space)
+	var spawn_config := MapConfig.new()
+	spawn_config.width = width
+	spawn_config.height = height
+	spawn_config.player_slots = config.player_slots
+	spawn_config.min_spawn_spacing = config.min_spawn_spacing
+	economy.balance_for_spawns(spawn_config.spawn_points(passable), passable,
+		config.fairness_radius, config.fairness_quota)
+	return economy
+
+
+func test_resource_nodes_are_sparse_at_every_map_size() -> void:
+	# Reported twice from real games as resources being far too common,
+	# the second time specifically on a small map — which is where the
+	# fairness top-up dominates, because a small map has nearly as many
+	# spawns to guarantee as a large one and far fewer natural nodes.
+	#
+	# Bounds rather than exact figures: this is tuning somebody should be
+	# free to move. What must not drift is the order of magnitude, which
+	# is the difference between somewhere to go and everywhere you stand.
+	for size in MapSettings.sizes():
+		var economy := _generated_map(int(size["width"]), int(size["height"]))
+		var cells := int(size["width"]) * int(size["height"])
+		var per_node := float(cells) / maxf(float(economy.node_count()), 1.0)
+		assert_gt(per_node, 45.0,
+			"%s: one node per %.0f cells — that is scenery, not a place worth holding" % [
+				size["name"], per_node])
+		assert_lt(per_node, 220.0,
+			"%s: one node per %.0f cells — too sparse to run an economy on" % [
+				size["name"], per_node])
+
+
+func test_small_maps_are_not_far_denser_than_large_ones() -> void:
+	# The specific complaint. Node COUNT scaled with map size correctly all
+	# along; the fairness pass did not, so the smallest map came out at one
+	# node per 37 cells against one per 57 on the largest — and the small
+	# map is the one people test on.
+	#
+	# Some spread is correct and should not be tuned away: a small map has
+	# to seat nearly as many players, and each of them still needs a start.
+	var sizes := MapSettings.sizes()
+	var smallest := _generated_map(int(sizes[0]["width"]), int(sizes[0]["height"]))
+	var largest := _generated_map(int(sizes[-1]["width"]), int(sizes[-1]["height"]))
+
+	var small_per := float(int(sizes[0]["width"]) * int(sizes[0]["height"])) \
+		/ maxf(float(smallest.node_count()), 1.0)
+	var large_per := float(int(sizes[-1]["width"]) * int(sizes[-1]["height"])) \
+		/ maxf(float(largest.node_count()), 1.0)
+
+	assert_lt(large_per / small_per, 2.5,
+		"the largest map is %.1fx sparser than the smallest — the fairness "
+		% (large_per / small_per) + "top-up is not scaling with the map")
 
 
 func test_thinning_the_nodes_did_not_starve_the_map() -> void:
-	# The other side of the change, and the one that could quietly ruin
-	# every match: NODE_STOCK was raised in step with NODE_EVERY so the
-	# map's TOTAL resource is roughly unchanged. Fewer, richer nodes is a
-	# different map, not a poorer one. Cutting the count alone would have
-	# left the same armies with a quarter of the economy.
-	var config := load("res://maps/default.tres") as MapConfig
-	var settings := MapSettings.new()
-	settings.width = config.width
-	settings.height = config.height
-	var space := settings.to_space()
-	var economy := Economy.new(space)
-	economy.generate(settings.to_terrain(), 1)
-
+	# The change that could quietly ruin every match: NODE_STOCK is raised
+	# in step with NODE_EVERY so the map's TOTAL resource stays roughly
+	# constant. Fewer, richer nodes is a different map, not a poorer one —
+	# cutting the count alone would leave the same armies with a fraction
+	# of the economy, and with a 1-2 hour target stripping the map bare is
+	# the specific failure to avoid.
+	var economy := _generated_map(84, 96)
 	var total := 0
 	for cell in economy.nodes:
 		total += int(economy.nodes[cell]["remaining"])
 	assert_gt(total, 250000,
-		"only %d resource on the whole map — an hour-long match would strip it bare" % total)
+		"only %d resource on the standard map — an hour-long match would strip it bare" % total)

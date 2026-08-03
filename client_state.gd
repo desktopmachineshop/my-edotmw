@@ -388,6 +388,7 @@ func _handle_building_info(data: PackedByteArray) -> void:
 			"health_fraction": float(entry.get("health_fraction", 1.0)),
 			"head_remaining": float(entry.get("head_remaining", 0.0)),
 			"queue": entry.get("queue", []),
+			"rally": int(entry.get("rally", 0)),
 		}
 
 

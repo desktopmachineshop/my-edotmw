@@ -72,7 +72,7 @@ class_name MapConfig
 ## quadrant symmetry as the fairness mechanism: generate freely, then make
 ## sure nobody starts with no wood in reach.
 @export var fairness_radius: int = 14
-@export var fairness_quota: int = 3
+@export var fairness_quota: int = 2
 
 # What a player starts with (D-028). Non-zero on purpose: gatherers cost
 # food, and food comes from gatherers, so a player starting empty could

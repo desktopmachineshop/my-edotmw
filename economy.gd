@@ -38,7 +38,7 @@ enum Phase { TO_NODE, GATHERING, TO_DROP_OFF }
 ## and hold rather than scenery you happen to be standing on, which is
 ## also what makes a hotspot worth fighting over (the same reasoning as
 ## D-039's scattered spawns).
-const NODE_EVERY := 45
+const NODE_EVERY := 95
 
 ## Starting stock in a node, before `alive`-scaled gathering eats it.
 ##

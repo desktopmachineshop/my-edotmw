@@ -59,6 +59,66 @@ var _queues := {}
 # Which squad founded each building, or -1. Parallel to the rest.
 var _builder := PackedInt32Array()
 
+## Where each building sends what it produces, as a cell index, or -1 for
+## "not set" — in which case `rally_of` answers with the default.
+##
+## A produced squad used to appear at `cell + (1, 0)`, one hex from the
+## building's centre, which is INSIDE the 2.4-wide box drawn on a 1.73-wide
+## hex: units materialised standing in the wall of the thing that made
+## them. They now spawn clear of it and walk to this point.
+var _rally := PackedInt32Array()
+
+## How far in front of a building its default rally point sits, in cells.
+## Far enough that a squad standing there is visibly outside the building
+## rather than leaning against it.
+const DEFAULT_RALLY_CELLS := 3
+
+
+## Where this building sends what it produces.
+##
+## Defaults to a few cells "in front", which for a building with no facing
+## means a fixed direction — arbitrary, but it has to be deterministic
+## because both sides derive it, and consistent so a player learns where
+## their troops appear.
+func rally_of(building: int) -> Vector2i:
+	if building < 0 or building >= _cell.size():
+		return Vector2i.ZERO
+	if _rally[building] >= 0:
+		return space.from_index(_rally[building])
+	return space.normalize(space.from_index(_cell[building])
+		+ Vector2i(DEFAULT_RALLY_CELLS, 0))
+
+
+## The living building standing on a cell, or -1.
+##
+## Linear over buildings rather than a cell->building map, because there
+## are orders of magnitude fewer buildings than cells and a map would be a
+## second source of truth to keep in step with `_cell`. If building counts
+## ever reach the thousands this is the thing to index.
+func building_at(cell: Vector2i) -> int:
+	var index := space.index(cell)
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0 and _cell[i] == index:
+			return i
+	return -1
+
+
+## Cells that living buildings stand on, for the simulation's passability
+## (D-007). A squad should walk AROUND a town hall, not through it.
+func occupied_cells() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0:
+			out.append(_cell[i])
+	return out
+
+
+func set_rally(building: int, cell: Vector2i) -> void:
+	if building < 0 or building >= _cell.size():
+		return
+	_rally[building] = space.index(cell)
+	_dirty[building] = true
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -77,6 +137,7 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 		builder: int = -1) -> int:
 	var id := _cell.size()
 	_builder.append(builder)
+	_rally.append(-1)
 	_cell.append(space.index(at))
 	_owner.append(owner)
 	_defs.append(def)
@@ -219,6 +280,8 @@ func info_entries(ids: Array) -> Array:
 			"health_fraction": _health[id] / maxf(_defs[id].max_health, 0.001),
 			"head_remaining": float(queue[0]["remaining"]) if not queue.is_empty() else 0.0,
 			"queue": queued_ids,
+			# So the client can draw where troops will muster.
+			"rally": space.index(rally_of(id)),
 		})
 	return out
 

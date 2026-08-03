@@ -32,6 +32,7 @@ const C2S_ORDER_ATTACK_MOVE := 12
 const C2S_ORDER_BUILD := 13
 const C2S_ORDER_PRODUCE := 14
 const C2S_ORDER_GATHER := 16
+const C2S_ORDER_RALLY := 23
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
@@ -263,6 +264,7 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		# as construction progress rather than a stream of floats.
 		buf.put_float(float(entry.get("health_fraction", 1.0)))
 		buf.put_float(float(entry.get("head_remaining", 0.0)))
+		buf.put_u32(int(entry.get("rally", 0)))
 		var queue: Array = entry.get("queue", [])
 		buf.put_u16(queue.size())
 		for queued in queue:
@@ -291,6 +293,7 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 			"destroyed": buf.get_u8() == 1,
 			"health_fraction": buf.get_float(),
 			"head_remaining": buf.get_float(),
+			"rally": buf.get_u32(),
 		}
 		var queue := []
 		for _q in range(buf.get_u16()):
@@ -379,6 +382,26 @@ static func decode_order_gather(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"squad": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## ORDER_RALLY: where a building sends what it produces.
+##
+## The building is named by its WIRE id (BuildingSim.wire_id), like every
+## other building order — squad ids and building ids share a number space
+## and the offset is what keeps them apart.
+static func encode_order_rally(building_wire_id: int, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_RALLY)
+	buf.put_u32(building_wire_id)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_rally(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "cell": buf.get_u32()}
 
 
 ## NOTICE: a short human-readable line for the player who sent an order.
