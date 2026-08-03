@@ -47,7 +47,14 @@ const THINK_INTERVAL := 1.0
 ##
 ## Becomes a profile field in the next slice (D-053); it is a constant
 ## here only until profiles land.
-const GATHERERS_WANTED := 7
+## Counted in SOLDIERS, not squads.
+##
+## It was 7 SQUADS, which is a number about crews rather than about
+## labour — so when gatherer squads went from 16 men to 5 the AI's economy
+## silently fell to a third without anyone changing the AI. A target
+## expressed in the thing that actually gathers (gather_rate is per living
+## soldier, D-028) survives a roster change instead of quietly breaking.
+const GATHERER_SOLDIERS_WANTED := 110
 
 ## Seconds between production orders, so the queue cannot outrun the
 ## target the AI is aiming at. A profile field in the next slice.
@@ -244,8 +251,13 @@ func _train() -> void:
 	# want another worker, so workers grew until they filled the squad cap
 	# (D-033) and the army could never be built. The ladder showed 15
 	# squads of which 15 were workers.
-	var workers := _squads_matching(func(def): return def.carry_capacity > 0).size()
-	var wanted := &"gatherers" if workers < GATHERERS_WANTED else _military_archetype()
+	# Summed as SOLDIERS, because that is what gathers — a headcount
+	# target survives the roster changing crew size under it.
+	var worker_soldiers := 0
+	for squad in _squads_matching(func(def): return def.carry_capacity > 0):
+		worker_soldiers += state.alive_of(squad)
+	var wanted := &"gatherers" if worker_soldiers < GATHERER_SOLDIERS_WANTED \
+		else _military_archetype()
 	if wanted == &"":
 		return
 
