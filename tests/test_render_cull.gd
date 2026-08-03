@@ -268,3 +268,40 @@ func test_the_zoom_cap_keeps_a_second_terrain_copy_off_screen() -> void:
 	assert_gt(old_cap * 2.6, z_period,
 		"the width-derived cap should be demonstrably unsafe — if this fails, "
 		+ "the map shape changed and this test is no longer testing anything")
+
+
+func test_every_shipped_map_is_roughly_square_in_world_units() -> void:
+	# A map that is much wider than it is deep forces the zoom cap down,
+	# because the cap is bounded by the SHALLOWER lattice period — and
+	# past that cap a second terrain copy enters view showing bare ground
+	# with no units on it.
+	#
+	# Cells are not the measure: a hex column is SQRT_3 (~1.732) wide and
+	# a row is 1.5 deep, so 128x64 cells is 2.31:1 on the ground, not 2:1.
+	# Every shipped size was 2:1 in cells, so every one of them was oblong.
+	var sizes := MapSettings.sizes()
+	assert_gt(sizes.size(), 0, "no sizes to check")
+
+	for entry in sizes:
+		var w := int(entry["width"])
+		var h := int(entry["height"])
+		var x_period := float(w) * TorusSpace.SQRT_3
+		var z_period := float(h) * 1.5
+		var ratio := maxf(x_period, z_period) / minf(x_period, z_period)
+		assert_lt(ratio, 1.15,
+			"%s (%dx%d) is %.2f:1 on the ground — the shallow axis caps the zoom" % [
+				entry["name"], w, h, ratio])
+		assert_eq(h % 2, 0, "%s has an odd height, which D-008 forbids" % entry["name"])
+
+
+func test_the_shipped_map_files_are_square_too() -> void:
+	# The lobby sizes and the .tres files on disk are separate lists, and
+	# a fix applied to one and not the other is exactly the drift this
+	# project keeps getting caught by.
+	for path in ["res://maps/default.tres", "res://maps/ladder.tres"]:
+		var config := load(path) as MapConfig
+		assert_not_null(config, "%s is missing" % path)
+		var ratio := maxf(float(config.width) * TorusSpace.SQRT_3, float(config.height) * 1.5) \
+			/ minf(float(config.width) * TorusSpace.SQRT_3, float(config.height) * 1.5)
+		assert_lt(ratio, 1.15,
+			"%s is %.2f:1 on the ground" % [path, ratio])

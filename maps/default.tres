@@ -6,8 +6,8 @@
 script = ExtResource("1_mapcfg")
 id = &"default"
 display_name = "Default Torus"
-width = 128
-height = 64
+width = 84
+height = 96
 hex_size = 1.0
 squads_per_player = 12
 squad_cap = 40

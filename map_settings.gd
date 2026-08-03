@@ -23,8 +23,8 @@ class_name MapSettings
 
 ## Torus dimensions. Height must stay even (D-008's row parity), which
 ## `sizes()` guarantees and `validate()` rechecks.
-var width: int = 128
-var height: int = 64
+var width: int = 84
+var height: int = 96
 
 ## How many starting positions the map offers (D-039).
 var player_slots: int = 8
@@ -49,12 +49,30 @@ var height_scale: float = 2.0
 ## The map sizes the lobby offers. Every height is even (D-008), and the
 ## cell counts span the range M4 measured: 2,048 through 32,768, where
 ## the worst tick stayed flat once field building was amortised (D-040).
+## Every size is roughly SQUARE IN WORLD UNITS, which is not the same as
+## square in cells.
+##
+## A hex column is `SQRT_3` (~1.732) wide and a hex row is 1.5 deep, so a
+## W x H cell grid measures `W * 1.732` by `H * 1.5`. These were all 2:1
+## in cells, which is 2.31:1 on the ground — and the shallow axis is what
+## bounds how far the camera may zoom before a second terrain copy enters
+## view (RenderCull.max_camera_height). On the old Standard map that
+## capped zoom at 31 against a possible 47.
+##
+## So `height ~ width * 1.155`. Heights stay EVEN for D-008's row parity,
+## and cell counts are close to what they replaced so spawn density,
+## match pacing and the D-038/D-043 performance figures stay comparable.
+##
+##   Skirmish  42 x 48  =  2,016 cells   (was 64 x 32  =  2,048)
+##   Standard  84 x 96  =  8,064 cells   (was 128 x 64 =  8,192)
+##   Large    126 x 146 = 18,396 cells   (was 192 x 96 = 18,432)
+##   Huge     168 x 194 = 32,592 cells   (was 256 x 128 = 32,768)
 static func sizes() -> Array:
 	return [
-		{"width": 64, "height": 32, "name": "Skirmish"},
-		{"width": 128, "height": 64, "name": "Standard"},
-		{"width": 192, "height": 96, "name": "Large"},
-		{"width": 256, "height": 128, "name": "Huge"},
+		{"width": 42, "height": 48, "name": "Skirmish"},
+		{"width": 84, "height": 96, "name": "Standard"},
+		{"width": 126, "height": 146, "name": "Large"},
+		{"width": 168, "height": 194, "name": "Huge"},
 	]
 
 

@@ -248,6 +248,8 @@ func _process(delta: float) -> void:
 	_refresh_squads()
 	_refresh_buildings()
 	_refresh_resource_nodes()
+	# After both, so a ring can sit on the position they just set.
+	_refresh_selection_rings()
 	_update_hud()
 	_update_minimap()
 	_seat_capture_ai()
@@ -464,6 +466,9 @@ func _build_terrain() -> void:
 	# Minimap base: one pixel per cell, painted from the same biome
 	# classification the mesh used (D-037), so the small picture and the
 	# big one cannot disagree about where the water is.
+	# Now the map's real dimensions are known, give the minimap its shape.
+	_layout_minimap(space)
+
 	_minimap_base = Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
 	for y in range(space.height):
 		for x in range(space.width):
@@ -922,6 +927,41 @@ var _selected: Array = []
 var _dragging := false
 var _drag_start := Vector2.ZERO
 var _selection_rect: ColorRect = null
+## The drag box's four border bars: top, bottom, left, right.
+var _selection_edges: Array[ColorRect] = []
+const SELECTION_EDGE_PX := 2.0
+const MINIMAP_WIDTH_PX := 216.0
+
+
+## Give the minimap the map's own proportions, once the map is known.
+##
+## The bounds were fixed at 256x128, written when every shipped map was
+## 2:1 in cells. Maps are square in world units now, and a square world
+## drawn into a 2:1 box is stretched 3x horizontally against 1.3x
+## vertically: distances read wrong and the view-bounds box comes out a
+## shape unlike anything you are looking at.
+##
+## Aspect from the WORLD periods, not the cell counts — a hex column is
+## SQRT_3 wide and a row 1.5 deep, the same distinction that let every map
+## be oblong without anyone noticing.
+##
+## `_minimap_bounds` is also the hit-test rect for minimap clicks, and it
+## is deliberately the ONE definition: reading the size back off the
+## TextureRect once made the whole screen behave as minimap, which killed
+## selection and ordering together.
+func _layout_minimap(space: TorusSpace) -> void:
+	if _minimap_rect == null or space == null:
+		return
+	var x_period := float(space.width) * space.hex_size * TorusSpace.SQRT_3
+	var z_period := float(space.height) * 1.5 * space.hex_size
+	if x_period <= 0.0 or z_period <= 0.0:
+		return
+
+	_minimap_bounds = Rect2(_minimap_bounds.position,
+		Vector2(MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX * z_period / x_period))
+	_minimap_rect.position = _minimap_bounds.position
+	_minimap_rect.size = _minimap_bounds.size
+	_minimap_rect.custom_minimum_size = _minimap_bounds.size
 var _control_groups := {}
 
 var _hud_status: Label = null
@@ -966,7 +1006,7 @@ func _build_hud() -> void:
 	# list of every key in the game implies all of it is always available,
 	# and most of it never is (founders may build a town hall and nothing
 	# else; gatherers cannot fight; infantry cannot build).
-	hint.text = "LMB select · drag box · shift extend · Ctrl+1-9 groups · WASD pan · wheel zoom"
+	hint.text = "LMB select · drag box · shift extend · RMB move, or RMB an enemy to attack · Ctrl+1-9 groups · WASD pan · wheel zoom"
 
 	# Outlined text because the map underneath is light sand and dark
 	# forest in equal measure; plain white is unreadable over half of it.
@@ -982,6 +1022,24 @@ func _build_hud() -> void:
 	_selection_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_selection_rect)
 
+	# A bright border, as four thin bars.
+	#
+	# The box was an 18%-alpha fill and nothing else, which over sand or
+	# pale grass is very nearly invisible — reported as it being hard to
+	# tell where you are selecting. A border reads against any terrain
+	# because it is a hard edge rather than a wash of colour.
+	#
+	# Four ColorRects rather than a Panel with a StyleBoxFlat, for the
+	# reason the HUD sliders learned: a Panel container overrides its
+	# children's anchors and the result silently ignores the size you set.
+	for _i in range(4):
+		var bar := ColorRect.new()
+		bar.color = Color(0.55, 0.9, 1.0, 0.95)
+		bar.visible = false
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_selection_edges.append(bar)
+		layer.add_child(bar)
+
 	# Hit-testing uses THIS rect, not the Control's reported size.
 	#
 	# Reading the size back from the node was a real bug: a TextureRect
@@ -995,7 +1053,17 @@ func _build_hud() -> void:
 	# line — visible in the capture frame, invisible to every counter the
 	# verdict checks. Left generous room rather than exactly enough, so a
 	# longer "can:" line does not put it back.
-	_minimap_bounds = Rect2(12.0, 168.0, 256.0, 128.0)
+	#
+	# SHAPED FROM THE MAP, not fixed at 256x128. That 2:1 rect was written
+	# when every shipped map was 2:1 in cells; the maps are square in world
+	# units now (D-056's follow-up) and a square world drawn into a 2:1 box
+	# is stretched 3x horizontally against 1.3x vertically. Distances read
+	# wrong, and the view-bounds box comes out a shape that is nothing like
+	# what you are looking at.
+	#
+	# Shaped in _layout_minimap once the map is known — the HUD is built
+	# in _ready, long before any welcome packet says how big the world is.
+	_minimap_bounds = Rect2(12.0, 168.0, MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX)
 
 	_minimap_rect = TextureRect.new()
 	_minimap_rect.position = _minimap_bounds.position
@@ -1103,6 +1171,75 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 
 
 var _node_meshes := {}
+
+## Glowing rings drawn under whatever is selected. Pooled and reused
+## rather than created per frame, because selection changes constantly
+## and churning scene nodes in _process is how a frame budget goes.
+var _selection_rings: Array[MeshInstance3D] = []
+
+
+## A flat, glowing ring on the ground beneath every selected thing.
+##
+## Until now the only feedback that anything was selected was a line of
+## HUD text, so a player could not tell WHICH units they had — reported
+## directly. A ground ring is the genre's answer because it reads at any
+## zoom and never occludes the unit it marks.
+##
+## Emissive rather than lit, so it is equally visible on dark forest and
+## pale sand — the same reason the HUD labels carry a hard outline.
+func _refresh_selection_rings() -> void:
+	if _state.space == null:
+		return
+
+	var wanted := []
+	for squad in _selected:
+		if not _state.curves.has(squad):
+			continue
+		var node: PrimitiveUnit = _squad_nodes.get(squad, null)
+		if node == null or not node.visible:
+			continue
+		var at := _state.squad_world_position(squad, _now) + node.position
+		if _state.terrain_sampler.is_valid():
+			at.y = _state.terrain_sampler.call(at.x, at.z)
+		# Scaled by squad strength so a big formation gets a big ring
+		# rather than a dot lost inside it.
+		var alive := maxi(_state.alive_of(squad), 1)
+		wanted.append({"at": at, "radius": 1.6 + sqrt(float(alive)) * 0.45})
+
+	if _selected_building >= 0 and _state.buildings.has(_selected_building):
+		var instance: MeshInstance3D = _building_nodes.get(_selected_building, null)
+		if instance != null and instance.visible:
+			wanted.append({"at": instance.position, "radius": 3.0})
+
+	while _selection_rings.size() < wanted.size():
+		var mesh := TorusMesh.new()
+		mesh.inner_radius = 0.86
+		mesh.outer_radius = 1.0
+		var material := StandardMaterial3D.new()
+		material.albedo_color = Color(0.55, 0.95, 1.0)
+		material.emission_enabled = true
+		material.emission = Color(0.45, 0.9, 1.0)
+		material.emission_energy_multiplier = 2.2
+		# Drawn over the ground it sits on, so a ring on a slope is not
+		# half-swallowed by the terrain it is marking.
+		material.no_depth_test = true
+		var ring := MeshInstance3D.new()
+		ring.mesh = mesh
+		ring.material_override = material
+		_selection_rings.append(ring)
+		add_child(ring)
+
+	for i in range(_selection_rings.size()):
+		var ring := _selection_rings[i]
+		if i >= wanted.size():
+			ring.visible = false
+			continue
+		var entry: Dictionary = wanted[i]
+		var at: Vector3 = entry["at"]
+		var radius: float = entry["radius"]
+		ring.visible = true
+		ring.position = Vector3(at.x, at.y + 0.12, at.z)
+		ring.scale = Vector3(radius, 1.0, radius)
 
 
 ## Where to draw a STATIC thing that stands on the tiled world.
@@ -1303,7 +1440,7 @@ func _actions_for_squads() -> String:
 	var def_id := StringName(String(_state.composition.get(_selected[0], {}).get("def_id", "")))
 	var def := UnitRoster.by_id(def_id)
 
-	var parts := ["RMB move", "A attack-move", "X stop"]
+	var parts := ["RMB move", "RMB enemy = attack", "X stop"]
 	if def != null and def.carry_capacity > 0:
 		parts.append("G gather")
 
@@ -1623,13 +1760,31 @@ func _update_selection_rect(to: Vector2) -> void:
 	var rect := Rect2(_drag_start, to - _drag_start).abs()
 	_selection_rect.position = rect.position
 	_selection_rect.size = rect.size
-	_selection_rect.visible = rect.size.length() > DRAG_THRESHOLD_PX
+	var showing := rect.size.length() > DRAG_THRESHOLD_PX
+	_selection_rect.visible = showing
+
+	if _selection_edges.size() == 4:
+		var e := SELECTION_EDGE_PX
+		var placements := [
+			Rect2(rect.position, Vector2(rect.size.x, e)),                          # top
+			Rect2(rect.position + Vector2(0.0, rect.size.y - e),
+				Vector2(rect.size.x, e)),                                           # bottom
+			Rect2(rect.position, Vector2(e, rect.size.y)),                          # left
+			Rect2(rect.position + Vector2(rect.size.x - e, 0.0),
+				Vector2(e, rect.size.y)),                                           # right
+		]
+		for i in range(4):
+			_selection_edges[i].position = placements[i].position
+			_selection_edges[i].size = placements[i].size
+			_selection_edges[i].visible = showing
 
 
 func _finish_selection(at: Vector2, additive: bool) -> void:
 	_dragging = false
 	if _selection_rect != null:
 		_selection_rect.visible = false
+	for bar in _selection_edges:
+		bar.visible = false
 	if not additive:
 		_selected.clear()
 
@@ -1643,8 +1798,19 @@ func _finish_selection(at: Vector2, additive: bool) -> void:
 ## Where a squad appears on screen. Squads behind the camera unproject to
 ## a meaningless point, so they are pushed far off-screen rather than
 ## being allowed to match a click.
+##
+## Uses the position the squad is actually DRAWN at, which on a torus is
+## not its canonical position: `_refresh_squads` places the node at a
+## lattice offset so a squad past the seam appears near the camera rather
+## than a map away (D-035). Selection read the canonical position, so
+## clicking a wrapped squad tested a point somewhere else entirely — you
+## clicked exactly on a unit and nothing was selected. Reported as
+## selection feeling hard to aim.
 func _squad_screen_position(squad: int) -> Vector2:
 	var world := _state.squad_world_position(squad, _now)
+	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
+	if node != null:
+		world += node.position
 	if _camera.is_position_behind(world):
 		return Vector2(-1e6, -1e6)
 	return _camera.unproject_position(world)
@@ -1757,19 +1923,69 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	if not _connected or _state.space == null or _selected.is_empty():
 		return
 
-	var cell := _cell_under(screen_position)
+	# Right-clicking an ENEMY attacks it. No modifier, no separate key.
+	#
+	# Attack-move was Ctrl+right-click and also the A key — and A is bound
+	# to camera pan (WASD), so it could never have worked. The result was a
+	# player with no way to attack that they would find. Every RTS since
+	# the nineties answers this the same way: right-click means "do the
+	# obvious thing to that", which is move for ground and attack for an
+	# enemy.
+	var target := _enemy_cell_at(screen_position)
+	var cell := target if target.x >= 0 else _cell_under(screen_position)
 	if cell.x < 0:
 		return
+	var attacking := attack_move or target.x >= 0
 
 	var sent := 0
 	for squad in _selected:
-		var order := _state.encode_attack_move(squad, cell) if attack_move else _state.encode_order(squad, cell)
+		var order := _state.encode_attack_move(squad, cell) if attacking else _state.encode_order(squad, cell)
 		if not order.is_empty():
 			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 			sent += 1
 	if sent > 0:
 		print("client: %s %d squad(s) to cell %s" % [
-			"attack-moved" if attack_move else "ordered", sent, cell])
+			"attacked with" if attacking else "ordered", sent, cell])
+
+
+## The cell of an enemy squad or building under the cursor, or (-1,-1).
+##
+## Uses the same screen-distance test and the same DRAWN positions as
+## selection, so what you can click to attack is what you can see — and a
+## wrapped enemy across the seam is clickable where it appears rather than
+## where its canonical coordinates say it is.
+##
+## Buildings are checked too: a town hall is the thing you most want to
+## right-click, and it is the only way to win (D-055).
+func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
+	var best := Vector2i(-1, -1)
+	var best_distance := SELECT_CLICK_RADIUS_PX
+
+	for squad in _state.curves:
+		if not _state.composition.has(squad):
+			continue
+		if int(_state.composition[squad].get("owner", 0)) == _state.player:
+			continue
+		if _state.alive_of(squad) <= 0:
+			continue
+		var distance := _squad_screen_position(squad).distance_to(screen_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = _state.squad_cell(squad, _now)
+
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info["owner"]) == _state.player or bool(info["destroyed"]):
+			continue
+		var node: MeshInstance3D = _building_nodes.get(wire_id, null)
+		if node == null or not node.visible or _camera.is_position_behind(node.position):
+			continue
+		var distance := _camera.unproject_position(node.position).distance_to(screen_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = _state.space.from_index(int(info["cell"]))
+
+	return best
 
 
 ## Ask the first selected squad to found a building at the cursor.

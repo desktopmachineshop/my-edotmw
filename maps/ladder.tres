@@ -6,8 +6,8 @@
 script = ExtResource("1_mapcfg")
 id = &"ladder"
 display_name = "Ladder"
-width = 64
-height = 32
+width = 42
+height = 48
 hex_size = 1.0
 squads_per_player = 12
 squad_cap = 40
