@@ -14,7 +14,13 @@ extends GutTest
 
 const UNITS_DIR := "res://units"
 
-const VALID_FORMATIONS := ["line", "column", "wedge", "loose"]
+## Must mirror UnitDef's `formation_shape` enum. "ring" was added for
+## gatherers so a work crew stands AROUND the node it is working rather
+## than in a spread grid beside it — and this list catching that change
+## is the point of it: a shape in a .tres that the schema does not know
+## about would otherwise fall through `Formation.slot_offset`'s default
+## and silently stack everyone into a line.
+const VALID_FORMATIONS := ["line", "column", "wedge", "loose", "ring"]
 const VALID_PRIMITIVES := ["capsule", "box", "cylinder", "hull"]
 
 

@@ -65,6 +65,8 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 			return _wedge_offset(index, spacing)
 		"loose":
 			return _loose_offset(index, alive, spacing)
+		"ring":
+			return _ring_offset(index, spacing)
 		_:
 			push_error("Unknown formation_shape '%s' — falling back to line" % shape)
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
@@ -145,6 +147,37 @@ static func _wedge_offset(index: int, spacing: float) -> Vector2:
 	var position_in_row := index - consumed
 	var centre := float(row) * 0.5
 	return Vector2((float(position_in_row) - centre) * spacing, -float(row) * spacing)
+
+
+## Concentric rings around the centre, nobody standing on it.
+##
+## For a work crew rather than a fighting line: a squad ordered onto a
+## resource node walks its curve to that node, so a formation that circles
+## its own centre puts the gatherers AROUND the thing they are working —
+## which is what they visibly ought to be doing, and what a spread grid
+## never looked like.
+##
+## Six per unit radius, matching the hex world's own ring sizes, so the
+## crew sits on the ground the way the grid underneath is shaped.
+##
+## Pure in (index, spacing) like every other shape, with no per-soldier
+## state anywhere (D-006 clause 1). Note it deliberately does NOT depend
+## on the haul phase: making the shape follow what the squad is doing
+## would mean Formation reading economy state, and the purity clause is
+## worth more than the extra realism.
+static func _ring_offset(index: int, spacing: float) -> Vector2:
+	var ring := 1
+	var consumed := 0
+	while consumed + ring * 6 <= index:
+		consumed += ring * 6
+		ring += 1
+
+	var in_ring := ring * 6
+	var place := index - consumed
+	# Half-step each ring round so the rings interleave instead of
+	# lining every soldier up on the same spokes.
+	var angle := TAU * (float(place) + 0.5 * float(ring % 2)) / float(in_ring)
+	return Vector2(cos(angle), sin(angle)) * float(ring) * spacing
 
 
 static func _loose_offset(index: int, alive: int, spacing: float) -> Vector2:
