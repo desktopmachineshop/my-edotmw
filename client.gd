@@ -250,6 +250,7 @@ func _process(delta: float) -> void:
 	_refresh_resource_nodes()
 	# After both, so a ring can sit on the position they just set.
 	_refresh_selection_rings()
+	_update_placement_ghost()
 	_update_hud()
 	_update_minimap()
 	_seat_capture_ai()
@@ -469,6 +470,12 @@ func _build_terrain() -> void:
 	# Now the map's real dimensions are known, give the minimap its shape.
 	_layout_minimap(space)
 
+	# Passability from the SAME TerrainGen that built the mesh, which is
+	# the same one the server built its own from (both from the settings
+	# on the wire, D-049). So the build preview agrees with the server
+	# about where the water is by construction rather than by luck.
+	_passable = terrain.passability(space)
+
 	_minimap_base = Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
 	for y in range(space.height):
 		for x in range(space.width):
@@ -567,7 +574,14 @@ func _refresh_squads() -> void:
 			squad_id, _now, _detail_for(centre + offset))
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
-		unit.set_slot_transforms(CosmeticOffset.decorate_all(transforms, _now, 1.0))
+		var decorated := CosmeticOffset.decorate_all(transforms, _now, 1.0)
+		unit.set_slot_transforms(decorated)
+
+		# A selection circle under EVERY soldier, from the transforms we
+		# just derived — so the highlight follows the formation's real
+		# shape as it changes, for free. A single disc could only ever
+		# approximate a line, a wedge and a loose scatter with one circle.
+		_stamp_selection_discs(squad_id, decorated)
 
 	for squad_id in _state.ghost_squad_ids():
 		var ghost := _state.ghost_info(squad_id)
@@ -894,7 +908,15 @@ func _train_from_home_town() -> void:
 		# picture. Every counter passed while the panel was empty, which is
 		# the failure mode this project keeps rediscovering.
 		_selected_building = int(wire_id)
+
+		# ...and its squads, so the per-soldier selection circles appear
+		# in the capture frame too. A feature that renders nothing in the
+		# one check that looks at the picture is a feature nobody has
+		# looked at.
 		_selected.clear()
+		for owned in _state.squads:
+			if _state.curves.has(owned) and _state.alive_of(owned) > 0:
+				_selected.append(owned)
 
 		# Space the orders out rather than firing one per frame at a
 		# building that can only make one thing at a time.
@@ -1353,10 +1375,80 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 
 var _node_meshes := {}
 
-## Glowing rings drawn under whatever is selected. Pooled and reused
-## rather than created per frame, because selection changes constantly
-## and churning scene nodes in _process is how a frame budget goes.
+## The building armed for placement, or "" — a ghost of it follows the
+## cursor until you click the ground or cancel.
+var _placing: StringName = &""
+var _placement_ghost: MeshInstance3D = null
+
+## Terrain passability, derived from the SAME TerrainGen that built the
+## mesh, so the build preview agrees with the server about where the water
+## is. Advisory only: the server is the authority and re-checks (D-002).
+var _passable := PackedByteArray()
+
+## Footprints drawn under selected BUILDINGS. Pooled and reused rather
+## than created per frame, because selection changes constantly and
+## churning scene nodes in _process is how a frame budget goes.
 var _selection_rings: Array[MeshInstance3D] = []
+
+## squad id -> MultiMeshInstance3D of per-soldier selection circles.
+var _selection_discs := {}
+
+
+## A circle under every soldier of a selected squad.
+##
+## Takes the transforms the render pass HAS ALREADY derived, so marking a
+## squad costs a MultiMesh write and no extra derivation — which matters,
+## because per-soldier derivation is ~96% of this client's frame at scale
+## (D-045) and doing it twice for a selected army would be the single
+## most expensive way to draw a highlight.
+##
+## Per soldier rather than one disc for the squad because the formation
+## changes shape — a line, a wedge and a loose scatter are not the same
+## outline, and one circle can only approximate all three. This follows
+## whatever the formation actually is, including as casualties restamp it
+## (D-006 clause 3).
+func _stamp_selection_discs(squad_id, transforms: Array[Transform3D]) -> void:
+	var marked := _selected.has(squad_id)
+	var discs: MultiMeshInstance3D = _selection_discs.get(squad_id, null)
+
+	if not marked:
+		if discs != null:
+			discs.visible = false
+		return
+
+	if discs == null:
+		var mesh := CylinderMesh.new()
+		mesh.top_radius = 0.42
+		mesh.bottom_radius = 0.42
+		mesh.height = 0.03
+		mesh.radial_segments = 12
+		var material := StandardMaterial3D.new()
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		# Over the ground, so a circle on a slope is not half-swallowed.
+		material.no_depth_test = true
+		material.vertex_color_use_as_albedo = false
+		var multi := MultiMesh.new()
+		multi.transform_format = MultiMesh.TRANSFORM_3D
+		multi.mesh = mesh
+		discs = MultiMeshInstance3D.new()
+		discs.multimesh = multi
+		discs.material_override = material
+		_selection_discs[squad_id] = discs
+		add_child(discs)
+
+	var colour := _owner_colour_of(squad_id)
+	(discs.material_override as StandardMaterial3D).albedo_color = Color(
+		colour.r, colour.g, colour.b, 0.5)
+
+	discs.visible = true
+	discs.multimesh.instance_count = transforms.size()
+	for i in range(transforms.size()):
+		# Flat on the ground under the soldier, upright regardless of how
+		# he is facing — a selection circle should not roll with him.
+		var at := transforms[i].origin
+		discs.multimesh.set_instance_transform(i,
+			Transform3D(Basis.IDENTITY, Vector3(at.x, at.y + 0.05, at.z)))
 
 
 ## A flat, glowing ring on the ground beneath every selected thing.
@@ -1372,28 +1464,12 @@ func _refresh_selection_rings() -> void:
 	if _state.space == null:
 		return
 
+	# Squads are marked per SOLDIER by _stamp_selection_discs, from the
+	# transforms the render pass already derived — a highlight that
+	# follows the formation's real shape rather than one circle
+	# approximating a line, a wedge and a loose scatter alike. Only
+	# buildings are marked with a single footprint here.
 	var wanted := []
-	for squad in _selected:
-		if not _state.curves.has(squad):
-			continue
-		var node: PrimitiveUnit = _squad_nodes.get(squad, null)
-		if node == null or not node.visible:
-			continue
-		# The squad's REAL footprint — where the body is and how wide —
-		# rather than a radius guessed from headcount and centred on the
-		# curve point. The first version was both far too big and visibly
-		# offset from the troops, because a line formation extends
-		# backwards from the point it was drawn around.
-		var print := _squad_footprint(squad)
-		var at: Vector3 = print["centre"]
-		if _state.terrain_sampler.is_valid():
-			at.y = _state.terrain_sampler.call(at.x, at.z)
-		wanted.append({
-			"at": at,
-			"radius": float(print["radius"]),
-			"colour": _owner_colour_of(squad),
-		})
-
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var instance: MeshInstance3D = _building_nodes.get(_selected_building, null)
 		if instance != null and instance.visible:
@@ -2019,6 +2095,10 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				if jump.x >= 0:
 					_jump_camera_to(jump)
 					return
+				# A click while a building is armed PLACES it, and does not
+				# also start a selection drag.
+				if _place_armed_building(event.position):
+					return
 				_dragging = true
 				_drag_start = event.position
 			elif _dragging:
@@ -2028,6 +2108,11 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			# the selection to whatever the ray happens to hit behind it.
 			# Sending an army somewhere random on a misclick is the kind of
 			# thing a player never forgives.
+			# Right-click cancels a pending placement rather than ordering
+			# the army somewhere — the same escape hatch every RTS has.
+			if event.pressed and _placing != &"":
+				_cancel_placement()
+				return
 			if event.pressed and _minimap_cell_at(event.position).x < 0:
 				_order_selected(event.position, event.ctrl_pressed)
 
@@ -2382,18 +2467,103 @@ func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
 ## is data on the BuildingDef (D-031) and enforced server-side, so a
 ## refused order simply does nothing here rather than being second-guessed
 ## client-side.
+## ARM placement rather than building immediately.
+##
+## Pressing build used to found the building at wherever the mouse
+## happened to be, which is fine for a key you press while pointing at a
+## spot and wrong for a BUTTON — the mouse is over the button. You now
+## pick the building, a ghost of it follows the cursor, and you click the
+## ground where you want it.
 func _build_selected(def_id: String) -> void:
 	if not _connected or _state.space == null or _selected.is_empty():
 		return
+	_placing = StringName(def_id)
+	_update_placement_ghost()
+
+
+## Place the armed building, or do nothing if none is armed.
+## Returns true if the click was consumed by placement.
+func _place_armed_building(screen_position: Vector2) -> bool:
+	if _placing == &"":
+		return false
+	var cell := _cell_under(screen_position)
+	# Typed explicitly: `_selected` is untyped, so a ternary over it has
+	# no inferable type and the whole script fails to parse.
+	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
+	var def_id := _placing
+	_cancel_placement()
+	if cell.x < 0 or squad < 0:
+		return true
+
+	var order := _state.encode_build(squad, String(def_id), cell)
+	if not order.is_empty():
+		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+		print("client: asked squad %d to found a %s at %s" % [squad, def_id, cell])
+	return true
+
+
+func _cancel_placement() -> void:
+	_placing = &""
+	if _placement_ghost != null:
+		_placement_ghost.visible = false
+
+
+## Move the ghost to the cell under the cursor, and colour it by whether
+## the ground will take it.
+##
+## Buildability is judged the same way the SERVER judges it (terrain
+## passability plus nothing already standing there), so the preview and
+## the answer agree. It is still only a preview: the server decides, and a
+## refusal comes back as a notice like any other (D-034).
+func _update_placement_ghost() -> void:
+	if _placing == &"" or _state.space == null:
+		return
+
+	if _placement_ghost == null:
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(2.4, 3.0, 2.4)
+		var material := StandardMaterial3D.new()
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_placement_ghost = MeshInstance3D.new()
+		_placement_ghost.mesh = mesh
+		_placement_ghost.material_override = material
+		add_child(_placement_ghost)
 
 	var cell := _cell_under(get_viewport().get_mouse_position())
 	if cell.x < 0:
+		_placement_ghost.visible = false
 		return
 
-	var order := _state.encode_build(_selected[0], def_id, cell)
-	if not order.is_empty():
-		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
-		print("client: asked squad %d to found a %s at %s" % [_selected[0], def_id, cell])
+	var world := _state.space.to_world(cell)
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	_placement_ghost.visible = true
+	_placement_ghost.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
+
+	var ok := _can_place_at(cell)
+	var material := _placement_ghost.material_override as StandardMaterial3D
+	material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+
+
+## Whether the ground under the cursor looks buildable from here.
+##
+## Advisory only — the server is the authority (D-002) and re-checks on
+## arrival, since a builder that walks for twenty seconds may find the
+## ground taken. This exists so the preview is not misleading, not so the
+## client can decide.
+func _can_place_at(cell: Vector2i) -> bool:
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info["destroyed"]):
+			continue
+		if _state.space.from_index(int(info["cell"])) == cell:
+			return false
+	if not _passable.is_empty():
+		var index := _state.space.index(cell)
+		if index < _passable.size() and _passable[index] == 0:
+			return false
+	return true
 
 
 ## Put the selected workers on the node under the cursor (D-028).

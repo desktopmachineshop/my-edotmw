@@ -100,6 +100,14 @@ const BUILD_REACH_CELLS := 3
 ## appended to `_sim.last_combat_events`, because the next tick overwrites
 ## that; they wait here until the next `_replicate()` sends them.
 var _pending_events: Array = []
+
+## squad -> { "def_id": StringName, "cell": Vector2i, "peer": ... }.
+##
+## A build ordered from out of reach: the squad walks to the site and
+## `_advance_pending_builds` finishes the job on arrival. Cleared the
+## moment the player orders that squad anywhere else, because a builder
+## told to go somewhere has been told to stop building.
+var _pending_builds := {}
 var _reported_match_end := false
 
 var _accumulator := 0.0
@@ -378,6 +386,7 @@ func _process(delta: float) -> void:
 					float(_sim.last_buildings_usec) / 1000.0,
 					float(_sim.last_production_usec) / 1000.0,
 					float(_sim.last_economy_usec) / 1000.0])
+		_advance_pending_builds()
 		_advance_match()
 		# AI seats think on the server's clock, after the world has moved
 		# but before it is replicated, so they act on the same tick a human
@@ -803,6 +812,8 @@ func _handle_order_move(peer, data: PackedByteArray) -> void:
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
 		return
+	# A builder told to go somewhere has been told to stop building.
+	_pending_builds.erase(squad)
 	# from_index normalises, so a nonsense destination wraps into the map
 	# rather than going out of bounds (D-008).
 	_sim.order_move(squad, _sim.space.from_index(int(order["destination"])))
@@ -813,7 +824,38 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
 		return
+	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Finish any build whose builder has now walked into reach.
+##
+## Runs once per tick, over a dictionary that is empty in the ordinary
+## case, so it costs nothing when nobody is walking to a building site.
+##
+## Every rule is re-checked on arrival rather than trusted from when the
+## order was given: the ground may have been built on by someone else
+## while the builder walked, and the wallet may have been spent. Checking
+## at order time and committing at arrival would be a way to buy a
+## building with money you no longer have.
+func _advance_pending_builds() -> void:
+	if _pending_builds.is_empty():
+		return
+	for squad in _pending_builds.keys():
+		var intent: Dictionary = _pending_builds[squad]
+
+		# A builder that died on the way is not building anything.
+		if squad >= _sim.squad_count() or _sim.alive_of(squad) <= 0:
+			_pending_builds.erase(squad)
+			continue
+
+		var cell: Vector2i = intent["cell"]
+		if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+			continue
+
+		_pending_builds.erase(squad)
+		_finish_build(intent["peer"], squad,
+			BuildingSim.def_by_id(StringName(intent["def_id"])), cell)
 
 
 ## Found a building (D-031). Every rule is enforced here rather than
@@ -841,9 +883,42 @@ func _handle_order_build(peer, data: PackedByteArray) -> void:
 	if not _is_buildable(cell):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
-	var reach := _sim.space.distance(_sim.cell_of(squad), cell)
-	if reach > BUILD_REACH_CELLS:
-		_notify(peer, "Too far — move closer (%d cells away, reach is %d)" % [reach, BUILD_REACH_CELLS])
+	# Too far? WALK THERE. Do not refuse.
+	#
+	# This used to answer "Too far — move closer", which is the server
+	# telling the player to do by hand something it is perfectly able to
+	# do itself. Nobody orders a builder to a spot and then re-issues the
+	# order on arrival; in every RTS the order IS "go there and build".
+	# It made the build buttons look broken, because from the player's
+	# side a click on open ground simply did nothing.
+	#
+	# Recorded as an INTENT rather than executed now: the squad is sent to
+	# the site and `_advance_pending_builds` finishes the job when it
+	# arrives. Cost is charged on arrival, not here — you should not pay
+	# for a building while the builder is still walking, and the wallet
+	# check has to happen against the wallet as it will be, not as it is.
+	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+		_pending_builds[squad] = {"def_id": def.id, "cell": cell, "peer": peer}
+		_sim.order_move(squad, cell)
+		_notify(peer, "Moving to build a %s" % def.display_name)
+		return
+
+	_finish_build(peer, squad, def, cell)
+
+
+## Commit a build: charge for it, raise the site, consume the founders.
+##
+## Shared by the in-reach path above and the walked-there path in
+## `_advance_pending_builds`, so "what founding a building does" has one
+## implementation rather than two that can drift — the same reason
+## `_admit_player` is shared by joining and by starting a match.
+func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i) -> void:
+	if def == null:
+		return
+	# Re-checked here, not just at order time: a builder that walked for
+	# twenty seconds may arrive to find the ground taken.
+	if not _is_buildable(cell):
+		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
 
 	# Construction costs resources (D-028). This was missing, so
