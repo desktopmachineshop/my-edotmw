@@ -408,3 +408,46 @@ func test_bulk_derivation_applies_the_terrain_sampler_per_soldier() -> void:
 		heights[snappedf(t.origin.y, 0.001)] = true
 	assert_gt(heights.size(), 1,
 		"Every soldier got the same height — the sampler was hoisted out of the loop")
+
+
+# --- footprint (selection, D-057) --------------------------------------
+
+func test_a_squads_footprint_covers_every_soldier_in_it() -> void:
+	# Selection tested the squad's CURVE position against a fixed pixel
+	# radius, so on a wide formation clicking a soldier you could plainly
+	# see selected nothing — the hit test was aimed at one point inside a
+	# body many metres across. Reported from a real game as selection
+	# being based on one man rather than the squad.
+	for shape in ["line", "column", "wedge", "loose"]:
+		var alive := 40
+		var spacing := 1.2
+		var print := Formation.footprint(shape, alive, spacing)
+		var centre: Vector2 = print["centre"]
+		var radius: float = print["radius"]
+
+		for slot in range(alive):
+			var at := Formation.slot_offset(shape, slot, alive, spacing)
+			assert_lte(at.distance_to(centre), radius,
+				"%s: soldier %d sits outside the squad's own footprint" % [shape, slot])
+
+
+func test_the_footprint_is_centred_on_the_body_not_the_curve_point() -> void:
+	# A line puts rank r at -r * spacing, so the curve point is at the
+	# FRONT rank and the troops extend behind it. A marker drawn at the
+	# curve point is visibly offset from the squad it marks — which is
+	# exactly how the first selection ring looked.
+	var print := Formation.footprint("line", 40, 1.2)
+	var centre: Vector2 = print["centre"]
+	assert_lt(centre.y, -0.1,
+		"a line formation's body sits behind its curve point, so the footprint "
+		+ "centre must too — otherwise the marker floats off the front rank")
+
+
+func test_the_footprint_grows_with_the_squad() -> void:
+	# The other side: a radius that ignored headcount would be wrong for
+	# either a big squad or a small one, and "big target for a big
+	# formation" is the whole point of using it for hit-testing.
+	var small := Formation.footprint("line", 6, 1.2)
+	var large := Formation.footprint("line", 60, 1.2)
+	assert_gt(float(large["radius"]), float(small["radius"]),
+		"a sixty-man formation should present a bigger target than a six-man one")

@@ -74,6 +74,55 @@ static func _files_for_ranks(alive: int, ranks: int) -> int:
 	return maxi(1, ceili(float(alive) / float(maxi(ranks, 1))))
 
 
+## Cache: "shape|alive|spacing" -> {"centre": Vector2, "radius": float}.
+## Pure in those three, so one static cache serves every squad — the same
+## reasoning as TorusSpace.disk_offsets.
+static var _footprint_cache: Dictionary = {}
+
+
+## The ground a squad actually occupies, in formation-local units.
+##
+## Returns the CENTRE of the occupied area (which is not the squad's curve
+## point) and a radius covering every slot.
+##
+## Both halves matter and both were wrong. Selection tested a click
+## against the squad's curve position with a fixed pixel radius, so
+## clicking a soldier at the edge of a forty-man line selected nothing —
+## the hit test was aimed at one point inside a formation many metres
+## across. And the selection marker was drawn at that same curve point,
+## which for a line formation sits at the FRONT rank: `_grid_offset` puts
+## rank r at -r * spacing, so the body of the squad extends backwards and
+## a marker centred on the curve point is visibly offset from the troops
+## it is marking.
+##
+## A circle rather than a rectangle, deliberately: the formation rotates
+## with the squad's heading, and a radius is rotation-invariant while a
+## box would need re-deriving every frame the squad turned.
+static func footprint(shape: String, alive: int, spacing: float) -> Dictionary:
+	var key := "%s|%d|%.3f" % [shape, alive, spacing]
+	if _footprint_cache.has(key):
+		return _footprint_cache[key]
+
+	var result := {"centre": Vector2.ZERO, "radius": maxf(spacing, 0.5)}
+	if alive > 0:
+		var min_p := Vector2(INF, INF)
+		var max_p := Vector2(-INF, -INF)
+		for slot in range(alive):
+			var p := slot_offset(shape, slot, alive, spacing)
+			min_p = Vector2(minf(min_p.x, p.x), minf(min_p.y, p.y))
+			max_p = Vector2(maxf(max_p.x, p.x), maxf(max_p.y, p.y))
+		var centre := (min_p + max_p) * 0.5
+		# Half the diagonal, so the circle contains the whole extent
+		# whichever way the squad is facing. Plus a soldier's own width, so
+		# the edge of the marker sits just outside the outermost man rather
+		# than bisecting him.
+		var half := (max_p - min_p) * 0.5
+		result = {"centre": centre, "radius": half.length() + spacing * 0.5}
+
+	_footprint_cache[key] = result
+	return result
+
+
 static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> Vector2:
 	var rank := index / files
 	var file := index % files

@@ -1379,29 +1379,49 @@ func _refresh_selection_rings() -> void:
 		var node: PrimitiveUnit = _squad_nodes.get(squad, null)
 		if node == null or not node.visible:
 			continue
-		var at := _state.squad_world_position(squad, _now) + node.position
+		# The squad's REAL footprint — where the body is and how wide —
+		# rather than a radius guessed from headcount and centred on the
+		# curve point. The first version was both far too big and visibly
+		# offset from the troops, because a line formation extends
+		# backwards from the point it was drawn around.
+		var print := _squad_footprint(squad)
+		var at: Vector3 = print["centre"]
 		if _state.terrain_sampler.is_valid():
 			at.y = _state.terrain_sampler.call(at.x, at.z)
-		# Scaled by squad strength so a big formation gets a big ring
-		# rather than a dot lost inside it.
-		var alive := maxi(_state.alive_of(squad), 1)
-		wanted.append({"at": at, "radius": 1.6 + sqrt(float(alive)) * 0.45})
+		wanted.append({
+			"at": at,
+			"radius": float(print["radius"]),
+			"colour": _owner_colour_of(squad),
+		})
 
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var instance: MeshInstance3D = _building_nodes.get(_selected_building, null)
 		if instance != null and instance.visible:
-			wanted.append({"at": instance.position, "radius": 3.0})
+			var info: Dictionary = _state.buildings[_selected_building]
+			# On the GROUND under the building, not at its centre — a
+			# building's node sits half its height up so the box rests on
+			# the terrain, and a footprint placed there is inside the mesh
+			# and invisible.
+			var ground := instance.position
+			if _state.terrain_sampler.is_valid():
+				ground.y = _state.terrain_sampler.call(ground.x, ground.z)
+			wanted.append({
+				"at": ground, "radius": 2.2,
+				"colour": _state.colour_of(int(info["owner"])),
+			})
 
 	while _selection_rings.size() < wanted.size():
-		var mesh := TorusMesh.new()
-		mesh.inner_radius = 0.86
-		mesh.outer_radius = 1.0
+		# A flat disc sitting on the ground, not a torus standing on it.
+		# `height` is near-zero so this is a footprint rather than a hoop.
+		var mesh := CylinderMesh.new()
+		mesh.top_radius = 1.0
+		mesh.bottom_radius = 1.0
+		mesh.height = 0.04
+		mesh.radial_segments = 24
 		var material := StandardMaterial3D.new()
-		material.albedo_color = Color(0.55, 0.95, 1.0)
-		material.emission_enabled = true
-		material.emission = Color(0.45, 0.9, 1.0)
-		material.emission_energy_multiplier = 2.2
-		# Drawn over the ground it sits on, so a ring on a slope is not
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		# Drawn over the ground, so a footprint on a slope is not
 		# half-swallowed by the terrain it is marking.
 		material.no_depth_test = true
 		var ring := MeshInstance3D.new()
@@ -1419,8 +1439,14 @@ func _refresh_selection_rings() -> void:
 		var at: Vector3 = entry["at"]
 		var radius: float = entry["radius"]
 		ring.visible = true
-		ring.position = Vector3(at.x, at.y + 0.12, at.z)
+		ring.position = Vector3(at.x, at.y + 0.06, at.z)
 		ring.scale = Vector3(radius, 1.0, radius)
+		# The OWNER's colour at half transparency (D-052), so a selected
+		# ally and a selected enemy are told apart by the same palette
+		# their troops wear, and the ground still reads through it.
+		var colour: Color = entry["colour"]
+		var material := ring.material_override as StandardMaterial3D
+		material.albedo_color = Color(colour.r, colour.g, colour.b, 0.5)
 
 
 ## Where to draw a STATIC thing that stands on the tiled world.
@@ -2080,6 +2106,42 @@ func _finish_selection(at: Vector2, additive: bool) -> void:
 		_select_within(rect)
 
 
+## A squad's occupied ground: where its BODY is, and how wide.
+##
+## Not the same as its curve position. A line formation puts rank r at
+## -r * spacing, so the curve point sits at the front rank and the troops
+## extend behind it — which is why the selection marker looked offset from
+## the squad it marked.
+##
+## Returns world centre and world radius, both including the lattice
+## offset the squad is actually drawn at (D-035).
+func _squad_footprint(squad: int) -> Dictionary:
+	var centre := _state.squad_world_position(squad, _now)
+	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
+	if node != null:
+		centre += node.position
+
+	var info: Dictionary = _state.composition.get(squad, {})
+	var alive := _state.alive_of(squad)
+	var shape := String(info.get("shape", "line"))
+	var spacing := float(info.get("spacing", 1.0))
+	var print := Formation.footprint(shape, alive, spacing)
+
+	# Rotated by the squad's heading exactly as Formation.soldier_transform
+	# does it — local +y is forward, which is +z after rotating about UP —
+	# so the marker sits on the troops rather than near them.
+	var local: Vector2 = print["centre"]
+	if _state.curves.has(squad) and _state.space != null:
+		var world_dir := _state.space.axial_offset_to_world(
+			Formation.heading(_state.curves[squad], _now))
+		var angle := atan2(world_dir.x, world_dir.z)
+		centre += Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+	else:
+		centre += Vector3(local.x, 0.0, local.y)
+
+	return {"centre": centre, "radius": float(print["radius"])}
+
+
 ## Where a squad appears on screen. Squads behind the camera unproject to
 ## a meaningless point, so they are pushed far off-screen rather than
 ## being allowed to match a click.
@@ -2091,6 +2153,26 @@ func _finish_selection(at: Vector2, additive: bool) -> void:
 ## clicking a wrapped squad tested a point somewhere else entirely — you
 ## clicked exactly on a unit and nothing was selected. Reported as
 ## selection feeling hard to aim.
+## A world point in screen pixels, pushed far off screen if it is behind
+## the camera (where unproject returns a meaningless answer).
+func _screen_of(world: Vector3) -> Vector2:
+	if _camera.is_position_behind(world):
+		return Vector2(-1e6, -1e6)
+	return _camera.unproject_position(world)
+
+
+## A footprint's radius in SCREEN pixels, by projecting a point on its
+## edge. Perspective means a metre is worth more pixels near the camera
+## than far from it, so this cannot be a constant.
+func _screen_radius_of(print: Dictionary) -> float:
+	var centre: Vector3 = print["centre"]
+	var edge := centre + Vector3(float(print["radius"]), 0.0, 0.0)
+	if _camera.is_position_behind(centre) or _camera.is_position_behind(edge):
+		return 0.0
+	return _camera.unproject_position(centre).distance_to(
+		_camera.unproject_position(edge))
+
+
 func _squad_screen_position(squad: int) -> Vector2:
 	var world := _state.squad_world_position(squad, _now)
 	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
@@ -2107,9 +2189,24 @@ func _select_nearest(at: Vector2) -> void:
 	for squad in _state.squads:
 		if not _state.curves.has(squad):
 			continue
-		var distance := _squad_screen_position(squad).distance_to(at)
-		if distance < best_distance:
-			best_distance = distance
+		# Against the squad's FOOTPRINT, not a point.
+		#
+		# This tested the curve position with a fixed 48px radius, so on a
+		# forty-man line — many metres across, and drawn well behind the
+		# curve point — clicking a soldier you could plainly see selected
+		# nothing. Reported as selection being based on one man rather than
+		# the squad. The tolerance is now the squad's own on-screen size,
+		# so a big formation is a big target and a small one is not.
+		var print := _squad_footprint(squad)
+		var distance := _screen_of(print["centre"]).distance_to(at)
+		var allowance := maxf(_screen_radius_of(print), SELECT_CLICK_RADIUS_PX * 0.35)
+		# Ranked by how far INSIDE the footprint the click landed, so two
+		# overlapping squads resolve to the one you actually clicked on
+		# rather than to whichever has the nearer centre.
+		if distance > allowance:
+			continue
+		if distance - allowance < best_distance:
+			best_distance = distance - allowance
 			best = squad
 
 	# Buildings are selectable the same way, and compete on the same
@@ -2143,7 +2240,13 @@ func _select_within(rect: Rect2) -> void:
 	for squad in _state.squads:
 		if not _state.curves.has(squad):
 			continue
-		if rect.has_point(_squad_screen_position(squad)) and not _selected.has(squad):
+		# A box that clips any part of the squad takes it, rather than
+		# needing to contain one particular point — dragging across the
+		# front rank of a line should select that line.
+		var print := _squad_footprint(squad)
+		var at := _screen_of(print["centre"])
+		var reach := _screen_radius_of(print)
+		if rect.grow(reach).has_point(at) and not _selected.has(squad):
 			_selected.append(squad)
 
 
