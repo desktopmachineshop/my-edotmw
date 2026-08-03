@@ -1577,10 +1577,13 @@ func _refresh_resource_nodes() -> void:
 			continue
 		var marker: MeshInstance3D = _node_meshes.get(cell, null)
 		if marker == null:
+			# Big enough to see across a map and to aim at. These were
+			# noticeably smaller, which made them both easy to miss when
+			# scanning for somewhere to send workers and fiddly to click.
 			var mesh := CylinderMesh.new()
-			mesh.top_radius = 0.55
-			mesh.bottom_radius = 0.85
-			mesh.height = 1.1
+			mesh.top_radius = 0.7
+			mesh.bottom_radius = 1.05
+			mesh.height = 1.5
 			var material := StandardMaterial3D.new()
 			material.albedo_color = _node_colour(int(_state.nodes[cell]))
 			material.roughness = 0.75
@@ -1597,7 +1600,7 @@ func _refresh_resource_nodes() -> void:
 		var world := _state.space.to_world(_state.space.from_index(int(cell)))
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
-		world.y += 0.55
+		world.y += 0.75
 		marker.position = world + _lattice_offset_for(world)
 
 
@@ -1824,7 +1827,7 @@ func _squad_actions(def_id: StringName) -> Array:
 	var def := UnitRoster.by_id(def_id)
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
 	if def != null and def.carry_capacity > 0:
-		out.append({"label": "Gather", "kind": "gather", "id": &""})
+		out.append({"label": "Gather\nor right-click a node", "kind": "gather", "id": &""})
 	for building in BuildingSim.all_defs():
 		if BuildingSim.can_build(building, def_id):
 			out.append({
@@ -2405,6 +2408,27 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	# obvious thing to that", which is move for ground and attack for an
 	# enemy.
 	var target := _enemy_cell_at(screen_position)
+
+	# Right-clicking a RESOURCE puts workers on it, the same way
+	# right-clicking an enemy attacks. Gathering was reachable only
+	# through the G key and the Gather button, both of which act on
+	# wherever the mouse happens to be — so the obvious gesture did the
+	# non-obvious thing and marched your villagers onto the trees to stand
+	# there. Enemies win the tie: if a node and an enemy are both under
+	# the cursor, the enemy is the more urgent thing you meant.
+	if target.x < 0 and _selection_can_gather():
+		var node_cell := _resource_cell_at(screen_position)
+		if node_cell.x >= 0:
+			var sent_gather := 0
+			for squad in _selected:
+				var gather := _state.encode_gather(squad, node_cell)
+				if not gather.is_empty():
+					_peer.send(0, gather, ENetPacketPeer.FLAG_RELIABLE)
+					sent_gather += 1
+			if sent_gather > 0:
+				print("client: sent %d squad(s) to gather at %s" % [sent_gather, node_cell])
+				return
+
 	var cell := target if target.x >= 0 else _cell_under(screen_position)
 	if cell.x < 0:
 		return
@@ -2574,7 +2598,12 @@ func _gather_selected() -> void:
 	if not _connected or _state.space == null or _selected.is_empty():
 		return
 
-	var cell := _cell_under(get_viewport().get_mouse_position())
+	var at := get_viewport().get_mouse_position()
+	# The nearest node to the cursor, not the exact hex under it — see
+	# _resource_cell_at.
+	var cell := _resource_cell_at(at)
+	if cell.x < 0:
+		cell = _cell_under(at)
 	if cell.x < 0:
 		return
 
@@ -2582,6 +2611,53 @@ func _gather_selected() -> void:
 		var order := _state.encode_gather(squad, cell)
 		if not order.is_empty():
 			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+
+
+## The cell of a resource node near the cursor, or (-1,-1).
+##
+## Gathering used to require clicking the EXACT hex a node stands on,
+## because it took `_cell_under` and nothing else. A hex is a small target
+## at any sensible zoom and there is no visual edge to aim at, so ordering
+## workers onto a forest was a game of precision clicking. Reported as the
+## hitbox feeling tiny, which it was — one cell.
+##
+## Same screen-distance test as enemies and squads, so everything on the
+## map is clicked the same way, and against the DRAWN marker position so a
+## node past the seam is clickable where it appears (D-035).
+##
+## Only explored nodes: fog governs what you know about the map, and that
+## includes what is on it (D-004).
+func _resource_cell_at(screen_position: Vector2) -> Vector2i:
+	if _state.space == null:
+		return Vector2i(-1, -1)
+
+	var best := Vector2i(-1, -1)
+	var best_distance := SELECT_CLICK_RADIUS_PX
+	for cell in _state.nodes:
+		if not _explored.has(cell):
+			continue
+		var marker: MeshInstance3D = _node_meshes.get(cell, null)
+		if marker == null or not marker.visible:
+			continue
+		if _camera.is_position_behind(marker.position):
+			continue
+		var distance := _camera.unproject_position(marker.position).distance_to(screen_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = _state.space.from_index(int(cell))
+	return best
+
+
+## Whether anything selected can actually gather. Right-clicking a forest
+## with SOLDIERS selected should march them there, not silently do
+## nothing — the order has to mean something for the unit receiving it.
+func _selection_can_gather() -> bool:
+	for squad in _selected:
+		var def := UnitRoster.by_id(
+			StringName(String(_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and def.carry_capacity > 0:
+			return true
+	return false
 
 
 ## Train a unit at the selected building (D-028).
