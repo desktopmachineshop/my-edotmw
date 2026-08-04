@@ -38,7 +38,7 @@ enum Phase { TO_NODE, GATHERING, TO_DROP_OFF }
 ## and hold rather than scenery you happen to be standing on, which is
 ## also what makes a hotspot worth fighting over (the same reasoning as
 ## D-039's scattered spawns).
-const NODE_EVERY := 95
+const NODE_EVERY := 60
 
 ## Starting stock in a node, before `alive`-scaled gathering eats it.
 ##
@@ -47,7 +47,7 @@ const NODE_EVERY := 95
 ## map, not a poorer one: the economy still supports the same army, it
 ## just concentrates where that army has to walk to get it. Cutting the
 ## count without this would have quietly starved every match.
-const NODE_STOCK := 3600
+const NODE_STOCK := 2400
 
 var space: TorusSpace
 

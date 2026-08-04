@@ -537,6 +537,8 @@ var cap_refusals: int = 0
 ## a small army is the signature of a THROUGHPUT limit; a floor near zero
 ## is the signature of a real economy limit.
 var peak_stockpile: int = 0
+var peak_food: int = 0
+var peak_wood: int = 0
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
@@ -577,15 +579,22 @@ func _record_stats() -> void:
 	for i in range(state.wallet.size()):
 		stockpile += state.wallet[i]
 	peak_stockpile = maxi(peak_stockpile, stockpile)
+	# Per-resource peaks: a total says the economy is running, and says
+	# nothing about WHICH resource a stalled build is waiting on. The AI
+	# saves for a barracks (150 wood) and a big food pile looks identical
+	# to a healthy economy from the total alone.
+	if state.wallet.size() >= 2:
+		peak_food = maxi(peak_food, state.wallet[0])
+		peak_wood = maxi(peak_wood, state.wallet[1])
 
 
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d afford_refusals=%d cap_refusals=%d" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d afford_refusals=%d cap_refusals=%d" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, attacks_launched, first_attack_at,
-		peak_stockpile, afford_refusals, cap_refusals]
+		peak_stockpile, peak_food, peak_wood, afford_refusals, cap_refusals]
 
 
 # --- what it is thinking (D-054) --------------------------------------
