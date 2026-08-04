@@ -90,6 +90,7 @@ func update(now: float) -> void:
 	_report_refusals()
 	_forget_dead_assignments()
 	_drop_unreachable_assignments()
+	_scout_for_resources()
 	_found_town()
 	_raise_buildings()
 	_train()
@@ -378,6 +379,8 @@ func _put_gatherers_to_work() -> void:
 		# Already hauling something useful — leave it be. Re-issuing every
 		# second restarted the round trip forever, so nothing was ever
 		# delivered.
+		if squad == _resource_scout and state_time() < _scout_leg_until:
+			continue
 		if _assigned.has(squad):
 			continue
 
@@ -397,6 +400,86 @@ func _put_gatherers_to_work() -> void:
 		if on_kind.has(wanted_kind):
 			on_kind[wanted_kind] = int(on_kind[wanted_kind]) + 1
 		send.call(NetProtocol.encode_order_gather(squad, cell))
+
+
+## Go and LOOK for a resource it needs and has never seen (D-061).
+##
+## Resource positions are fog-gated now: a client is told about a node
+## when it comes into view, not at join. Before that the AI knew the whole
+## map's resources from the first tick, so this was unnecessary — and the
+## measurement says plainly that it no longer is. With gating on, an AI's
+## `peak_wood` sat at its STARTING 180 for a whole match and `substituted`
+## climbed to 17: every worker asking for wood was handed food instead,
+## because no wood node had ever been seen.
+##
+## Deliberately cheap. One worker at a time, sent to a waypoint on a
+## widening spiral out from home, and only while something it wants is
+## genuinely unknown. It is not a search algorithm — walking anywhere new
+## reveals nodes, because vision does the discovering.
+const SCOUT_LEG_SECONDS := 25.0
+
+
+func _scout_for_resources() -> void:
+	if state.space == null or not state.welcomed:
+		return
+
+	# Only if something it needs has never been seen. Once a node of that
+	# kind is known, ordinary gathering takes over and this stops.
+	var missing := -1
+	for kind in _kinds_below_floor():
+		if _nearest_known_of_kind(kind) < 0:
+			missing = kind
+			break
+	if missing < 0:
+		_resource_scout = -1
+		return
+
+	# Let the current leg finish before picking a new direction, or the
+	# scout pivots every think and never actually covers ground.
+	if _resource_scout >= 0 and state_time() < _scout_leg_until \
+			and state.alive_of(_resource_scout) > 0:
+		return
+
+	var crews := _squads_matching(func(def): return def.carry_capacity > 0)
+	if crews.size() < 2:
+		return  # too few to spare one
+
+	# The LAST crew, so scouting does not fight `_idle_builder` over the
+	# first one — losing the builder to exploration is how the barracks
+	# stops being built.
+	_resource_scout = int(crews[-1])
+	_scout_leg_until = state_time() + SCOUT_LEG_SECONDS
+	_assigned.erase(_resource_scout)
+	_assigned_at.erase(_resource_scout)
+
+	var home := state.spawn_cell_of(player)
+	if home.x < 0:
+		home = state.squad_cell(_resource_scout, state_time())
+	if home.x < 0:
+		return
+
+	# A widening spiral: each leg turns and steps further out, so the
+	# scout sweeps new ground rather than pacing the same line.
+	_scout_leg += 1
+	var radius := 6 + _scout_leg * 5
+	var angle := float(_scout_leg) * 2.39996  # golden angle, so legs spread
+	var target := state.space.normalize(home + Vector2i(
+		roundi(cos(angle) * float(radius)), roundi(sin(angle) * float(radius))))
+
+	scout_legs += 1
+	send.call(state.encode_order(_resource_scout, target))
+
+
+## The nearest node of a kind this AI has actually been shown, or -1.
+## Unlike `_nearest_node_of_kind` this does NOT fall back to another kind
+## — the whole question here is whether the wanted kind is known at all.
+func _nearest_known_of_kind(kind: int) -> int:
+	for cell in state.nodes:
+		if _exhausted.has(int(cell)):
+			continue
+		if int(state.nodes[cell]) == kind:
+			return int(cell)
+	return -1
 
 
 ## Give up on a node a crew cannot actually reach.
@@ -593,6 +676,11 @@ var peak_wood: int = 0
 var substituted_kind: int = 0
 ## Nodes given up on because no crew could reach them.
 var unreachable_nodes: int = 0
+## How many exploration legs the AI walked looking for a resource.
+var scout_legs: int = 0
+var _resource_scout := -1
+var _scout_leg_until := 0.0
+var _scout_leg := 0
 ## squad -> when it was given its current gather order.
 var _assigned_at := {}
 var attacks_launched: int = 0
@@ -647,10 +735,10 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d afford_refusals=%d cap_refusals=%d" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, attacks_launched, first_attack_at,
-		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, afford_refusals, cap_refusals]
+		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals]
 
 
 # --- what it is thinking (D-054) --------------------------------------
