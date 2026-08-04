@@ -644,3 +644,37 @@ func test_asking_for_a_node_that_does_not_exist_yields_nothing() -> void:
 	economy.nodes[5] = {"kind": Economy.ResourceKind.FOOD, "remaining": 10}
 	assert_eq(economy.node_entries([99]).size(), 0,
 		"a node was invented for a cell that has none")
+
+
+func test_a_guaranteed_resource_is_one_the_spawn_can_walk_to() -> void:
+	# `balance_for_spawns` placed on any PASSABLE cell in range, which on a
+	# map with water is not the same as reachable. A spawn behind a channel
+	# got its guarantee on the far bank.
+	#
+	# One AI seat in a 700 s ladder match gathered NOTHING — food and wood
+	# still at their starting 220 each — while running 13 worker crews and
+	# giving up on 43 nodes it could not walk to. Same defect as the AI's
+	# own node choice: distance mistaken for reachability.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var economy := Economy.new(space)
+
+	# An island: the spawn's column and the one beside it, walled off by
+	# water from everything else.
+	var passable := PackedByteArray()
+	passable.resize(space.cell_count())
+	passable.fill(0)
+	var spawn := Vector2i(4, 4)
+	var island := [spawn, Vector2i(5, 4), Vector2i(4, 5), Vector2i(5, 5), Vector2i(3, 4)]
+	for cell in island:
+		passable[space.index(cell)] = 1
+
+	economy.balance_for_spawns([spawn], passable, 8, 1)
+
+	for cell_index in economy.nodes:
+		var at := space.from_index(int(cell_index))
+		assert_true(island.has(at),
+			"a guaranteed resource was placed at %s, which the spawn cannot walk to" % at)
+
+	assert_gt(economy.nodes.size(), 0,
+		"nothing was placed at all — the fill found no reachable ground, which "
+		+ "would starve the spawn just as surely")

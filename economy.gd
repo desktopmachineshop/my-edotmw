@@ -114,28 +114,76 @@ func generate(terrain: TerrainGen, symmetry_order: int = 2) -> void:
 func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 		radius: int, quota: int) -> void:
 	for spawn in spawns:
+		# REACHABLE cells, not merely nearby ones.
+		#
+		# This used to count and place on anything passable inside the
+		# radius, which on a map with water is not the same thing: a spawn
+		# behind a channel got its guaranteed resources on the far bank.
+		# One AI seat in a 700 s ladder match gathered NOTHING — food and
+		# wood still at their starting 220 each — while running 13 worker
+		# crews and giving up on 43 nodes it could not walk to. Its
+		# guarantee had been satisfied on the other side of the water.
+		#
+		# Same defect as the AI's own `_nearest_node_of_kind`: distance
+		# mistaken for reachability. Fixed here as well as there, because
+		# a node nobody can reach is not a resource, it is scenery.
+		var walkable := _reachable_from(spawn, passable, radius)
 		for kind in range(RESOURCE_COUNT):
 			var found := 0
-			for offset in TorusSpace.disk_offsets(radius):
-				var index := space.index(spawn + offset)
+			for index in walkable:
 				if nodes.has(index) and int(nodes[index]["kind"]) == kind:
 					found += 1
 			if found >= quota:
 				continue
 
-			# Short: top up on the nearest free, walkable ground.
-			for offset in TorusSpace.disk_offsets(radius):
+			# Short: top up on the nearest free ground the spawn can WALK
+			# to. `walkable` is already in flood-fill order, which is
+			# nearest-first, and already excludes water and the far bank.
+			for index in walkable:
 				if found >= quota:
 					break
-				var index := space.index(spawn + offset)
 				if nodes.has(index):
-					continue
-				if index < passable.size() and passable[index] == 0:
 					continue
 				if space.distance(spawn, space.from_index(index)) < 2:
 					continue  # leave room for the town hall itself
 				nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
 				found += 1
+
+
+## Cells within `radius` of `from` that a squad can actually WALK to,
+## nearest first.
+##
+## A flood fill rather than a disk, because passability is not the same as
+## reachability: a cell across a channel is close and unreachable, and
+## treating the two as equivalent is what put one spawn's guaranteed
+## resources on the far bank of a river.
+##
+## Bounded by radius so this stays cheap — it runs once per spawn at map
+## generation, never per tick. Deterministic: cells are enqueued in
+## `TorusSpace.neighbors` order, so replays and both sides of the wire
+## agree about where resources ended up.
+func _reachable_from(from: Vector2i, passable: PackedByteArray, radius: int) -> Array:
+	var start := space.index(from)
+	var seen := {start: true}
+	var queue := [from]
+	var out := [start]
+	var head := 0
+
+	while head < queue.size():
+		var cell: Vector2i = queue[head]
+		head += 1
+		for neighbour in space.neighbors(cell):
+			var index := space.index(neighbour)
+			if seen.has(index):
+				continue
+			if space.distance(from, neighbour) > radius:
+				continue
+			if index < passable.size() and passable[index] == 0:
+				continue
+			seen[index] = true
+			queue.append(neighbour)
+			out.append(index)
+	return out
 
 
 ## Biome to resource. Water and beach yield nothing — you cannot chop a
