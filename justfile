@@ -781,8 +781,20 @@ lobby-shot SECONDS="8" AI="2" PRESET="0": _import
 # Reports the SPREAD and the sample size, not a bare win rate: ten matches
 # where one side wins six proves nothing, and this project has twice been
 # burned by a number that looked conclusive.
+#
+# SECONDS defaults to 600, and that number is load-bearing. It was 240,
+# then 300, tuned when gatherer crews were 16 strong and the AI's first
+# attack landed at 121-160 s. Crews are 5 now, and TRAIN_COOLDOWN is per
+# ORDER — so the same labour force takes 22 productions instead of 7, and
+# first contact moved to ~326 s. Every run at 300 s reported `attacks=0`
+# and I read it as a broken AI for most of a session. It was the window.
+#
+# This is CLAUDE.md's standing rule biting again: when the opening
+# changes, every timing tuned against the old one is stale. If crew size,
+# TRAIN_COOLDOWN or the town hall's build time move, re-derive this
+# before believing a run that says the AI never fought.
 [doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
-ai-ladder MATCHES="10" SECONDS="240" AI="2": _import
+ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{artifacts_dir}}"
