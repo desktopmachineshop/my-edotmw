@@ -449,7 +449,15 @@ func _nearest_node_of_kind(from: Vector2i, kind: int) -> int:
 		elif d < fallback_distance:
 			fallback_distance = d
 			fallback = index
-	# Something is better than idling if the wanted kind is all gone.
+	# Something is better than idling if the wanted kind is all gone —
+	# but COUNT it, because this silently substitutes a different resource
+	# and that is what hid the AI gathering zero wood for a whole session.
+	# Every worker asked for wood, none was among the nodes it had seen,
+	# and each was quietly handed a food node instead. The wallet showed a
+	# healthy 3,248 food beside a starting 180 wood, and nothing anywhere
+	# said the substitution had happened.
+	if best < 0 and fallback >= 0:
+		substituted_kind += 1
 	return best if best >= 0 else fallback
 
 
@@ -539,6 +547,9 @@ var cap_refusals: int = 0
 var peak_stockpile: int = 0
 var peak_food: int = 0
 var peak_wood: int = 0
+## How often a worker asked for one resource and was handed another,
+## because none of the wanted kind was among the nodes this AI has seen.
+var substituted_kind: int = 0
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
@@ -591,10 +602,10 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d afford_refusals=%d cap_refusals=%d" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d afford_refusals=%d cap_refusals=%d" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, attacks_launched, first_attack_at,
-		peak_stockpile, peak_food, peak_wood, afford_refusals, cap_refusals]
+		peak_stockpile, peak_food, peak_wood, substituted_kind, afford_refusals, cap_refusals]
 
 
 # --- what it is thinking (D-054) --------------------------------------
