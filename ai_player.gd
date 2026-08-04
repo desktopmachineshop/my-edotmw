@@ -276,7 +276,26 @@ func _train() -> void:
 	var worker_soldiers := 0
 	for squad in _squads_matching(func(def): return def.carry_capacity > 0):
 		worker_soldiers += state.alive_of(squad)
-	var wanted := &"gatherers" if worker_soldiers < GATHERER_SOLDIERS_WANTED \
+	# LATCHED, with hysteresis — the boundary is not a safe place to sit.
+	#
+	# The target is 110 soldiers and a crew is 5, so it is met at exactly
+	# 22 squads. A single casualty anywhere drops the count to 109, the
+	# test flips back to "make gatherers", and the AI spends the rest of
+	# the match rebuilding one worker instead of an army. One ladder seat
+	# did exactly that: 22 squads, all of them workers, three buildings,
+	# 1,680 wood banked and not one soldier trained in 700 seconds — while
+	# its opponent on the same code reached 44 squads and attacked 59
+	# times.
+	#
+	# So: once the economy has EVER been staffed, stay switched. It only
+	# goes back if the workforce is genuinely gutted (a raid, not a
+	# scratch), which is the case where rebuilding really is the priority.
+	if worker_soldiers >= GATHERER_SOLDIERS_WANTED:
+		_economy_staffed = true
+	elif worker_soldiers < GATHERER_SOLDIERS_WANTED * 0.6:
+		_economy_staffed = false
+
+	var wanted := &"gatherers" if not _economy_staffed \
 		else _military_archetype()
 	if wanted == &"":
 		return
@@ -696,6 +715,9 @@ var substituted_kind: int = 0
 var unreachable_nodes: int = 0
 ## How many exploration legs the AI walked looking for a resource.
 var scout_legs: int = 0
+## Latched once the economy has been staffed, so a single casualty at the
+## boundary cannot send the AI back to building workers forever.
+var _economy_staffed := false
 var _resource_scout := -1
 var _scout_leg_until := 0.0
 var _scout_leg := 0
