@@ -63,8 +63,10 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 			return _grid_offset(index, alive, COLUMN_FILES, spacing)
 		"wedge":
 			return _wedge_offset(index, spacing)
-		"loose":
+		"loose", "sparse":
 			return _loose_offset(index, alive, spacing)
+		"tight":
+			return _tight_offset(index, alive, spacing)
 		"ring":
 			return _ring_offset(index, alive, spacing)
 		_:
@@ -135,6 +137,24 @@ static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> 
 	var centre := float(in_this_rank - 1) * 0.5
 
 	return Vector2((float(file) - centre) * spacing, -float(rank) * spacing)
+
+
+## The three shapes a PLAYER may choose, for any unit (D-058).
+##
+## `line`, `column` and `wedge` remain for .tres defaults and are still
+## implemented; they are simply not offered in the UI. Keeping them costs
+## nothing and removing them would rewrite every unit file.
+const PLAYER_SHAPES := ["sparse", "tight", "ring"]
+
+
+## Shoulder to shoulder: a deep block at plain `spacing`.
+##
+## The counterpart to `sparse` — same soldiers, a third of the frontage.
+## Deliberately deeper than `line`'s three ranks, so choosing it visibly
+## changes the squad's shape rather than nudging it.
+static func _tight_offset(index: int, alive: int, spacing: float) -> Vector2:
+	var files := maxi(1, ceili(sqrt(float(alive))))
+	return _grid_offset(index, alive, files, spacing * 0.85)
 
 
 static func _wedge_offset(index: int, spacing: float) -> Vector2:

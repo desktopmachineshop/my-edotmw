@@ -765,6 +765,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_gather(peer, data)
 			NetProtocol.C2S_ORDER_RALLY:
 				_handle_order_rally(peer, data)
+			NetProtocol.C2S_ORDER_FORMATION:
+				_handle_order_formation(peer, data)
 			NetProtocol.C2S_CHAT:
 				_handle_chat(peer, data)
 			NetProtocol.C2S_LOBBY:
@@ -833,6 +835,25 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 		return
 	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Change a squad's formation (D-058).
+##
+## The shape is checked against the offered set here rather than trusted:
+## an unknown one would fall through `Formation.slot_offset`'s default and
+## silently stack the squad into a line, with only a push_error nobody
+## reads — and a client is not the authority on what formations exist.
+func _handle_order_formation(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_formation(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+
+	var shape := String(order["shape"])
+	if not Formation.PLAYER_SHAPES.has(shape):
+		_notify(peer, "No such formation")
+		return
+	_sim.set_shape(squad, shape)
 
 
 ## Set where a building sends what it produces.
@@ -1208,6 +1229,10 @@ func _replicate() -> void:
 	# here, because take_dirty() clears — reading it inside the per-client
 	# loop would hand the change to the first client and nobody else.
 	var dirty_buildings := _buildings.take_dirty()
+	# Taken once, out here, because take_shape_dirty() CLEARS — reading it
+	# inside the per-client loop would tell the first client and nobody
+	# else, and the rest would silently hold a stale formation.
+	var shape_changes := _sim.take_shape_dirty()
 	var wallet_changes := {}
 	for player in _sim.last_wallet_changes:
 		wallet_changes[player] = true
@@ -1252,6 +1277,31 @@ func _replicate() -> void:
 				ENetPacketPeer.FLAG_RELIABLE)
 
 		record["visible"] = visible_set
+
+		# Squads whose FORMATION changed this tick (D-058), for the ones
+		# this client can see.
+		#
+		# Shape is in `composition_hash` and is what `Formation` derives
+		# every soldier's position from, so a client that missed a change
+		# would draw the squad in the wrong shape AND report a desync. Sent
+		# as ordinary SQUAD_INFO — the message that already carries shape —
+		# rather than inventing a second one, and only for squads that
+		# actually changed, so a formation nobody touched costs nothing
+		# (D-003).
+		#
+		# Filtered against `visible_set`, so this leaks no more than a
+		# reveal does: you are told what an enemy squad looks like exactly
+		# when you can see it.
+		if not shape_changes.is_empty():
+			var changed_visible := []
+			for id in shape_changes:
+				if visible_set.has(int(id)):
+					changed_visible.append(int(id))
+			if not changed_visible.is_empty():
+				var shape_entries := _sim.squad_info_entries(changed_visible)
+				if not shape_entries.is_empty():
+					peer.send(0, NetProtocol.encode_squad_info(shape_entries),
+						ENetPacketPeer.FLAG_RELIABLE)
 
 		var packets := _sim.replicator.collect_for_client(player, _sim.time, visible)
 		for packet in packets:

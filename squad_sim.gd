@@ -91,6 +91,8 @@ var _alive := PackedInt32Array()
 var _owner := PackedInt32Array()
 var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
+## Squads whose shape changed and whose clients have not been told yet.
+var _shape_dirty := {}
 var _spacing := PackedFloat32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
@@ -229,6 +231,49 @@ func owner_of(squad: int) -> int:
 
 func curve_of(squad: int) -> StateCurve:
 	return _curves[squad]
+
+
+func shape_of(squad: int) -> String:
+	return _shape[squad]
+
+
+## Change a squad's formation (D-058).
+##
+## Shape is REPLICATED squad state and is part of `composition_hash`, so a
+## change here has to reach every client that can see the squad or they
+## will disagree with the server about what it looks like — and, because
+## `Formation` derives soldier positions from it, about where every
+## soldier in it is standing. `take_shape_dirty` is how the server finds
+## out; that is the whole reason this cannot just assign to `_shape`.
+##
+## Ignores a no-op, so a caller may set the same shape every tick without
+## generating wire traffic. That matters: the economy sets a gathering
+## crew to `ring` on every tick it is at a node.
+func set_shape(squad: int, shape: String) -> void:
+	if squad < 0 or squad >= _shape.size() or _shape[squad] == shape:
+		return
+	_shape[squad] = shape
+	_shape_dirty[squad] = true
+	# Soldier positions come from the shape, so the curve is unaffected but
+	# anything caching a footprint is not.
+	_dirty_footprint(squad)
+
+
+## Squads whose shape changed since the last call, and clears the list.
+## Same contract as BuildingSim.take_dirty, and for the same reason.
+func take_shape_dirty() -> Array:
+	var out := _shape_dirty.keys()
+	_shape_dirty.clear()
+	out.sort()
+	return out
+
+
+func _dirty_footprint(_squad: int) -> void:
+	# Placeholder hook: Formation's footprint cache is keyed by
+	# (shape, alive, spacing) and so needs no invalidation — a changed
+	# shape simply looks up a different entry. Kept as a named seam so a
+	# future per-squad cache cannot quietly go stale.
+	pass
 
 
 func def_id_of(squad: int) -> StringName:

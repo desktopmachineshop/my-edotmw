@@ -505,3 +505,59 @@ func test_thinning_the_nodes_did_not_starve_the_map() -> void:
 		total += int(economy.nodes[cell]["remaining"])
 	assert_gt(total, 250000,
 		"only %d resource on the standard map — an hour-long match would strip it bare" % total)
+
+
+# --- formations (D-058) ------------------------------------------------
+
+func test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk() -> void:
+	# A gathering crew standing in walking order looked like a squad that
+	# happened to be near a resource rather than one working it. Shape is
+	# replicated state, so the SIM owns this — the client cannot infer it,
+	# because the haul phase is not on the wire.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var def := UnitRoster.by_id(&"gatherers")
+	assert_not_null(def, "the roster should ship gatherers")
+	var node_cell := Vector2i(9, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
+	}
+
+	# Ordered from a distance: walking, so spread out.
+	var squad := sim.add_squad(def, 1, Vector2i(2, 8))
+	economy.order_gather(sim, squad, space.index(node_cell))
+	sim.tick()
+	assert_eq(sim.shape_of(squad), "sparse",
+		"a crew on the road should walk in open order, not ringed around nothing")
+
+	# Now let them arrive.
+	for _i in range(400):
+		sim.tick()
+		if sim.shape_of(squad) == "ring":
+			break
+
+	assert_eq(sim.shape_of(squad), "ring",
+		"a crew standing on its node should work AROUND it")
+
+
+func test_a_shape_change_is_offered_to_the_server_exactly_once() -> void:
+	# The replication contract. `set_shape` ignores a no-op, which is what
+	# lets the economy call it every tick without generating wire traffic —
+	# and without that, a gathering crew would resend SQUAD_INFO to every
+	# client that can see it ten times a second.
+	var space := TorusSpace.new(16, 8, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var squad := sim.add_squad(UnitRoster.first(), 1, Vector2i(2, 2))
+	sim.take_shape_dirty()  # clear whatever spawning left
+
+	sim.set_shape(squad, "tight")
+	assert_eq(sim.take_shape_dirty(), [squad], "the change was not offered to clients")
+
+	sim.set_shape(squad, "tight")
+	assert_eq(sim.take_shape_dirty(), [],
+		"setting the same shape again queued a pointless resend")

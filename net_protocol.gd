@@ -33,6 +33,7 @@ const C2S_ORDER_BUILD := 13
 const C2S_ORDER_PRODUCE := 14
 const C2S_ORDER_GATHER := 16
 const C2S_ORDER_RALLY := 23
+const C2S_ORDER_FORMATION := 24
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
@@ -382,6 +383,31 @@ static func decode_order_gather(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"squad": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## ORDER_FORMATION: change a squad's formation (D-058).
+##
+## The shape travels as a STRING rather than an enum ordinal, for the same
+## reason `produces` lists archetypes: adding a formation should not
+## renumber the wire, and a name in a packet capture is readable.
+static func encode_order_formation(squad: int, shape: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_FORMATION)
+	buf.put_u32(squad)
+	var bytes := shape.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_order_formation(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var squad := buf.get_u32()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"squad": squad, "shape": bytes.get_string_from_utf8()}
 
 
 ## ORDER_RALLY: where a building sends what it produces.

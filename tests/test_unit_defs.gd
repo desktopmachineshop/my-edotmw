@@ -20,7 +20,7 @@ const UNITS_DIR := "res://units"
 ## is the point of it: a shape in a .tres that the schema does not know
 ## about would otherwise fall through `Formation.slot_offset`'s default
 ## and silently stack everyone into a line.
-const VALID_FORMATIONS := ["line", "column", "wedge", "loose", "ring"]
+const VALID_FORMATIONS := ["line", "column", "wedge", "loose", "sparse", "tight", "ring"]
 const VALID_PRIMITIVES := ["capsule", "box", "cylinder", "hull"]
 
 

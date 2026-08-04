@@ -17,7 +17,7 @@ extends GutTest
 
 const W := 32
 const H := 16
-const SHAPES := ["line", "column", "wedge", "loose", "ring"]
+const SHAPES := ["line", "column", "wedge", "loose", "sparse", "tight", "ring"]
 
 
 func _space() -> TorusSpace:

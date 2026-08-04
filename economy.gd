@@ -277,6 +277,17 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 			Phase.TO_DROP_OFF:
 				_try_unload(sim, squad, haul, buildings, changed)
 
+		# A crew standing at a node works AROUND it; a crew on the road
+		# walks spread out (D-058). Set every tick rather than on the
+		# transition, because `set_shape` ignores a no-op — so this costs
+		# nothing on the ticks where nothing changed, and cannot be left
+		# wrong by a phase change that took some other path out.
+		# A released crew goes back to walking order too — a worked-out
+		# node erases the haul, and leaving them ringed around a bare patch
+		# would be the one case this misses.
+		var working := _hauls.has(squad) and int(haul["phase"]) == Phase.GATHERING
+		sim.set_shape(squad, "ring" if working else "sparse")
+
 		# Only write back a haul that still exists. A helper above may have
 		# ended it — a worked-out node releases its crew — and assigning
 		# unconditionally here would resurrect the entry it had just

@@ -967,9 +967,9 @@ var _drag_start := Vector2.ZERO
 ## or what is queued behind the current unit — and it made the keys look
 ## like the only way to act.
 const PANEL_X := 12.0
-const PANEL_Y := 470.0
+const PANEL_Y := 408.0
 const PANEL_W := 430.0
-const PANEL_H := 238.0
+const PANEL_H := 300.0
 const ACTION_BUTTON_W := 128.0
 const ACTION_BUTTON_H := 34.0
 
@@ -1138,7 +1138,7 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 	# Action buttons, in a grid. Pooled and relabelled rather than rebuilt,
 	# because the selection changes constantly and churning Controls in
 	# _process is how a frame budget goes.
-	for i in range(6):
+	for i in range(9):
 		var button := Button.new()
 		button.position = Vector2(
 			PANEL_X + 12.0 + float(i % 3) * (ACTION_BUTTON_W + 8.0),
@@ -1840,6 +1840,19 @@ func _cost_text(food: int, wood: int, gold: int, stone: int) -> String:
 func _squad_actions(def_id: StringName) -> Array:
 	var out := []
 	var def := UnitRoster.by_id(def_id)
+
+	# Formation, for any unit (D-058). First, because it is the thing a
+	# player changes most often once they know it exists.
+	var current := String(_state.composition.get(_selected[0], {}).get("shape", ""))
+	for shape in Formation.PLAYER_SHAPES:
+		out.append({
+			# The current one is marked rather than hidden: a row of three
+			# where one is ticked says "these are your options and this is
+			# where you are", which two buttons cannot.
+			"label": ("* " if shape == current else "") + String(shape).capitalize(),
+			"kind": "formation", "id": StringName(shape),
+		})
+
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
 	if def != null and def.carry_capacity > 0:
 		out.append({"label": "Gather\nor right-click a node", "kind": "gather", "id": &""})
@@ -1881,6 +1894,22 @@ func _on_action_pressed(index: int) -> void:
 			_gather_selected()
 		"stop":
 			_stop_selected()
+		"formation":
+			_set_formation(StringName(action["id"]))
+
+
+## Put every selected squad into a formation (D-058).
+##
+## Sent per squad rather than as one order for the selection, because the
+## server validates ownership per squad — a selection is a client-side
+## idea and the authority does not have one.
+func _set_formation(shape: StringName) -> void:
+	if not _connected or _selected.is_empty():
+		return
+	for squad in _selected:
+		_peer.send(0, NetProtocol.encode_order_formation(int(squad), String(shape)),
+			ENetPacketPeer.FLAG_RELIABLE)
+	print("client: %d squad(s) to %s formation" % [_selected.size(), shape])
 
 
 ## Repaint the minimap a few times a second rather than every frame:
