@@ -180,3 +180,27 @@ func test_a_squad_stops_drawing_soldiers_it_has_lost() -> void:
 
 	assert_eq(multimesh.visible_instance_count, 3,
 		"Three soldiers were given; anything else is drawing the dead")
+
+
+func test_a_gatherer_costs_about_the_same_per_head_as_a_soldier_does() -> void:
+	# Crew size and cost have to move together. Gatherer squads went 16
+	# men to 5 and their cost stayed at 50 food, which made a worker 3.2x
+	# more expensive per head overnight — so the AI spent everything
+	# assembling labour, never afforded a barracks, and stopped attacking
+	# entirely. The ladder caught it; nothing else would have.
+	#
+	# A band rather than a number: this is balance, and balance should
+	# move. What must not happen is a squad_size edit silently changing
+	# what a unit of labour costs.
+	var gatherers := UnitRoster.by_id(&"gatherers")
+	assert_not_null(gatherers, "the roster should ship gatherers")
+	if gatherers == null:
+		return
+
+	var per_head := float(gatherers.cost_food) / float(maxi(gatherers.squad_size, 1))
+	assert_lt(per_head, 6.0,
+		"a gatherer costs %.1f food per head — shrink the crew and the cost has to follow"
+		% per_head)
+	assert_gt(per_head, 1.0,
+		"a gatherer costs %.1f food per head, which is close enough to free that "
+		% per_head + "there is no economic choice in making one")

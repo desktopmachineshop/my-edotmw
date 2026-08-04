@@ -449,6 +449,18 @@ func _separate_arrivals() -> void:
 		# rules out.
 		if _cell[i] != _destination[i]:
 			continue
+
+		# A crew AT WORK is exempt, and this is not a nicety.
+		#
+		# Gathering requires standing on the node's own cell (D-028), and
+		# several crews working one node is both normal and desirable. The
+		# first version separated them anyway: a displaced crew could never
+		# reach the gathering phase, so it hauled nothing, forever. The
+		# ladder showed 22 gatherer squads and a stockpile that never rose
+		# above the STARTING 480 — an economy that looked staffed and was
+		# producing literally nothing.
+		if economy != null and economy.is_gathering(i):
+			continue
 		var cell := _cell[i]
 		if not occupants.has(cell):
 			occupants[cell] = i

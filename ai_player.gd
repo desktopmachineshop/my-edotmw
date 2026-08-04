@@ -345,7 +345,28 @@ func _put_gatherers_to_work() -> void:
 	if gatherers.is_empty():
 		return
 
-	var wanted_kind := _scarcest_kind()
+	# Workers are SHARED between the resources that are short, not all
+	# sent after whichever is scarcest right now.
+	#
+	# Sending everyone at one kind worked while crews were 16-strong and
+	# there were seven of them. With 5-man crews there are twenty-odd
+	# productions, each spending food, so food never climbed back over its
+	# floor — every worker chased food forever, wood never reached 150,
+	# and the barracks was unreachable. The ladder showed it exactly:
+	# 20.7 squads of which 20.7 were workers, one building, never attacked.
+	#
+	# A worker joins whichever short resource has the FEWEST already on it,
+	# so the crew spreads across what is actually needed and no single
+	# demand can starve the rest.
+	var short := _kinds_below_floor()
+	var on_kind := {}
+	for kind in short:
+		on_kind[kind] = 0
+	for squad in _assigned:
+		var kind := int(state.nodes.get(int(_assigned[squad]), -1))
+		if on_kind.has(kind):
+			on_kind[kind] = int(on_kind[kind]) + 1
+
 	for squad in gatherers:
 		# The worker that was just told to build is left alone. Re-issuing
 		# a gather order a second later cancelled the build it had only
@@ -359,11 +380,32 @@ func _put_gatherers_to_work() -> void:
 		if _assigned.has(squad):
 			continue
 
+		# Whichever short resource is currently least attended.
+		var wanted_kind := _scarcest_kind()
+		var fewest := 1 << 30
+		for kind in short:
+			if int(on_kind[kind]) < fewest:
+				fewest = int(on_kind[kind])
+				wanted_kind = kind
+
 		var cell := _nearest_node_of_kind(state.squad_cell(squad, state_time()), wanted_kind)
 		if cell < 0:
 			continue
 		_assigned[squad] = cell
+		if on_kind.has(wanted_kind):
+			on_kind[wanted_kind] = int(on_kind[wanted_kind]) + 1
 		send.call(NetProtocol.encode_order_gather(squad, cell))
+
+
+## The resources currently under their floor. Food always qualifies, so a
+## crew is never left with nothing to do when everything is stocked.
+func _kinds_below_floor() -> Array:
+	var out := []
+	if state.wallet.size() >= 4:
+		if state.wallet[1] < WOOD_FLOOR:
+			out.append(Economy.ResourceKind.WOOD)
+	out.append(Economy.ResourceKind.FOOD)
+	return out
 
 
 ## Which resource to send the next worker after.

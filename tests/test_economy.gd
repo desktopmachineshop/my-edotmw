@@ -561,3 +561,44 @@ func test_a_shape_change_is_offered_to_the_server_exactly_once() -> void:
 	sim.set_shape(squad, "tight")
 	assert_eq(sim.take_shape_dirty(), [],
 		"setting the same shape again queued a pointless resend")
+
+
+func test_separating_squads_does_not_evict_crews_from_the_node_they_work() -> void:
+	# D-060 pushes arrived squads off each other's cell so armies do not
+	# heap. Gathering requires standing ON the node (D-028), and several
+	# crews working one node is normal — so separating them meant a
+	# displaced crew could never reach the gathering phase and hauled
+	# nothing, forever.
+	#
+	# The ladder showed it as 22 gatherer squads with a stockpile that
+	# never rose above the starting 480: an economy fully staffed and
+	# producing literally nothing. Nothing in the suite would have caught
+	# it, because each feature was correct on its own.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	sim.buildings = BuildingSim.new(space)
+
+	var def := UnitRoster.by_id(&"gatherers")
+	var node_cell := Vector2i(10, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 9000,
+	}
+
+	var crews := []
+	for i in range(3):
+		var squad := sim.add_squad(def, 1, Vector2i(4 + i, 8))
+		economy.order_gather(sim, squad, space.index(node_cell))
+		crews.append(squad)
+
+	for _i in range(600):
+		sim.tick()
+
+	var working := 0
+	for squad in crews:
+		if sim.cell_index_of(squad) == space.index(node_cell):
+			working += 1
+	assert_gt(working, 1,
+		"only %d of 3 crews reached the node — separation is evicting them from their work"
+		% working)

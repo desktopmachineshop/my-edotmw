@@ -580,9 +580,9 @@ func _refresh_squads() -> void:
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
 		var eased := _motion.ease(squad_id, transforms, _frame_delta)
-		var doing := _activity_of(squad_id)
+		var doing := _activity_for(squad_id)
 		var decorated := CosmeticOffset.decorate_activity(
-			eased, _now, 1.0, doing, _activity_target(squad_id, doing))
+			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# A selection circle under EVERY soldier, from the transforms we
@@ -1393,66 +1393,78 @@ var _motion := SoldierMotion.new()
 var _frame_delta := 0.0
 
 
-## What a squad is visibly DOING, from state the client already has
-## (D-059). No new protocol: `shape` is replicated and tells us a crew is
-## working a node, and enemy squads in vision tell us who is fighting.
-func _activity_of(squad_id) -> int:
-	var info: Dictionary = _state.composition.get(squad_id, {})
-	if info.is_empty():
-		return CosmeticOffset.Activity.IDLE
+## Every live squad's position and owner, rebuilt ONCE per frame.
+##
+## The first version scanned `_state.composition` inside a per-squad
+## helper, and called that helper twice per visible squad — so a hundred
+## visible squads against a thousand known ones was 200,000 dictionary
+## walks and curve samples a frame, to decide an animation.
+##
+## That is the fifth appearance of one defect in this project: a lookup
+## that belongs outside a loop, sitting inside it. After `distance()` per
+## cell in vision (232 -> 15 µs/squad), `UnitRoster.by_id` per produced
+## squad (858 ms in one tick), terrain noise per soldier per frame, and a
+## BuildingDef resolved per building per frame. Hoisting it is the fix
+## every time.
+var _enemy_scan: Array = []
+var _enemy_scan_at := -1.0
 
-	# A gathering crew rings its node (D-058), and that shape reaches us
-	# over the wire — so "is this crew working?" needs nothing new.
+
+func _refresh_enemy_scan() -> void:
+	if is_equal_approx(_enemy_scan_at, _now):
+		return
+	_enemy_scan_at = _now
+	_enemy_scan = []
+	for id in _state.composition:
+		if _state.alive_of(id) <= 0 or not _state.curves.has(id):
+			continue
+		_enemy_scan.append({
+			"owner": int(_state.composition[id].get("owner", -2)),
+			"at": _state.squad_world_position(id, _now),
+		})
+
+
+## What a squad is visibly DOING and what it is leaning toward, from state
+## the client already has (D-059).
+##
+## No new protocol: `shape` is replicated and tells us a crew is working a
+## node (D-058), and enemy squads in vision tell us who is fighting.
+## Returned together because finding the enemy is the expensive half and
+## asking twice was doing it twice.
+func _activity_for(squad_id) -> Dictionary:
+	var idle := {"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO}
+	var info: Dictionary = _state.composition.get(squad_id, {})
+	if info.is_empty() or _state.space == null:
+		return idle
+
+	# A gathering crew rings its node, and that shape reaches us over the
+	# wire — so "is this crew working?" needs nothing new. The node is
+	# under the crew's own centre, so leaning inward IS leaning at it.
 	if String(info.get("shape", "")) == "ring":
-		return CosmeticOffset.Activity.WORKING
+		return {
+			"activity": CosmeticOffset.Activity.WORKING,
+			"toward": _state.squad_world_position(squad_id, _now),
+		}
 
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
 	if def == null or def.damage <= 0.0:
-		return CosmeticOffset.Activity.IDLE
-	return CosmeticOffset.Activity.FIGHTING \
-		if _nearest_enemy_within(squad_id, def.attack_range) != null \
-		else CosmeticOffset.Activity.IDLE
+		return idle
 
-
-## What the squad is leaning toward: the ground it works, or the enemy it
-## is engaging.
-func _activity_target(squad_id, activity: int) -> Vector3:
-	match activity:
-		CosmeticOffset.Activity.WORKING:
-			# The node is under the crew's own centre — they were ordered
-			# onto it — so leaning inward is leaning at the resource.
-			return _state.squad_world_position(squad_id, _now)
-		CosmeticOffset.Activity.FIGHTING:
-			var enemy = _nearest_enemy_within(squad_id, 1e9)
-			return enemy if enemy != null else Vector3.ZERO
-		_:
-			return Vector3.ZERO
-
-
-## The world position of the nearest VISIBLE enemy squad within `reach`,
-## or null. Squad-granular, so it costs one distance test per enemy per
-## squad per frame rather than anything per soldier.
-func _nearest_enemy_within(squad_id, reach: float):
-	if _state.space == null:
-		return null
+	_refresh_enemy_scan()
 	var here := _state.squad_world_position(squad_id, _now)
-	var mine := int(_state.composition.get(squad_id, {}).get("owner", -1))
-
-	var best = null
-	var best_distance := reach
-	for other in _state.composition:
-		if other == squad_id:
+	var mine := int(info.get("owner", -1))
+	var best_distance := def.attack_range
+	var toward := Vector3.ZERO
+	for entry in _enemy_scan:
+		if int(entry["owner"]) == mine:
 			continue
-		if int(_state.composition[other].get("owner", -2)) == mine:
-			continue
-		if _state.alive_of(other) <= 0 or not _state.curves.has(other):
-			continue
-		var there := _state.squad_world_position(other, _now)
-		var d := here.distance_to(there)
+		var d := here.distance_to(entry["at"])
 		if d < best_distance:
 			best_distance = d
-			best = there
-	return best
+			toward = entry["at"]
+	if toward == Vector3.ZERO:
+		return idle
+	return {"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward}
 
 ## The building armed for placement, or "" — a ghost of it follows the
 ## cursor until you click the ground or cancel.
