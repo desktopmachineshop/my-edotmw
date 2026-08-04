@@ -455,6 +455,27 @@ test-load N DURATION:
     fi
     echo "test-load: fog gated at least $((total_squads - known_squads_max)) of $total_squads simulated squads even from the most-informed bot (known_squads_max=$known_squads_max)"
 
+    # The same check for RESOURCE POSITIONS (D-061). Every node on the map
+    # used to be sent to every client at join, so a player knew where each
+    # opponent had to expand and where to raid without scouting for any of
+    # it — and a modified client could read it straight out of the packet.
+    #
+    # Checked here rather than only in a unit test for the reason the
+    # squad gate is: a per-client filter can be correct in isolation and
+    # still be bypassed by some other send path, and only a live run with
+    # real clients exercises all of them.
+    nodes_known_max="$(grep -oE 'nodes_known_max=[0-9]+' "$bots_log" | tail -1 | cut -d= -f2)"
+    total_nodes="$(grep -oE 'FOG_TOTAL_NODES=[0-9]+' "$server_log" | tail -1 | cut -d= -f2)"
+    if [ -z "${nodes_known_max:-}" ] || [ -z "${total_nodes:-}" ]; then
+        echo "test-load: could not find nodes_known_max or FOG_TOTAL_NODES — can't check resource gating" >&2
+        exit 1
+    fi
+    if [ "$nodes_known_max" -ge "$total_nodes" ]; then
+        echo "test-load: resource positions are NOT gated — the most-informed bot knew $nodes_known_max of $total_nodes nodes (expected fewer)" >&2
+        exit 1
+    fi
+    echo "test-load: fog gated $((total_nodes - nodes_known_max)) of $total_nodes resource nodes from the most-informed bot (nodes_known_max=$nodes_known_max)"
+
     # Both civilisations must actually have fielded something (D-046
     # criterion 10). A run where everyone happened to draw the same civ
     # exercises half the roster and proves nothing about the other half —

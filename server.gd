@@ -499,6 +499,9 @@ func _print_summary(reason: String) -> void:
 	# to read from any point in the log, including the periodic status
 	# line below.
 	print("server: FOG_TOTAL_SQUADS=%d" % _sim.squad_count())
+	# The same shape for resources (D-061): the best-informed client must
+	# know FEWER nodes than exist, or positions are not being gated.
+	print("server: FOG_TOTAL_NODES=%d" % (_economy.node_count() if _economy != null else 0))
 
 
 func _print_status() -> void:
@@ -645,10 +648,19 @@ func _admit_player(peer, player: int) -> void:
 	_economy.credit(player, Economy.ResourceKind.STONE,
 		civ.starting_stone if civ != null else _config.starting_stone)
 	_send_wallet(peer, player)
-	# Where the resources are, once. A player cannot be asked to send
-	# workers to a node they have no way of finding.
-	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries()),
-		ENetPacketPeer.FLAG_RELIABLE)
+	# Only the resources this player can currently SEE (D-061).
+	#
+	# This used to send every node on the map, once, to everybody — the
+	# comment said "a player cannot be asked to send workers to a node
+	# they have no way of finding", which is true and was solved the wrong
+	# way. Knowing every resource position from the moment you join tells
+	# you where an opponent must expand and where to raid, without
+	# scouting for any of it, and a modified client could read it straight
+	# out. That is precisely the class of knowledge D-004's curve gating
+	# and D-025's fog exist to withhold.
+	#
+	# The rest arrive as they are revealed, in `_replicate`.
+	_send_visible_nodes(peer, player, _record_for(peer))
 
 	# Registration happened at the top of _on_connect, before the lobby
 	# branch — a player has to be seated before anyone can decide whether
@@ -880,6 +892,36 @@ func _handle_order_rally(peer, data: PackedByteArray) -> void:
 	var cell := _sim.space.from_index(int(order["cell"]))
 	_buildings.set_rally(building, cell)
 	_notify(peer, "Rally point set")
+
+
+## Tell a client about resource nodes it can see and has not been told
+## about yet (D-061).
+##
+## PERSISTENT-EXPLORED, exactly like buildings (D-030): once you have seen
+## a forest you remember where it was, and a node cannot be un-known. So
+## the per-client set only ever grows, and a node already sent is never
+## resent — an explored map costs nothing per tick.
+##
+## Nodes are static, so this needs no conceal event and no ghost: unlike a
+## squad, a forest does not move away while you are not looking.
+func _send_visible_nodes(peer, player: int, record) -> void:
+	if record == null or _economy == null or _sim == null:
+		return
+	var known: Dictionary = record.get("nodes_known", {})
+	var fresh := []
+	for cell in _economy.nodes:
+		if known.has(cell):
+			continue
+		if not _sim.vision.is_visible(player, int(cell)):
+			continue
+		known[cell] = true
+		fresh.append(cell)
+	record["nodes_known"] = known
+
+	if fresh.is_empty():
+		return
+	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries(fresh)),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Terrain passability with living buildings stamped out of it, so squads
@@ -1281,6 +1323,11 @@ func _replicate() -> void:
 				ENetPacketPeer.FLAG_RELIABLE)
 
 		record["visible"] = visible_set
+
+		# Resources come into view like anything else (D-061). Cheap: the
+		# scan skips cells already known, and once a player has explored
+		# their surroundings it finds nothing and sends nothing.
+		_send_visible_nodes(peer, player, record)
 
 		# Squads whose FORMATION changed this tick (D-058), for the ones
 		# this client can see.

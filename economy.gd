@@ -156,7 +156,24 @@ static func _kind_for(biome: int) -> int:
 
 
 ## Node positions and kinds for the wire, without their stock.
-func node_entries() -> Array:
+##
+## `only` restricts the result to specific cells — the caller passes the
+## ones a given player has actually seen (D-061). Called with no argument
+## this returns EVERY node, which is exactly the leak that made it
+## necessary: knowing where every resource sits from the moment you join
+## tells you where an opponent must expand and where to raid, without
+## scouting for any of it.
+func node_entries(only: Array = []) -> Array:
+	if not only.is_empty():
+		var picked := []
+		for cell in only:
+			if nodes.has(cell):
+				picked.append({"cell": cell, "kind": int(nodes[cell]["kind"])})
+		return picked
+	return _all_node_entries()
+
+
+func _all_node_entries() -> Array:
 	var out := []
 	for cell in nodes:
 		out.append({"cell": cell, "kind": int(nodes[cell]["kind"])})

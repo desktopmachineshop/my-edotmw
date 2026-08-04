@@ -602,3 +602,45 @@ func test_separating_squads_does_not_evict_crews_from_the_node_they_work() -> vo
 	assert_gt(working, 1,
 		"only %d of 3 crews reached the node — separation is evicting them from their work"
 		% working)
+
+
+# --- resource positions are fog-gated (D-061) --------------------------
+
+func test_node_entries_can_be_restricted_to_what_a_player_has_seen() -> void:
+	# `node_entries()` sent EVERY node on the map to every client once, at
+	# join. Knowing where every resource sits from the moment you connect
+	# tells you where an opponent must expand and where to raid, without
+	# scouting for any of it — and a modified client could read it
+	# straight out of the packet. That is the class of knowledge D-004's
+	# curve gating and D-025's fog exist to withhold.
+	#
+	# It also hid a real AI bug for a whole session: "the AI cannot find
+	# wood" was diagnosed as fog when the AI in fact knew every node, and
+	# the true fault was reachability.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var economy := Economy.new(space)
+	for cell in [10, 40, 90, 150]:
+		economy.nodes[cell] = {"kind": Economy.ResourceKind.WOOD, "remaining": 100}
+
+	assert_eq(economy.node_entries().size(), 4,
+		"unrestricted, every node should still be listed — that is what the "
+		+ "server needs for its own bookkeeping")
+
+	var seen := economy.node_entries([10, 90])
+	assert_eq(seen.size(), 2, "a restricted list should contain only what was asked for")
+	var cells := []
+	for entry in seen:
+		cells.append(int(entry["cell"]))
+	cells.sort()
+	assert_eq(cells, [10, 90], "the restricted list named the wrong nodes")
+
+
+func test_asking_for_a_node_that_does_not_exist_yields_nothing() -> void:
+	# The boundary: a client that asked about a cell with no node must not
+	# get a phantom entry, or "is there a resource here?" becomes
+	# answerable for any cell on the map — the leak again, one cell at a
+	# time.
+	var economy := Economy.new(TorusSpace.new(16, 8, 1.0))
+	economy.nodes[5] = {"kind": Economy.ResourceKind.FOOD, "remaining": 10}
+	assert_eq(economy.node_entries([99]).size(), 0,
+		"a node was invented for a cell that has none")
