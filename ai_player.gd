@@ -58,6 +58,24 @@ const GATHERER_SOLDIERS_WANTED := 110
 
 ## Seconds between production orders, so the queue cannot outrun the
 ## target the AI is aiming at. A profile field in the next slice.
+##
+## ## Per ORDER, and that is deliberate — do not "fix" it
+##
+## Because it gates orders rather than labour, shrinking gatherer crews
+## from 16 to 5 tripled the time to staff an economy: the same ~110
+## workers now take 22 productions instead of 7, so 110 s of cooldown
+## instead of 35 s. First contact moved from 121-160 s to ~326 s.
+##
+## I flagged that as a bug to fix. It is not: the owner's call is that
+## the old ramp was FAR too quick, and a slower build-up is wanted
+## (2026-08-04). It pulls the same direction as D-056's 1-2 hour target —
+## an opening you can be attacked out of in two minutes is not a strategy
+## game, it is a race.
+##
+## So a future reader finding "the cooldown scales with order count rather
+## than headcount" should leave it alone unless the pacing target changes.
+## The thing to re-derive when it does is `ai-ladder`'s SECONDS default,
+## which has already been stale once for exactly this reason.
 const TRAIN_COOLDOWN := 5.0
 
 var player: int = 0

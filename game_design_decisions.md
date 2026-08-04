@@ -227,6 +227,25 @@ to climb, and that machinery does not exist here.
 owner's call, 2026-08-02): get the basics working first, plan age/tech
 progression in a separate session. See Q15 in the open questions.
 
+**Amended 2026-08-04 — the slower opening is WANTED, not a regression.**
+
+Shrinking gatherer crews 16 → 5 tripled the time to staff an economy,
+because `AiPlayer.TRAIN_COOLDOWN` gates production ORDERS rather than
+labour: the same ~110 workers take 22 productions instead of 7. First
+contact moved from 121–160 s to ~326 s.
+
+I raised that as a bug to fix. **The owner's call is that the old ramp was
+far too quick and the longer one should stay.** It pulls the same
+direction as this decision's 1–2 hour target: an opening you can be
+attacked out of in two minutes is a race, not a strategy game.
+
+Recorded because the cooldown looks like a scaling defect to anyone
+reading it cold — the comment on the constant now says so too. The thing
+to re-derive when pacing changes is `ai-ladder`'s SECONDS default, which
+has already been stale once for precisely this reason: it ran 300 s while
+first contact landed at 326 s, reported `attacks=0`, and was read as a
+broken AI for a whole session.
+
 **Measured after the change** (`ai-ladder 2 900`), and two corrections
 worth keeping because both were confident and wrong:
 
