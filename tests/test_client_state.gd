@@ -347,7 +347,7 @@ func test_composition_hash_changes_with_every_field() -> void:
 	assert_ne(baseline, NetProtocol.composition_hash(
 		[{"id": 1, "alive": 11, "shape": "line", "spacing": 1.0}]), "alive must matter")
 	assert_ne(baseline, NetProtocol.composition_hash(
-		[{"id": 1, "alive": 10, "shape": "loose", "spacing": 1.0}]), "shape must matter")
+		[{"id": 1, "alive": 10, "shape": "sparse", "spacing": 1.0}]), "shape must matter")
 	assert_ne(baseline, NetProtocol.composition_hash(
 		[{"id": 1, "alive": 10, "shape": "line", "spacing": 1.4}]), "spacing must matter")
 

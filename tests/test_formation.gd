@@ -17,7 +17,7 @@ extends GutTest
 
 const W := 32
 const H := 16
-const SHAPES := ["line", "column", "wedge", "loose", "sparse", "tight", "ring"]
+const SHAPES := ["line", "column", "wedge", "sparse", "tight", "ring"]
 
 
 func _space() -> TorusSpace:
@@ -103,13 +103,13 @@ func test_two_independent_evaluators_agree() -> void:
 
 
 func test_loose_scatter_is_hashed_not_random() -> void:
-	# "loose" is the one shape with scatter, and the obvious
+	# "sparse" is the one shape with scatter, and the obvious
 	# implementation — an RNG — would desync client from server.
 	var t := _space()
 	var curve := _march(t, Vector2i(5, 5), 4)
 
-	var first := Formation.soldier_transforms(curve, 1.0, 40, "loose", 1.0, t)
-	var second := Formation.soldier_transforms(curve, 1.0, 40, "loose", 1.0, t)
+	var first := Formation.soldier_transforms(curve, 1.0, 40, "sparse", 1.0, t)
+	var second := Formation.soldier_transforms(curve, 1.0, 40, "sparse", 1.0, t)
 	for i in range(first.size()):
 		assert_eq(first[i], second[i], "loose slot %d scattered differently on a second call" % i)
 
@@ -456,7 +456,7 @@ func test_the_footprint_grows_with_the_squad() -> void:
 # --- ring, for work crews (playtest feedback) --------------------------
 
 func test_a_ring_crew_stands_around_its_centre_not_on_it() -> void:
-	# Gatherers used "loose" — a wide jittered grid — so a crew ordered
+	# Gatherers used "sparse" — a wide jittered grid — so a crew ordered
 	# onto a resource stood in a spread rectangle rather than around the
 	# thing they were working. "ring" puts them around it, which is what
 	# they visibly ought to be doing.

@@ -14,13 +14,17 @@ extends GutTest
 
 const UNITS_DIR := "res://units"
 
-## Must mirror UnitDef's `formation_shape` enum. "ring" was added for
-## gatherers so a work crew stands AROUND the node it is working rather
-## than in a spread grid beside it — and this list catching that change
-## is the point of it: a shape in a .tres that the schema does not know
-## about would otherwise fall through `Formation.slot_offset`'s default
-## and silently stack everyone into a line.
-const VALID_FORMATIONS := ["line", "column", "wedge", "loose", "sparse", "tight", "ring"]
+## Formations come from /formations/*.tres now (D-058), so this reads the
+## roster rather than mirroring a list. A hardcoded copy here was exactly
+## the thing that made adding a formation two edits instead of one file,
+## and a mirror that drifts is worse than no check.
+static func _valid_formations() -> Array:
+	var out := []
+	for def in FormationRoster.load_all():
+		out.append(String(def.id))
+	return out
+
+
 const VALID_PRIMITIVES := ["capsule", "box", "cylinder", "hull"]
 
 
@@ -59,8 +63,8 @@ func test_every_unit_def_loads_and_matches_schema() -> void:
 		assert_ne(String(def.id), "", "%s has an empty id" % path)
 		assert_gt(def.squad_size, 0, "%s has a non-positive squad_size" % path)
 		assert_gt(def.health, 0.0, "%s has non-positive health" % path)
-		assert_has(VALID_FORMATIONS, def.formation_shape,
-			"%s has formation_shape '%s' outside the UnitDef enum" % [path, def.formation_shape])
+		assert_has(_valid_formations(), def.formation_shape,
+			"%s has formation_shape '%s' — no such file under /formations" % [path, def.formation_shape])
 		assert_has(VALID_PRIMITIVES, def.mesh_primitive,
 			"%s has mesh_primitive '%s' outside the UnitDef enum" % [path, def.mesh_primitive])
 		# A squad that starts already below its own rout threshold would

@@ -56,22 +56,49 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 		return Vector2.ZERO
 	var index := clampi(slot, 0, alive - 1)
 
-	match shape:
-		"line":
+	# Resolved from /formations/*.tres (D-058), not from a match statement
+	# here. The GEOMETRY is an algorithm and has to be code; which
+	# formations exist, what they are called, how they are parameterised
+	# and which are offered to a player are data — the same split UnitDef
+	# makes with `mesh_primitive`.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		push_error("Unknown formation '%s' — falling back to line" % shape)
+		def = FormationRoster.by_id(&"line")
+		if def == null:
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
-		"column":
-			return _grid_offset(index, alive, COLUMN_FILES, spacing)
+	return _offset_for(def, index, alive, spacing)
+
+
+## Dispatch to a geometry generator. Adding a `kind` to FormationDef's
+## enum means adding a branch HERE — and a roster test fails if a .tres
+## names a kind nothing implements, rather than letting it fall through to
+## a line and merely look wrong.
+static func _offset_for(def: FormationDef, index: int, alive: int,
+		spacing: float) -> Vector2:
+	var scaled := spacing * maxf(def.spacing_scale, 0.01)
+	match def.kind:
+		"grid":
+			return _grid_offset(index, alive, _grid_files(def, alive), scaled)
+		"scatter":
+			return _scatter_offset(index, alive, scaled, _grid_files(def, alive), def.jitter)
 		"wedge":
-			return _wedge_offset(index, spacing)
-		"loose", "sparse":
-			return _loose_offset(index, alive, spacing)
-		"tight":
-			return _tight_offset(index, alive, spacing)
+			return _wedge_offset(index, scaled)
 		"ring":
-			return _ring_offset(index, alive, spacing)
+			return _ring_offset(index, alive, scaled)
 		_:
-			push_error("Unknown formation_shape '%s' — falling back to line" % shape)
-			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
+			push_error("FormationDef '%s' has unimplemented kind '%s'" % [def.id, def.kind])
+			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), scaled)
+
+
+## How wide a grid formation is: from its declared ranks, its declared
+## files, or square if it declares neither.
+static func _grid_files(def: FormationDef, alive: int) -> int:
+	if def.ranks > 0:
+		return _files_for_ranks(alive, def.ranks)
+	if def.files > 0:
+		return def.files
+	return maxi(1, ceili(sqrt(float(alive))))
 
 
 static func _files_for_ranks(alive: int, ranks: int) -> int:
@@ -138,23 +165,6 @@ static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> 
 
 	return Vector2((float(file) - centre) * spacing, -float(rank) * spacing)
 
-
-## The three shapes a PLAYER may choose, for any unit (D-058).
-##
-## `line`, `column` and `wedge` remain for .tres defaults and are still
-## implemented; they are simply not offered in the UI. Keeping them costs
-## nothing and removing them would rewrite every unit file.
-const PLAYER_SHAPES := ["sparse", "tight", "ring"]
-
-
-## Shoulder to shoulder: a deep block at plain `spacing`.
-##
-## The counterpart to `sparse` — same soldiers, a third of the frontage.
-## Deliberately deeper than `line`'s three ranks, so choosing it visibly
-## changes the squad's shape rather than nudging it.
-static func _tight_offset(index: int, alive: int, spacing: float) -> Vector2:
-	var files := maxi(1, ceili(sqrt(float(alive))))
-	return _grid_offset(index, alive, files, spacing * 0.85)
 
 
 static func _wedge_offset(index: int, spacing: float) -> Vector2:
@@ -261,16 +271,20 @@ static func _capacity_of_rings(rings: int) -> int:
 	return total
 
 
-static func _loose_offset(index: int, alive: int, spacing: float) -> Vector2:
-	# Skirmish order: a grid, spread wider, with a deterministic scatter.
-	#
-	# The scatter is hashed from the slot index, NOT drawn from an RNG.
-	# An RNG would either need seeding state (breaking purity) or would
-	# desync client from server. Same index always yields the same offset,
-	# on every machine, forever.
-	var base := _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing * 1.8)
-	var jitter := Vector2(_hash_unit(index * 2 + 1), _hash_unit(index * 2 + 2))
-	return base + jitter * spacing * 0.6
+## Skirmish order: a grid with a deterministic scatter over it.
+##
+## The scatter is hashed from the slot index, NOT drawn from an RNG. An
+## RNG would either need seeding state (breaking purity) or would desync
+## client from server. The same index always yields the same offset, on
+## every machine, forever.
+##
+## Spread and jitter are the FormationDef's, so "how loose is loose" is a
+## number in a text file rather than two literals in here.
+static func _scatter_offset(index: int, alive: int, spacing: float,
+		files: int, jitter: float) -> Vector2:
+	var base := _grid_offset(index, alive, files, spacing)
+	var scatter := Vector2(_hash_unit(index * 2 + 1), _hash_unit(index * 2 + 2))
+	return base + scatter * spacing * jitter
 
 
 ## Deterministic hash of an integer to [-0.5, 0.5]. Integer ops only, so

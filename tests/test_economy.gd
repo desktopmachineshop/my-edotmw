@@ -25,7 +25,7 @@ func _gatherer_def() -> UnitDef:
 	d.damage = 0.0
 	d.attack_range = 0.0
 	d.move_speed = 4.0
-	d.formation_shape = "loose"
+	d.formation_shape = "sparse"
 	d.formation_spacing = 1.0
 	d.morale = 100.0
 	d.carry_capacity = 20

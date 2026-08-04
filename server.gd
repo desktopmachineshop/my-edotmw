@@ -850,7 +850,11 @@ func _handle_order_formation(peer, data: PackedByteArray) -> void:
 		return
 
 	var shape := String(order["shape"])
-	if not Formation.PLAYER_SHAPES.has(shape):
+	# Against the OFFERED set from /formations (D-058), not a list here.
+	# A formation a player is not offered is not one they may order, and
+	# an unknown one would fall through to a line with only a push_error
+	# nobody reads.
+	if not FormationRoster.offered_ids().has(StringName(shape)):
 		_notify(peer, "No such formation")
 		return
 	_sim.set_shape(squad, shape)

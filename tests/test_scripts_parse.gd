@@ -19,22 +19,55 @@ extends GutTest
 ## is all this needs.
 
 
-func test_every_script_in_the_project_root_compiles() -> void:
-	var dir := DirAccess.open("res://")
-	assert_not_null(dir, "res:// is unreadable")
+func _compiles_in(directory: String, floor_count: int) -> void:
+	var dir := DirAccess.open(directory)
+	assert_not_null(dir, "%s is unreadable" % directory)
+	if dir == null:
+		return
 
 	var checked := 0
 	for file_name in dir.get_files():
 		var name := String(file_name).trim_suffix(".remap")
 		if not name.ends_with(".gd"):
 			continue
-		var script = load("res://%s" % name)
+		var script = load("%s/%s" % [directory, name])
 		assert_not_null(script, ("%s failed to parse — the whole file is dead, "
 			+ "and nothing else in this suite would have noticed") % name)
+
+		# `load()` is not enough on its own. It returns null for a SYNTAX
+		# error but a perfectly good object for a script that parsed and
+		# then failed to COMPILE — an unresolved identifier, a call to a
+		# method that does not exist, a const that became a function and
+		# left a dangling reference. Those are the ones that actually
+		# happen, and `can_instantiate()` is what tells them apart.
+		#
+		# Found by perturbing this guard and watching it pass while 26
+		# tests silently disappeared.
+		if script != null:
+			assert_true(script.can_instantiate(),
+				("%s parsed but does not compile — GUT will skip it silently "
+				+ "and the suite will report success with its assertions gone") % name)
 		checked += 1
 
 	# Guard against the guard passing vacuously: if the directory walk
 	# ever stops finding scripts, this test would report success while
 	# checking nothing at all.
-	assert_gt(checked, 15,
-		"only %d scripts were checked — the scan is not finding the project" % checked)
+	assert_gt(checked, floor_count,
+		"only %d scripts checked in %s — the scan is not finding them" % [checked, directory])
+
+
+func test_every_script_in_the_project_root_compiles() -> void:
+	_compiles_in("res:/" + "/", 15)
+
+
+func test_every_test_script_compiles() -> void:
+	# The tests themselves, because GUT SILENTLY SKIPS a test file it
+	# cannot parse. That is worse than the production case this guard was
+	# written for: a broken script under /tests does not fail the suite, it
+	# quietly removes its own assertions and the total drops.
+	#
+	# It happened twice — once when `ReplayLog.read_all` did not exist and
+	# the count went 337 -> 325, and again here when a const became a
+	# function and left a dangling reference, taking it 372 -> 364. Both
+	# times the suite reported "all tests passed".
+	_compiles_in("res://tests", 15)

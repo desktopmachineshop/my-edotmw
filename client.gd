@@ -1844,13 +1844,13 @@ func _squad_actions(def_id: StringName) -> Array:
 	# Formation, for any unit (D-058). First, because it is the thing a
 	# player changes most often once they know it exists.
 	var current := String(_state.composition.get(_selected[0], {}).get("shape", ""))
-	for shape in Formation.PLAYER_SHAPES:
+	for formation in FormationRoster.offered():
 		out.append({
-			# The current one is marked rather than hidden: a row of three
-			# where one is ticked says "these are your options and this is
-			# where you are", which two buttons cannot.
-			"label": ("* " if shape == current else "") + String(shape).capitalize(),
-			"kind": "formation", "id": StringName(shape),
+			# The current one is marked rather than hidden: a row where one
+			# is ticked says "these are your options and this is where you
+			# are", which hiding it cannot.
+			"label": ("* " if String(formation.id) == current else "") + formation.display_name,
+			"kind": "formation", "id": formation.id,
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})

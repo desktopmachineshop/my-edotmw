@@ -42,7 +42,10 @@ class_name UnitDef
 
 # Formation & morale (D-019: Total War-style formations/morale/routing,
 # no campaign layer). Exact rout behavior (Q7) is still open.
-@export_enum("line", "column", "wedge", "loose", "sparse", "tight", "ring") var formation_shape: String = "line"
+## The formation this unit uses by default. Validated against
+## /formations/*.tres by the roster test rather than an enum here, so
+## adding a formation is one file and not two edits (D-058).
+@export var formation_shape: String = "line"
 # Centre-to-centre spacing between adjacent soldiers, in world units.
 # Schema addition 2026-07-29 (M1, recorded against D-010): formation
 # geometry needs a per-unit spacing — cavalry and skirmishers do not
