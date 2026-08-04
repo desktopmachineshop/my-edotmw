@@ -89,6 +89,7 @@ func update(now: float) -> void:
 	_record_stats()
 	_report_refusals()
 	_forget_dead_assignments()
+	_drop_unreachable_assignments()
 	_found_town()
 	_raise_buildings()
 	_train()
@@ -392,9 +393,49 @@ func _put_gatherers_to_work() -> void:
 		if cell < 0:
 			continue
 		_assigned[squad] = cell
+		_assigned_at[squad] = state_time()
 		if on_kind.has(wanted_kind):
 			on_kind[wanted_kind] = int(on_kind[wanted_kind]) + 1
 		send.call(NetProtocol.encode_order_gather(squad, cell))
+
+
+## Give up on a node a crew cannot actually reach.
+##
+## `_nearest_node_of_kind` ranks by DISTANCE, which on a torus with water
+## is not the same as reachability: the nearest wood may be across a
+## channel, and a crew sent there walks as far as it can and stops. It
+## stays `_assigned` forever, so it is never reconsidered and never
+## gathers — while the AI reports a full complement of workers.
+##
+## That is what the ladder was showing: `substituted=0`, so wood nodes
+## WERE found and crews WERE sent, and `peak_wood` never moved off its
+## starting 180 in any match. Food happened to be reachable and looked
+## perfectly healthy alongside it.
+##
+## A timeout rather than a reachability query, because the flow field is
+## the only thing that truly knows and asking it per candidate node per
+## think is the `distance()`-per-cell defect again. If a crew has not
+## arrived after this long, the node is unreachable in practice —
+## whatever the reason — and that is the useful definition.
+const UNREACHABLE_AFTER := 40.0
+
+
+func _drop_unreachable_assignments() -> void:
+	for squad in _assigned.keys():
+		var since := state_time() - float(_assigned_at.get(squad, state_time()))
+		if since < UNREACHABLE_AFTER:
+			continue
+		var target := int(_assigned[squad])
+		# Arrived at some point? Then it is working, just slowly.
+		if state.space != null and state.squad_cell(squad, state_time()) \
+				== state.space.from_index(target):
+			_assigned_at[squad] = state_time()
+			continue
+		print("server: AI_UNREACHABLE player=%d gave up on node %d" % [player, target])
+		unreachable_nodes += 1
+		_exhausted[target] = true
+		_assigned.erase(squad)
+		_assigned_at.erase(squad)
 
 
 ## The resources currently under their floor. Food always qualifies, so a
@@ -550,6 +591,10 @@ var peak_wood: int = 0
 ## How often a worker asked for one resource and was handed another,
 ## because none of the wanted kind was among the nodes this AI has seen.
 var substituted_kind: int = 0
+## Nodes given up on because no crew could reach them.
+var unreachable_nodes: int = 0
+## squad -> when it was given its current gather order.
+var _assigned_at := {}
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
@@ -602,10 +647,10 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d afford_refusals=%d cap_refusals=%d" % [
+	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d afford_refusals=%d cap_refusals=%d" % [
 		player, civ, peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, attacks_launched, first_attack_at,
-		peak_stockpile, peak_food, peak_wood, substituted_kind, afford_refusals, cap_refusals]
+		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, afford_refusals, cap_refusals]
 
 
 # --- what it is thinking (D-054) --------------------------------------
