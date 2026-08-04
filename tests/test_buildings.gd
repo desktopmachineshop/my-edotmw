@@ -666,3 +666,41 @@ func test_a_rally_point_defaults_in_front_and_can_be_moved() -> void:
 	buildings.set_rally(hall, Vector2i(14, 12))
 	assert_eq(buildings.rally_of(hall), Vector2i(14, 12),
 		"setting a rally point did not take")
+
+
+# --- claimed ground (D-062) --------------------------------------------
+
+func test_a_building_denies_ground_to_other_players_but_not_to_you() -> void:
+	# Territory: nobody hostile may plant anything inside a building's
+	# no_build_radius, so a town cannot be walled in by towers built
+	# against its walls, and a settlement means something on the map.
+	#
+	# Your OWN ground stays yours — a rule that stopped you extending your
+	# own base would be a different and much worse mechanic.
+	var space := _space()
+	var buildings := BuildingSim.new(space)
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	assert_not_null(hall, "town_centre.tres is missing")
+	assert_gt(hall.no_build_radius, 0, "a town centre should claim some ground")
+
+	var at := Vector2i(10, 8)
+	buildings.add_building(hall, 1, at, true)
+
+	# A cell inside the claim, and one outside it.
+	var inside := space.normalize(at + Vector2i(hall.no_build_radius - 1, 0))
+	var outside := space.normalize(at + Vector2i(hall.no_build_radius + 3, 0))
+	assert_lte(space.distance(inside, at), hall.no_build_radius, "setup: inside the claim")
+	assert_gt(space.distance(outside, at), hall.no_build_radius, "setup: outside the claim")
+
+
+func test_the_claim_is_data_not_a_constant() -> void:
+	# Per building, so a town centre claims a settlement's worth of ground
+	# and a tower claims its own footprint — and a scenario can tune
+	# territory without touching a script (D-010).
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	var tower := BuildingSim.def_by_id(&"tower")
+	assert_not_null(hall)
+	assert_not_null(tower)
+	assert_gt(hall.no_build_radius, tower.no_build_radius,
+		"a town centre should claim more ground than a tower — if these are equal, "
+		+ "the radius is behaving like one global constant")

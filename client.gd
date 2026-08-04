@@ -2730,8 +2730,24 @@ func _can_place_at(cell: Vector2i) -> bool:
 		var info: Dictionary = _state.buildings[wire_id]
 		if bool(info["destroyed"]):
 			continue
-		if _state.space.from_index(int(info["cell"])) == cell:
+		var at := _state.space.from_index(int(info["cell"]))
+		if at == cell:
 			return false
+
+		# Ground claimed by somebody else's building (D-062). Shown here so
+		# the ghost turns red before you click, rather than the order being
+		# refused after a walk — but ADVISORY only, like everything else in
+		# this preview: the server decides, and re-checks on arrival.
+		#
+		# Only buildings this client has been SHOWN are considered, so this
+		# leaks nothing: an unexplored enemy town still refuses the build,
+		# and finding out that way is scouting the hard way.
+		if int(info["owner"]) != _state.player and not _state.are_allied(
+				int(info["owner"]), _state.player):
+			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+			if def != null and def.no_build_radius > 0 \
+					and _state.space.distance(cell, at) <= def.no_build_radius:
+				return false
 	if not _passable.is_empty():
 		var index := _state.space.index(cell)
 		if index < _passable.size() and _passable[index] == 0:

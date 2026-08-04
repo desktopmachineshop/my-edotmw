@@ -723,6 +723,19 @@ func friendly_squads() -> Array:
 	return out
 
 
+## Whether two players are on the same side (D-050).
+##
+## Mirrors `MatchState.are_allied` exactly, including the part that is
+## easy to get wrong: team 0 means FREE-FOR-ALL, so two players both on
+## team 0 are NOT allies — they are each their own side. Treating 0 like
+## any other team would make every player in an FFA everybody's friend.
+func are_allied(a: int, b: int) -> bool:
+	if a == b:
+		return true
+	var team_a := _team_of(a)
+	return team_a != 0 and team_a == _team_of(b)
+
+
 func _team_of(who: int) -> int:
 	for seat in lobby.get("seats", []):
 		if int(seat["player"]) == who:

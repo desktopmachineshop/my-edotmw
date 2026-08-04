@@ -998,6 +998,14 @@ func _handle_order_build(peer, data: PackedByteArray) -> void:
 	if not _is_buildable(cell):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
+
+	# Somebody else's ground (D-062). Refused up front as well as on
+	# arrival, so a player is told immediately rather than watching a
+	# builder walk twenty seconds to be turned away.
+	var claimed := _claimed_against(cell, _sim.owner_of(squad))
+	if claimed >= 0:
+		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(claimed).display_name)
+		return
 	# Too far? WALK THERE. Do not refuse.
 	#
 	# This used to answer "Too far — move closer", which is the server
@@ -1034,6 +1042,15 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i) -> void:
 	# twenty seconds may arrive to find the ground taken.
 	if not _is_buildable(cell):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
+		return
+
+	# Re-checked on ARRIVAL too: a builder ordered from out of reach walks
+	# for twenty seconds, and an opponent may have planted something in
+	# the meantime. Checking only at order time would let a slow walk beat
+	# the rule.
+	var blocked := _claimed_against(cell, _sim.owner_of(squad))
+	if blocked >= 0:
+		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(blocked).display_name)
 		return
 
 	# Construction costs resources (D-028). This was missing, so
@@ -1154,6 +1171,35 @@ func _is_buildable(cell: Vector2i) -> bool:
 		if _buildings.cell_index_of(i) == index and not _buildings.is_destroyed(i):
 			return false
 	return true
+
+
+## The hostile building whose claimed ground covers `cell`, or -1 (D-062).
+##
+## Each building denies a radius to players it is not allied with, so
+## nobody can wall a town in by planting towers against its walls, and a
+## settlement means something on the map rather than being a dot others
+## can crowd.
+##
+## Allies are exempt: D-050 gives teams a shared front, and a teammate
+## unable to build beside your hall would be a worse partner than an
+## enemy.
+##
+## Scans buildings directly rather than maintaining a claimed-cell map:
+## there are orders of magnitude fewer buildings than cells, and a map
+## would be a second source of truth to keep in step with `_cell` — the
+## same reasoning `BuildingSim.building_at` gives.
+func _claimed_against(cell: Vector2i, player: int) -> int:
+	for i in range(_buildings.building_count()):
+		if _buildings.is_destroyed(i):
+			continue
+		if _sim.are_allied(_buildings.owner_of(i), player):
+			continue
+		var def := _buildings.def_of(i)
+		if def == null or def.no_build_radius <= 0:
+			continue
+		if _sim.space.distance(cell, _buildings.cell_of(i)) <= def.no_build_radius:
+			return i
+	return -1
 
 
 func _handle_order_stop(peer, data: PackedByteArray) -> void:
