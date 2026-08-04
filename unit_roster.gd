@@ -88,3 +88,49 @@ static func first() -> UnitDef:
 static func by_id(id: StringName) -> UnitDef:
 	load_all()  # populates _by_id on the first call, then costs a branch
 	return _by_id.get(id, null)
+
+
+## Whether a def belongs to `civ` — its own, or shared by everyone.
+##
+## `neutral` is the shared pool: founders and gatherers are the opening
+## and the economy rather than an army type, so every civ fields the same
+## ones and only the ARMY archetypes are civ-specific (D-047).
+static func _available_to(def: UnitDef, civ: StringName) -> bool:
+	return def.civ == civ or def.civ == &"neutral"
+
+
+## Every unit `civ` may field, in the roster's stable order.
+##
+## A civ's roster is DERIVED from which unit files name it (D-047), not
+## listed in `CivDef`. Adding a `.tres` gives that civ a type, and there
+## is no register that can disagree with the files.
+static func for_civ(civ: StringName) -> Array[UnitDef]:
+	var out: Array[UnitDef] = []
+	for def in load_all():
+		if _available_to(def, civ):
+			out.append(def)
+	return out
+
+
+## This civ's version of an archetype, or null if it does not field one.
+##
+## THE lookup that keeps every script civ-agnostic (D-046 criterion 3).
+## Callers ask for "this player's spearmen" and never for a civ id: the
+## client's keybinds, a building's `produces` list and the AI all go
+## through here, so one key trains your own civ's spearmen whatever that
+## civ happens to call them.
+static func for_civ_archetype(civ: StringName, archetype: StringName) -> UnitDef:
+	for def in load_all():
+		if def.archetype == archetype and _available_to(def, civ):
+			return def
+	return null
+
+
+## Which archetypes `civ` can field. Each civ gets a SUBSET (D-047), so
+## this is genuinely different per civ rather than a constant list.
+static func archetypes_for(civ: StringName) -> Array[StringName]:
+	var out: Array[StringName] = []
+	for def in for_civ(civ):
+		if not out.has(def.archetype):
+			out.append(def.archetype)
+	return out

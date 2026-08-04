@@ -91,6 +91,8 @@ var _alive := PackedInt32Array()
 var _owner := PackedInt32Array()
 var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
+## Squads whose shape changed and whose clients have not been told yet.
+var _shape_dirty := {}
 var _spacing := PackedFloat32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
@@ -115,6 +117,12 @@ var _attack_move := PackedByteArray()
 ## broadcasts it (filtered per client by visible_to()) before the state
 ## hash for that tick.
 var last_combat_events: Array = []
+
+## Local BuildingSim ids destroyed by squads on the most recent tick.
+## Not a wire message: BuildingSim.damage() already marks the building
+## dirty, and the server replicates building state from take_dirty(). This
+## is for the match rules and the log.
+var destroyed_buildings: Array = []
 
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
@@ -223,6 +231,49 @@ func owner_of(squad: int) -> int:
 
 func curve_of(squad: int) -> StateCurve:
 	return _curves[squad]
+
+
+func shape_of(squad: int) -> String:
+	return _shape[squad]
+
+
+## Change a squad's formation (D-058).
+##
+## Shape is REPLICATED squad state and is part of `composition_hash`, so a
+## change here has to reach every client that can see the squad or they
+## will disagree with the server about what it looks like — and, because
+## `Formation` derives soldier positions from it, about where every
+## soldier in it is standing. `take_shape_dirty` is how the server finds
+## out; that is the whole reason this cannot just assign to `_shape`.
+##
+## Ignores a no-op, so a caller may set the same shape every tick without
+## generating wire traffic. That matters: the economy sets a gathering
+## crew to `ring` on every tick it is at a node.
+func set_shape(squad: int, shape: String) -> void:
+	if squad < 0 or squad >= _shape.size() or _shape[squad] == shape:
+		return
+	_shape[squad] = shape
+	_shape_dirty[squad] = true
+	# Soldier positions come from the shape, so the curve is unaffected but
+	# anything caching a footprint is not.
+	_dirty_footprint(squad)
+
+
+## Squads whose shape changed since the last call, and clears the list.
+## Same contract as BuildingSim.take_dirty, and for the same reason.
+func take_shape_dirty() -> Array:
+	var out := _shape_dirty.keys()
+	_shape_dirty.clear()
+	out.sort()
+	return out
+
+
+func _dirty_footprint(_squad: int) -> void:
+	# Placeholder hook: Formation's footprint cache is keyed by
+	# (shape, alive, spacing) and so needs no invalidation — a changed
+	# shape simply looks up a different entry. Kept as a named seam so a
+	# future per-squad cache cannot quietly go stale.
+	pass
 
 
 func def_id_of(squad: int) -> StringName:
@@ -357,6 +408,144 @@ func set_alive(squad: int, alive: int) -> void:
 ## A routed squad ignores this (D-024, D-019): it is fleeing under its own
 ## steam and does not take player orders again until it rallies. That is
 ## enforced here, structurally, rather than left to callers to remember.
+## Squads that have ARRIVED do not stack: one settles onto a free cell
+## nearby (D-060).
+##
+## ## Why on arrival, and not by spreading destinations
+##
+## Spreading at order time was the obvious version and it broke D-007:
+## twenty squads sent to one point got twenty DIFFERENT destinations and
+## therefore built twenty flow fields instead of sharing one. That
+## sharing is the whole scaling claim, and `_quantise` (D-038) exists to
+## force nearby orders onto the same destination for exactly this reason.
+## An existing test caught it immediately.
+##
+## So travel is unchanged — one destination, one field, everybody walks
+## the same way — and separation happens only where the pile-up actually
+## shows: at the end.
+##
+## ## Why squad-granular and not per soldier
+##
+## The obvious fix for "units stack" is per-soldier collision, and D-006
+## names that specifically as out of bounds: "local avoidance, collision
+## push-back, jostling" each give a soldier integration state and fire the
+## revisit trigger. That purity is what lets client and server agree on
+## 40,000 soldier positions without sending any of them, which is not a
+## small thing to trade for spacing.
+##
+## The GOAL though — armies taking up room instead of heaping — is a
+## squad-level property, and squads are the atomic unit (D-005).
+##
+## Deterministic tie-break: the LOWER squad id keeps the cell and the
+## higher one moves. Without that, two squads would each decide the other
+## was there first and swap places forever.
+func _separate_arrivals() -> void:
+	var occupants := {}
+	for i in range(_cell.size()):
+		if _alive[i] <= 0:
+			continue
+		# Only settled squads: one still walking is passing through, and
+		# shoving it aside mid-journey is the per-tick avoidance D-006
+		# rules out.
+		if _cell[i] != _destination[i]:
+			continue
+
+		# A crew AT WORK is exempt, and this is not a nicety.
+		#
+		# Gathering requires standing on the node's own cell (D-028), and
+		# several crews working one node is both normal and desirable. The
+		# first version separated them anyway: a displaced crew could never
+		# reach the gathering phase, so it hauled nothing, forever. The
+		# ladder showed 22 gatherer squads and a stockpile that never rose
+		# above the STARTING 480 — an economy that looked staffed and was
+		# producing literally nothing.
+		if economy != null and economy.is_gathering(i):
+			continue
+		var cell := _cell[i]
+		if not occupants.has(cell):
+			occupants[cell] = i
+			continue
+
+		# Someone is already here. Lower id stays.
+		var sitting: int = occupants[cell]
+		var mover := i if i > sitting else sitting
+		if mover == sitting:
+			occupants[cell] = i
+		var spot := _free_cell_near(space.from_index(cell), mover)
+		if spot != space.from_index(cell):
+			_destination[mover] = space.index(spot)
+			_rebuild_curve(mover)
+
+
+## The nearest cell to `cell` that no living squad is sitting on.
+func _free_cell_near(cell: Vector2i, asking: int) -> Vector2i:
+	for offset in TorusSpace.disk_offsets(4):
+		var candidate := space.normalize(cell + offset)
+		if not is_passable(candidate):
+			continue
+		var index := space.index(candidate)
+		var taken := false
+		for i in range(_cell.size()):
+			if i != asking and _alive[i] > 0 and _cell[i] == index:
+				taken = true
+				break
+		if not taken:
+			return candidate
+	# Nowhere free within reach: standing too close beats never settling.
+	return cell
+
+
+## `cell` if a squad can stand there, otherwise the nearest cell it can.
+##
+## Walks outward in `disk_offsets` order, which is deterministic, so two
+## squads ordered onto the same wall pick the same approach and a replay
+## reproduces it. Gives up after a few rings and returns the original —
+## somewhere sealed off is better handled by the squad failing to arrive
+## than by searching the whole map every order.
+func _approachable(cell: Vector2i) -> Vector2i:
+	if is_passable(cell):
+		return cell
+	for offset in TorusSpace.disk_offsets(3):
+		var candidate := space.normalize(cell + offset)
+		if is_passable(candidate):
+			return candidate
+	return cell
+
+
+## Whether a squad may stand on a cell: terrain only.
+##
+## Empty passability means fully open, which is what a bare SquadSim in a
+## test gets.
+func is_passable(cell: Vector2i) -> bool:
+	if _passable.is_empty():
+		return true
+	var index := space.index(cell)
+	return index < _passable.size() and _passable[index] != 0
+
+
+## A cell just outside a building, for a squad that has just been made
+## there — walkable, not underneath the building, and not inside another.
+##
+## Walks the hex ring at increasing radius, so it prefers to stand a new
+## squad right at the door and only spreads out when the door is blocked.
+## Deterministic: `disk_offsets` enumerates in a fixed order, so server and
+## replay agree about where a unit appeared.
+func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
+	var home := buildings.cell_of(building)
+	for offset in TorusSpace.disk_offsets(4):
+		if TorusSpace.hex_length(offset) < 2:
+			continue  # under the building itself
+		var candidate := space.normalize(home + offset)
+		if not is_passable(candidate):
+			continue
+		if buildings.building_at(candidate) >= 0:
+			continue
+		return candidate
+	# Hemmed in on every side: put them at the door anyway rather than
+	# losing a squad somebody paid for.
+	return space.normalize(home + Vector2i(2, 0))
+
+
 func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
@@ -448,7 +637,17 @@ func _quantise(cell: Vector2i) -> Vector2i:
 ## a bucket corner. Gathering must reach the node's own cell or the squad
 ## never registers as arrived and never starts work.
 func _apply_move_order(squad: int, destination: Vector2i, quantise := false) -> void:
-	var dest_index := space.index(_quantise(destination) if quantise else destination)
+	# An order onto ground nobody can stand on becomes an order to the
+	# nearest ground they can.
+	#
+	# Buildings block movement now, so their cells are impassable — and
+	# without this, right-clicking a town hall, or a gatherer hauling to a
+	# storehouse, would set a destination the flow field can never reach
+	# and the squad would simply never move. Handled HERE rather than at
+	# each call site because there are four of them (player orders,
+	# attack-moves, rally points, hauling) and three would have been fixed.
+	var wanted := _quantise(destination) if quantise else destination
+	var dest_index := space.index(_approachable(wanted))
 	if _destination[squad] == dest_index:
 		return
 	_destination[squad] = dest_index
@@ -758,6 +957,12 @@ func tick() -> void:
 		if time >= curve.end_time() - (1.0 / TICK_HZ):
 			_rebuild_curve(squad)
 
+	# Squads that have arrived shuffle off each other's cell (D-060), so
+	# an army settles as a body rather than a heap. Only touches squads
+	# already at their destination, so it costs nothing while everyone is
+	# walking and never interferes with a journey in progress.
+	_separate_arrivals()
+
 	last_curves_usec = Time.get_ticks_usec() - curves_started
 
 	# Vision (D-025) recomputes against THIS tick's freshly-derived
@@ -802,11 +1007,30 @@ func tick() -> void:
 				push_error("SquadSim: building produced unknown unit '%s'" % finished["def_id"])
 				continue
 			var at: int = int(finished["building"])
-			add_squad(produced, buildings.owner_of(at), buildings.cell_of(at) + Vector2i(1, 0))
+			# Clear of the building, then walk to its rally point.
+			#
+			# This used to be `cell + (1, 0)` — one hex from the building's
+			# centre, which is INSIDE the box drawn on top of it, because a
+			# building's mesh is wider than a hex. Units appeared standing
+			# in the wall of the thing that made them.
+			var door := _spawn_cell_near(buildings, at)
+			var spawned := add_squad(produced, buildings.owner_of(at), door)
+			var rally := buildings.rally_of(at)
+			if rally != door:
+				order_move(spawned, rally)
 		last_production_usec = Time.get_ticks_usec() - production_started
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
+
+		# ...and squads shoot back. Needs no event list of its own:
+		# BuildingSim.damage() marks the building dirty, and take_dirty()
+		# is already what the server replicates building state from, so a
+		# destruction reaches clients through the path that already
+		# existed for it. `destroyed_buildings` is published for the match
+		# rules and the log, not for the wire.
+		destroyed_buildings = combat.resolve_squads_vs_buildings(
+			self, buildings, tick_count)
 
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).
@@ -930,6 +1154,33 @@ func eliminate_player(player: int) -> Array:
 func visible_to(player: int) -> Array:
 	var ids := []
 	for i in range(_cell.size()):
-		if _owner[i] == player or vision.is_visible(player, _cell[i]):
+		# You always see your allies' squads, not merely whatever their
+		# vision happens to cover (D-050).
+		if are_allied(_owner[i], player) or vision.is_visible(player, _cell[i]):
 			ids.append(i)
 	return ids
+
+
+# --- alliances (D-050) ------------------------------------------------
+
+## player id -> team number. 0 means "no team", which is free-for-all:
+## everyone is hostile to everyone.
+##
+## Held here rather than in MatchState because COMBAT needs it every
+## round, and combat is driven from this class. MatchState owns choosing
+## teams; this owns the consequence.
+var teams := {}
+
+
+## Whether two players are on the same side.
+##
+## A player is always allied with itself. Team 0 is deliberately NOT a
+## team — two players who both picked "none" are enemies, not allies,
+## which is what makes free-for-all the default rather than a special
+## case that has to be spelled somewhere.
+func are_allied(a: int, b: int) -> bool:
+	if a == b:
+		return true
+	var team_a := int(teams.get(a, 0))
+	var team_b := int(teams.get(b, 0))
+	return team_a != 0 and team_a == team_b

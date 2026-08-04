@@ -54,9 +54,14 @@ func _sim() -> SquadSim:
 ## override attack_range/damage explicitly after construction.
 func _def(vision_range: float, move_speed: float = 3.5, attack_range: float = 0.0, damage: float = 0.0) -> UnitDef:
 	var d := UnitDef.new()
-	d.id = &"militia"
-	d.formation_shape = "line"
-	d.formation_spacing = 1.0
+	# A real roster id, taken from the roster rather than named: a
+	# synthetic def_id would fail ClientState._handle_squad_info's
+	# UnitRoster lookup and silently drop the composition. Reading it from
+	# the roster keeps that true however the shipped units change.
+	var real := UnitRoster.first()
+	d.id = real.id
+	d.formation_shape = real.formation_shape
+	d.formation_spacing = real.formation_spacing
 	d.squad_size = 10
 	d.health = 20.0
 	d.move_speed = move_speed
@@ -468,3 +473,71 @@ func test_vision_field_agrees_with_a_brute_force_reference_over_every_cell() -> 
 
 	assert_eq(mismatches, 0,
 		"The O(1) vision field must agree with a brute-force per-pair reference at every cell")
+
+
+# --- shared sight (D-050) ---------------------------------------------
+
+func test_allies_see_through_each_others_eyes() -> void:
+	# The point of teams sharing vision: a scout you did not send still
+	# reveals ground for you.
+	var sim := _sim()
+	sim.teams = {1: 1, 2: 1}
+
+	# Player 2's scout stands far from player 1, who has one blind squad.
+	var blind := _def(0.0)
+	var scout := _def(10.0)
+	sim.add_squad(blind, 1, Vector2i(2, 2))
+	sim.add_squad(scout, 2, Vector2i(30, 8))
+	var seen := sim.add_squad(blind, 3, Vector2i(31, 8))
+	sim.tick()
+
+	assert_true(sim.visible_to(1).has(seen),
+		"Player 1 should see what its ally's scout sees")
+
+
+func test_vision_is_not_shared_with_enemies() -> void:
+	# The other side of the boundary. Without it, "allies share vision"
+	# could be satisfied by everyone seeing everything.
+	var sim := _sim()
+	sim.teams = {1: 1, 2: 2}
+
+	var blind := _def(0.0)
+	var scout := _def(10.0)
+	sim.add_squad(blind, 1, Vector2i(2, 2))
+	sim.add_squad(scout, 2, Vector2i(30, 8))
+	var seen := sim.add_squad(blind, 3, Vector2i(31, 8))
+	sim.tick()
+
+	assert_false(sim.visible_to(1).has(seen),
+		"An enemy's scout revealed ground to player 1")
+
+
+func test_players_with_no_team_do_not_share() -> void:
+	# Team 0 is not a team (D-050), so a free-for-all lobby must not
+	# accidentally become one giant alliance with total map vision.
+	var sim := _sim()
+
+	var blind := _def(0.0)
+	var scout := _def(10.0)
+	sim.add_squad(blind, 1, Vector2i(2, 2))
+	sim.add_squad(scout, 2, Vector2i(30, 8))
+	var seen := sim.add_squad(blind, 3, Vector2i(31, 8))
+	sim.tick()
+
+	assert_false(sim.visible_to(1).has(seen),
+		"Two unteamed players shared vision — free-for-all became an alliance")
+
+
+func test_allies_see_each_others_squads_wherever_they_are() -> void:
+	# Not merely whatever their vision covers: an ally's army is never a
+	# surprise to you, even out in the dark.
+	var sim := _sim()
+	sim.teams = {1: 3, 2: 3}
+
+	var blind := _def(0.0)
+	sim.add_squad(blind, 1, Vector2i(2, 2))
+	var ally_squad := sim.add_squad(blind, 2, Vector2i(40, 12))
+	sim.tick()
+
+	assert_true(sim.visible_to(1).has(ally_squad),
+		"An allied squad standing in the dark was hidden from its own side")

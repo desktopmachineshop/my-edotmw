@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="TerrainPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://terrain_preset.gd" id="1_tp"]
+
+[resource]
+script = ExtResource("1_tp")
+id = &"plains"
+display_name = "Plains"
+summary = "Almost all of it is walkable. Few natural defences, so battles happen where armies meet rather than where terrain allows."
+sea_level = 0.22
+beach_level = 0.27
+mountain_level = 0.92
+elevation_frequency = 1.6
+moisture_frequency = 4.0
+height_scale = 1.2

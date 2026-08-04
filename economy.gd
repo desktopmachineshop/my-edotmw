@@ -28,13 +28,26 @@ const RESOURCE_COUNT := 4
 ## Phases of the haul cycle (D-028's round trip).
 enum Phase { TO_NODE, GATHERING, TO_DROP_OFF }
 
-## One cell in this many becomes a node. Sparse on purpose: a node on
-## every forest tile would make the map a lawn rather than a set of places
-## worth holding.
-const NODE_EVERY := 11
+## One cell in this many becomes a node.
+##
+## This said "sparse on purpose" at 11 and was not sparse: measured on the
+## shipped 84x96 map it produced 467 nodes across 8,064 cells — one per
+## seventeen — which is the lawn the comment claimed to be avoiding.
+##
+## At 45 the same map gets about a hundred. Nodes become places you go to
+## and hold rather than scenery you happen to be standing on, which is
+## also what makes a hotspot worth fighting over (the same reasoning as
+## D-039's scattered spawns).
+const NODE_EVERY := 60
 
 ## Starting stock in a node, before `alive`-scaled gathering eats it.
-const NODE_STOCK := 900
+##
+## Raised in step with NODE_EVERY so the map's TOTAL resource is roughly
+## unchanged — about 420k either way. Fewer, richer nodes is a different
+## map, not a poorer one: the economy still supports the same army, it
+## just concentrates where that army has to walk to get it. Cutting the
+## count without this would have quietly starved every match.
+const NODE_STOCK := 2400
 
 var space: TorusSpace
 
@@ -101,28 +114,76 @@ func generate(terrain: TerrainGen, symmetry_order: int = 2) -> void:
 func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 		radius: int, quota: int) -> void:
 	for spawn in spawns:
+		# REACHABLE cells, not merely nearby ones.
+		#
+		# This used to count and place on anything passable inside the
+		# radius, which on a map with water is not the same thing: a spawn
+		# behind a channel got its guaranteed resources on the far bank.
+		# One AI seat in a 700 s ladder match gathered NOTHING — food and
+		# wood still at their starting 220 each — while running 13 worker
+		# crews and giving up on 43 nodes it could not walk to. Its
+		# guarantee had been satisfied on the other side of the water.
+		#
+		# Same defect as the AI's own `_nearest_node_of_kind`: distance
+		# mistaken for reachability. Fixed here as well as there, because
+		# a node nobody can reach is not a resource, it is scenery.
+		var walkable := _reachable_from(spawn, passable, radius)
 		for kind in range(RESOURCE_COUNT):
 			var found := 0
-			for offset in TorusSpace.disk_offsets(radius):
-				var index := space.index(spawn + offset)
+			for index in walkable:
 				if nodes.has(index) and int(nodes[index]["kind"]) == kind:
 					found += 1
 			if found >= quota:
 				continue
 
-			# Short: top up on the nearest free, walkable ground.
-			for offset in TorusSpace.disk_offsets(radius):
+			# Short: top up on the nearest free ground the spawn can WALK
+			# to. `walkable` is already in flood-fill order, which is
+			# nearest-first, and already excludes water and the far bank.
+			for index in walkable:
 				if found >= quota:
 					break
-				var index := space.index(spawn + offset)
 				if nodes.has(index):
-					continue
-				if index < passable.size() and passable[index] == 0:
 					continue
 				if space.distance(spawn, space.from_index(index)) < 2:
 					continue  # leave room for the town hall itself
 				nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
 				found += 1
+
+
+## Cells within `radius` of `from` that a squad can actually WALK to,
+## nearest first.
+##
+## A flood fill rather than a disk, because passability is not the same as
+## reachability: a cell across a channel is close and unreachable, and
+## treating the two as equivalent is what put one spawn's guaranteed
+## resources on the far bank of a river.
+##
+## Bounded by radius so this stays cheap — it runs once per spawn at map
+## generation, never per tick. Deterministic: cells are enqueued in
+## `TorusSpace.neighbors` order, so replays and both sides of the wire
+## agree about where resources ended up.
+func _reachable_from(from: Vector2i, passable: PackedByteArray, radius: int) -> Array:
+	var start := space.index(from)
+	var seen := {start: true}
+	var queue := [from]
+	var out := [start]
+	var head := 0
+
+	while head < queue.size():
+		var cell: Vector2i = queue[head]
+		head += 1
+		for neighbour in space.neighbors(cell):
+			var index := space.index(neighbour)
+			if seen.has(index):
+				continue
+			if space.distance(from, neighbour) > radius:
+				continue
+			if index < passable.size() and passable[index] == 0:
+				continue
+			seen[index] = true
+			queue.append(neighbour)
+			out.append(index)
+	return out
 
 
 ## Biome to resource. Water and beach yield nothing — you cannot chop a
@@ -143,7 +204,24 @@ static func _kind_for(biome: int) -> int:
 
 
 ## Node positions and kinds for the wire, without their stock.
-func node_entries() -> Array:
+##
+## `only` restricts the result to specific cells — the caller passes the
+## ones a given player has actually seen (D-061). Called with no argument
+## this returns EVERY node, which is exactly the leak that made it
+## necessary: knowing where every resource sits from the moment you join
+## tells you where an opponent must expand and where to raid, without
+## scouting for any of it.
+func node_entries(only: Array = []) -> Array:
+	if not only.is_empty():
+		var picked := []
+		for cell in only:
+			if nodes.has(cell):
+				picked.append({"cell": cell, "kind": int(nodes[cell]["kind"])})
+		return picked
+	return _all_node_entries()
+
+
+func _all_node_entries() -> Array:
 	var out := []
 	for cell in nodes:
 		out.append({"cell": cell, "kind": int(nodes[cell]["kind"])})
@@ -263,6 +341,17 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 				_gather(sim, squad, haul, def, dt, buildings)
 			Phase.TO_DROP_OFF:
 				_try_unload(sim, squad, haul, buildings, changed)
+
+		# A crew standing at a node works AROUND it; a crew on the road
+		# walks spread out (D-058). Set every tick rather than on the
+		# transition, because `set_shape` ignores a no-op — so this costs
+		# nothing on the ticks where nothing changed, and cannot be left
+		# wrong by a phase change that took some other path out.
+		# A released crew goes back to walking order too — a worked-out
+		# node erases the haul, and leaving them ringed around a bare patch
+		# would be the one case this misses.
+		var working := _hauls.has(squad) and int(haul["phase"]) == Phase.GATHERING
+		sim.set_shape(squad, "ring" if working else "sparse")
 
 		# Only write back a haul that still exists. A helper above may have
 		# ended it — a worked-out node releases its crew — and assigning

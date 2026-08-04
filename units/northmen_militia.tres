@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"northmen_militia"
+display_name = "Levy"
+civ = &"northmen"
+archetype = &"militia"
+squad_size = 44
+health = 62.0
+damage = 6.5
+move_speed = 3.8
+attack_range = 1.9
+attack_interval = 1.0
+formation_shape = "line"
+formation_spacing = 0.9
+morale = 80.0
+rout_threshold = 34.0
+armour_class = "infantry"
+bonus_vs = {}
+mesh_primitive = "capsule"
+mesh_color = Color(0.72, 0.45, 0.3, 1)
+build_time = 5.0
+cost = 45
+cost_food = 40
+cost_wood = 0
+cost_gold = 0
+vision_range = 12.0

@@ -39,7 +39,11 @@ const HEADER_BYTES := 8 + 4 + 4 + 4 + 4  # magic + hz + width + height + hex_siz
 # payload_size (u32).
 const RECORD_HEADER_BYTES := 1 + 4 + 4
 
-enum Kind { CURVE = 0, SQUAD_INFO = 1, COMBAT = 2, BUILDING_INFO = 3 }
+## SEATS records who played as whom (D-046 criterion 11). Appended as a
+## new kind rather than folded into the header: a reader that predates it
+## skips an unknown kind by its length prefix, so old replays stay
+## readable and new ones do not need a format version bump.
+enum Kind { CURVE = 0, SQUAD_INFO = 1, COMBAT = 2, BUILDING_INFO = 3, SEATS = 4 }
 
 var _file: FileAccess = null
 var records_written: int = 0
@@ -212,6 +216,8 @@ static func read(path: String) -> Dictionary:
 				record["combat"] = NetProtocol.decode_squad_combat(payload)
 			Kind.BUILDING_INFO:
 				record["buildings"] = NetProtocol.decode_building_info(payload)
+			Kind.SEATS:
+				record["seats"] = decode_seats(payload)
 			_:
 				pass  # Unknown kind: keep the record's time/kind, decode nothing.
 
@@ -279,3 +285,45 @@ static func reconstruct_at(replay: Dictionary, at_time: float) -> Dictionary:
 	state[ROUTED_KEY] = routed
 	state[BUILDINGS_KEY] = buildings
 	return state
+
+
+## Record who is playing as which civilisation and on whose side (D-046
+## criterion 11, D-047, D-050).
+##
+## Written once, when the match starts — which is the first moment it is
+## knowable, because a seat may have said "Random" until then (D-048). A
+## replay that reconstructed the battle but not who fought it would
+## answer "what happened" and not "who won", and with asymmetric civs the
+## second question is most of the first.
+func record_seats(at_time: float, seats: Array) -> void:
+	var payload := StreamPeerBuffer.new()
+	payload.put_u32(seats.size())
+	for seat in seats:
+		payload.put_u32(int(seat["player"]))
+		payload.put_u8(int(seat.get("team", 0)))
+		var civ := String(seat["civ"]).to_utf8_buffer()
+		payload.put_u16(civ.size())
+		payload.put_data(civ)
+		var name := String(seat["name"]).to_utf8_buffer()
+		payload.put_u16(name.size())
+		payload.put_data(name)
+	_write_record(Kind.SEATS, at_time, payload.data_array)
+
+
+## Read a SEATS payload back.
+static func decode_seats(payload: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = payload
+	var count := int(buf.get_u32())
+	var out := []
+	for _i in range(count):
+		var player := int(buf.get_u32())
+		var team := int(buf.get_u8())
+		var civ_bytes: PackedByteArray = buf.get_data(buf.get_u16())[1]
+		var name_bytes: PackedByteArray = buf.get_data(buf.get_u16())[1]
+		out.append({
+			"player": player, "team": team,
+			"civ": civ_bytes.get_string_from_utf8(),
+			"name": name_bytes.get_string_from_utf8(),
+		})
+	return out

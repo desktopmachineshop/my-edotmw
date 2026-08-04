@@ -227,16 +227,32 @@ func test_shipped_roster_has_a_real_counter_triangle() -> void:
 	# D-015's cut line asks for 3-4 unit types; four types with no
 	# counters between them would meet the letter of it and none of the
 	# point. This checks the shipped .tres data, not a fixture.
-	var by_id := {}
+	# Keyed on ARCHETYPE, not unit id (D-047): every civ has its own
+	# spearmen, and the triangle has to hold for all of them. Checking one
+	# civ's would let a civ added later quietly ship archers that lose to
+	# infantry.
+	var by_archetype := {}
 	for def in UnitRoster.load_all():
-		by_id[String(def.id)] = def
+		if not by_archetype.has(String(def.archetype)):
+			by_archetype[String(def.archetype)] = []
+		by_archetype[String(def.archetype)].append(def)
 
 	for expected in ["militia", "archers", "spearmen", "cavalry"]:
-		assert_true(by_id.has(expected), "The roster should ship a '%s' unit" % expected)
+		assert_true(by_archetype.has(expected),
+			"Some civ should field the '%s' archetype" % expected)
 
-	assert_eq(by_id["archers"].armour_class, "missile")
-	assert_eq(by_id["cavalry"].armour_class, "cavalry")
-	assert_eq(by_id["spearmen"].armour_class, "infantry")
+	for def in by_archetype.get("archers", []):
+		assert_eq(def.armour_class, "missile", "%s is archers but not missile" % def.id)
+	for def in by_archetype.get("cavalry", []):
+		assert_eq(def.armour_class, "cavalry", "%s is cavalry but not cavalry-classed" % def.id)
+	for def in by_archetype.get("spearmen", []):
+		assert_eq(def.armour_class, "infantry", "%s is spearmen but not infantry" % def.id)
+
+	# Flatten back to one representative per archetype for the triangle
+	# assertions below, which are about the shape rather than the tuning.
+	var by_id := {}
+	for archetype in by_archetype:
+		by_id[archetype] = by_archetype[archetype][0]
 
 	# The triangle: spears beat cavalry, cavalry beat missile, missile
 	# beats infantry.
@@ -513,3 +529,206 @@ func test_replay_reconstructs_post_combat_strengths() -> void:
 		"Replay should reconstruct the attacker's final strength")
 	assert_eq(int(strengths[defender]), final_defender_alive,
 		"Replay should reconstruct the defender's final (post-casualty) strength")
+
+
+func test_allies_do_not_shoot_each_other() -> void:
+	# The whole point of teams (D-050). A team dropdown that combat
+	# ignored would be decoration.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.teams = {1: 1, 2: 1}
+
+	var def := UnitRoster.first()
+	var a := sim.add_squad(def, 1, Vector2i(5, 5))
+	var b := sim.add_squad(def, 2, Vector2i(5, 5))
+	var before := sim.alive_of(a) + sim.alive_of(b)
+
+	for _i in range(30):
+		sim.tick()
+
+	assert_eq(sim.alive_of(a) + sim.alive_of(b), before,
+		"Allied squads standing on each other fought anyway")
+
+
+func test_enemies_on_no_team_still_fight() -> void:
+	# The other side of the boundary: without it, "allies never fight"
+	# could be satisfied by nobody ever fighting.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+
+	var def := UnitRoster.first()
+	var a := sim.add_squad(def, 1, Vector2i(5, 5))
+	var b := sim.add_squad(def, 2, Vector2i(5, 5))
+	var before := sim.alive_of(a) + sim.alive_of(b)
+
+	for _i in range(30):
+		sim.tick()
+
+	assert_lt(sim.alive_of(a) + sim.alive_of(b), before,
+		"Two players with no team set should be enemies (free-for-all is the default)")
+
+
+# --- squads vs buildings (the half that was missing) -------------------
+#
+# `BuildingSim.damage()` was written, marked buildings dirty so
+# destruction would replicate, and was called by nothing outside its own
+# tests for two milestones. Buildings were indestructible, so a match
+# could not be won: D-033 ends a match by elimination, and a town centre
+# that survives everything keeps producing replacements. Every AI ladder
+# match drew at the time cap and it was read as an AI weakness through
+# several rounds of AI work.
+#
+# These four tests are what would have caught it. Each was observed to
+# fail before being trusted, by reverting the pass in combat.gd and
+# watching them go red (D-022's standing rule).
+
+
+func _armed_building_def(id: StringName = &"combat_test_hall") -> BuildingDef:
+	var d := BuildingDef.new()
+	d.id = id
+	d.max_health = 120.0
+	d.build_time = 1.0
+	d.vision_range = 8.0
+	return d
+
+
+func test_a_squad_destroys_an_enemy_building() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+
+	for _i in range(200):
+		sim.tick()
+		if buildings.is_destroyed(hall):
+			break
+
+	assert_true(buildings.is_destroyed(hall),
+		"A squad stood next to an enemy building and never damaged it")
+
+
+func test_a_squad_leaves_its_own_buildings_alone() -> void:
+	# The other side of the boundary. Without it, "buildings can be
+	# destroyed" would be satisfied by an army that razes its own town.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 1, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+
+	for _i in range(200):
+		sim.tick()
+
+	assert_false(buildings.is_destroyed(hall),
+		"A squad demolished a building belonging to its own player")
+	assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+		"An own building took damage from a friendly squad")
+
+
+func test_a_squad_out_of_range_cannot_reach_a_building() -> void:
+	# _attacker_def's range reaches distance 1 and not distance 2, the
+	# same line the squad-vs-squad range tests sit on.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	sim.add_squad(_attacker_def(), 1, Vector2i(5, 7))
+
+	for _i in range(200):
+		sim.tick()
+
+	assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+		"A building took damage from a squad two cells away, out of range")
+
+
+func test_a_squad_fighting_a_squad_does_not_also_hit_a_building() -> void:
+	# Defenders come first. A squad that spends its attack on a wall while
+	# being cut down behind it is a bug in a siege costume, and it would
+	# make a garrison pointless — an attacker could ignore it entirely.
+	#
+	# Worth knowing before trusting this one: TWO redundant guards enforce
+	# the rule (see resolve_squads_vs_buildings), and this test only goes
+	# red when BOTH are removed. Perturbing either alone leaves it green —
+	# which is not the test failing to guard anything, but it does mean it
+	# cannot tell you which mechanism is carrying the rule.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := buildings.add_building(_armed_building_def(), 2, Vector2i(5, 5), true)
+	var attacker := sim.add_squad(_attacker_def(), 1, Vector2i(5, 6))
+	# A defender standing with the attacker, so it has a squad target in
+	# range for as long as the defender lives.
+	var defender := sim.add_squad(_defender_def(), 2, Vector2i(5, 6))
+
+	# Checked EVERY tick while the garrison holds, rather than once at the
+	# end. The first version of this test ticked a fixed 40 times and
+	# failed — correctly: the defender dies part-way through, after which
+	# hitting the building is exactly right. Asserting at the end measured
+	# the wrong window and would have reported a working rule as broken.
+	var ticks_with_a_defender := 0
+	for _i in range(60):
+		if sim.alive_of(defender) <= 0 or sim.is_routed(defender):
+			break
+		sim.tick()
+		if sim.alive_of(attacker) <= 0:
+			break
+		ticks_with_a_defender += 1
+		assert_almost_eq(buildings.health_of(hall), 120.0, 0.001,
+			"A squad ignored the enemy squad in front of it to hit a building")
+
+	assert_gt(ticks_with_a_defender, 0,
+		"The garrison never survived a single tick, so nothing was actually tested")
+
+
+func test_soldiers_are_not_siege_engines() -> void:
+	# D-056. Unscaled, a single 36-strong militia squad razed a 900 HP town
+	# centre in 2.1 SECONDS (measured), so a base evaporated the moment any
+	# army reached it and matches decided in about three minutes against a
+	# 1-2 hour target.
+	#
+	# The bound is deliberately generous rather than pinned to today's
+	# tuning — this guards the RULE (a lone squad cannot flatten a town
+	# hall in seconds), not a balance number somebody should be free to
+	# tune. Perturbed by removing the damage_vs_buildings factor in
+	# combat.gd, which takes it from ~57s to ~2s and turns it red.
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	assert_not_null(hall, "town_centre.tres is missing, so nothing was tested")
+	var id := buildings.add_building(hall, 2, Vector2i(5, 5), true)
+
+	# The roster's heaviest hitter against buildings, so this measures the
+	# best case for the attacker rather than a convenient one.
+	var worst: UnitDef = null
+	for def in UnitRoster.load_all():
+		if def.carry_capacity > 0:
+			continue  # villagers are not the question
+		var rate := def.damage * float(def.squad_size) * def.damage_vs_buildings \
+			/ maxf(def.attack_interval, 0.001)
+		if worst == null or rate > worst.damage * float(worst.squad_size) \
+				* worst.damage_vs_buildings / maxf(worst.attack_interval, 0.001):
+			worst = def
+	assert_not_null(worst, "no fighting units in the roster")
+
+	sim.add_squad(worst, 1, Vector2i(5, 6))
+	var ticks := 0
+	while ticks < 6000 and not buildings.is_destroyed(id):
+		sim.tick()
+		ticks += 1
+
+	var seconds := float(ticks) / SquadSim.TICK_HZ
+	assert_gt(seconds, 20.0,
+		"%s razed a town centre in %.1fs — a lone squad should not flatten a base in seconds" % [
+			worst.id, seconds])

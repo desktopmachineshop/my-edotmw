@@ -80,7 +80,7 @@ func _derive_sweep(config: MapConfig) -> void:
 		var sim := SquadSim.new(space, CurveReplicator.new())
 		sim.set_passable(TerrainGen.new().passability(space))
 
-		var def := UnitRoster.by_id(&"militia")
+		var def := UnitRoster.first()
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 0xD00D
 		for i in range(int(count)):
@@ -160,7 +160,7 @@ func _map_sweep_at(quantum: int, cells_per_tick: int) -> void:
 		sim.destination_quantum = quantum
 		sim.field_cells_per_tick = cells_per_tick
 
-		var defs := [UnitRoster.by_id(&"militia"), UnitRoster.by_id(&"archers")]
+		var defs := UnitRoster.load_all()
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 0xF00D
 
@@ -208,7 +208,7 @@ func _run(config: MapConfig, squad_count: int, cells_per_tick: int) -> void:
 
 	# Two sides, so combat actually engages rather than every squad
 	# peacefully ignoring every other.
-	var defs := [UnitRoster.by_id(&"militia"), UnitRoster.by_id(&"archers")]
+	var defs := UnitRoster.load_all()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 0xF00D  # fixed: a sweep must be comparable between runs
 

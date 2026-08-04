@@ -158,6 +158,14 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+		NetProtocol.S2C_CHAT:
+			_handle_chat(data)
+		NetProtocol.S2C_MAP_SETTINGS:
+			map_settings = NetProtocol.decode_map_settings(data)
+		NetProtocol.S2C_LOBBY:
+			# The whole seat list, replacing whatever was held before — the
+			# server sends it entire on any change (see encode_lobby).
+			lobby = NetProtocol.decode_lobby(data)
 		NetProtocol.S2C_NOTICE:
 			last_notice = NetProtocol.decode_notice(data)
 			notices_received += 1
@@ -229,6 +237,11 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"alive": int(entry["alive"]),
 			"shape": def.formation_shape,
 			"spacing": def.formation_spacing,
+			# Kept so the client can tell an ally's squad from an enemy's
+			# (D-050). Deliberately NOT part of composition_hash, which
+			# builds its own entry list from named fields — adding a key
+			# here cannot drift into what the desync check compares.
+			"owner": int(entry.get("owner", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -370,6 +383,12 @@ func _handle_building_info(data: PackedByteArray) -> void:
 			"cell": int(entry["cell"]),
 			"progress": float(entry["progress"]),
 			"destroyed": bool(entry["destroyed"]),
+			# For the selection panel (health bar, production queue).
+			# Neither is hashed — see the hash's own comment.
+			"health_fraction": float(entry.get("health_fraction", 1.0)),
+			"head_remaining": float(entry.get("head_remaining", 0.0)),
+			"queue": entry.get("queue", []),
+			"rally": int(entry.get("rally", 0)),
 		}
 
 
@@ -604,3 +623,137 @@ func encode_stop(squad: int) -> PackedByteArray:
 	if not owns(squad):
 		return PackedByteArray()
 	return NetProtocol.encode_order_stop(squad)
+
+
+# --- lobby (D-048) ----------------------------------------------------
+
+## The lobby as the server last described it: {admin: int, seats: Array}.
+## Empty until the first S2C_LOBBY arrives, which is also how the client
+## knows whether it is in a lobby at all.
+var lobby := {}
+
+
+## True only while the match has not started. The seat list survives the
+## whole match (colours, teams), so its presence says nothing about the
+## phase — inferring it from that drew the lobby over a live game.
+func in_lobby() -> bool:
+	if lobby.get("seats", []).is_empty():
+		return false
+	return int(lobby.get("phase", 0)) == 0
+
+
+## A player's civ as the lobby last described it, or "" if unknown.
+##
+## Needed so the HUD can name what a building will actually produce: a
+## barracks offers ARCHETYPES (D-047), and which troops those are depends
+## on who is asking. Resolving through the seat list means the client can
+## only ever name its own civ's units — it has no way to name another's,
+## which is D-046 criterion 4 holding structurally rather than by care.
+func civ_of(who: int) -> StringName:
+	for seat in lobby.get("seats", []):
+		if int(seat["player"]) == who:
+			return StringName(seat.get("civ", ""))
+	return &""
+
+
+## This client's own seat index, or -1.
+func my_seat() -> int:
+	var seats: Array = lobby.get("seats", [])
+	for i in range(seats.size()):
+		if String(seats[i]["kind"]) == "human" and int(seats[i]["player"]) == player:
+			return i
+	return -1
+
+
+func is_admin() -> bool:
+	return player > 0 and int(lobby.get("admin", 0)) == player
+
+
+## The world's concrete terrain parameters, once the server has sent them
+## (D-049). Empty until then — and until then there is no world to draw,
+## which is exactly the point: the client used to generate terrain on
+## connect, before anybody had chosen a size, a seed or a shape.
+var map_settings := {}
+
+
+func has_map() -> bool:
+	return not map_settings.is_empty()
+
+
+## The generator the server is using. One conversion, shared, so the two
+## sides cannot disagree about where the water is.
+func terrain_from_settings() -> TerrainGen:
+	return MapSettings.from_dict(map_settings).to_terrain()
+
+
+## Chat backlog, oldest first (D-050). Bounded, because a long match
+## should not grow this without limit.
+var chat_log: Array = []
+const CHAT_HISTORY := 40
+
+
+func _handle_chat(data: PackedByteArray) -> void:
+	var message := NetProtocol.decode_chat(data)
+	chat_log.append(message)
+	if chat_log.size() > CHAT_HISTORY:
+		chat_log = chat_log.slice(chat_log.size() - CHAT_HISTORY)
+
+
+## Squads on this player's side — its own, plus any ally's it can see
+## (D-050).
+##
+## Derived from the lobby's seat list, which the client already holds and
+## which keeps its teams after the match starts. That avoids a second
+## message carrying the same fact, and avoids the client inventing its own
+## idea of who is allied with whom.
+func friendly_squads() -> Array:
+	var out := []
+	for squad in squads:
+		out.append(squad)
+	if lobby.is_empty():
+		return out
+
+	var my_team := _team_of(player)
+	if my_team == 0:
+		return out
+	for id in composition:
+		var owner := int(composition[id].get("owner", 0))
+		if owner != player and _team_of(owner) == my_team and not out.has(id):
+			out.append(id)
+	return out
+
+
+## Whether two players are on the same side (D-050).
+##
+## Mirrors `MatchState.are_allied` exactly, including the part that is
+## easy to get wrong: team 0 means FREE-FOR-ALL, so two players both on
+## team 0 are NOT allies — they are each their own side. Treating 0 like
+## any other team would make every player in an FFA everybody's friend.
+func are_allied(a: int, b: int) -> bool:
+	if a == b:
+		return true
+	var team_a := _team_of(a)
+	return team_a != 0 and team_a == _team_of(b)
+
+
+func _team_of(who: int) -> int:
+	for seat in lobby.get("seats", []):
+		if int(seat["player"]) == who:
+			return int(seat.get("team", 0))
+	return 0
+
+
+## The colour that identifies a player's units and buildings (D-052).
+##
+## Derived from the SEAT ORDER the server sent, so every client agrees
+## without a message dedicated to colour — and so a player's colour is
+## stable for the whole match rather than depending on who happens to be
+## on screen.
+func colour_of(player: int) -> Color:
+	var seats: Array = lobby.get("seats", [])
+	for i in range(seats.size()):
+		if int(seats[i]["player"]) == player:
+			return PlayerColours.of_index(i)
+	# Before the seat list arrives, or for a player not in it: fall back
+	# to something stable rather than flickering as the list loads.
+	return PlayerColours.of_index(maxi(player - 1, 0))

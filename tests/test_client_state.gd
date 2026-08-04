@@ -310,15 +310,15 @@ func test_world_to_cell_picks_the_nearest_cell_near_boundaries() -> void:
 
 func test_squad_info_roundtrips() -> void:
 	var entries := [
-		{"id": 4, "def_id": "militia", "alive": 40},
-		{"id": 9, "def_id": "archers", "alive": 32},
+		{"id": 4, "def_id": "test_alpha", "alive": 40},
+		{"id": 9, "def_id": "test_beta", "alive": 32},
 	]
 	var decoded := NetProtocol.decode_squad_info(NetProtocol.encode_squad_info(entries))
 	assert_eq(decoded.size(), 2)
 	assert_eq(int(decoded[0]["id"]), 4)
-	assert_eq(String(decoded[0]["def_id"]), "militia")
+	assert_eq(String(decoded[0]["def_id"]), "test_alpha")
 	assert_eq(int(decoded[0]["alive"]), 40)
-	assert_eq(String(decoded[1]["def_id"]), "archers")
+	assert_eq(String(decoded[1]["def_id"]), "test_beta")
 	assert_eq(int(decoded[1]["alive"]), 32)
 
 
@@ -347,7 +347,7 @@ func test_composition_hash_changes_with_every_field() -> void:
 	assert_ne(baseline, NetProtocol.composition_hash(
 		[{"id": 1, "alive": 11, "shape": "line", "spacing": 1.0}]), "alive must matter")
 	assert_ne(baseline, NetProtocol.composition_hash(
-		[{"id": 1, "alive": 10, "shape": "loose", "spacing": 1.0}]), "shape must matter")
+		[{"id": 1, "alive": 10, "shape": "sparse", "spacing": 1.0}]), "shape must matter")
 	assert_ne(baseline, NetProtocol.composition_hash(
 		[{"id": 1, "alive": 10, "shape": "line", "spacing": 1.4}]), "spacing must matter")
 

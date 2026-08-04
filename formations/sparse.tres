@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="FormationDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://formation_def.gd" id="1_fdef"]
+
+[resource]
+script = ExtResource("1_fdef")
+id = &"sparse"
+display_name = "Sparse"
+kind = "scatter"
+spacing_scale = 1.8
+ranks = 3
+files = 0
+jitter = 0.6
+offered = true
+order = 1

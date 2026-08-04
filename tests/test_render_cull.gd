@@ -181,3 +181,127 @@ func _extent(transforms: Array) -> float:
 		for b in transforms:
 			worst = maxf(worst, (a as Transform3D).origin.distance_to((b as Transform3D).origin))
 	return worst
+
+
+# --- more than one copy on screen (the "half the screen is empty" bug) --
+
+## A camera placed exactly as client.gd places it: above and behind the
+## point it looks at, tilted down.
+func _camera_looking_at(target: Vector3, height: float) -> Camera3D:
+	var camera := Camera3D.new()
+	add_child_autofree(camera)
+	camera.position = target + Vector3(0.0, height, height * 0.6)
+	camera.look_at(target, Vector3.UP)
+	return camera
+
+
+func test_the_zoom_cap_does_not_bound_the_z_direction() -> void:
+	# The root cause, as pure geometry — no camera, no GPU.
+	#
+	# client.gd caps zoom from the map's WIDTH, on the stated assumption
+	# that less than one full copy is ever on screen. A 128x64 torus is
+	# `width * SQRT_3` = ~221 units wide but only `height * 1.5` = 96 deep,
+	# so a cap derived from width says nothing about z. That is what let
+	# more than one lattice copy be visible at once, which is exactly the
+	# condition nearest_offset documents as unsafe.
+	var space := _space()
+	var x_period := float(W) * space.hex_size * TorusSpace.SQRT_3
+	var z_period := float(H) * 1.5 * space.hex_size
+
+	assert_lt(z_period, x_period,
+		"this map is shallower than it is wide, which is the whole problem")
+
+	# The cap client.gd computes, from width alone.
+	var cap := x_period * 0.25
+	assert_gt(cap * 2.0, z_period,
+		"a width-derived zoom cap must be shown NOT to bound z — if this ever "
+		+ "fails the map got deep enough that the old assumption held")
+
+
+
+
+func test_visible_offset_still_culls_something_genuinely_off_screen() -> void:
+	# The other side of the boundary. Testing all nine copies must not
+	# become "never cull anything" — that would silently undo D-045 and
+	# show up only as a frame-rate regression at scale.
+	var space := _space()
+	var offsets := space.lattice_offsets()
+	var size := Vector2(1280.0, 720.0)
+
+	var target := space.to_world(Vector2i(W / 2, H / 2))
+	var camera := _camera_looking_at(target, 12.0)  # zoomed right in
+
+	# Diagonally opposite on both axes, so no copy of it is near the view.
+	var squad_at := space.to_world(Vector2i(0, 0))
+	var visible = RenderCull.visible_offset(camera, offsets, squad_at, 0.0, size)
+
+	assert_null(visible,
+		"a squad on the far side of the map was reported visible — culling is doing nothing")
+
+
+func test_the_zoom_cap_keeps_a_second_terrain_copy_off_screen() -> void:
+	# THE bug behind "half the screen will not render units as visible".
+	#
+	# Terrain is drawn nine times (D-035) but every squad, building and
+	# node is drawn ONCE, so as soon as the view spans a second terrain
+	# copy that copy is bare ground — real terrain, no units on it.
+	#
+	# Measured on 128x64 at 1280x720: forward ground reach is ~1.9x camera
+	# height and the camera sits 0.6h behind its target, so the on-screen
+	# z span is ~2.6h. This asserts the cap client.gd computes keeps that
+	# span inside the SHALLOWER lattice period. The old cap took a quarter
+	# of the map's WIDTH and allowed 106 units of a 96-unit period.
+	var space := _space()
+	var x_period := float(W) * space.hex_size * TorusSpace.SQRT_3
+	var z_period := float(H) * 1.5 * space.hex_size
+
+	# The shipped function, not a copy of it — client.gd calls this too.
+	var cap := RenderCull.max_camera_height(space, 8.0, 90.0)
+
+	assert_lt(cap * 2.6, z_period,
+		"at max zoom the view spans more than one lattice copy, so the second "
+		+ "copy shows terrain with no units on it")
+
+	# And the old formula must be shown to FAIL this, or the assertion
+	# above is just describing whatever the code happens to do.
+	var old_cap := x_period * 0.25
+	assert_gt(old_cap * 2.6, z_period,
+		"the width-derived cap should be demonstrably unsafe — if this fails, "
+		+ "the map shape changed and this test is no longer testing anything")
+
+
+func test_every_shipped_map_is_roughly_square_in_world_units() -> void:
+	# A map that is much wider than it is deep forces the zoom cap down,
+	# because the cap is bounded by the SHALLOWER lattice period — and
+	# past that cap a second terrain copy enters view showing bare ground
+	# with no units on it.
+	#
+	# Cells are not the measure: a hex column is SQRT_3 (~1.732) wide and
+	# a row is 1.5 deep, so 128x64 cells is 2.31:1 on the ground, not 2:1.
+	# Every shipped size was 2:1 in cells, so every one of them was oblong.
+	var sizes := MapSettings.sizes()
+	assert_gt(sizes.size(), 0, "no sizes to check")
+
+	for entry in sizes:
+		var w := int(entry["width"])
+		var h := int(entry["height"])
+		var x_period := float(w) * TorusSpace.SQRT_3
+		var z_period := float(h) * 1.5
+		var ratio := maxf(x_period, z_period) / minf(x_period, z_period)
+		assert_lt(ratio, 1.15,
+			"%s (%dx%d) is %.2f:1 on the ground — the shallow axis caps the zoom" % [
+				entry["name"], w, h, ratio])
+		assert_eq(h % 2, 0, "%s has an odd height, which D-008 forbids" % entry["name"])
+
+
+func test_the_shipped_map_files_are_square_too() -> void:
+	# The lobby sizes and the .tres files on disk are separate lists, and
+	# a fix applied to one and not the other is exactly the drift this
+	# project keeps getting caught by.
+	for path in ["res://maps/default.tres", "res://maps/ladder.tres"]:
+		var config := load(path) as MapConfig
+		assert_not_null(config, "%s is missing" % path)
+		var ratio := maxf(float(config.width) * TorusSpace.SQRT_3, float(config.height) * 1.5) \
+			/ minf(float(config.width) * TorusSpace.SQRT_3, float(config.height) * 1.5)
+		assert_lt(ratio, 1.15,
+			"%s is %.2f:1 on the ground" % [path, ratio])

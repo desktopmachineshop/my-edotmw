@@ -71,8 +71,12 @@ class_name MapConfig
 ## kind a start is guaranteed (D-036 revised). This is what replaces
 ## quadrant symmetry as the fairness mechanism: generate freely, then make
 ## sure nobody starts with no wood in reach.
-@export var fairness_radius: int = 14
-@export var fairness_quota: int = 3
+## Kept inside a starting unit's vision_range (~12): a guaranteed
+## resource the player cannot SEE is not a guarantee. With nodes four
+## times sparser (D-056 follow-up) the AI stopped finding wood at all —
+## 3,248 food against 180 wood — and never afforded a barracks.
+@export var fairness_radius: int = 9
+@export var fairness_quota: int = 1
 
 # What a player starts with (D-028). Non-zero on purpose: gatherers cost
 # food, and food comes from gatherers, so a player starting empty could

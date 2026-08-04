@@ -60,7 +60,7 @@ different claims.
 
 **M3 (launchable MVP) complete** — exit criteria are D-027, sliced into
 (1) map foundations, (2) playable skirmish, (3) torus presentation, (4)
-buildings, (5) economy. `just test-unit` is green at **287 tests**.
+buildings, (5) economy. `just test-unit` is green at **345 tests**.
 
 *Slice 1, landed:* the map is 128×64, biome is simulation data rather
 than colour (D-037), and spawn points come from `MapConfig` instead of a
@@ -111,13 +111,22 @@ fight better than line infantry, and only they can build a town hall —
 expressed in `BuildingDef.built_by`, which is also how they are barred
 from building anything else. Everything else is produced.
 
-**Use `just test-load 4 40`, not `4 12`.** Spawns are far apart on a
-128×64 map, so four armies cannot reach each other inside 12 seconds —
-the run fails with `casualties_applied=0 conceal_events=0
-reveal_events=0`, which is the verdict correctly reporting that combat
-and fog never happened rather than passing vacuously. Bots converge on
-the middle of the map deliberately, but they still need time to get
-there.
+**Use `just test-load 4 120`.** Two separate reasons, both learned the
+hard way:
+
+- Spawns are far apart on a 128×64 map, so four armies cannot reach each
+  other quickly. A short run fails with `casualties_applied=0
+  conceal_events=0 reveal_events=0` — the verdict correctly reporting
+  that combat and fog never happened rather than passing vacuously.
+- **A town hall takes 40 seconds and the founding party is spent on it
+  (D-031), so a player owns no soldiers until production finishes.** Any
+  run shorter than ~90 s reports `soldiers=0` and fails, and that is the
+  check working, not a bug. `4 40` was the recommendation here for a
+  whole milestone and could not have passed since D-031 landed;
+  `test-client`'s 15 s default had the same problem. **When the opening
+  changes, every timing tuned against the old one is stale** — that
+  applies to the load test, the capture scenario, and any scripted bot
+  phase.
 
 **M4 (scale + performance): every measurement it set out to take is
 taken.** They live in D-038 and D-040 through D-042. At D-018's target of
@@ -249,6 +258,62 @@ happened and is now satisfied by *founding a town hall*, because
 consuming the founding party reports through the casualty path. It passes
 without any fighting. Recorded in D-045; fix it when next touching the
 capture scenario.
+
+**M6 (civs, lobby, AI) — in progress.** Civs are data (D-047), the lobby
+seats humans and AI with teams and shared vision (D-048/D-050), colours
+are per player (D-052), and AI players are clients without a socket
+(D-051) held to every rule you are. `just ai-ladder` measures AI strength
+(D-054); `just run-server AI=3` seats opponents without a lobby so a
+human can play one.
+
+**The single most important thing M6 found: nothing could destroy a
+building, so no match could be won** (D-055). `BuildingSim.damage()` was
+fully written and called by nothing outside its own tests for two
+milestones. Buildings shot at squads; squads never shot back. Every AI
+ladder match drew at the time cap, and that was read as an AI weakness
+through several rounds of AI work before anyone checked. Fixing it took
+the ladder from **0 of 3 decided to 2 of 3 with no AI change at all**.
+
+**So: grep for uncalled public members.** This was the THIRD
+declared-and-unread mechanic here, after `UnitDef.cost` and
+`BuildingDef.cost`. The shape is always a field or method with no caller,
+and it survives because *nothing fails* — the game runs and quietly lacks
+a rule. No test can see it, because the code under test is correct. This
+is the one defect class this project's testing discipline is blind to by
+construction.
+
+**Target match length is 1–2 hours, and the game is nowhere near it**
+(D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
+one 36-strong militia squad razed a 900 HP town centre in **2.1 seconds**
+— a base evaporated the moment any army arrived, and that number was
+introduced by D-055 the same day it made buildings damageable at all.
+
+Two data changes toward it: `UnitDef.damage_vs_buildings` (default 0.15,
+a schema addition against D-010) and roughly tripled building health, plus
+**`squad_cap` 15 → 40** against D-018's ~50/player target — an "army" was
+about six squads once gatherers were paid for.
+
+**Neither reaches 1–2 hours, and is not meant to.** The structural cause
+is that **there is no progression at all** — four buildings and four
+units per civ, no ages, no tech, no upgrades — so after roughly three
+minutes there is nothing to do but fight. That is **its own planning
+milestone**, deferred deliberately (owner's call, 2026-08-02); see Q15.
+Don't try to reach an hour by tuning health.
+
+**And a fourth instance of the `distance()`-per-candidate defect** landed
+in the same change and was caught by `test-load`: scanning every building
+per squad cost ~15 µs/squad, bucketing it cost ~1.3. After vision (M2),
+`UnitRoster.by_id` (M4) and terrain noise (M5), treat this as a standing
+rule — **any radius scan reaches for `TorusSpace.disk_offsets` before it
+reaches for `distance()`.**
+
+Two M6 numbers left honestly open. The rise from M4's **40.8 µs/squad at
+120 squads** to **~77** is *not* the siege pass (measured with it
+disabled) and is still unattributed to whichever of civs/teams/economy
+caused it. And worst-tick figures from that session are unreliable — a
+run with strictly *less* work reported 146 ms where a fuller run reported
+52 ms, because the host was building containers throughout. Zero dropped
+ticks in both.
 
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
@@ -412,6 +477,13 @@ bot_client.gd            Headless load-test bot. Runs N *virtual*
 unit_def.gd             UnitDef schema — extend fields here when a new
                         unit needs a stat that doesn't exist yet, and
                         record the change in D-010's schema log.
+/civs/*.tres           Civilizations as data (D-047). A civ fields a
+                        SUBSET of unit archetypes and tunes them its own
+                        way, so the same type is not the same troops in
+                        two armies. Mechanical differences are declarative
+                        knobs EVERY civ has — never a per-civ branch, and
+                        a test fails if any .gd file names a civ at all.
+civ_def.gd              CivDef schema; civ_roster.gd loads them.
 unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads
@@ -498,7 +570,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 158 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 350 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

@@ -10,6 +10,23 @@ class_name UnitDef
 @export var display_name: String = ""
 @export var civ: StringName = &"neutral"
 
+## The shared idea of a troop type — spearmen, archers, cavalry (D-047).
+##
+## A UnitDef is ONE CIV'S VERSION of an archetype. Two civs that both
+## field spearmen have two UnitDefs with the same `archetype` and
+## different ids, stats and costs: one may be cheap and weak, fielded fast
+## and in numbers, and lose to a smaller body of the other's.
+##
+## This is what lets every script stay civ-agnostic (D-046 criterion 3).
+## Keybinds, production UI and the AI all reason about archetypes, so one
+## key trains *your* civ's spearmen whatever that civ calls them, and
+## nothing anywhere needs to know a civ id.
+##
+## Distinct from `armour_class`, which has three values and answers "what
+## beats this" for `bonus_vs`. This answers "what IS this", and there are
+## more archetypes than armour classes.
+@export var archetype: StringName = &"militia"
+
 # Squad composition (D-005: squads are the atomic sim unit; D-018: full
 # scale target is ~40 soldiers/squad, ~50 squads/player).
 @export var squad_size: int = 40
@@ -25,7 +42,10 @@ class_name UnitDef
 
 # Formation & morale (D-019: Total War-style formations/morale/routing,
 # no campaign layer). Exact rout behavior (Q7) is still open.
-@export_enum("line", "column", "wedge", "loose") var formation_shape: String = "line"
+## The formation this unit uses by default. Validated against
+## /formations/*.tres by the roster test rather than an enum here, so
+## adding a formation is one file and not two edits (D-058).
+@export var formation_shape: String = "line"
 # Centre-to-centre spacing between adjacent soldiers, in world units.
 # Schema addition 2026-07-29 (M1, recorded against D-010): formation
 # geometry needs a per-unit spacing — cavalry and skirmishers do not
@@ -73,6 +93,26 @@ class_name UnitDef
 # generalist, not a special case.
 @export_enum("infantry", "cavalry", "missile") var armour_class: String = "infantry"
 @export var bonus_vs: Dictionary = {}
+
+## Fraction of this squad's damage that lands on a BUILDING. Schema
+## addition 2026-08-02 (M6, against D-010), recorded in D-056.
+##
+## Soldiers are not siege engines. Without this, siege damage was the full
+## `damage * alive` a squad deals to flesh, and measurement said a single
+## 36-strong militia squad razed a 900 HP town centre in **2.1 seconds** —
+## so once any army arrived, a base evaporated and the match was over.
+##
+## A separate field rather than an entry in `bonus_vs`, deliberately.
+## `bonus_vs` reads 1.0 for a missing key, which is the right default for
+## a counter table (no bonus = generalist) and exactly the wrong one here:
+## forgetting the entry on a new unit would silently restore the
+## three-second base. This field's default is the SAFE end of the range,
+## so a new .tres that never mentions it is conservative rather than
+## catastrophic.
+##
+## Raise it for units that are meant to break walls — that is the hook a
+## future siege archetype hangs on, and it needs no code change.
+@export var damage_vs_buildings: float = 0.15
 
 @export_enum("capsule", "box", "cylinder", "hull") var mesh_primitive: String = "capsule"
 @export var mesh_color: Color = Color.WHITE

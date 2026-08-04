@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"northmen_cavalry"
+display_name = "Raiders"
+civ = &"northmen"
+archetype = &"cavalry"
+squad_size = 22
+health = 74.0
+damage = 12.0
+move_speed = 6.6
+attack_range = 2.0
+attack_interval = 1.0
+formation_shape = "wedge"
+formation_spacing = 0.9
+morale = 88.0
+rout_threshold = 30.0
+armour_class = "cavalry"
+bonus_vs = {
+"missile": 1.8
+}
+mesh_primitive = "hull"
+mesh_color = Color(0.6, 0.38, 0.28, 1)
+build_time = 8.0
+cost = 45
+cost_food = 60
+cost_wood = 0
+cost_gold = 25
+vision_range = 12.0

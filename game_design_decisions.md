@@ -20,6 +20,348 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-060 · 2026-08-04 · Accepted — squads take up room, at squad granularity
+**Decision:** Squads that have ARRIVED do not share a cell: the
+higher-id one settles onto the nearest free cell
+(`SquadSim._separate_arrivals`). Movement in transit is unchanged, and
+there is no per-soldier collision.
+
+**Rationale:** twenty squads could occupy one cell and render as a single
+heap, so an army had no physical extent.
+
+**Why not per-soldier collision, which is what was asked for:** D-006
+names it specifically — "local avoidance, collision push-back, jostling"
+each give a soldier integration state and fire the revisit trigger. That
+purity is what lets client and server agree on 40,000 soldier positions
+without sending any of them; it is not a small thing to trade for
+spacing. The GOAL — armies taking up room rather than heaping — is a
+squad-level property, and squads are the atomic unit (D-005), so it is
+achievable without touching the keystone.
+
+**The first attempt was wrong and an existing test caught it.** Spreading
+DESTINATIONS at order time gave twenty squads twenty different goals, so
+they built twenty flow fields instead of sharing one — destroying D-007's
+per-destination sharing, which is the entire scaling claim, and undoing
+what `_quantise` (D-038) exists to enforce. Separation therefore happens
+on ARRIVAL: travel keeps one destination and one field, and the pile-up
+is resolved only where it shows.
+
+**Rejected alternatives:**
+- *Per-tick separation of overlapping squads* (rejected for now — needs
+  per-squad integration state and a curve rebuild every time two units
+  brush, which is a real cost against D-020's tick budget and a real
+  design decision, not something to slip in under a rendering fix).
+- *Per-soldier collision* (rejected — D-006's explicit revisit trigger).
+
+**Consequences:** squads still walk THROUGH each other in transit, and
+two already-overlapping squads are not pushed apart. Both are visible and
+neither is fixed here.
+
+**Revisit trigger:** if formations need to hold a line against each other
+— a shield wall that genuinely blocks — squad-level separation is not
+enough and D-006 has to be reopened deliberately.
+
+---
+
+### D-059 · 2026-08-04 · Accepted — soldiers ease and act, on the render path only
+**Decision:** The client eases each soldier toward his authoritative slot
+rather than snapping (`soldier_motion.gd`), and displaces soldiers toward
+what their squad is doing — a resource being worked, an enemy being
+fought (`CosmeticOffset.decorate_activity`). Both are client-only,
+one-way, and never read back.
+
+**Rationale:** two complaints with one cause. A soldier's position is a
+pure function of the squad curve and formation (D-006 clause 1), so when
+a squad turns every slot rotates in the same instant and the block snaps
+round. And a squad standing perfectly still while a resource drains or an
+enemy dies looks broken.
+
+**Why this is allowed:** clause 2 permits client-side visual offsets
+never read back by simulation, and `cosmetic_offset.gd`'s own header
+already named this case — "the authoritative slot snaps, and the render
+layer is free to ease toward it."
+
+**Where the line sits, precisely.** `SoldierMotion` holds per-soldier
+state, which clause 1 forbids in the SIMULATION and clause 2 permits on
+the render path. Three properties keep it legitimate, and a test guards
+each: the authoritative transform is unmodified; it is client-only, so
+two clients may disagree and nothing notices; nothing reads back out.
+
+It lives in its own file rather than in `CosmeticOffset` because that
+class is deliberately pure and static — it has nowhere to put state, and
+that is what makes its boundary structural rather than a comment.
+
+**No new protocol.** Activity is inferred from what the client already
+has: `shape == "ring"` means a crew is working (D-058 replicates shape),
+and enemy squads in vision mean fighting.
+
+**Rejected alternatives:**
+- *Easing in the simulation* (rejected — clause 1, and it would put
+  soldier positions out of step between client and server).
+- *Replicating an activity flag* (rejected — more wire traffic for a
+  picture the client can already derive).
+
+**Consequences:** the client now carries per-soldier render state, which
+is new. A seam-sized jump snaps rather than easing, or a wrapped squad
+would send soldiers streaming across the world (D-035).
+
+**Revisit trigger:** if easing is ever consulted by selection, combat or
+the composition hash, the state has stopped being cosmetic and D-006's
+trigger has fired.
+
+---
+
+### D-058 · 2026-08-04 · Accepted — formation is a player's choice, and replicated state
+**Decision:** A squad's formation is chosen by the player from three
+options offered for every unit — **sparse**, **tight**, **ring** — and is
+mutable, replicated squad state rather than a fixed property of its
+UnitDef. Gatherers switch themselves: **ring while working a node,
+sparse while walking**, decided by the SIMULATION.
+
+`line`, `column` and `wedge` remain implemented for .tres defaults; they
+are simply not offered in the UI.
+
+**Rationale:** shape was set once at spawn from `UnitDef.formation_shape`
+and never changed, so a gathering crew stood in the same order whether it
+was marching or working — it looked like a squad that happened to be near
+a resource rather than one working it.
+
+**The part that made this more than a UI change:** shape is an input to
+`Formation.slot_offset`, so it decides where every soldier in the squad
+stands, and it is part of `composition_hash`. A client that missed a
+change would draw the squad in the wrong shape AND report a desync on a
+perfectly healthy system. So changing it needs the same treatment
+`alive` gets: `SquadSim.take_shape_dirty()` mirrors
+`BuildingSim.take_dirty()`, and the server resends ordinary `SQUAD_INFO`
+— the message that already carries shape — for changed squads only,
+filtered per client by visibility.
+
+`set_shape` ignores a no-op deliberately. That is what lets the economy
+assert the right shape every tick without generating wire traffic; without
+it a gathering crew would resend its composition ten times a second to
+every client that can see it, and D-003's zero-cost-when-idle claim would
+be false for the whole economy.
+
+**Why the sim decides the gatherer switch, not the client:** the haul
+phase is not replicated, so a client physically cannot infer it. The
+alternative — replicating the phase so the client could switch shape
+cosmetically — is strictly more wire traffic for the same picture, and
+would put a second copy of the rule on the untrusted side.
+
+**Rejected alternatives:**
+- *Client-side cosmetic shape override* (rejected — D-006 clause 2 allows
+  cosmetic offsets that are never read back, but shape is hashed, so a
+  local override would desync).
+- *A new wire message for formation* (rejected — `SQUAD_INFO` already
+  carries shape; a second message would be a second thing to keep in step
+  with the hash).
+- *Formation as a UnitDef property only* (rejected — that is what it was).
+
+**Consequences:** any future system that wants a squad to change shape —
+a shield wall on contact, skirmishers spreading under fire — now has the
+plumbing, and needs no new protocol. Note the cost is per CHANGE, so a
+mechanic that toggles shape every tick would be expensive; that is a
+reason to make such a rule hysteretic, not a reason to avoid it.
+
+**Revisit trigger:** if formation changes ever become frequent enough
+that `SQUAD_INFO` resends show up in the bandwidth figures (D-041's
+595 B/client/s), move shape into the curve stream instead of the discrete
+one.
+
+---
+
+### D-056 · 2026-08-02 · Provisional — match pacing, and what it is NOT solved by
+**Decision:** Target match length is **1–2 hours** (stated by the project
+owner, 2026-08-02). Two changes toward it, both data:
+
+1. **`UnitDef.damage_vs_buildings`** (schema addition against D-010),
+   default **0.15**. A squad's siege output is its ordinary damage scaled
+   by this. Soldiers are not siege engines.
+2. **Building health roughly tripled** — town centre 900 → 3000, barracks
+   600 → 1600, tower 450 → 1400, storehouse 300 → 700 — and **`squad_cap`
+   15 → 40** on both shipped maps.
+
+**Rationale:** matches were deciding at ~200–230 s. Measured cause, one
+squad against a 900 HP town centre with no modifier:
+
+| | time to raze |
+|---|---|
+| legion_militia (36 × 9.5) | **2.1 s** |
+| legion_heavy (24 × 15.0) | 2.9 s |
+| northmen_militia (44 × 6.5) | 3.1 s |
+
+A base evaporated the instant any army reached it. **That number was
+introduced by D-055 the same day**: siege damage was written as
+`damage * alive`, mirroring squad-vs-squad, because there was no prior
+building balance to mirror — buildings had never been damageable at all.
+
+`squad_cap` was 15 against D-018's target of **~50 squads/player**. About
+9 go to gatherers, so an "army" was ~6 squads. The architecture is built
+for 3× more army than the maps permitted, and M4 already showed the sim
+carrying 120 squads at 20 players inside D-020's tick budget — this was a
+data ceiling, never a performance one.
+
+**A separate field rather than an entry in `bonus_vs`.** `bonus_vs` reads
+1.0 for a missing key, which is right for a counter table (no entry =
+generalist) and exactly wrong here: forgetting it on a new unit would
+silently restore the three-second base. `damage_vs_buildings` defaults to
+the SAFE end, so an unaware .tres is conservative rather than
+catastrophic. It is also the hook a future siege archetype hangs on, with
+no code change.
+
+**Rejected alternatives:**
+- *Tune building HP alone.* Would need absurd numbers (a 6-squad army at
+  full damage is ~1,800 HP/second) and would make towers unkillable in
+  the same stroke.
+- *A constant in `combat.gd`.* Violates D-010, and forecloses siege units.
+
+**Consequences and the honest limit:** this does **not** reach 1–2 hours,
+and is not expected to. It stops bases evaporating and lets armies be
+armies. **The structural reason an hour is unreachable is that there is
+no progression at all** — four buildings and four units per civ, no ages,
+no tech, no upgrades — so after roughly three minutes there is nothing to
+do but fight. *Empires: DotMW* and *AoE* both stretch matches with epochs
+to climb, and that machinery does not exist here.
+
+**That is deliberately deferred to its own planning milestone** (project
+owner's call, 2026-08-02): get the basics working first, plan age/tech
+progression in a separate session. See Q15 in the open questions.
+
+**Amended 2026-08-04 — the slower opening is WANTED, not a regression.**
+
+Shrinking gatherer crews 16 → 5 tripled the time to staff an economy,
+because `AiPlayer.TRAIN_COOLDOWN` gates production ORDERS rather than
+labour: the same ~110 workers take 22 productions instead of 7. First
+contact moved from 121–160 s to ~326 s.
+
+I raised that as a bug to fix. **The owner's call is that the old ramp was
+far too quick and the longer one should stay.** It pulls the same
+direction as this decision's 1–2 hour target: an opening you can be
+attacked out of in two minutes is a race, not a strategy game.
+
+Recorded because the cooldown looks like a scaling defect to anyone
+reading it cold — the comment on the constant now says so too. The thing
+to re-derive when pacing changes is `ai-ladder`'s SECONDS default, which
+has already been stale once for precisely this reason: it ran 300 s while
+first contact landed at 326 s, reported `attacks=0`, and was read as a
+broken AI for a whole session.
+
+**Measured after the change** (`ai-ladder 2 900`), and two corrections
+worth keeping because both were confident and wrong:
+
+- Match length **~215 s → ~325 s decided**. Longer, still not the target.
+- **The economy was never the constraint.** I predicted the raised cap
+  would hit an economy wall on the reasoning that 7 gatherers could not
+  fund 33 squads. There is no upkeep, so a worker count caps the RATE of
+  buying and never the SIZE of an army. Legion banked a peak stockpile of
+  **2,480 while pinned at the squad cap**; northmen sat on 985 and
+  fielded eight squads. `AI_STATS` now reports `peak_stockpile`,
+  `afford_refusals` and `cap_refusals` so this is a number rather than an
+  argument.
+- **The cap of 15 WAS binding — for the AI.** I said it was not, which
+  was true of `test-load`'s bots (6 squads of 15) and false for the AI,
+  pinned at exactly 15–16 and reaching 41 once the cap moved. Generalised
+  from the bots without checking.
+
+**Still open, and an AI defect rather than a mechanic one:** legion held
+41 squads against northmen's 8, knew all three of its buildings, attacked
+93 times over 900 s and never finished the match.
+
+**Revisit trigger:** the age/tech milestone landing, which will re-derive
+these numbers from a phase-by-phase account of what a 1–2 hour match is
+made of, rather than from stopping the worst behaviour.
+
+---
+
+### D-055 · 2026-08-02 · Accepted — squads besiege buildings, and the game became winnable
+**Decision:** Squads damage enemy buildings, via
+`Combat.resolve_squads_vs_buildings` — the mirror of the
+`resolve_buildings` pass that already existed. Defenders come first: a
+squad with an enemy SQUAD in range never spends its attack on a
+structure. A building under construction is a legitimate target. Damage
+is continuous rather than a casualty roll, and skips `bonus_vs`.
+
+**Rationale:** `BuildingSim.damage()` was fully written — it even marked
+the building dirty so destruction would replicate through the path the
+server already used — and was called by nothing outside its own tests
+for two milestones. Buildings were indestructible.
+
+The consequence was larger than the omission sounds. D-033 ends a match
+by elimination; a town centre that survives everything keeps producing
+replacements; so **no match could be won by anybody**, human or AI. Every
+`ai-ladder` run drew at the time cap, and that was read as an AI weakness
+through several rounds of AI work on massing, target choice and scouting.
+None of it could have mattered.
+
+**How it was found, because the method is the transferable part:** making
+enemy buildings the AI's attack objective produced a ladder result
+*identical to the previous one in every statistic to three significant
+figures*. That is not a small effect, it is no effect — so the new branch
+could not be executing. Instrumenting the AI with `enemy_buildings_seen`
+settled it in one run: legion finds all three of its opponent's
+buildings, attacks 18–21 times, and destroys none.
+
+**This is the third declared-and-unread mechanic this project has
+shipped,** after `UnitDef.cost` and `BuildingDef.cost`. The shape is
+always a field or method with no caller, and it survives because nothing
+fails: the game runs and quietly lacks a rule. A test suite cannot see it
+— the code under test is correct. **A grep for uncalled public members is
+worth more here than another assertion.**
+
+**Rejected alternatives:**
+- *Reuse `_resolve_attack`.* It is steeped in squad assumptions —
+  fractional casualty carry, morale, rout, `armour_class`. A building has
+  none of those. Duck-typing `BuildingSim` through squad-shaped functions
+  is the subtle-bug factory `resolve_buildings` already declined.
+- *Carry a fractional accumulator.* D-024's accumulator exists because
+  casualties must be whole soldiers. `max_health` is a float, so the
+  problem does not arise.
+- *Apply `bonus_vs`.* `BuildingDef` has no `armour_class`, so D-032's
+  counter triangle has nothing to key on and the lookup would silently
+  read 1.0 while looking meaningful.
+
+**Consequences:** the ladder went from **0 of 3 decided** to **2 of 3**
+with no AI change whatsoever — same code, same seeds. A defended base is
+now a real objective, and a garrison now matters, because an attacker
+cannot ignore it.
+
+Cost, measured by `test-load 20 120`, all at 120 squads:
+
+| | µs/squad | combat |
+|---|---|---|
+| pass off | 77.02 | 5.99 |
+| pass on, `distance()` per pair | 92.10 | 24.24 |
+| pass on, bucketed | 76.50 | 7.33 |
+
+The first version scanned every building for every squad — ~7,700
+`distance()` calls a tick — on the reasoning that buildings are rare
+enough for a scan to beat a bucket rebuild. Measurement said otherwise.
+**That is the fourth appearance of one defect**, after `distance()` per
+candidate cell in vision (232 → 15 µs/squad, M2), `UnitRoster.by_id`
+walking the filesystem per produced squad (858 ms in one tick, M4), and
+terrain noise sampled per soldier per frame (M5). A hex disk is
+translation-invariant on a torus: reach for `TorusSpace.disk_offsets`
+before reaching for `distance()`.
+
+Two things left open and deliberately not dressed up:
+
+- **The 40.8 → 77 µs/squad rise against M4's figure at the same squad
+  count is not this change** — it was measured with the siege pass
+  disabled, so it belongs to M6's civs/teams/economy work and is still
+  unattributed.
+- **Worst-tick figures from this session are untrustworthy.** A run with
+  strictly *less* work reported 146 ms while the fuller run reported
+  52 ms, because the host was building containers throughout. Both runs
+  dropped zero ticks.
+
+**Revisit trigger:** anything wanting a different attack rate against
+buildings than against squads. Defenders-first is currently enforced
+twice — by `_engaged` and, implicitly, by both passes sharing one
+`_last_attack_tick` clock — and the test only goes red when *both* are
+removed. Splitting that clock silently removes one of the two.
+
+---
+
 ### D-038 · 2026-08-01 · Accepted — M4's first measurements
 **Decision:** Record what the scale sweep actually measured, and what it
 settles. Three things were being taken on faith and are now numbers:
@@ -237,6 +579,327 @@ The lesson generalises past this instance: **an anomalous measurement is
 a bug report about the harness first and the system second.** Three
 sessions of theorising about spawn placement would not have found this;
 reading the server's own error log did, immediately.
+
+---
+
+### D-052 · 2026-08-02 · Accepted — one colour per player
+**Decision:** Every player gets a colour from a twenty-entry palette,
+keyed by SEAT INDEX, and their units and buildings wear it. `PlayerColours`
+owns the palette; `ClientState.colour_of` maps a player to it.
+
+**Rationale:** colour used to come from `UnitDef.mesh_color`, which
+describes the unit TYPE — every spearman on the map was the same grey
+whoever owned him. That is fine in a screenshot and useless in a battle.
+The first thing a player needs to read off the screen is whose units
+those are; which kind they are is second, and shape still carries it. The
+unit colour survives as a 25% tint over the owner colour, so two unit
+types stay distinguishable within one army without muddying whose army it
+is.
+
+**Twenty entries, and no wrap.** D-018 targets 20 concurrent players, so
+the palette is exactly that long and out-of-range CLAMPS rather than
+wrapping — wrapping would hand a twenty-first player an existing
+player's colour in precisely the largest, most confusing match. A test
+asserts the count, that every entry is distinct, and that no two are
+within a small distance of each other, because "distinct" and
+"distinguishable" are not the same claim.
+
+**Keyed by seat, not player id.** Ids are not contiguous: AI seats are
+numbered from 1000 (D-051), so any modulo of a player id would give
+AI 1000 the same entry as player 1. There is a test for exactly that
+collision.
+
+**Derived, not sent.** The client already holds the seat list, so colour
+needs no message of its own and every client agrees by construction.
+
+**Consequences, and both were caught by looking at a picture rather than
+by a check:** sending the seat list to every client made
+`ClientState.in_lobby()` true forever, because it inferred "in a lobby"
+from HAVING seats — the client drew the lobby over a live match while the
+verdict reported terrain built, 96 soldiers and zero desyncs. The lobby
+packet now carries the match phase. Separately, the same commit that
+surfaced this had already been shipping a frame with no terrain at all
+for three commits (D-046's audit).
+
+---
+
+### D-051 · 2026-08-02 · Accepted — AI players are clients without a socket
+**Decision:** An AI player holds a real `ClientState` and is fed by the
+server's ordinary `_replicate()` loop through a `LoopbackPeer` — an
+object whose only job is to expose `send(channel, packet, flags)` and
+hand the bytes to that ClientState. Its decisions become real
+`NetProtocol` packets, handed to the server's own dispatcher.
+
+**Rationale: fog has to be a property, not a promise.** D-046 criterion 9
+requires an AI to see only what a human in its seat would. The obvious
+implementation — let the AI read `SquadSim` and be careful — makes that a
+convention one refactor can quietly break, and the failure mode is
+invisible: **an AI that sees through fog does not look like a bug, it
+looks like a good AI.** Nobody finds that by playing.
+
+Feeding it the same packets makes the guarantee structural. There is no
+code path by which an AI can learn about a squad the server did not send
+it, because the only thing it has is a ClientState and the only thing
+that writes to it is `handle_packet`. This is the same reasoning that
+made `bot_client.gd` drive the real ClientState rather than an imitation
+(D-018), applied where the stakes are higher.
+
+**Orders take the same road.** An AI's decisions go through
+`_dispatch()`, the same function a socket's packets go through, so
+ownership read from the sim, the squad cap, affordability and "is the
+match running" all apply unchanged. An AI calling into the simulation
+directly could do things no human could, and nobody would notice until
+they wondered why it never ran out of food.
+
+**Consequences:** the replication loop needed a two-line change — merge
+`_ai_clients` into the recipients — rather than a branch, which is the
+whole point of the loopback shape. Several `peer` parameters became
+untyped, and GDScript's type checker found every one of them
+immediately, which is the right kind of failure. `LoopbackPeer` is
+deliberately NOT a subclass of `ENetPacketPeer` and deliberately kept out
+of `_clients`: real sockets are legitimately treated as sockets there
+(ENet statistics, the lobby broadcast), and an impostor in that
+dictionary would be a null cast waiting to happen.
+
+`bot_client.gd`'s role is now distinct: it stays the LOAD-TEST harness,
+driving N virtual clients over a real socket. The in-game AI is a
+different job, and conflating them would give the load test a stake in AI
+quality.
+
+**What this AI is not:** good. It founds a town, gathers, trains, and
+attacks the nearest enemy it can see. D-046 makes AI a shipped feature,
+so this is the floor to build on rather than a scripted demo — and
+because it plays through the client interface, improving it cannot
+accidentally grant it privileges.
+
+**Rejected alternatives:** Privileged access to SquadSim with a
+"don't cheat" convention (rejected — see above). Running AI as separate
+processes connecting over ENet (rejected — a real socket per AI seat
+costs a connection and a scheduler slot to buy nothing; the loopback is
+the same guarantee without the transport). Putting AI in `_clients`
+(rejected — null casts, above).
+
+**Revisit trigger:** If an AI seat's ClientState becomes a measurable
+share of server memory or tick time at D-018's scale, the answer is a
+narrower view object with the same gating, not privileged access.
+
+---
+
+### D-047 · 2026-08-02 · Accepted — civilizations as data: archetypes, subsets, and per-civ tuning
+**Decision:** A **unit archetype** is the shared idea of a troop type —
+spearmen, archers, cavalry. A **UnitDef is one civ's version of an
+archetype**. Each civ fields a *subset* of the archetypes, and tunes the
+ones it has differently, so the same type is not the same troops in two
+armies.
+
+The worked example that set this: one civ's spearmen may be cheap and
+weak, fielded in numbers quickly, and lose to a smaller body of another
+civ's stronger spearmen. Same archetype, different answer to it.
+
+**Schema (logged against D-010):** `UnitDef` gains `archetype`. It
+already has `civ`, and it already has per-unit `cost_*`, stats and
+`bonus_vs`, so "cheap and weak" versus "expensive and strong" is
+expressible today with no new machinery.
+
+**A civ's roster is DERIVED, not listed.** A unit declares its `civ`;
+which archetypes a civ fields is simply which unit files name it. Adding
+a `.tres` gives that civ a type — no register to update, and no second
+place for the roster to disagree with itself. `CivDef` therefore carries
+only what is genuinely civ-level: display name, starting stockpile,
+buildings, and declarative modifiers.
+
+**Why `archetype` is not just `armour_class`.** `bonus_vs` already keys
+on `armour_class` (infantry/cavalry/missile), which is why the counter
+triangle survives new civs untouched — a civ added tomorrow is countered
+correctly by every civ written before it, with no edits anywhere. That
+was a genuinely lucky call in D-032. But `armour_class` has three values
+and exists to answer "what beats this". `archetype` answers "what IS
+this", and there are more archetypes than armour classes.
+
+**What archetype buys, and it is the point of the whole design:** every
+script can stay civ-agnostic. The client's train keybinds bind to
+*archetype*, so one key trains your civ's spearmen whatever that civ
+names them; production, UI grouping and AI all reason about archetypes.
+Nothing needs to know a civ id — which is exactly what D-046 criterion 3
+tests for.
+
+**Mechanical asymmetry stays declarative**, per D-046's governing
+constraint: a civ that wants a new mechanic adds a knob every civ has and
+turns it. `CivDef`'s modifiers are that surface.
+
+**Rejected alternatives:** One shared UnitDef per archetype plus per-civ
+stat multipliers in `CivDef` (rejected — less duplication, but it hides
+a unit's real numbers behind arithmetic in another file, and this project
+optimises for stats being directly readable and editable as text; balance
+work wants to see the number, not derive it). Per-civ unit ids referenced
+directly in `bonus_vs` (rejected — every new civ would then require
+editing every existing civ's counter lists, which is precisely the
+"adding a civ is an engineering project" failure D-046 exists to
+prevent).
+
+**Consequences:** The existing four units become one civ's roster and
+gain an `archetype`. The client's keybind table stops naming units and
+starts naming archetypes. `UnitRoster` gains civ- and archetype-aware
+lookups; `UnitRoster.first()` — currently "the default unit" — has to
+become civ-relative or its callers do.
+
+**Revisit trigger:** If two civs want the same archetype to differ
+structurally rather than numerically — different formation behaviour, a
+different number of attacks — that is the moment to check whether it is
+still a parameter or has become a branch, and to amend D-046 honestly if
+it has.
+
+---
+
+### D-046 · 2026-08-02 · Accepted — M6's exit criteria
+**Decision:** M6 is **"a civilization is data"** — proved by a second
+civ, a lobby that lets people choose one, and AI players an admin can
+seat. Written before the code, per D-043's standing rule.
+
+**The governing constraint, because two of the answers pull against each
+other.** M6 wants asymmetry that is *real* — unique units, different
+stats, and different mechanics — and it wants adding a civ to need no
+new code. Mechanical asymmetry is exactly the thing that normally becomes
+`if civ == "romans"`, and the third civ then needs a programmer.
+
+So the rule for this milestone: **mechanical asymmetry is expressed as
+declarative parameters the engine already interprets, never as a per-civ
+branch.** A civ that wants a genuinely new *mechanic* is a schema
+addition (logged against D-010) implemented generically for every civ —
+one more knob everybody has, which one civ happens to turn. That is what
+keeps "a mix of all three" and "data, not code" from being contradictory,
+and criterion 3 below is what makes it falsifiable rather than an
+intention.
+
+**The criteria:**
+
+*Civilizations as data (D-047)*
+
+1. A `CivDef` resource in `/civs/*.tres` defines a civ: display name,
+   which units and buildings it may field, starting stockpile, and its
+   declarative modifiers. Server, client and tests discover civs through
+   one loader, the way `UnitRoster` does for units.
+2. A **second civ exists and is genuinely different**: at least one
+   exclusive unit the other cannot build, different stat tuning on the
+   shared core, and at least one mechanical difference expressed purely
+   as `CivDef` data.
+3. **The falsifiable one.** A test asserts that **no `.gd` file mentions
+   any civ id**. Adding a third civ must require only `.tres` files. This
+   is the criterion the whole milestone turns on, and it is trivially
+   observed to fail by hardcoding one civ id anywhere.
+4. Production, construction and the roster all filter by the acting
+   player's civ, server-side. A player cannot build another civ's units,
+   and a test proves the server refuses it rather than the UI merely
+   hiding it (D-002 — the client is not trusted).
+
+*Lobby, admin and AI players (D-048)*
+
+5. A lobby phase with **seats**: each seat has an occupant (human, AI, or
+   empty) and a civ choice. The match starts when the admin starts it,
+   not when a connection count is reached.
+6. **One admin**, the first human to connect. If they leave, it passes to
+   the next human deterministically. Only the admin may add or remove AI
+   players, set an AI's civ, or start the match.
+7. **Each human picks their own civ**, and the server enforces that: a
+   client changing another seat's civ is refused, and a test proves it.
+8. **"Random" is always an option**, resolved at match start, **uniform
+   across civs** — no weighting toward any civ for now. Resolution is
+   seeded so a replay reproduces the same draw (D-016). A test asserts
+   the distribution is flat over many draws, and that the same seed
+   yields the same civ.
+9. **AI players are server-side and see only what a human in their seat
+   would see.** They read the world through the same `visible_to(player)`
+   gate that gates replication (D-025), so an AI cannot read through fog.
+   A test proves an AI's knowledge is a subset of its vision — the same
+   shape as D-026 criterion 6's fog check, and for the same reason: an AI
+   that cheats is not a test of the game.
+
+*It has to work*
+
+10. `just test-load` runs a match with **both civs present**, and the
+    verdict fails if either civ never fielded a unit — a run where
+    everyone happened to be one civ proves nothing about the second.
+11. Replays reconstruct a match including civ assignment (D-016).
+12. `just test-unit` green; `just test-client` green and the PNG
+    inspected; `just test-load 20 120` still clean with zero ticks over
+    D-020's budget.
+13. Every new check **observed to fail** before it is trusted (D-022).
+
+*The question M3 left open*
+
+14. **A human session against AI players of the other civ**, judged on
+    whether the asymmetry reads as interesting rather than merely
+    different. This closes D-027's last criterion, which has been
+    outstanding since M3 and which no automated check can answer.
+
+**Rejected alternatives:** Stat-tuning-only asymmetry (rejected — it
+would prove the data pipeline while telling us nothing about whether the
+architecture supports asymmetry anyone would notice). Per-civ code
+branches (rejected — it makes civ 3 a programming task and quietly
+converts D-015's "4-6 civilizations at launch" into six engineering
+projects). Assigning civs by slot with no lobby (rejected — the lobby is
+also where AI players get seated, and AI opponents are a shipped feature
+of this game rather than test scaffolding).
+
+**Consequences:** `bot_client.gd`'s role splits. It stays the load-test
+harness; the *in-game* AI is a separate, server-side thing that occupies
+a seat. Those are different jobs and conflating them would give the load
+test a stake in AI quality.
+
+**Revisit trigger:** If criterion 3 cannot be met without contorting the
+data model — if some mechanic genuinely resists being a parameter — that
+is worth knowing early. Record the mechanic, take the code branch
+deliberately, and amend this entry rather than pretending the rule held.
+
+---
+
+**Audited 2026-08-02 — 13 of 14 met; the last one needs a human.**
+
+| # | Verdict | Evidence |
+|---|---|---|
+| 1 | Met | `CivDef` in `/civs/*.tres`, `CivRoster` loads them |
+| 2 | Met | Northmen field skirmishers and no heavy foot; Legion field heavy foot and no cavalry; shared archetypes tuned apart |
+| 3 | **Met** | no `.gd` outside `tests/` names a civ; observed failing by putting one id in a comment |
+| 4 | Met, and structurally | the wire carries an ARCHETYPE, so a client cannot name another civ's unit at all |
+| 5 | Met | seats with kind, civ, team |
+| 6 | Met | first human is admin, passes to the lowest remaining |
+| 7 | Met | server-side; a player changing another seat's civ is refused |
+| 8 | Met | uniform over 4,000 draws, seeded, resolved at start |
+| 9 | **Met, and structurally** | AI is a client without a socket (D-051) |
+| 10 | Met | `CIVS_FIELDED 2 of 2 — legion=50, northmen=70` at 20 players; observed failing when forced to one civ |
+| 11 | Met | `replay-info` reports `Player 1 = legion, Player 2 = northmen…` |
+| 12 | Met | 339 tests; `test-load 20 120` clean, 0 of 1,323 ticks over budget; `test-client` clean **and the PNG opened** |
+| 13 | Met | every new check perturbed and watched to fail |
+| 14 | **Outstanding** | needs a human at the wheel |
+
+**Criterion 12 is the one worth reading twice, because it nearly passed
+while broken.** The capture reported `ok` — 96 soldiers, 97 distinct
+colours, zero desyncs — over a frame containing **no terrain at all**.
+D-049 made the client wait for map settings before generating the world,
+and those were only sent when an admin started a lobby; a server without
+a lobby never sent them. Every number was identical to a healthy run,
+because the HUD and the soldiers were genuinely fine. Only the world was
+missing.
+
+Two things came out of it. The settings are now sent from
+`_admit_player`, which both ways of starting a match go through. And the
+capture's verdict asserts the terrain was actually built — a check whose
+failing state was not simulated but *observed*, since the previous run
+produced exactly it.
+
+The lesson is one this project keeps paying for and had written down
+already: **"a green run is not the same as a run that happened", and a
+green verdict is not the same as a correct picture.** The recipe's own
+docstring says the PNG "is meant to be looked at, not just asserted
+about" — and it was not looked at for three commits, which is precisely
+how long the regression survived.
+
+**Two things deliberately not done**, recorded so they are choices rather
+than oversights: seats cannot be opened or closed (a slot is a human who
+joined or an AI the host added), and the AI is not good — it founds,
+gathers, trains and attacks the nearest enemy it can see, with no
+scouting, no expansion and no use of the counter triangle it is subject
+to.
 
 ---
 
@@ -2926,3 +3589,41 @@ items resolved as:
 - **Q14 — Terminology: what does "seamless" mean here** — no loading
   screens between regions, or one contiguous map? Implies very different
   streaming work.
+- **Q15 — Age/tech progression, and what a 1–2 hour match is made of.**
+  **Owner has scheduled this as its own planning milestone** (2026-08-02)
+  — the basics first, this planned separately.
+
+  The target is 1–2 hours (D-056). Matches currently decide in about
+  three minutes, and D-056's tuning addresses only the worst of that.
+  **The structural cause is that there is no progression to climb**: four
+  buildings and four units per civ, no ages, no tech, no upgrades, so
+  after roughly three minutes there is nothing to do but fight. No amount
+  of health or squad-cap tuning reaches an hour from there.
+
+  What the planning session has to settle, at minimum:
+  - Ages/epochs: how many, what gates advancing, what each unlocks.
+  - Whether progression is per-civ (D-047 says civs are data and no
+    script may name one, so a tech tree must be declarative too).
+  - What a 1–2 hour match is made of, phase by phase — opening,
+    expansion, mid-war, late — because D-056's numbers should be DERIVED
+    from that account rather than tuned until the symptom stops.
+  - Economy scale: `NODE_STOCK` is 900 per node with a node every 11
+    cells; an hour-long match at 40 squads/player may exhaust the map,
+    which is either a designed pressure or a bug depending on the answer.
+  - **Is an army a ratchet or a running cost?** *(raised by the owner,
+    2026-08-02.)* There is **no upkeep** today — a unit costs a one-time
+    price and nothing drains per tick — so army size only ever grows and
+    losing one costs nothing but the rebuild. Upkeep would convert it to
+    a steady state you keep paying for, which is what makes losing an
+    army hurt, makes raiding workers a real strategy, and stops the
+    endgame being two maxed doomstacks with nowhere to go. It is also the
+    difference between a late game with economic texture and one where
+    everybody accumulates until the map is bare.
+
+    Deliberately NOT bolted on now: it touches economy, AI, UI and every
+    balance number, and the phase-by-phase account of a 1–2 hour match is
+    exactly what should decide it. Note it interacts with the squad cap —
+    upkeep is a *soft* cap, and having both may be one mechanism too many.
+  - Interaction with D-018's scale target and D-020's tick budget: more
+    ages means more squads alive later, and the 1,000-squad figure is
+    already the ceiling the architecture was sized for.

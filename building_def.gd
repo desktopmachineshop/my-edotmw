@@ -22,6 +22,21 @@ class_name BuildingDef
 ## what put a cell in it.
 @export var vision_range: float = 16.0
 
+## How much ground this building denies to OTHER players, in cells
+## (D-062). Nobody hostile may found anything inside this radius.
+##
+## Per building rather than one global constant, because a town centre
+## claims a settlement's worth of ground and a tower claims its own
+## footprint — and making it data means a civ or a scenario can tune
+## territory without touching a script (D-010).
+##
+## Allies are exempt: D-050 gives teams shared vision and a shared front,
+## and a teammate unable to build beside your hall would be a worse
+## partner than an enemy. It is enforced server-side (D-002) and re-checked
+## on arrival, because a builder ordered from out of reach walks for
+## twenty seconds and the ground may be claimed by the time it gets there.
+@export var no_build_radius: int = 4
+
 # Combat (D-032). Only the tower has an attack; everything else leaves
 # `damage` at zero and is simply a target. Buildings resolve attacks in a
 # pass separate from the squad path — `Combat._check_rout` calls

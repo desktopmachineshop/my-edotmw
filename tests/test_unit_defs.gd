@@ -14,7 +14,17 @@ extends GutTest
 
 const UNITS_DIR := "res://units"
 
-const VALID_FORMATIONS := ["line", "column", "wedge", "loose"]
+## Formations come from /formations/*.tres now (D-058), so this reads the
+## roster rather than mirroring a list. A hardcoded copy here was exactly
+## the thing that made adding a formation two edits instead of one file,
+## and a mirror that drifts is worse than no check.
+static func _valid_formations() -> Array:
+	var out := []
+	for def in FormationRoster.load_all():
+		out.append(String(def.id))
+	return out
+
+
 const VALID_PRIMITIVES := ["capsule", "box", "cylinder", "hull"]
 
 
@@ -53,8 +63,8 @@ func test_every_unit_def_loads_and_matches_schema() -> void:
 		assert_ne(String(def.id), "", "%s has an empty id" % path)
 		assert_gt(def.squad_size, 0, "%s has a non-positive squad_size" % path)
 		assert_gt(def.health, 0.0, "%s has non-positive health" % path)
-		assert_has(VALID_FORMATIONS, def.formation_shape,
-			"%s has formation_shape '%s' outside the UnitDef enum" % [path, def.formation_shape])
+		assert_has(_valid_formations(), def.formation_shape,
+			"%s has formation_shape '%s' — no such file under /formations" % [path, def.formation_shape])
 		assert_has(VALID_PRIMITIVES, def.mesh_primitive,
 			"%s has mesh_primitive '%s' outside the UnitDef enum" % [path, def.mesh_primitive])
 		# A squad that starts already below its own rout threshold would
@@ -75,8 +85,8 @@ func test_unit_def_ids_are_unique() -> void:
 
 
 func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
-	var def := load("res://units/militia.tres") as UnitDef
-	assert_not_null(def, "militia.tres should load as a UnitDef")
+	var def := UnitRoster.first()
+	assert_not_null(def, "the roster should ship at least one unit")
 	if def == null:
 		return
 
@@ -99,7 +109,7 @@ func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
 
 
 func test_rebuild_is_idempotent_and_tracks_squad_size() -> void:
-	var def := load("res://units/archers.tres") as UnitDef
+	var def := UnitRoster.first()
 	var unit := PrimitiveUnit.new()
 	autofree(unit)
 
@@ -170,3 +180,27 @@ func test_a_squad_stops_drawing_soldiers_it_has_lost() -> void:
 
 	assert_eq(multimesh.visible_instance_count, 3,
 		"Three soldiers were given; anything else is drawing the dead")
+
+
+func test_a_gatherer_costs_about_the_same_per_head_as_a_soldier_does() -> void:
+	# Crew size and cost have to move together. Gatherer squads went 16
+	# men to 5 and their cost stayed at 50 food, which made a worker 3.2x
+	# more expensive per head overnight — so the AI spent everything
+	# assembling labour, never afforded a barracks, and stopped attacking
+	# entirely. The ladder caught it; nothing else would have.
+	#
+	# A band rather than a number: this is balance, and balance should
+	# move. What must not happen is a squad_size edit silently changing
+	# what a unit of labour costs.
+	var gatherers := UnitRoster.by_id(&"gatherers")
+	assert_not_null(gatherers, "the roster should ship gatherers")
+	if gatherers == null:
+		return
+
+	var per_head := float(gatherers.cost_food) / float(maxi(gatherers.squad_size, 1))
+	assert_lt(per_head, 6.0,
+		"a gatherer costs %.1f food per head — shrink the crew and the cost has to follow"
+		% per_head)
+	assert_gt(per_head, 1.0,
+		"a gatherer costs %.1f food per head, which is close enough to free that "
+		% per_head + "there is no economic choice in making one")

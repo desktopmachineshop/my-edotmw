@@ -44,6 +44,36 @@ var _clients := {}
 var _next_player := 1
 var _peak_clients := 0
 
+## player id -> civ id (D-047).
+##
+## Assigned round-robin at join for now, so a mixed match is the default
+## rather than a coincidence — D-046 criterion 10 fails a load test in
+## which one civ never fielded anything, and that must be a real finding
+## rather than an artifact of everyone drawing the same civ.
+##
+## D-048's lobby replaces this with seats and player choice; the shape of
+## the lookup does not change, only who decides.
+var _civs := {}
+
+## LoopbackPeer -> the same record shape as _clients, for AI seats
+## (D-051). Kept OUT of _clients on purpose: several places legitimately
+## treat that dictionary's keys as real sockets (ENet statistics, the
+## lobby broadcast), and a duck-typed impostor there would be a null cast
+## waiting to happen.
+var _ai_clients := {}
+var _ai_players: Array = []
+
+
+## This player's civ. Never a hardcoded id — the roster is the authority,
+## and no script may name a civ (D-046 criterion 3).
+func _civ_of(player: int) -> StringName:
+	if _civs.has(player):
+		return _civs[player]
+	var all := CivRoster.ids()
+	if all.is_empty():
+		return &""
+	return all[(player - 1) % all.size()]
+
 var _config: MapConfig
 var _sim: SquadSim
 var _replay: ReplayLog
@@ -57,6 +87,9 @@ var _passable := PackedByteArray()
 ## is filled in.
 var _spawn_points: Array[Vector2i] = []
 
+## What the world is, or will be once the lobby settles (D-049).
+var _settings: MapSettings
+
 ## How near a squad must be to found a building, in cells. A player
 ## should not be able to plant a town hall across the map from the
 ## founders who are supposedly building it.
@@ -67,6 +100,14 @@ const BUILD_REACH_CELLS := 3
 ## appended to `_sim.last_combat_events`, because the next tick overwrites
 ## that; they wait here until the next `_replicate()` sends them.
 var _pending_events: Array = []
+
+## squad -> { "def_id": StringName, "cell": Vector2i, "peer": ... }.
+##
+## A build ordered from out of reach: the squad walks to the site and
+## `_advance_pending_builds` finishes the job on arrival. Cleared the
+## moment the player orders that squad anywhere else, because a builder
+## told to go somewhere has been told to stop building.
+var _pending_builds := {}
 var _reported_match_end := false
 
 var _accumulator := 0.0
@@ -137,7 +178,57 @@ func _ready() -> void:
 		get_tree().quit(1)
 		return
 
-	var space := _config.to_space()
+	# What the world WILL be. Seeded from the map file, then edited in the
+	# lobby (D-049).
+	_settings = MapSettings.new()
+	_settings.width = _config.width
+	_settings.height = _config.height
+	_settings.player_slots = _config.player_slots
+	_settings.seed = int(args.get("seed", 1337))
+	_settings.apply_preset(TerrainPresetRoster.by_id(_settings.preset))
+
+	_match = MatchState.new()
+	_match.players_expected = maxi(1, int(args.get("players", 1)))
+	_match.require_admin_start = int(args.get("lobby", 0)) != 0
+	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
+	_match.squad_cap = _config.squad_cap
+	_match.map_settings = _settings
+
+	# In lobby mode the world does NOT exist yet, and cannot: its size,
+	# seed and shape are all still being chosen (D-049). This is why
+	# terrain generation moved out of startup — the old code built a map
+	# the moment the server booted, which was before anybody had asked for
+	# one, and the client did the same on connect. The lobby has nothing
+	# behind it because there is genuinely nothing there yet.
+	if not _match.require_admin_start:
+		_build_world()
+		# AI opponents without a lobby, so `run-client` and the load test can
+		# have real opposition (D-051).
+		var ai_wanted := int(args.get("ai", 0))
+		var civs := CivRoster.ids()
+		for i in range(ai_wanted):
+			_seat_ai(1000 + i, civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
+
+	_host = ENetConnection.new()
+	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
+	if err != OK:
+		push_error("server: could not bind UDP %d (error %d)" % [_port, err])
+		get_tree().quit(1)
+		return
+
+	print("server: listening on 0.0.0.0:%d — map %s, tick %d Hz%s" % [
+		_port, _config.id, int(SquadSim.TICK_HZ),
+		" (lobby)" if _match.require_admin_start else ""])
+	if _run_seconds > 0.0:
+		print("server: will stop after %.1f simulated seconds" % _run_seconds)
+
+
+## Generate the world the settings describe. Called at startup when there
+## is no lobby, and when the admin starts a match when there is (D-049).
+func _build_world() -> void:
+	if _sim != null:
+		return
+	var space := _settings.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
 
 	# Terrain is real to the SIMULATION, not just to the renderer.
@@ -161,7 +252,7 @@ func _ready() -> void:
 	# One TerrainGen for the whole server: passability, and the resource
 	# field derived from the same biomes (D-037). Two instances would be
 	# two sources of truth about the same ground.
-	var terrain := TerrainGen.new()
+	var terrain := _settings.to_terrain()
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
 
@@ -172,8 +263,18 @@ func _ready() -> void:
 	# points. Recomputing is deterministic and would agree anyway, but only
 	# as long as nobody passes a different `passable`, which is exactly the
 	# kind of drift that is cheaper to make impossible.
-	_spawn_points = _config.spawn_points(_passable)
-	var seating := _config.validate_spawns(_passable)
+	# Spawn placement follows the LOBBY's chosen slot count and map size
+	# (D-049), not the map file's — the file is only the starting point
+	# those settings were seeded from.
+	var spawn_config := MapConfig.new()
+	spawn_config.width = _settings.width
+	spawn_config.height = _settings.height
+	spawn_config.player_slots = _settings.player_slots
+	spawn_config.min_spawn_spacing = _config.min_spawn_spacing
+	spawn_config.spawn_seed = _config.spawn_seed + _settings.seed
+	_spawn_points = spawn_config.spawn_points(_passable)
+
+	var seating := spawn_config.validate_spawns(_passable)
 	if seating != "":
 		# Not fatal: a short-seated map still plays, players just share
 		# starts. Fatal would take down a running server over a map tuning
@@ -182,8 +283,9 @@ func _ready() -> void:
 		# meant to be measuring.
 		push_warning("server: %s" % seating)
 		print("server: WARNING — %s" % seating)
-	print("server: %d spawn points, min spacing %d" % [
-		_spawn_points.size(), _config.min_spawn_spacing])
+	print("server: world %dx%d, preset %s, seed %d — %d spawn points" % [
+		_settings.width, _settings.height, _settings.preset, _settings.seed,
+		_spawn_points.size()])
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
@@ -194,7 +296,7 @@ func _ready() -> void:
 	# the map's symmetry order, so all four starts hold equal resources
 	# without anything here reasoning about fairness (D-036).
 	_economy = Economy.new(space)
-	_economy.generate(terrain, _config.symmetry_order)
+	_economy.generate(terrain, 1)
 	# Fairness on an asymmetric map is a post-pass now, not a property of
 	# the generator (D-036 revised): every start is guaranteed a minimum
 	# of each resource within reach.
@@ -203,20 +305,13 @@ func _ready() -> void:
 	_sim.economy = _economy
 	print("server: %d resource nodes generated" % _economy.node_count())
 
-	# Match lifecycle (D-033). Defaults to 1 so the single-client
-	# development flows (`run-client`, `test-client`) behave exactly as
-	# they did before matches existed: the match starts on the first join
-	# and the victory rule never fires with fewer than two players.
-	_match = MatchState.new()
-	_match.players_expected = maxi(1, int(args.get("players", 1)))
-	_match.squad_cap = _config.squad_cap
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
 	# (D-024) — MapConfig has no dedicated seed field, so this derives one
 	# deterministically from fields it already has. Same map, same seed,
 	# every run: that is what lets a replay reproduce the exact battle
 	# that happened rather than a different one (D-016).
-	_sim.combat_seed = NetProtocol.seed_from(String(_config.id), _config.width, _config.height)
+	_sim.combat_seed = NetProtocol.seed_from(String(_config.id), _settings.width, _settings.height) + _settings.seed
 
 	_replay = ReplayLog.new()
 	# Replays are the curve log (D-016), written from M1 onward.
@@ -224,18 +319,6 @@ func _ready() -> void:
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % replay_path)
-
-	_host = ENetConnection.new()
-	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
-	if err != OK:
-		push_error("server: could not bind UDP %d (error %d)" % [_port, err])
-		get_tree().quit(1)
-		return
-
-	print("server: listening on 0.0.0.0:%d — map %s (%dx%d), tick %d Hz" % [
-		_port, _config.id, _config.width, _config.height, int(SquadSim.TICK_HZ)])
-	if _run_seconds > 0.0:
-		print("server: will stop after %.1f simulated seconds" % _run_seconds)
 
 
 func _exit_tree() -> void:
@@ -262,6 +345,11 @@ func _process(delta: float) -> void:
 		return
 
 	_service_network()
+
+	# No world, no ticks. In lobby mode the simulation does not exist yet
+	# (D-049), and everything below this line assumes it does.
+	if _sim == null:
+		return
 
 	# Fixed-timestep accumulator (D-023). Whole ticks are consumed and the
 	# remainder carried, so the sim rate is independent of frame rate.
@@ -298,7 +386,19 @@ func _process(delta: float) -> void:
 					float(_sim.last_buildings_usec) / 1000.0,
 					float(_sim.last_production_usec) / 1000.0,
 					float(_sim.last_economy_usec) / 1000.0])
+		# Rubble is walkable again. Cheap to check — the list is empty on
+		# almost every tick — and skipping it would leave an invisible wall
+		# where a razed town hall used to be.
+		if not _sim.destroyed_buildings.is_empty():
+			_refresh_passability()
+		_advance_pending_builds()
 		_advance_match()
+		# AI seats think on the server's clock, after the world has moved
+		# but before it is replicated, so they act on the same tick a human
+		# would be reacting to (D-051).
+		for brain in _ai_players:
+			brain.set_time(_sim.time)
+			brain.update(_sim.time)
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
@@ -371,6 +471,21 @@ func _print_summary(reason: String) -> void:
 		_peak_rtt_ms, _peak_loss_fraction * 100.0,
 		_min_throttle if _min_throttle < 1e8 else 1.0])
 
+	var fielded := _civs_fielded()
+	var civ_parts := []
+	for civ in fielded:
+		civ_parts.append("%s=%d" % [civ, fielded[civ]])
+	civ_parts.sort()
+	# A structured marker, not prose: `just test-load` fails the run if
+	# fewer than two civs ever fielded a squad (D-046 criterion 10).
+	print("server: CIVS_FIELDED %d of %d — %s" % [
+		fielded.size(), CivRoster.ids().size(), ", ".join(civ_parts)])
+
+	for brain in _ai_players:
+		print("server: %s" % brain.stats_line())
+	print("server: MATCH_RESULT winner=%d phase=%d" % [
+		_match.winner, int(_match.phase)])
+
 	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
 		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
 		float(_worst_tick_usec) / 1000.0, _worst_tick_index])
@@ -384,6 +499,9 @@ func _print_summary(reason: String) -> void:
 	# to read from any point in the log, including the periodic status
 	# line below.
 	print("server: FOG_TOTAL_SQUADS=%d" % _sim.squad_count())
+	# The same shape for resources (D-061): the best-informed client must
+	# know FEWER nodes than exist, or positions are not being gated.
+	print("server: FOG_TOTAL_NODES=%d" % (_economy.node_count() if _economy != null else 0))
 
 
 func _print_status() -> void:
@@ -424,13 +542,58 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	var player := _next_player
 	_next_player += 1
 
+	# In lobby mode nothing is spawned yet, because nothing CAN be: a seat
+	# may still say "Random", so this player has no civ, no roster and no
+	# opening stockpile until the admin starts (D-048). Spawning first and
+	# correcting later would mean a founding party existing before the
+	# civilisation that raised it.
+	_clients[peer] = {"player": player, "visible": {}}
+	_match.add_player(player)
+	if _match.phase == MatchState.Phase.LOBBY:
+		_broadcast_lobby()
+		peer.send(0, NetProtocol.encode_welcome(player, _settings.width, _settings.height,
+			PackedInt32Array(), _spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
+		_peak_clients = maxi(_peak_clients, _clients.size())
+		return
+
 	# The returned ids go to the client so it knows what it starts with.
 	# They are deliberately NOT cached on the connection record: ownership
 	# lives in the sim (see _validated_squad), and a second copy here is
 	# what silently stopped every produced squad from taking orders.
-	var squads := _spawn_squads_for(player)
-	_clients[peer] = {"player": player, "visible": {}}
 	_peak_clients = maxi(_peak_clients, _clients.size())
+	_admit_player(peer, player)
+
+
+## Give a player their opening — squads, stockpile, and everything a
+## client needs to draw the world.
+##
+## Shared by the two ways a match can begin: joining an already-running
+## server, and the admin starting a lobby (D-048). It has to be one
+## function, because "what a player starts with" is exactly the kind of
+## thing that drifts when written twice — the same reasoning that made
+## ownership read from the sim rather than a per-connection copy.
+## `peer` is deliberately untyped: it is an ENetPacketPeer for a human
+## and a LoopbackPeer for an AI seat (D-051), and both answer send().
+func _admit_player(peer, player: int) -> void:
+	# The world's concrete numbers FIRST, because the client cannot build
+	# terrain without them (D-049) and will sit on an empty scene until
+	# they arrive.
+	#
+	# Sent here rather than only at match start: a match begins two ways —
+	# an admin pressing start in a lobby, or a player connecting to a
+	# server that has no lobby — and hanging this off the first meant
+	# every non-lobby client drew no terrain at all. Every counter still
+	# passed (squads drawn, soldiers derived, zero desyncs, colours in the
+	# frame) because the HUD and the soldiers were fine. Only the world
+	# was missing, and only looking at the picture found it.
+	# The seat list too, so the client knows every player's colour
+	# (D-052) whichever way the match began. Small, and sent once.
+	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+		_settings.to_dict(), int(_match.phase)), ENetPacketPeer.FLAG_RELIABLE)
+	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+	var squads := _spawn_squads_for(player)
 
 	# The new player's own squads need a vision stamp before anything asks
 	# visible_to() about them — own squads are always visible regardless
@@ -467,28 +630,46 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# worst, leaving it alone means their next tick re-announces a squad
 	# that only just became visible via this broadcast — redundant, never
 	# a leak, and self-correcting within one tick.
-	_clients[peer]["visible"] = _dict_from_ids(_sim.visible_to(player))
+	_record_for(peer)["visible"] = _dict_from_ids(_sim.visible_to(player))
 
 	# Starting stockpile (D-028): gatherers cost food and food comes from
 	# gatherers, so a player starting empty could never begin.
-	_economy.credit(player, Economy.ResourceKind.FOOD, _config.starting_food)
-	_economy.credit(player, Economy.ResourceKind.WOOD, _config.starting_wood)
-	_economy.credit(player, Economy.ResourceKind.GOLD, _config.starting_gold)
-	_economy.credit(player, Economy.ResourceKind.STONE, _config.starting_stone)
+	#
+	# From the CIV, falling back to the map (D-047). A civ built on cheap
+	# numbers wants a different opening bank than one built on expensive
+	# quality, and that is civ-level data rather than a map property.
+	var civ := CivRoster.by_id(_civ_of(player))
+	_economy.credit(player, Economy.ResourceKind.FOOD,
+		civ.starting_food if civ != null else _config.starting_food)
+	_economy.credit(player, Economy.ResourceKind.WOOD,
+		civ.starting_wood if civ != null else _config.starting_wood)
+	_economy.credit(player, Economy.ResourceKind.GOLD,
+		civ.starting_gold if civ != null else _config.starting_gold)
+	_economy.credit(player, Economy.ResourceKind.STONE,
+		civ.starting_stone if civ != null else _config.starting_stone)
 	_send_wallet(peer, player)
-	# Where the resources are, once. A player cannot be asked to send
-	# workers to a node they have no way of finding.
-	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries()),
-		ENetPacketPeer.FLAG_RELIABLE)
+	# Only the resources this player can currently SEE (D-061).
+	#
+	# This used to send every node on the map, once, to everybody — the
+	# comment said "a player cannot be asked to send workers to a node
+	# they have no way of finding", which is true and was solved the wrong
+	# way. Knowing every resource position from the moment you join tells
+	# you where an opponent must expand and where to raid, without
+	# scouting for any of it, and a modified client could read it straight
+	# out. That is precisely the class of knowledge D-004's curve gating
+	# and D-025's fog exist to withhold.
+	#
+	# The rest arrive as they are revealed, in `_replicate`.
+	_send_visible_nodes(peer, player, _record_for(peer))
 
-	if _match.add_player(player):
-		print("server: MATCH_START — %s" % _match.describe())
-
+	# Registration happened at the top of _on_connect, before the lobby
+	# branch — a player has to be seated before anyone can decide whether
+	# there is a lobby to wait in.
 	print("server: player %d joined with %d squads (%d connected) — match %s" % [
 		player, squads.size(), _clients.size(), _match.describe()])
 
 
-func _send_squad_info(peer: ENetPacketPeer, player: int) -> void:
+func _send_squad_info(peer, player: int) -> void:
 	var entries := _sim.squad_info_entries(_sim.visible_to(player))
 	if entries.is_empty():
 		return
@@ -513,8 +694,9 @@ func _dict_from_ids(ids: Array) -> Dictionary:
 ## is what lets replay-info report a final strength for a squad that
 ## never fought and so never appears in a SQUAD_COMBAT event.
 func _broadcast_squad_info() -> void:
-	for peer in _clients:
-		_send_squad_info(peer, int(_clients[peer]["player"]))
+	var recipients := _recipients()
+	for peer in recipients:
+		_send_squad_info(peer, int(recipients[peer]["player"]))
 
 	if _replay != null and _replay.is_open():
 		var entries := _sim.squad_info_entries(_all_squad_ids())
@@ -526,6 +708,8 @@ func _broadcast_squad_info() -> void:
 ## (D-036). Sent so no client has to reimplement spawn placement to know
 ## where anyone starts.
 func _spawn_cell_indices() -> Array:
+	if _sim == null:
+		return []
 	var out := []
 	for point in _spawn_points:
 		out.append(_sim.space.index(point))
@@ -540,7 +724,7 @@ func _all_squad_ids() -> Array:
 
 
 func _on_disconnect(peer: ENetPacketPeer) -> void:
-	var record = _clients.get(peer, null)
+	var record = _record_for(peer)
 	if record != null:
 		var player := int(record["player"])
 		_sim.replicator.forget_client(player)
@@ -565,6 +749,18 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 		var data := peer.get_packet()
 		if data.size() < 1:
 			continue
+		_dispatch(peer, data)
+
+
+## One place a command is acted on, whether it arrived over a socket or
+## came from an AI player sitting in this process (D-051).
+##
+## AI orders go through the SAME handlers and therefore the same checks:
+## ownership read from the sim, the squad cap, affordability, the match
+## actually running. An AI that reached into SquadSim directly could do
+## things no human could, and the difference would stay invisible until
+## somebody wondered why it never ran out of food.
+func _dispatch(peer, data: PackedByteArray) -> void:
 		var opcode := NetProtocol.opcode_of(data)
 		match opcode:
 			NetProtocol.C2S_ORDER_MOVE:
@@ -579,6 +775,14 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
 				_handle_order_gather(peer, data)
+			NetProtocol.C2S_ORDER_RALLY:
+				_handle_order_rally(peer, data)
+			NetProtocol.C2S_ORDER_FORMATION:
+				_handle_order_formation(peer, data)
+			NetProtocol.C2S_CHAT:
+				_handle_chat(peer, data)
+			NetProtocol.C2S_LOBBY:
+				_handle_lobby_command(peer, data)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -604,8 +808,8 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 ## up, about three copies of a check. The lesson is narrower than the
 ## comment: it was not a copy of the *check* that drifted, it was a copy
 ## of the *data*. There is one owner of ownership now.
-func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
-	var record = _clients.get(peer, null)
+func _validated_squad(peer, squad: int) -> int:
+	var record = _record_for(peer)
 	if record == null:
 		return -1
 	if not _match.is_running():
@@ -624,29 +828,156 @@ func _validated_squad(peer: ENetPacketPeer, squad: int) -> int:
 	return squad
 
 
-func _handle_order_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_move(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_move(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
 		return
+	# A builder told to go somewhere has been told to stop building.
+	_pending_builds.erase(squad)
 	# from_index normalises, so a nonsense destination wraps into the map
 	# rather than going out of bounds (D-008).
 	_sim.order_move(squad, _sim.space.from_index(int(order["destination"])))
 
 
-func _handle_order_attack_move(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_attack_move(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
 		return
+	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Change a squad's formation (D-058).
+##
+## The shape is checked against the offered set here rather than trusted:
+## an unknown one would fall through `Formation.slot_offset`'s default and
+## silently stack the squad into a line, with only a push_error nobody
+## reads — and a client is not the authority on what formations exist.
+func _handle_order_formation(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_formation(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+
+	var shape := String(order["shape"])
+	# Against the OFFERED set from /formations (D-058), not a list here.
+	# A formation a player is not offered is not one they may order, and
+	# an unknown one would fall through to a line with only a push_error
+	# nobody reads.
+	if not FormationRoster.offered_ids().has(StringName(shape)):
+		_notify(peer, "No such formation")
+		return
+	_sim.set_shape(squad, shape)
+
+
+## Set where a building sends what it produces.
+##
+## Ownership is checked here like every other order (D-002): a client that
+## could set an opponent's rally point could walk their army off a cliff.
+func _handle_order_rally(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null or not _match.is_running():
+		return
+
+	var order := NetProtocol.decode_order_rally(data)
+	var building := BuildingSim.local_id(int(order["building"]))
+	if building < 0 or building >= _buildings.building_count():
+		return
+	if _buildings.owner_of(building) != int(record["player"]):
+		_notify(peer, "That is not yours to give orders to")
+		return
+
+	var cell := _sim.space.from_index(int(order["cell"]))
+	_buildings.set_rally(building, cell)
+	_notify(peer, "Rally point set")
+
+
+## Tell a client about resource nodes it can see and has not been told
+## about yet (D-061).
+##
+## PERSISTENT-EXPLORED, exactly like buildings (D-030): once you have seen
+## a forest you remember where it was, and a node cannot be un-known. So
+## the per-client set only ever grows, and a node already sent is never
+## resent — an explored map costs nothing per tick.
+##
+## Nodes are static, so this needs no conceal event and no ghost: unlike a
+## squad, a forest does not move away while you are not looking.
+func _send_visible_nodes(peer, player: int, record) -> void:
+	if record == null or _economy == null or _sim == null:
+		return
+	var known: Dictionary = record.get("nodes_known", {})
+	var fresh := []
+	for cell in _economy.nodes:
+		if known.has(cell):
+			continue
+		if not _sim.vision.is_visible(player, int(cell)):
+			continue
+		known[cell] = true
+		fresh.append(cell)
+	record["nodes_known"] = known
+
+	if fresh.is_empty():
+		return
+	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries(fresh)),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Terrain passability with living buildings stamped out of it, so squads
+## walk AROUND a town hall instead of through it (D-007).
+##
+## Rebuilt wholesale from `_passable` rather than edited in place, because
+## a destroyed building has to give its ground back and an in-place edit
+## would need to remember what the terrain said underneath. Called only
+## when the set of buildings changes — raising one, losing one — never per
+## tick, and `SquadSim.set_passable` discards cached flow fields, which is
+## exactly right: a field solved before a wall existed routes through it.
+func _refresh_passability() -> void:
+	if _sim == null:
+		return
+	var blocked := _passable.duplicate()
+	for index in _buildings.occupied_cells():
+		if index < blocked.size():
+			blocked[index] = 0
+	_sim.set_passable(blocked)
+
+
+## Finish any build whose builder has now walked into reach.
+##
+## Runs once per tick, over a dictionary that is empty in the ordinary
+## case, so it costs nothing when nobody is walking to a building site.
+##
+## Every rule is re-checked on arrival rather than trusted from when the
+## order was given: the ground may have been built on by someone else
+## while the builder walked, and the wallet may have been spent. Checking
+## at order time and committing at arrival would be a way to buy a
+## building with money you no longer have.
+func _advance_pending_builds() -> void:
+	if _pending_builds.is_empty():
+		return
+	for squad in _pending_builds.keys():
+		var intent: Dictionary = _pending_builds[squad]
+
+		# A builder that died on the way is not building anything.
+		if squad >= _sim.squad_count() or _sim.alive_of(squad) <= 0:
+			_pending_builds.erase(squad)
+			continue
+
+		var cell: Vector2i = intent["cell"]
+		if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+			continue
+
+		_pending_builds.erase(squad)
+		_finish_build(intent["peer"], squad,
+			BuildingSim.def_by_id(StringName(intent["def_id"])), cell)
 
 
 ## Found a building (D-031). Every rule is enforced here rather than
 ## trusted from the client (D-002): who owns the squad, whether that KIND
 ## of squad may build this kind of building, whether the ground takes a
 ## foundation, and whether the builder is anywhere near the site.
-func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_build(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_build(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -659,7 +990,7 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	# Every refusal below tells the player WHY. Silence made a refused
 	# order indistinguishable from a broken key during the first playtest.
-	if not BuildingSim.can_build(def, _sim.def_id_of(squad)):
+	if not BuildingSim.can_build(def, _sim.def_of(squad).archetype):
 		_notify(peer, "%s cannot build a %s" % [_sim.def_id_of(squad), def.display_name])
 		return
 
@@ -667,9 +998,59 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 	if not _is_buildable(cell):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
-	var reach := _sim.space.distance(_sim.cell_of(squad), cell)
-	if reach > BUILD_REACH_CELLS:
-		_notify(peer, "Too far — move closer (%d cells away, reach is %d)" % [reach, BUILD_REACH_CELLS])
+
+	# Somebody else's ground (D-062). Refused up front as well as on
+	# arrival, so a player is told immediately rather than watching a
+	# builder walk twenty seconds to be turned away.
+	var claimed := _claimed_against(cell, _sim.owner_of(squad))
+	if claimed >= 0:
+		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(claimed).display_name)
+		return
+	# Too far? WALK THERE. Do not refuse.
+	#
+	# This used to answer "Too far — move closer", which is the server
+	# telling the player to do by hand something it is perfectly able to
+	# do itself. Nobody orders a builder to a spot and then re-issues the
+	# order on arrival; in every RTS the order IS "go there and build".
+	# It made the build buttons look broken, because from the player's
+	# side a click on open ground simply did nothing.
+	#
+	# Recorded as an INTENT rather than executed now: the squad is sent to
+	# the site and `_advance_pending_builds` finishes the job when it
+	# arrives. Cost is charged on arrival, not here — you should not pay
+	# for a building while the builder is still walking, and the wallet
+	# check has to happen against the wallet as it will be, not as it is.
+	if _sim.space.distance(_sim.cell_of(squad), cell) > BUILD_REACH_CELLS:
+		_pending_builds[squad] = {"def_id": def.id, "cell": cell, "peer": peer}
+		_sim.order_move(squad, cell)
+		_notify(peer, "Moving to build a %s" % def.display_name)
+		return
+
+	_finish_build(peer, squad, def, cell)
+
+
+## Commit a build: charge for it, raise the site, consume the founders.
+##
+## Shared by the in-reach path above and the walked-there path in
+## `_advance_pending_builds`, so "what founding a building does" has one
+## implementation rather than two that can drift — the same reason
+## `_admit_player` is shared by joining and by starting a match.
+func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i) -> void:
+	if def == null:
+		return
+	# Re-checked here, not just at order time: a builder that walked for
+	# twenty seconds may arrive to find the ground taken.
+	if not _is_buildable(cell):
+		_notify(peer, "Cannot build there — water, mountain, or already occupied")
+		return
+
+	# Re-checked on ARRIVAL too: a builder ordered from out of reach walks
+	# for twenty seconds, and an opponent may have planted something in
+	# the meantime. Checking only at order time would let a slow walk beat
+	# the rule.
+	var blocked := _claimed_against(cell, _sim.owner_of(squad))
+	if blocked >= 0:
+		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(blocked).display_name)
 		return
 
 	# Construction costs resources (D-028). This was missing, so
@@ -684,6 +1065,7 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 
 	var built := _buildings.add_building(def, owner, cell, false, squad)
 	_send_wallet(peer, owner)
+	_refresh_passability()
 
 	# The founding party becomes the settlement, here and now (D-031).
 	# Consuming them at completion instead left them free to queue another
@@ -707,8 +1089,8 @@ func _handle_order_build(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## building, the building makes that kind of unit, the player is under the
 ## squad cap, and the player can pay. Payment is last and is all-or-
 ## nothing, so a refused order never leaves a part-spent wallet.
-func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
-	var record = _clients.get(peer, null)
+func _handle_order_produce(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
 	if record == null or not _match.is_running():
 		return
 
@@ -722,12 +1104,17 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 		push_error("server: player %d tried to produce at a building it does not own" % player)
 		return
 
-	var unit_id := StringName(order["def_id"])
-	if not _buildings.can_produce(building, unit_id):
-		_notify(peer, "That building cannot train %s yet — is it still under construction?" % unit_id)
+	# The wire carries an ARCHETYPE, not a unit id (D-047), and the server
+	# resolves it against this player's civ. A client therefore cannot
+	# name another civ's unit at all — D-046 criterion 4 is structural
+	# here rather than a check somebody has to remember to write.
+	var archetype := StringName(order["def_id"])
+	if not _buildings.can_produce(building, archetype):
+		_notify(peer, "That building cannot train %s yet — is it still under construction?" % archetype)
 		return
-	var def := UnitRoster.by_id(unit_id)
+	var def := UnitRoster.for_civ_archetype(_civ_of(player), archetype)
 	if def == null:
+		_notify(peer, "Your people do not field %s" % archetype)
 		return
 
 	# ONE cap covering military and gatherers alike (D-033): every
@@ -736,7 +1123,7 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 		_notify(peer, "At the squad cap (%d) — gatherers count too" % _match.squad_cap)
 		return
 	if not _economy.try_spend(player, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
-		_notify(peer, "Cannot afford %s" % unit_id)
+		_notify(peer, "Cannot afford %s" % def.display_name)
 		return
 
 	_buildings.enqueue(building, def)
@@ -746,7 +1133,7 @@ func _handle_order_produce(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## Put a gatherer squad to work (D-028). The economy decides whether the
 ## squad can gather and whether the cell holds anything; this only checks
 ## that the order is the player's to give.
-func _handle_order_gather(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+func _handle_order_gather(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_gather(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -764,12 +1151,12 @@ func _handle_order_gather(peer: ENetPacketPeer, data: PackedByteArray) -> void:
 ## Tell one player why something did not happen. The server owns the
 ## rules, so it owns the explanation too — a client inventing its own
 ## refusal messages would be a second copy of those rules, free to drift.
-func _notify(peer: ENetPacketPeer, text: String) -> void:
+func _notify(peer, text: String) -> void:
 	peer.send(0, NetProtocol.encode_notice(text), ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Wallets go to their owner and nobody else (D-028).
-func _send_wallet(peer: ENetPacketPeer, player: int) -> void:
+func _send_wallet(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_wallet(_economy.wallet_of(player)),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -786,7 +1173,36 @@ func _is_buildable(cell: Vector2i) -> bool:
 	return true
 
 
-func _handle_order_stop(peer: ENetPacketPeer, data: PackedByteArray) -> void:
+## The hostile building whose claimed ground covers `cell`, or -1 (D-062).
+##
+## Each building denies a radius to players it is not allied with, so
+## nobody can wall a town in by planting towers against its walls, and a
+## settlement means something on the map rather than being a dot others
+## can crowd.
+##
+## Allies are exempt: D-050 gives teams a shared front, and a teammate
+## unable to build beside your hall would be a worse partner than an
+## enemy.
+##
+## Scans buildings directly rather than maintaining a claimed-cell map:
+## there are orders of magnitude fewer buildings than cells, and a map
+## would be a second source of truth to keep in step with `_cell` — the
+## same reasoning `BuildingSim.building_at` gives.
+func _claimed_against(cell: Vector2i, player: int) -> int:
+	for i in range(_buildings.building_count()):
+		if _buildings.is_destroyed(i):
+			continue
+		if _sim.are_allied(_buildings.owner_of(i), player):
+			continue
+		var def := _buildings.def_of(i)
+		if def == null or def.no_build_radius <= 0:
+			continue
+		if _sim.space.distance(cell, _buildings.cell_of(i)) <= def.no_build_radius:
+			return i
+	return -1
+
+
+func _handle_order_stop(peer, data: PackedByteArray) -> void:
 	var order := NetProtocol.decode_order_stop(data)
 	var squad := _validated_squad(peer, int(order["squad"]))
 	if squad < 0:
@@ -807,11 +1223,24 @@ func _spawn_squads_for(player: int) -> Array:
 	# guaranteed minimum spacing as of D-039, and sampled once at startup.
 	var points := _spawn_points
 
-	# Players are numbered from 1, spawn points from 0. Wrapping rather
-	# than refusing keeps an extra connection working on a full map: the
-	# player cap belongs to the match lifecycle (D-033), which is not built
-	# yet, so sharing a start is a better failure than crashing.
-	var origin: Vector2i = points[(player - 1) % points.size()]
+	# Keyed on SEAT INDEX, not player id — the same rule and the same
+	# reason as D-052's colours.
+	#
+	# This was `points[(player - 1) % points.size()]`, and AI players are
+	# numbered from 1000 (D-051, deliberately sharing the human id space).
+	# With 20 spawn points that put player 1 at index 0 and player 1001 at
+	# 1000 % 20 = 0 as well: a human and an AI spawned on the SAME cell.
+	# Reported from an actual game, where they landed on top of each other.
+	#
+	# D-052 fixed exactly this for colours and said so in as many words —
+	# "any modulo of a player id would give" collisions once ids start at
+	# 1000. Spawn assignment simply never had the fix applied. Seats are
+	# numbered 0..n-1 contiguously however players are numbered, so keying
+	# on them makes the collision unrepresentable rather than unlikely.
+	#
+	# The fallback keeps a player with no seat (nothing does this today,
+	# but a reconnect path might) working rather than crashing.
+	var origin: Vector2i = points[_match.spawn_index(player, points.size())]
 
 	# A player starts with ONE founding party and nothing else (D-031).
 	#
@@ -824,7 +1253,7 @@ func _spawn_squads_for(player: int) -> Array:
 	# `squads_per_player` no longer describes the opening; it survives as
 	# the sizing note D-015 and D-018 reason about, while `squad_cap` is
 	# what actually binds once production exists.
-	var founders := UnitRoster.by_id(&"founders")
+	var founders := UnitRoster.for_civ_archetype(_civ_of(player), &"founders")
 	if founders == null:
 		push_error("server: no 'founders' unit in the roster — a player has nothing to start with")
 		return ids
@@ -877,6 +1306,7 @@ func _advance_match() -> void:
 
 
 func _replicate() -> void:
+	_record_seats_once()
 	var send_hash := _sim.tick_count % STATE_HASH_EVERY_TICKS == 0
 
 	# This tick's combat, plus anything produced outside a tick (a
@@ -891,12 +1321,23 @@ func _replicate() -> void:
 	# here, because take_dirty() clears — reading it inside the per-client
 	# loop would hand the change to the first client and nobody else.
 	var dirty_buildings := _buildings.take_dirty()
+	# Taken once, out here, because take_shape_dirty() CLEARS — reading it
+	# inside the per-client loop would tell the first client and nobody
+	# else, and the rest would silently hold a stale formation.
+	var shape_changes := _sim.take_shape_dirty()
 	var wallet_changes := {}
 	for player in _sim.last_wallet_changes:
 		wallet_changes[player] = true
 
-	for peer in _clients:
-		var record = _clients[peer]
+	# AI seats are fed through the SAME loop as humans (D-051). They hold a
+	# LoopbackPeer whose send() hands bytes to a ClientState, so an AI
+	# receives byte-identical packets through byte-identical code — and its
+	# knowledge is a subset of its vision by construction rather than by
+	# promise. Giving the AI privileged access to SquadSim would have been
+	# less code and impossible to trust.
+	var recipients := _recipients()
+	for peer in recipients:
+		var record = recipients[peer]
 		var player := int(record["player"])
 		var visible := _sim.visible_to(player)
 		var visible_set := _dict_from_ids(visible)
@@ -928,6 +1369,36 @@ func _replicate() -> void:
 				ENetPacketPeer.FLAG_RELIABLE)
 
 		record["visible"] = visible_set
+
+		# Resources come into view like anything else (D-061). Cheap: the
+		# scan skips cells already known, and once a player has explored
+		# their surroundings it finds nothing and sends nothing.
+		_send_visible_nodes(peer, player, record)
+
+		# Squads whose FORMATION changed this tick (D-058), for the ones
+		# this client can see.
+		#
+		# Shape is in `composition_hash` and is what `Formation` derives
+		# every soldier's position from, so a client that missed a change
+		# would draw the squad in the wrong shape AND report a desync. Sent
+		# as ordinary SQUAD_INFO — the message that already carries shape —
+		# rather than inventing a second one, and only for squads that
+		# actually changed, so a formation nobody touched costs nothing
+		# (D-003).
+		#
+		# Filtered against `visible_set`, so this leaks no more than a
+		# reveal does: you are told what an enemy squad looks like exactly
+		# when you can see it.
+		if not shape_changes.is_empty():
+			var changed_visible := []
+			for id in shape_changes:
+				if visible_set.has(int(id)):
+					changed_visible.append(int(id))
+			if not changed_visible.is_empty():
+				var shape_entries := _sim.squad_info_entries(changed_visible)
+				if not shape_entries.is_empty():
+					peer.send(0, NetProtocol.encode_squad_info(shape_entries),
+						ENetPacketPeer.FLAG_RELIABLE)
 
 		var packets := _sim.replicator.collect_for_client(player, _sim.time, visible)
 		for packet in packets:
@@ -1003,3 +1474,262 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 			if kv.size() == 2:
 				parsed[kv[0]] = kv[1]
 	return parsed
+
+
+# --- lobby (D-048) ----------------------------------------------------
+
+## Next player id handed to an AI seat. AI players occupy the same id
+## space as humans deliberately: everything downstream — ownership,
+## vision, the economy, elimination — already reasons about "a player",
+## and giving AI a parallel identity would mean teaching all of it a
+## second concept.
+var _next_ai_player := 1000
+
+
+func _handle_lobby_command(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null:
+		return
+	var player := int(record["player"])
+	var command := NetProtocol.decode_lobby_command(data)
+	var action := int(command["action"])
+	var ok := false
+
+	match action:
+		NetProtocol.LOBBY_SET_CIV:
+			ok = _match.set_civ(player, int(command["seat"]), StringName(command["civ"]))
+			if not ok:
+				_notify(peer, "You cannot choose that seat's civilisation")
+		NetProtocol.LOBBY_ADD_AI:
+			var seat := _match.add_ai(player, StringName(command["civ"]), _next_ai_player)
+			ok = seat >= 0
+			if ok:
+				_next_ai_player += 1
+			else:
+				_notify(peer, "Only the lobby admin can add AI players")
+		NetProtocol.LOBBY_REMOVE_AI:
+			ok = _match.remove_ai(player, int(command["seat"]))
+			if not ok:
+				_notify(peer, "Only the lobby admin can remove AI players")
+		NetProtocol.LOBBY_SET_TEAM:
+			ok = _match.set_team(player, int(command["seat"]), int(String(command["civ"])))
+			if not ok:
+				_notify(peer, "You cannot choose that seat's team")
+		NetProtocol.LOBBY_SET_OPTION:
+			# The civ field carries "key=value" — the lobby command is a
+			# tiny generic message rather than one opcode per slider, so a
+			# new setting is a new key rather than a new packet type.
+			var parts := String(command["civ"]).split("=", true, 1)
+			if parts.size() == 2:
+				ok = _match.set_map_option(player, parts[0], float(parts[1]))
+			if not ok:
+				_notify(peer, "Only the admin can change map settings, and not to an unplayable one")
+		NetProtocol.LOBBY_START:
+			ok = _match.request_start(player)
+			if not ok:
+				_notify(peer, "Only the admin can start, and a lobby of one is not a match")
+			else:
+				_on_match_started()
+		_:
+			push_error("server: unknown lobby action %d" % action)
+
+	if ok:
+		_broadcast_lobby()
+
+
+## Everything that has to happen once the seats are final.
+##
+## Civs are only real at this point: a seat may have said "Random" right
+## up until the start (D-048), so nothing that depends on a civ — the
+## roster a player may build from, their opening stockpile — can be
+## settled before now.
+func _on_match_started() -> void:
+	# The world is generated HERE, from the settings the lobby settled on
+	# (D-049). Nothing before this point could have built it: the size,
+	# seed and shape were still being chosen.
+	_build_world()
+
+	# Civs are only real now — a seat could have said "Random" a moment
+	# ago — so this has to happen before anything that reads a roster or
+	# an opening stockpile.
+	for seat in _match.seats:
+		_civs[int(seat["player"])] = StringName(seat["civ"])
+	# Teams reach the simulation here, because combat needs them every
+	# round and nothing before this point could have known them (D-050).
+	_sim.teams = _match.team_map()
+	print("server: match started — %s" % _seat_summary())
+
+	# The world's concrete numbers, before anybody is admitted: a client
+	# has to be able to generate the SAME terrain, and it cannot do that
+	# from a preset name (D-049).
+	var settings_packet := NetProtocol.encode_map_settings(_settings.to_dict())
+	for peer in _clients:
+		(peer as ENetPacketPeer).send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
+
+	for seat in _match.seats:
+		var player := int(seat["player"])
+		if String(seat["kind"]) == "ai":
+			_seat_ai(player, StringName(seat["civ"]))
+			continue
+		var peer := _peer_of(player)
+		if peer != null:
+			_admit_player(peer, player)
+
+
+## Bring an AI seat to life (D-051).
+##
+## It is admitted through exactly the same `_admit_player` a human goes
+## through — same spawn, same opening stockpile, same welcome packet —
+## because "what a player starts with" must not have two implementations.
+func _seat_ai(player: int, civ: StringName) -> void:
+	var brain := AiPlayer.new(player, civ)
+	var peer := LoopbackPeer.new(brain.state)
+	# Its orders take the identical path a human's do, validation and all.
+	brain.send = func(packet: PackedByteArray) -> void:
+		_dispatch(peer, packet)
+
+	# Registered with the match like any player, so elimination and
+	# victory count an AI exactly as they count a human (D-033).
+	_match.add_player(player)
+	_ai_clients[peer] = {"player": player, "visible": {}}
+	_ai_players.append(brain)
+	_admit_player(peer, player)
+	print("server: AI seated as player %d (%s)" % [player, civ])
+
+
+## EVERY peer that receives simulation state — sockets and AI seats alike.
+##
+## D-051 says an AI receives byte-identical packets through byte-identical
+## code, and that guarantee only holds if there is ONE definition of who
+## "everybody" is. There were two: `_replicate` merged in `_ai_clients`,
+## `_broadcast_squad_info` iterated `_clients` alone. So an AI was never
+## sent composition for its own starting squads — and `_admit_player`
+## then seeded its reveal baseline to "already knows everything visible",
+## which meant the next tick's reveal diff found nothing new to send and
+## the gap never healed.
+##
+## It surfaced only when the founding party was consumed by the town it
+## founded (D-031): a casualty event arrived for a squad the AI had never
+## been described, and ClientState said so. Nothing else complained,
+## because an AI orders squads by the ids in its WELCOME packet and those
+## were fine — it simply had no idea how strong anything was, including
+## its own army, for the entire match.
+func _recipients() -> Dictionary:
+	var out := _clients.duplicate()
+	out.merge(_ai_clients)
+	return out
+
+
+## A client record, whether the sender is a socket or an AI seat in this
+## process (D-051).
+func _record_for(peer):
+	if _clients.has(peer):
+		return _clients[peer]
+	return _ai_clients.get(peer, null)
+
+
+func _peer_of(player: int) -> ENetPacketPeer:
+	for peer in _clients:
+		if int(_clients[peer]["player"]) == player:
+			return peer
+	return null
+
+
+func _seat_summary() -> String:
+	var parts := []
+	for seat in _match.seats:
+		parts.append("%s=%s%s" % [
+			seat["name"], seat["civ"],
+			" (admin)" if int(seat["player"]) == _match.admin_player else ""])
+	return ", ".join(parts)
+
+
+func _broadcast_lobby() -> void:
+	# The lobby is the authority on settings while it is up, so the
+	# server mirrors its choices before describing them.
+	_settings = _match.map_settings
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+		_settings.to_dict(), int(_match.phase))
+	for peer in _clients:
+		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Relay a chat message (D-050).
+##
+## The speaker is attached HERE, from the connection the message arrived
+## on. A client sends text and nothing else — letting it name its own
+## speaker would let it put words in another player's mouth, which is the
+## same untrusted-client rule as orders (D-002), just less obvious when
+## the payload is prose.
+func _handle_chat(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null:
+		return
+	var text := NetProtocol.sanitise_chat(NetProtocol.decode_chat_send(data))
+	if text == "":
+		return
+
+	var player := int(record["player"])
+	var speaker := "Player %d" % player
+	if _match != null:
+		var seat := _match.seat_of(player)
+		if seat >= 0:
+			speaker = String(_match.seats[seat]["name"])
+
+	var packet := NetProtocol.encode_chat(speaker, text)
+	for other in _clients:
+		(other as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+	print("server: chat <%s> %s" % [speaker, text])
+
+
+## Write who played as whom into the replay, once (D-046 criterion 11).
+##
+## Guarded and driven from the tick rather than hung off one start path,
+## because a match can begin two ways: an admin pressing start in a lobby
+## (D-048), or a player simply connecting to a server that has no lobby.
+## Hanging it off the first would have recorded nothing for every load
+## test, which is exactly where a replay is most useful.
+##
+## Civ comes from `_civ_of`, the same authority production uses, rather
+## than the seat's own field — a seat may have said "Random" until the
+## moment it started, and the replay should record what was PLAYED.
+var _seats_recorded := false
+
+
+func _record_seats_once() -> void:
+	if _seats_recorded or _replay == null or _match == null:
+		return
+	if _match.phase != MatchState.Phase.RUNNING:
+		return
+	_seats_recorded = true
+
+	var seats := []
+	for seat in _match.seats:
+		var player := int(seat["player"])
+		seats.append({
+			"player": player,
+			"team": int(seat.get("team", 0)),
+			"civ": String(_civ_of(player)),
+			"name": String(seat["name"]),
+		})
+	_replay.record_seats(_sim.time, seats)
+
+
+## Which civs actually put a squad on the field this match (D-046
+## criterion 10).
+##
+## Counted from the SIM rather than from the lobby's seat list: a seat
+## says who intended to play a civ, and this says who actually fielded
+## one. A match where a civ was chosen and then never produced anything
+## would satisfy the first and prove nothing about the second — which is
+## the whole failure mode M6's verdict is meant to catch, since the point
+## of two civs is that BOTH are exercised.
+func _civs_fielded() -> Dictionary:
+	var out := {}
+	if _sim == null:
+		return out
+	for squad in range(_sim.squad_count()):
+		var civ := _civ_of(_sim.owner_of(squad))
+		if civ != &"":
+			out[String(civ)] = int(out.get(String(civ), 0)) + 1
+	return out

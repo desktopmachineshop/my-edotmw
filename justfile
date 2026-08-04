@@ -212,7 +212,15 @@ status:
     fi
 
 # Manual dev loop: run the server in the foreground.
-run-server: _import
+# AI is how many computer opponents to seat (D-051). They take ordinary
+# player slots, read the world through a client like you do, and are held
+# to every rule you are.
+# LOBBY=1 holds the server in the lobby (D-048): the world is NOT
+# generated until the admin presses start, because its size, seed and
+# shape are all still being chosen (D-049). The first human to connect is
+# admin and adds AI seats there — a lobby of one cannot start a match.
+[doc("Headless server. AI=N seats opponents, LOBBY=1 waits in the lobby")]
+run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ ! -f "{{server_scene}}" ]; then
@@ -220,11 +228,68 @@ run-server: _import
         exit 1
     fi
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p edotmw run --rm --service-ports server
+        # Replaces the service's default command, so it has to restate it
+        # in full. The image ENTRYPOINT already supplies --headless.
+        docker compose -p edotmw run --rm --service-ports server \
+            --path . "{{server_scene}}" -- --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --path . "{{server_scene}}"
+        "$godot" --headless --path . "{{server_scene}}" -- \
+            --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     fi
+
+# Start a lobby server AND the GUI client, which is what "play a game"
+# actually means (D-048). One recipe rather than two, because the two have
+# to agree about the port and about lobby mode.
+#
+# Deliberately its OWN recipe instead of `run-server`'s LOBBY parameter.
+# just takes arguments POSITIONALLY, so `just run-server LOBBY=1` silently
+# parses "LOBBY=1" as the AI count, passes --ai=LOBBY=1, and int() reads
+# that as 0 — no error, no lobby, a server that looks fine and is not in
+# the mode you asked for. Exactly the silent-default class this project
+# keeps getting bitten by.
+#
+# The world is NOT generated until the admin presses start (D-049): its
+# size, seed and shape are all still being chosen, so there is genuinely
+# nothing behind the lobby.
+[doc("Play: lobby server + GUI client. You are admin; add AI seats, then Start")]
+lobby PLAYERS="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
+        echo "      Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+
+    # Whatever happens next, do not leave a server holding port 4433.
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    "{{just_executable()}}" down > /dev/null 2>&1 || true
+
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/lobby-server.log"
+    "{{just_executable()}}" _import
+    docker compose -p edotmw run --rm --service-ports -d --name edotmw-lobby \
+        server --path . "{{server_scene}}" -- \
+        --lobby=1 --players={{PLAYERS}} > /dev/null
+
+    # Wait for the port rather than sleeping a guessed number of seconds.
+    for _i in $(seq 1 60); do
+        if docker logs edotmw-lobby 2>&1 | grep -q "listening"; then break; fi
+        sleep 1
+    done
+    if ! docker logs edotmw-lobby 2>&1 | grep -q "(lobby)"; then
+        echo "FAIL: the server did not come up in LOBBY mode:" >&2
+        docker logs edotmw-lobby 2>&1 | tail -20 >&2
+        exit 1
+    fi
+    docker logs edotmw-lobby 2>&1 | grep "listening"
+
+    echo "lobby: you are the admin. Add AI seats, pick civs, then press Start."
+    "$godot" --headless --path . --import
+    "$godot" --path . client.tscn -- --address=127.0.0.1 --port=4433
+    docker logs edotmw-lobby > "$log" 2>&1 || true
 
 # Manual dev loop: run a client. Always native — needs a GPU (D-014), so
 # this recipe ignores EDOTMW_RUNTIME and refuses to pretend otherwise.
@@ -389,6 +454,44 @@ test-load N DURATION:
         exit 1
     fi
     echo "test-load: fog gated at least $((total_squads - known_squads_max)) of $total_squads simulated squads even from the most-informed bot (known_squads_max=$known_squads_max)"
+
+    # The same check for RESOURCE POSITIONS (D-061). Every node on the map
+    # used to be sent to every client at join, so a player knew where each
+    # opponent had to expand and where to raid without scouting for any of
+    # it — and a modified client could read it straight out of the packet.
+    #
+    # Checked here rather than only in a unit test for the reason the
+    # squad gate is: a per-client filter can be correct in isolation and
+    # still be bypassed by some other send path, and only a live run with
+    # real clients exercises all of them.
+    nodes_known_max="$(grep -oE 'nodes_known_max=[0-9]+' "$bots_log" | tail -1 | cut -d= -f2)"
+    total_nodes="$(grep -oE 'FOG_TOTAL_NODES=[0-9]+' "$server_log" | tail -1 | cut -d= -f2)"
+    if [ -z "${nodes_known_max:-}" ] || [ -z "${total_nodes:-}" ]; then
+        echo "test-load: could not find nodes_known_max or FOG_TOTAL_NODES — can't check resource gating" >&2
+        exit 1
+    fi
+    if [ "$nodes_known_max" -ge "$total_nodes" ]; then
+        echo "test-load: resource positions are NOT gated — the most-informed bot knew $nodes_known_max of $total_nodes nodes (expected fewer)" >&2
+        exit 1
+    fi
+    echo "test-load: fog gated $((total_nodes - nodes_known_max)) of $total_nodes resource nodes from the most-informed bot (nodes_known_max=$nodes_known_max)"
+
+    # Both civilisations must actually have fielded something (D-046
+    # criterion 10). A run where everyone happened to draw the same civ
+    # exercises half the roster and proves nothing about the other half —
+    # and it would pass every other check in this recipe, which is exactly
+    # the vacuous-pass shape D-022's audit exists to catch.
+    civs_fielded="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $2}')"
+    civs_total="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $4}')"
+    if [ -z "${civs_fielded:-}" ]; then
+        echo "test-load: no CIVS_FIELDED marker in the server log — can't check both civs played" >&2
+        exit 1
+    fi
+    if [ "$civs_fielded" -lt 2 ]; then
+        echo "test-load: only $civs_fielded of $civs_total civilisations ever fielded a squad — the match exercised one roster (D-046 criterion 10)" >&2
+        exit 1
+    fi
+    echo "test-load: $civs_fielded of $civs_total civilisations fielded squads"
 
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
@@ -617,3 +720,151 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
     fi
     "$godot" --headless --path . --import
     "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}
+
+# Screenshot the LOBBY (D-048), so its layout can actually be looked at.
+#
+# Separate from `test-client` because it wants the opposite setup: a
+# server that STAYS in the lobby (`--lobby=1`, so it waits for an admin
+# who never presses start) and a client that renders the seat list rather
+# than a battlefield. Docker only, same software-GL reasoning as
+# test-client.
+[doc("Screenshot the lobby screen into artifacts/lobby.png")]
+lobby-shot SECONDS="8" AI="2" PRESET="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "lobby-shot requires the docker runtime (it needs the software-GL image)." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/lobby.png"
+    log="{{artifacts_dir}}/lobby-shot.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down' EXIT INT TERM
+
+    docker compose -p edotmw run --rm --no-deps -d --name edotmw-lobby-server \
+        server --headless --path . server.tscn -- --lobby=1 --players=8 > /dev/null
+    sleep 3
+
+    status=0
+    timeout 180 docker compose -p edotmw run --rm --no-deps client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution 1280x720 \
+        -- --address=edotmw-lobby-server --run-seconds={{SECONDS}} \
+        --lobby-ai={{AI}} \
+        --lobby-preset-steps={{PRESET}} \
+        --screenshot=res://artifacts/lobby.png \
+        > "$log" 2>&1 || status=$?
+
+    docker rm -f edotmw-lobby-server > /dev/null 2>&1 || true
+    if [ ! -f "$shot" ]; then
+        echo "lobby-shot: no screenshot written (see $log)" >&2
+        exit 1
+    fi
+    echo "lobby-shot: wrote $shot"
+
+# AI ladder (D-054): headless AI-vs-AI matches, to make "smarter" a
+# measurement rather than an opinion.
+#
+# Runs the REAL server rather than a re-implementation of it. M4 paid for
+# that lesson twice: a harness is a workload, and a workload has blind
+# spots — `just profile` reported a healthy 29 ms for code that spent
+# 866 ms in a live server, because the harness resolved its UnitDefs once
+# at setup and the live one did not.
+#
+# Uses maps/ladder.tres — small, four close spawns — so opponents actually
+# meet inside a match. On the 128x64 ship map two AI can grow old without
+# ever seeing each other, which measures nothing.
+#
+# Reports the SPREAD and the sample size, not a bare win rate: ten matches
+# where one side wins six proves nothing, and this project has twice been
+# burned by a number that looked conclusive.
+#
+# SECONDS defaults to 600, and that number is load-bearing. It was 240,
+# then 300, tuned when gatherer crews were 16 strong and the AI's first
+# attack landed at 121-160 s. Crews are 5 now, and TRAIN_COOLDOWN is per
+# ORDER — so the same labour force takes 22 productions instead of 7, and
+# first contact moved to ~326 s. Every run at 300 s reported `attacks=0`
+# and I read it as a broken AI for most of a session. It was the window.
+#
+# This is CLAUDE.md's standing rule biting again: when the opening
+# changes, every timing tuned against the old one is stale. If crew size,
+# TRAIN_COOLDOWN or the town hall's build time move, re-derive this
+# before believing a run that says the AI never fought.
+[doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
+ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/ai-ladder.log"
+    : > "$log"
+
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{SECONDS}}s cap, map=ladder"
+    for i in $(seq 1 {{MATCHES}}); do
+        # A different seed per match: same seed every time would measure
+        # one map repeatedly and call it a win rate.
+        if [ "{{runtime}}" = "docker" ]; then
+            docker compose -p edotmw run --rm --no-deps server \
+                --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        else
+            godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+            "$godot" --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        fi
+        printf '.'
+    done
+    echo
+
+    # The ladder reports averages, and an average cannot report a fault.
+    # An AI seat was silently never sent composition for its own squads
+    # for a whole milestone: it played on, the numbers all looked
+    # plausible, and the ONLY thing that ever said so was a push_error in
+    # ClientState that no recipe read. `test-load` has scanned for this
+    # since M1 (line 423) — the ladder is the newer harness and simply
+    # did not inherit it.
+    if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log"; then
+        echo "ai-ladder: FAILED — engine diagnostics during the matches:" >&2
+        grep -EIn '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log" >&2 | head -20
+        exit 1
+    fi
+
+    echo "ai-ladder: --- results over {{MATCHES}} matches ---"
+    awk '
+        /MATCH_RESULT/ {
+            match($0, /winner=(-?[0-9]+)/, w)
+            if (w[1] == "-1") { draws++ } else { wins[w[1]]++ }
+            matches++
+        }
+        /AI_STATS/ {
+            match($0, /player=([0-9]+)/, p)
+            match($0, /civ=([a-z_]+)/, c)
+            match($0, /squads_peak=([0-9]+)/, s)
+            match($0, /workers_peak=([0-9]+)/, wk)
+            match($0, /buildings=([0-9]+)/, b)
+            match($0, /first_attack=(-?[0-9.]+)/, fa)
+            civ[p[1]] = c[1]
+            sq[p[1]] += s[1]; wkr[p[1]] += wk[1]; bld[p[1]] += b[1]; n[p[1]]++
+            if (fa[1] >= 0) { atk[p[1]] += fa[1]; atkn[p[1]]++ }
+        }
+        END {
+            if (matches == 0) { print "  no matches completed — see the log"; exit 1 }
+            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
+            for (k in n) {
+                printf "  player %-5s civ=%-10s wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f",
+                    k, civ[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k]
+                if (atkn[k] > 0) printf "  first_attack~%.0fs", atk[k]/atkn[k]
+                else printf "  first_attack=never"
+                printf "\n"
+            }
+            if (draws == matches) {
+                print "  EVERY match hit the time cap — the AI is not seeking combat, which is a finding, not a pass"
+            }
+        }
+    ' "$log"

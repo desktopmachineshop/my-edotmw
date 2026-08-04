@@ -408,3 +408,54 @@ func test_a_walled_off_destination_is_still_given_up_on() -> void:
 	_tick_for(sim, 3.0)
 	assert_eq(sim.curves_rebuilt, rebuilt,
 		"The squad is still re-pathing every tick — the give-up rule stopped firing")
+
+
+# --- squads take up room (D-060) ---------------------------------------
+
+func test_squads_ordered_to_one_point_do_not_end_up_stacked() -> void:
+	# Reported from a real game: twenty squads could sit on one cell in a
+	# single heap. Separation happens on ARRIVAL, not by spreading
+	# destinations — see _separate_arrivals for why that distinction is
+	# load-bearing.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.first()
+
+	var squads := []
+	for i in range(8):
+		squads.append(sim.add_squad(def, 1, Vector2i(2 + i, 2)))
+	for squad in squads:
+		sim.order_move(squad, Vector2i(16, 8))
+
+	for _i in range(600):
+		sim.tick()
+
+	var seen := {}
+	for squad in squads:
+		var cell := sim.cell_index_of(squad)
+		assert_false(seen.has(cell),
+			"squads %s and %d are standing on the same cell" % [seen.get(cell, "?"), squad])
+		seen[cell] = squad
+
+
+func test_separation_does_not_cost_extra_flow_fields() -> void:
+	# The regression the first attempt caused, and the reason separation
+	# moved to arrival: spreading DESTINATIONS gave twenty squads twenty
+	# different goals and therefore twenty flow fields, destroying D-007's
+	# per-destination sharing — the whole scaling claim.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.first()
+
+	var squads := []
+	for i in range(12):
+		squads.append(sim.add_squad(def, 1, Vector2i(2, 2 + (i % 8))))
+	var before := sim.fields_built
+	for squad in squads:
+		sim.order_move(squad, Vector2i(20, 9))
+	for _i in range(60):
+		sim.tick()
+
+	assert_lt(sim.fields_built - before, 4,
+		"twelve squads sharing one destination built %d flow fields — "
+		% (sim.fields_built - before) + "per-destination sharing (D-007) is broken")

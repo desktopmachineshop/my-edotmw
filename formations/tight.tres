@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="FormationDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://formation_def.gd" id="1_fdef"]
+
+[resource]
+script = ExtResource("1_fdef")
+id = &"tight"
+display_name = "Tight"
+kind = "grid"
+spacing_scale = 0.85
+ranks = 0
+files = 0
+jitter = 0.0
+offered = true
+order = 2

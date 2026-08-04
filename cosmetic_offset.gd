@@ -58,3 +58,59 @@ static func decorate_all(transforms: Array[Transform3D], time: float, speed: flo
 	for slot in range(transforms.size()):
 		out.append(decorate(transforms[slot], slot, time, speed))
 	return out
+
+
+## What a squad is visibly DOING, for the render path only (D-059).
+enum Activity { IDLE, WORKING, FIGHTING }
+
+
+## Lean and swing toward a point — chopping at a tree, striking at an
+## enemy. Returns an offset to add to the soldier's position.
+##
+## The whole point is that a squad standing perfectly still while its
+## strength drains looks broken. This costs nothing in the simulation:
+## casualties, gathering and combat all resolve exactly as before, and
+## this only decides where the man is drawn while it happens.
+##
+## Pure in (slot, time, toward) and stateless like everything else here.
+## Soldiers are deliberately out of phase with each other — a squad
+## swinging in perfect unison reads as a machine, not a crew.
+static func work_swing(slot: int, time: float, toward: Vector3,
+		activity: int, amplitude: float = 0.34) -> Vector3:
+	if activity == Activity.IDLE:
+		return Vector3.ZERO
+
+	var direction := toward
+	direction.y = 0.0
+	if direction.length_squared() < 0.0001:
+		return Vector3.ZERO
+	direction = direction.normalized()
+
+	# Fighting is sharper and faster than working: a strike snaps out and
+	# recovers, a woodcutter swings in a rhythm.
+	var rate := 5.5 if activity == Activity.FIGHTING else 3.0
+	var phase := float(slot) * 1.6180  # golden-ish, so no two share a beat
+	var swing := sin(time * rate + phase)
+	# Squared toward the far end so the motion has a bite to it rather
+	# than being a smooth sine slide.
+	var reach := swing * absf(swing)
+	return direction * reach * amplitude
+
+
+## Decorate a whole squad that is working or fighting, leaning toward
+## `toward` in WORLD space. `toward` is the thing being worked or fought:
+## the resource under them, or the enemy squad they are engaging.
+static func decorate_activity(transforms: Array[Transform3D], time: float,
+		speed: float, activity: int, toward: Vector3) -> Array[Transform3D]:
+	if activity == Activity.IDLE:
+		return decorate_all(transforms, time, speed)
+
+	var out: Array[Transform3D] = []
+	for slot in range(transforms.size()):
+		var decorated := decorate(transforms[slot], slot, time, speed)
+		# Each soldier leans toward the target from where HE stands, so a
+		# ring around a tree all face inward and a line facing an enemy
+		# all lean the same way — without any of them being told which.
+		decorated.origin += work_swing(slot, time, toward - transforms[slot].origin, activity)
+		out.append(decorated)
+	return out

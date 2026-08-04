@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="TerrainPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://terrain_preset.gd" id="1_tp"]
+
+[resource]
+script = ExtResource("1_tp")
+id = &"continents"
+display_name = "Continents"
+summary = "The default. Broad landmasses, a few inland seas, room to manoeuvre."
+sea_level = 0.38
+beach_level = 0.44
+mountain_level = 0.74
+elevation_frequency = 2.5
+moisture_frequency = 4.0
+height_scale = 2.0

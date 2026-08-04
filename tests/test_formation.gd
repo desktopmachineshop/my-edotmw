@@ -17,7 +17,7 @@ extends GutTest
 
 const W := 32
 const H := 16
-const SHAPES := ["line", "column", "wedge", "loose"]
+const SHAPES := ["line", "column", "wedge", "sparse", "tight", "ring"]
 
 
 func _space() -> TorusSpace:
@@ -103,13 +103,13 @@ func test_two_independent_evaluators_agree() -> void:
 
 
 func test_loose_scatter_is_hashed_not_random() -> void:
-	# "loose" is the one shape with scatter, and the obvious
+	# "sparse" is the one shape with scatter, and the obvious
 	# implementation — an RNG — would desync client from server.
 	var t := _space()
 	var curve := _march(t, Vector2i(5, 5), 4)
 
-	var first := Formation.soldier_transforms(curve, 1.0, 40, "loose", 1.0, t)
-	var second := Formation.soldier_transforms(curve, 1.0, 40, "loose", 1.0, t)
+	var first := Formation.soldier_transforms(curve, 1.0, 40, "sparse", 1.0, t)
+	var second := Formation.soldier_transforms(curve, 1.0, 40, "sparse", 1.0, t)
 	for i in range(first.size()):
 		assert_eq(first[i], second[i], "loose slot %d scattered differently on a second call" % i)
 
@@ -374,7 +374,7 @@ func test_bulk_derivation_matches_the_single_soldier_path() -> void:
 	curve.append_cell(1.0, Vector2i(9, 7), space)
 	curve.append_cell(2.0, Vector2i(20, 12), space)
 
-	for shape in ["line", "column", "wedge", "loose"]:
+	for shape in SHAPES:
 		for alive in [1, 7, 12, 40]:
 			for t in [0.0, 0.35, 1.4, 2.0]:
 				var bulk := Formation.soldier_transforms(
@@ -408,3 +408,90 @@ func test_bulk_derivation_applies_the_terrain_sampler_per_soldier() -> void:
 		heights[snappedf(t.origin.y, 0.001)] = true
 	assert_gt(heights.size(), 1,
 		"Every soldier got the same height — the sampler was hoisted out of the loop")
+
+
+# --- footprint (selection, D-057) --------------------------------------
+
+func test_a_squads_footprint_covers_every_soldier_in_it() -> void:
+	# Selection tested the squad's CURVE position against a fixed pixel
+	# radius, so on a wide formation clicking a soldier you could plainly
+	# see selected nothing — the hit test was aimed at one point inside a
+	# body many metres across. Reported from a real game as selection
+	# being based on one man rather than the squad.
+	for shape in SHAPES:
+		var alive := 40
+		var spacing := 1.2
+		var print := Formation.footprint(shape, alive, spacing)
+		var centre: Vector2 = print["centre"]
+		var radius: float = print["radius"]
+
+		for slot in range(alive):
+			var at := Formation.slot_offset(shape, slot, alive, spacing)
+			assert_lte(at.distance_to(centre), radius,
+				"%s: soldier %d sits outside the squad's own footprint" % [shape, slot])
+
+
+func test_the_footprint_is_centred_on_the_body_not_the_curve_point() -> void:
+	# A line puts rank r at -r * spacing, so the curve point is at the
+	# FRONT rank and the troops extend behind it. A marker drawn at the
+	# curve point is visibly offset from the squad it marks — which is
+	# exactly how the first selection ring looked.
+	var print := Formation.footprint("line", 40, 1.2)
+	var centre: Vector2 = print["centre"]
+	assert_lt(centre.y, -0.1,
+		"a line formation's body sits behind its curve point, so the footprint "
+		+ "centre must too — otherwise the marker floats off the front rank")
+
+
+func test_the_footprint_grows_with_the_squad() -> void:
+	# The other side: a radius that ignored headcount would be wrong for
+	# either a big squad or a small one, and "big target for a big
+	# formation" is the whole point of using it for hit-testing.
+	var small := Formation.footprint("line", 6, 1.2)
+	var large := Formation.footprint("line", 60, 1.2)
+	assert_gt(float(large["radius"]), float(small["radius"]),
+		"a sixty-man formation should present a bigger target than a six-man one")
+
+
+# --- ring, for work crews (playtest feedback) --------------------------
+
+func test_a_ring_crew_stands_around_its_centre_not_on_it() -> void:
+	# Gatherers used "sparse" — a wide jittered grid — so a crew ordered
+	# onto a resource stood in a spread rectangle rather than around the
+	# thing they were working. "ring" puts them around it, which is what
+	# they visibly ought to be doing.
+	var spacing := 1.3
+	for slot in range(24):
+		var at := Formation.slot_offset("ring", slot, 24, spacing)
+		assert_gt(at.length(), spacing * 0.5,
+			"soldier %d is standing on the node rather than around it" % slot)
+
+
+func test_a_ring_crew_is_actually_round() -> void:
+	# The point of the shape. A grid would satisfy "not on the centre"
+	# while looking nothing like a crew gathered round a thing, so this
+	# checks the extent is roughly equal in both axes — a line or a
+	# rectangle would fail it.
+	var min_p := Vector2(INF, INF)
+	var max_p := Vector2(-INF, -INF)
+	for slot in range(24):
+		var at := Formation.slot_offset("ring", slot, 24, 1.3)
+		min_p = Vector2(minf(min_p.x, at.x), minf(min_p.y, at.y))
+		max_p = Vector2(maxf(max_p.x, at.x), maxf(max_p.y, at.y))
+
+	var extent := max_p - min_p
+	var ratio := maxf(extent.x, extent.y) / maxf(minf(extent.x, extent.y), 0.001)
+	assert_lt(ratio, 1.4, "the crew is %.2f:1 — that is a rectangle, not a ring" % ratio)
+
+
+func test_every_shape_the_schema_offers_is_implemented() -> void:
+	# Adding a shape to UnitDef's enum without implementing it would fall
+	# through slot_offset's `_` branch: every soldier silently stacked into
+	# a line while the .tres says otherwise, with only a push_error nobody
+	# reads. Cheap to check, and it caught nothing today only because the
+	# implementation went in first.
+	for shape in SHAPES:
+		var a := Formation.slot_offset(shape, 7, 20, 1.0)
+		var b := Formation.slot_offset(shape, 8, 20, 1.0)
+		assert_ne(a, b,
+			"'%s' put two different soldiers in the same place — is it implemented?" % shape)

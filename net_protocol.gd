@@ -32,6 +32,8 @@ const C2S_ORDER_ATTACK_MOVE := 12
 const C2S_ORDER_BUILD := 13
 const C2S_ORDER_PRODUCE := 14
 const C2S_ORDER_GATHER := 16
+const C2S_ORDER_RALLY := 23
+const C2S_ORDER_FORMATION := 24
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
@@ -246,6 +248,30 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		buf.put_u32(int(entry["cell"]))
 		buf.put_float(float(entry["progress"]))
 		buf.put_u8(1 if bool(entry["destroyed"]) else 0)
+
+		# Health as a FRACTION, and the production queue.
+		#
+		# Added so a selected building can show what it is doing (health,
+		# what is training, what is waiting). Neither is hashed — the
+		# building composition hash covers identity, owner, kind and
+		# whether it still stands, deliberately excluding anything that
+		# varies continuously, because a client legitimately lags a tick
+		# and hashing these would report a desync on a healthy system.
+		#
+		# This message is sent on CHANGE, never per tick (BuildingSim's
+		# `take_dirty`), so an idle building still costs zero bandwidth —
+		# D-003's claim survives. `head_remaining` lets the client run the
+		# progress bar down locally between messages, the same derivation
+		# as construction progress rather than a stream of floats.
+		buf.put_float(float(entry.get("health_fraction", 1.0)))
+		buf.put_float(float(entry.get("head_remaining", 0.0)))
+		buf.put_u32(int(entry.get("rally", 0)))
+		var queue: Array = entry.get("queue", [])
+		buf.put_u16(queue.size())
+		for queued in queue:
+			var queued_id := String(queued).to_utf8_buffer()
+			buf.put_u16(queued_id.size())
+			buf.put_data(queued_id)
 	return buf.data_array
 
 
@@ -259,14 +285,24 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 		var id := buf.get_u32()
 		var name_length := buf.get_u16()
 		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
-		out.append({
+		var entry := {
 			"id": id,
 			"def_id": name_bytes.get_string_from_utf8(),
 			"owner": buf.get_u32(),
 			"cell": buf.get_u32(),
 			"progress": buf.get_float(),
 			"destroyed": buf.get_u8() == 1,
-		})
+			"health_fraction": buf.get_float(),
+			"head_remaining": buf.get_float(),
+			"rally": buf.get_u32(),
+		}
+		var queue := []
+		for _q in range(buf.get_u16()):
+			var queued_length := buf.get_u16()
+			var queued_bytes: PackedByteArray = buf.get_data(queued_length)[1]
+			queue.append(queued_bytes.get_string_from_utf8())
+		entry["queue"] = queue
+		out.append(entry)
 	return out
 
 
@@ -347,6 +383,51 @@ static func decode_order_gather(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"squad": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## ORDER_FORMATION: change a squad's formation (D-058).
+##
+## The shape travels as a STRING rather than an enum ordinal, for the same
+## reason `produces` lists archetypes: adding a formation should not
+## renumber the wire, and a name in a packet capture is readable.
+static func encode_order_formation(squad: int, shape: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_FORMATION)
+	buf.put_u32(squad)
+	var bytes := shape.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_order_formation(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var squad := buf.get_u32()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"squad": squad, "shape": bytes.get_string_from_utf8()}
+
+
+## ORDER_RALLY: where a building sends what it produces.
+##
+## The building is named by its WIRE id (BuildingSim.wire_id), like every
+## other building order — squad ids and building ids share a number space
+## and the offset is what keeps them apart.
+static func encode_order_rally(building_wire_id: int, cell_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_RALLY)
+	buf.put_u32(building_wire_id)
+	buf.put_u32(cell_index)
+	return buf.data_array
+
+
+static func decode_order_rally(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "cell": buf.get_u32()}
 
 
 ## NOTICE: a short human-readable line for the player who sent an order.
@@ -610,3 +691,208 @@ static func seed_from(text: String, a: int, b: int) -> int:
 	h = _hash_int(h, a)
 	h = _hash_int(h, b)
 	return h
+
+
+## LOBBY (D-048). The whole seat list, sent on any change.
+##
+## Sent whole rather than as diffs: a lobby changes when somebody clicks
+## something, which is thousands of times rarer than a curve update, and
+## the entire state is a few hundred bytes. D-003's incremental machinery
+## exists because squad state changes ten times a second — spending that
+## complexity here would be paying a cost the problem does not have.
+const S2C_LOBBY := 18
+const C2S_LOBBY := 19
+
+## What a client can ask the lobby to do. The server checks every one of
+## them against MatchState's rules; these are requests, not commands.
+const LOBBY_SET_CIV := 0
+const LOBBY_ADD_AI := 1
+const LOBBY_REMOVE_AI := 2
+const LOBBY_START := 3
+const LOBBY_SET_OPTION := 4
+const LOBBY_SET_TEAM := 5
+
+
+## `phase` is MatchState.Phase. Carried because a client cannot infer
+## "am I in a lobby" from HAVING a seat list — it keeps the seats all
+## match, for player colours and teams (D-052). Inferring it from the
+## list being non-empty made the client draw the lobby over a running
+## game while every counter reported a healthy match.
+static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_LOBBY)
+	buf.put_u8(phase)
+	buf.put_u32(admin_player)
+	buf.put_u32(seats.size())
+	for seat in seats:
+		buf.put_u8(1 if String(seat["kind"]) == "ai" else 0)
+		buf.put_u8(int(seat.get("team", 0)))
+		buf.put_u32(int(seat["player"]))
+		_put_string(buf, String(seat["civ"]))
+		_put_string(buf, String(seat["name"]))
+	var json := JSON.stringify(settings)
+	_put_string(buf, json)
+	return buf.data_array
+
+
+static func decode_lobby(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var phase := int(buf.get_u8())
+	var admin := int(buf.get_u32())
+	var count := int(buf.get_u32())
+	var seats := []
+	for _i in range(count):
+		var is_ai := buf.get_u8() == 1
+		var team := int(buf.get_u8())
+		var player := int(buf.get_u32())
+		var civ := _get_string(buf)
+		var name := _get_string(buf)
+		seats.append({
+			"kind": "ai" if is_ai else "human",
+			"player": player, "civ": civ, "team": team, "name": name,
+		})
+	var settings := {}
+	var json := _get_string(buf)
+	if json != "":
+		var parsed = JSON.parse_string(json)
+		if parsed is Dictionary:
+			settings = parsed
+	return {"admin": admin, "seats": seats, "settings": settings, "phase": phase}
+
+
+static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_LOBBY)
+	buf.put_u8(action)
+	buf.put_u32(seat)
+	_put_string(buf, civ)
+	return buf.data_array
+
+
+static func decode_lobby_command(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var action := int(buf.get_u8())
+	var seat := int(buf.get_u32())
+	var civ := _get_string(buf)
+	return {"action": action, "seat": seat, "civ": civ}
+
+
+static func _put_string(buf: StreamPeerBuffer, text: String) -> void:
+	var bytes := text.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+
+
+static func _get_string(buf: StreamPeerBuffer) -> String:
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return bytes.get_string_from_utf8()
+
+
+## MAP_SETTINGS (D-049) — the concrete world the match is about to use.
+##
+## Sent at match start, before any welcome, so a client can generate
+## terrain identical to the server's. CONCRETE NUMBERS, never a preset
+## name: `server.gd` warned in M3 that "the moment terrain parameters
+## become tunable they have to become map data and travel on the wire, or
+## the two sides will quietly disagree about which cells a squad may
+## enter". Sending "islands" would leave two implementations of what that
+## means, one per side, free to drift apart.
+const S2C_MAP_SETTINGS := 20
+
+
+static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_MAP_SETTINGS)
+	buf.put_u32(int(settings["width"]))
+	buf.put_u32(int(settings["height"]))
+	buf.put_u32(int(settings["player_slots"]))
+	buf.put_32(int(settings["seed"]))
+	_put_string(buf, String(settings["preset"]))
+	for key in ["sea_level", "beach_level", "mountain_level",
+			"elevation_frequency", "moisture_frequency", "height_scale"]:
+		buf.put_float(float(settings[key]))
+	return buf.data_array
+
+
+static func decode_map_settings(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var out := {
+		"width": int(buf.get_u32()),
+		"height": int(buf.get_u32()),
+		"player_slots": int(buf.get_u32()),
+		"seed": int(buf.get_32()),
+		"preset": _get_string(buf),
+	}
+	for key in ["sea_level", "beach_level", "mountain_level",
+			"elevation_frequency", "moisture_frequency", "height_scale"]:
+		out[key] = buf.get_float()
+	return out
+
+
+## CHAT (D-050). Player-authored text, relayed by the server.
+##
+## The server is the only thing that decides who said what: a client sends
+## text and nothing else, and the server attaches the speaker. Letting a
+## client name its own speaker would let it put words in someone's mouth,
+## which is the same "the client is not trusted" rule (D-002) that governs
+## orders — it is just less obvious when the payload is prose.
+const S2C_CHAT := 21
+const C2S_CHAT := 22
+
+## Longest message accepted. Bounded because it arrives on the same
+## reliable channel as everything else (D-042), so an unbounded message
+## is an unbounded stall for every packet queued behind it.
+const CHAT_MAX_CHARS := 240
+
+
+static func encode_chat(speaker: String, text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_CHAT)
+	_put_string(buf, speaker)
+	_put_string(buf, text)
+	return buf.data_array
+
+
+static func decode_chat(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"speaker": _get_string(buf), "text": _get_string(buf)}
+
+
+static func encode_chat_send(text: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHAT)
+	_put_string(buf, text)
+	return buf.data_array
+
+
+static func decode_chat_send(data: PackedByteArray) -> String:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return _get_string(buf)
+
+
+## Strip anything that would let a message rewrite the chat log rather
+## than appear in it — newlines and control characters — and cap length.
+##
+## Applied on the SERVER before the message is relayed, so one client
+## cannot fake extra lines in everyone else's window.
+static func sanitise_chat(text: String) -> String:
+	var out := ""
+	for i in range(text.length()):
+		var c := text[i]
+		if c.unicode_at(0) >= 32:
+			out += c
+	out = out.strip_edges()
+	if out.length() > CHAT_MAX_CHARS:
+		out = out.substr(0, CHAT_MAX_CHARS)
+	return out

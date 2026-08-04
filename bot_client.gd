@@ -633,13 +633,13 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
 		_state_hash_checks(), _desync_count(),
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
-		_max_known_squads(), _buildings_known(), _building_desyncs()])
+		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
@@ -663,3 +663,17 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 			if kv.size() == 2:
 				parsed[kv[0]] = kv[1]
 	return parsed
+
+
+## The best-informed bot's resource-node count (D-061).
+##
+## A MAX rather than a union, for the same reason `_max_known_squads` is:
+## the union across twenty bots would approach the whole map and say
+## nothing about what any one player is allowed to know. What proves the
+## gating is that the single most-informed client still knows fewer nodes
+## than exist.
+func _max_known_nodes() -> int:
+	var best := 0
+	for vc in _clients:
+		best = maxi(best, vc.state.nodes.size())
+	return best

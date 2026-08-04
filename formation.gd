@@ -56,22 +56,102 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 		return Vector2.ZERO
 	var index := clampi(slot, 0, alive - 1)
 
-	match shape:
-		"line":
+	# Resolved from /formations/*.tres (D-058), not from a match statement
+	# here. The GEOMETRY is an algorithm and has to be code; which
+	# formations exist, what they are called, how they are parameterised
+	# and which are offered to a player are data — the same split UnitDef
+	# makes with `mesh_primitive`.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		push_error("Unknown formation '%s' — falling back to line" % shape)
+		def = FormationRoster.by_id(&"line")
+		if def == null:
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
-		"column":
-			return _grid_offset(index, alive, COLUMN_FILES, spacing)
+	return _offset_for(def, index, alive, spacing)
+
+
+## Dispatch to a geometry generator. Adding a `kind` to FormationDef's
+## enum means adding a branch HERE — and a roster test fails if a .tres
+## names a kind nothing implements, rather than letting it fall through to
+## a line and merely look wrong.
+static func _offset_for(def: FormationDef, index: int, alive: int,
+		spacing: float) -> Vector2:
+	var scaled := spacing * maxf(def.spacing_scale, 0.01)
+	match def.kind:
+		"grid":
+			return _grid_offset(index, alive, _grid_files(def, alive), scaled)
+		"scatter":
+			return _scatter_offset(index, alive, scaled, _grid_files(def, alive), def.jitter)
 		"wedge":
-			return _wedge_offset(index, spacing)
-		"loose":
-			return _loose_offset(index, alive, spacing)
+			return _wedge_offset(index, scaled)
+		"ring":
+			return _ring_offset(index, alive, scaled)
 		_:
-			push_error("Unknown formation_shape '%s' — falling back to line" % shape)
-			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
+			push_error("FormationDef '%s' has unimplemented kind '%s'" % [def.id, def.kind])
+			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), scaled)
+
+
+## How wide a grid formation is: from its declared ranks, its declared
+## files, or square if it declares neither.
+static func _grid_files(def: FormationDef, alive: int) -> int:
+	if def.ranks > 0:
+		return _files_for_ranks(alive, def.ranks)
+	if def.files > 0:
+		return def.files
+	return maxi(1, ceili(sqrt(float(alive))))
 
 
 static func _files_for_ranks(alive: int, ranks: int) -> int:
 	return maxi(1, ceili(float(alive) / float(maxi(ranks, 1))))
+
+
+## Cache: "shape|alive|spacing" -> {"centre": Vector2, "radius": float}.
+## Pure in those three, so one static cache serves every squad — the same
+## reasoning as TorusSpace.disk_offsets.
+static var _footprint_cache: Dictionary = {}
+
+
+## The ground a squad actually occupies, in formation-local units.
+##
+## Returns the CENTRE of the occupied area (which is not the squad's curve
+## point) and a radius covering every slot.
+##
+## Both halves matter and both were wrong. Selection tested a click
+## against the squad's curve position with a fixed pixel radius, so
+## clicking a soldier at the edge of a forty-man line selected nothing —
+## the hit test was aimed at one point inside a formation many metres
+## across. And the selection marker was drawn at that same curve point,
+## which for a line formation sits at the FRONT rank: `_grid_offset` puts
+## rank r at -r * spacing, so the body of the squad extends backwards and
+## a marker centred on the curve point is visibly offset from the troops
+## it is marking.
+##
+## A circle rather than a rectangle, deliberately: the formation rotates
+## with the squad's heading, and a radius is rotation-invariant while a
+## box would need re-deriving every frame the squad turned.
+static func footprint(shape: String, alive: int, spacing: float) -> Dictionary:
+	var key := "%s|%d|%.3f" % [shape, alive, spacing]
+	if _footprint_cache.has(key):
+		return _footprint_cache[key]
+
+	var result := {"centre": Vector2.ZERO, "radius": maxf(spacing, 0.5)}
+	if alive > 0:
+		var min_p := Vector2(INF, INF)
+		var max_p := Vector2(-INF, -INF)
+		for slot in range(alive):
+			var p := slot_offset(shape, slot, alive, spacing)
+			min_p = Vector2(minf(min_p.x, p.x), minf(min_p.y, p.y))
+			max_p = Vector2(maxf(max_p.x, p.x), maxf(max_p.y, p.y))
+		var centre := (min_p + max_p) * 0.5
+		# Half the diagonal, so the circle contains the whole extent
+		# whichever way the squad is facing. Plus a soldier's own width, so
+		# the edge of the marker sits just outside the outermost man rather
+		# than bisecting him.
+		var half := (max_p - min_p) * 0.5
+		result = {"centre": centre, "radius": half.length() + spacing * 0.5}
+
+	_footprint_cache[key] = result
+	return result
 
 
 static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> Vector2:
@@ -86,6 +166,7 @@ static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> 
 	return Vector2((float(file) - centre) * spacing, -float(rank) * spacing)
 
 
+
 static func _wedge_offset(index: int, spacing: float) -> Vector2:
 	# Triangular: row r holds r+1 soldiers, point facing forward.
 	var row := 0
@@ -98,16 +179,112 @@ static func _wedge_offset(index: int, spacing: float) -> Vector2:
 	return Vector2((float(position_in_row) - centre) * spacing, -float(row) * spacing)
 
 
-static func _loose_offset(index: int, alive: int, spacing: float) -> Vector2:
-	# Skirmish order: a grid, spread wider, with a deterministic scatter.
-	#
-	# The scatter is hashed from the slot index, NOT drawn from an RNG.
-	# An RNG would either need seeding state (breaking purity) or would
-	# desync client from server. Same index always yields the same offset,
-	# on every machine, forever.
-	var base := _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing * 1.8)
-	var jitter := Vector2(_hash_unit(index * 2 + 1), _hash_unit(index * 2 + 2))
-	return base + jitter * spacing * 0.6
+## Concentric rings around the centre, nobody standing on it.
+##
+## For a work crew rather than a fighting line: a squad ordered onto a
+## resource node walks its curve to that node, so a formation that circles
+## its own centre puts the gatherers AROUND the thing they are working —
+## which is what they visibly ought to be doing, and what a spread grid
+## never looked like.
+##
+## Ring sizes and how the crew is shared between them are `_ring_layout`'s
+## business — see it for why a crew only gains a second ring when one
+## genuinely cannot hold it.
+##
+## Pure in (index, alive, spacing) like every other shape, with no
+## per-soldier state anywhere (D-006 clause 1).
+static func _ring_offset(index: int, alive: int, spacing: float) -> Vector2:
+	var layout := _ring_layout(alive, spacing)
+	var consumed := 0
+	for k in range(layout.size()):
+		var count: int = layout[k]
+		if index < consumed + count:
+			var place := index - consumed
+			# Half-step alternate rings so the rings interleave rather
+			# than lining every soldier up on the same spokes.
+			var angle := TAU * (float(place) + 0.5 * float(k % 2)) / float(count)
+			return Vector2(cos(angle), sin(angle)) * float(k + 1) * spacing
+		consumed += count
+	return Vector2.ZERO
+
+
+## Cache: "alive|spacing" -> Array of how many stand in each ring.
+static var _ring_layout_cache: Dictionary = {}
+
+
+## How to spread `alive` soldiers over as few rings as will hold them.
+##
+## The first version filled ring 1 to its capacity of six and started ring
+## 2 with whatever was left, so eight gatherers stood as a tight six with
+## two stranded on their own out at double the radius. Spacing was even
+## WITHIN a ring and the crew still looked wrong, because the rings were
+## unevenly loaded.
+##
+## Now: take the fewest rings whose combined capacity holds everyone, then
+## spread the crew across them in proportion to each ring's circumference.
+## Each ring is evenly divided, so angular spacing is uniform and arc
+## spacing is close to `spacing` at every radius — for a crew of any size,
+## which is what "equal spacing regardless of squad size" asks for.
+##
+## Ring k has radius k * spacing, so its circumference is TAU * k * spacing
+## and it holds floor(TAU * k) at one `spacing` apart — 6, 12, 18, and so
+## on. A crew only gains a second ring when a single one genuinely cannot
+## hold it without soldiers standing on each other.
+static func _ring_layout(alive: int, spacing: float) -> Array:
+	var key := "%d|%.3f" % [alive, spacing]
+	if _ring_layout_cache.has(key):
+		return _ring_layout_cache[key]
+
+	var layout := []
+	if alive > 0:
+		# Fewest rings that can hold the crew.
+		var rings := 1
+		while _capacity_of_rings(rings) < alive:
+			rings += 1
+
+		# Share them out by circumference, so no ring is left with a
+		# lonely pair while another is packed shoulder to shoulder.
+		var total_capacity := _capacity_of_rings(rings)
+		var placed := 0
+		for k in range(1, rings + 1):
+			var share := int(round(float(alive) * float(_ring_capacity(k)) / float(total_capacity)))
+			# The last ring takes the remainder, so rounding can never
+			# lose or invent a soldier.
+			if k == rings:
+				share = alive - placed
+			share = clampi(share, 0, alive - placed)
+			layout.append(share)
+			placed += share
+
+	_ring_layout_cache[key] = layout
+	return layout
+
+
+static func _ring_capacity(ring: int) -> int:
+	return maxi(1, floori(TAU * float(ring)))
+
+
+static func _capacity_of_rings(rings: int) -> int:
+	var total := 0
+	for k in range(1, rings + 1):
+		total += _ring_capacity(k)
+	return total
+
+
+## Skirmish order: a grid with a deterministic scatter over it.
+##
+## The scatter is hashed from the slot index, NOT drawn from an RNG. An
+## RNG would either need seeding state (breaking purity) or would desync
+## client from server. The same index always yields the same offset, on
+## every machine, forever.
+##
+## Spread and jitter are the FormationDef's, so "how loose is loose" is a
+## number in a text file rather than two literals in here.
+static func _scatter_offset(index: int, alive: int, spacing: float,
+		files: int, jitter: float) -> Vector2:
+	var base := _grid_offset(index, alive, files, spacing)
+	var scatter := Vector2(_hash_unit(index * 2 + 1), _hash_unit(index * 2 + 2))
+	return base + scatter * spacing * jitter
 
 
 ## Deterministic hash of an integer to [-0.5, 0.5]. Integer ops only, so

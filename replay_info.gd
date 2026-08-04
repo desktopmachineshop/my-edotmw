@@ -48,6 +48,7 @@ func _initialize() -> void:
 	var combat_records := 0
 	var casualty_events := 0
 	var building_records := 0
+	var seats: Array = []
 	for record in records:
 		match int(record.get("kind", ReplayLog.Kind.CURVE)):
 			ReplayLog.Kind.CURVE:
@@ -60,10 +61,25 @@ func _initialize() -> void:
 				combat_records += 1
 				var combat: Dictionary = record.get("combat", {})
 				casualty_events += (combat.get("events", []) as Array).size()
+			ReplayLog.Kind.SEATS:
+				seats = record.get("seats", [])
 			ReplayLog.Kind.BUILDING_INFO:
 				building_records += 1
 
 	print("replay-info: %s" % path)
+	# Who fought, before what happened (D-046 criterion 11). With
+	# asymmetric civs (D-047) "who won" is most of "what happened", and a
+	# replay that reconstructed only the motion could not answer it.
+	if seats.is_empty():
+		print("  players:  not recorded (replay predates seat records)")
+	else:
+		var described := []
+		for seat in seats:
+			var team := int(seat.get("team", 0))
+			described.append("%s = %s%s" % [
+				seat["name"], seat["civ"],
+				"" if team == 0 else " (team %d)" % team])
+		print("  players:  %s" % ", ".join(described))
 	print("  map:      %dx%d cells, hex size %.2f, tick %.0f Hz" % [
 		space.width, space.height, space.hex_size, float(replay["tick_hz"])])
 	print("  records:  %d total covering %.1fs (t=%.1f to t=%.1f) — %d curve, %d composition, %d combat (%d casualty/rout events)" % [

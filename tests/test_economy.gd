@@ -25,7 +25,7 @@ func _gatherer_def() -> UnitDef:
 	d.damage = 0.0
 	d.attack_range = 0.0
 	d.move_speed = 4.0
-	d.formation_shape = "loose"
+	d.formation_shape = "sparse"
 	d.formation_spacing = 1.0
 	d.morale = 100.0
 	d.carry_capacity = 20
@@ -395,11 +395,17 @@ func test_every_producible_unit_costs_something() -> void:
 	# A free unit makes the economy decorative, and this is exactly the
 	# trap UnitDef.cost fell into: declared, plausible-looking, read by
 	# nothing for two milestones.
-	for name in ["gatherers", "militia", "spearmen", "archers", "cavalry"]:
-		var def: UnitDef = UnitRoster.by_id(StringName(name))
-		assert_not_null(def, "roster should ship %s" % name)
+	# EVERY shipped unit, not a named list. A list would have to be edited
+	# whenever a civ is added (D-047), and the one thing D-046 criterion 3
+	# is protecting is that adding a civ needs no edits to anything but
+	# .tres files — a test that had to be updated would be the same
+	# maintenance burden wearing a different hat.
+	var checked := 0
+	for def in UnitRoster.load_all():
 		var total := def.cost_food + def.cost_wood + def.cost_gold + def.cost_stone
-		assert_gt(total, 0, "%s is free, which makes the economy decorative" % name)
+		assert_gt(total, 0, "%s is free, which makes the economy decorative" % def.id)
+		checked += 1
+	assert_gt(checked, 0, "No units were checked, so this proves nothing")
 
 
 func test_the_shipped_gatherer_can_actually_gather() -> void:
@@ -411,3 +417,264 @@ func test_the_shipped_gatherer_can_actually_gather() -> void:
 	var founders: UnitDef = UnitRoster.by_id(&"founders")
 	assert_eq(founders.carry_capacity, 0,
 		"Founders found towns; hauling is the gatherers' job")
+
+
+# --- node density (playtest feedback) ----------------------------------
+
+## The map as a PLAYER gets it: generated, then topped up for fairness.
+##
+## The first version of these guards measured `generate()` alone and
+## reported one node per 68 cells while the shipped map had one per 39.
+## `balance_for_spawns` guarantees every spawn a quota of each resource
+## within reach, and on a small map that nearly DOUBLES the count — so
+## measuring before it is measuring a map nobody plays.
+func _generated_map(width: int, height: int) -> Economy:
+	var settings := MapSettings.new()
+	settings.width = width
+	settings.height = height
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var config := load("res://maps/default.tres") as MapConfig
+	var passable := terrain.passability(space)
+	var spawn_config := MapConfig.new()
+	spawn_config.width = width
+	spawn_config.height = height
+	spawn_config.player_slots = config.player_slots
+	spawn_config.min_spawn_spacing = config.min_spawn_spacing
+	economy.balance_for_spawns(spawn_config.spawn_points(passable), passable,
+		config.fairness_radius, config.fairness_quota)
+	return economy
+
+
+func test_resource_nodes_are_sparse_at_every_map_size() -> void:
+	# Reported twice from real games as resources being far too common,
+	# the second time specifically on a small map — which is where the
+	# fairness top-up dominates, because a small map has nearly as many
+	# spawns to guarantee as a large one and far fewer natural nodes.
+	#
+	# Bounds rather than exact figures: this is tuning somebody should be
+	# free to move. What must not drift is the order of magnitude, which
+	# is the difference between somewhere to go and everywhere you stand.
+	for size in MapSettings.sizes():
+		var economy := _generated_map(int(size["width"]), int(size["height"]))
+		var cells := int(size["width"]) * int(size["height"])
+		var per_node := float(cells) / maxf(float(economy.node_count()), 1.0)
+		assert_gt(per_node, 45.0,
+			"%s: one node per %.0f cells — that is scenery, not a place worth holding" % [
+				size["name"], per_node])
+		assert_lt(per_node, 220.0,
+			"%s: one node per %.0f cells — too sparse to run an economy on" % [
+				size["name"], per_node])
+
+
+func test_small_maps_are_not_far_denser_than_large_ones() -> void:
+	# The specific complaint. Node COUNT scaled with map size correctly all
+	# along; the fairness pass did not, so the smallest map came out at one
+	# node per 37 cells against one per 57 on the largest — and the small
+	# map is the one people test on.
+	#
+	# Some spread is correct and should not be tuned away: a small map has
+	# to seat nearly as many players, and each of them still needs a start.
+	var sizes := MapSettings.sizes()
+	var smallest := _generated_map(int(sizes[0]["width"]), int(sizes[0]["height"]))
+	var largest := _generated_map(int(sizes[-1]["width"]), int(sizes[-1]["height"]))
+
+	var small_per := float(int(sizes[0]["width"]) * int(sizes[0]["height"])) \
+		/ maxf(float(smallest.node_count()), 1.0)
+	var large_per := float(int(sizes[-1]["width"]) * int(sizes[-1]["height"])) \
+		/ maxf(float(largest.node_count()), 1.0)
+
+	assert_lt(large_per / small_per, 2.5,
+		"the largest map is %.1fx sparser than the smallest — the fairness "
+		% (large_per / small_per) + "top-up is not scaling with the map")
+
+
+func test_thinning_the_nodes_did_not_starve_the_map() -> void:
+	# The change that could quietly ruin every match: NODE_STOCK is raised
+	# in step with NODE_EVERY so the map's TOTAL resource stays roughly
+	# constant. Fewer, richer nodes is a different map, not a poorer one —
+	# cutting the count alone would leave the same armies with a fraction
+	# of the economy, and with a 1-2 hour target stripping the map bare is
+	# the specific failure to avoid.
+	var economy := _generated_map(84, 96)
+	var total := 0
+	for cell in economy.nodes:
+		total += int(economy.nodes[cell]["remaining"])
+	assert_gt(total, 250000,
+		"only %d resource on the standard map — an hour-long match would strip it bare" % total)
+
+
+# --- formations (D-058) ------------------------------------------------
+
+func test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk() -> void:
+	# A gathering crew standing in walking order looked like a squad that
+	# happened to be near a resource rather than one working it. Shape is
+	# replicated state, so the SIM owns this — the client cannot infer it,
+	# because the haul phase is not on the wire.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var def := UnitRoster.by_id(&"gatherers")
+	assert_not_null(def, "the roster should ship gatherers")
+	var node_cell := Vector2i(9, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
+	}
+
+	# Ordered from a distance: walking, so spread out.
+	var squad := sim.add_squad(def, 1, Vector2i(2, 8))
+	economy.order_gather(sim, squad, space.index(node_cell))
+	sim.tick()
+	assert_eq(sim.shape_of(squad), "sparse",
+		"a crew on the road should walk in open order, not ringed around nothing")
+
+	# Now let them arrive.
+	for _i in range(400):
+		sim.tick()
+		if sim.shape_of(squad) == "ring":
+			break
+
+	assert_eq(sim.shape_of(squad), "ring",
+		"a crew standing on its node should work AROUND it")
+
+
+func test_a_shape_change_is_offered_to_the_server_exactly_once() -> void:
+	# The replication contract. `set_shape` ignores a no-op, which is what
+	# lets the economy call it every tick without generating wire traffic —
+	# and without that, a gathering crew would resend SQUAD_INFO to every
+	# client that can see it ten times a second.
+	var space := TorusSpace.new(16, 8, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var squad := sim.add_squad(UnitRoster.first(), 1, Vector2i(2, 2))
+	sim.take_shape_dirty()  # clear whatever spawning left
+
+	sim.set_shape(squad, "tight")
+	assert_eq(sim.take_shape_dirty(), [squad], "the change was not offered to clients")
+
+	sim.set_shape(squad, "tight")
+	assert_eq(sim.take_shape_dirty(), [],
+		"setting the same shape again queued a pointless resend")
+
+
+func test_separating_squads_does_not_evict_crews_from_the_node_they_work() -> void:
+	# D-060 pushes arrived squads off each other's cell so armies do not
+	# heap. Gathering requires standing ON the node (D-028), and several
+	# crews working one node is normal — so separating them meant a
+	# displaced crew could never reach the gathering phase and hauled
+	# nothing, forever.
+	#
+	# The ladder showed it as 22 gatherer squads with a stockpile that
+	# never rose above the starting 480: an economy fully staffed and
+	# producing literally nothing. Nothing in the suite would have caught
+	# it, because each feature was correct on its own.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	sim.buildings = BuildingSim.new(space)
+
+	var def := UnitRoster.by_id(&"gatherers")
+	var node_cell := Vector2i(10, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 9000,
+	}
+
+	var crews := []
+	for i in range(3):
+		var squad := sim.add_squad(def, 1, Vector2i(4 + i, 8))
+		economy.order_gather(sim, squad, space.index(node_cell))
+		crews.append(squad)
+
+	for _i in range(600):
+		sim.tick()
+
+	var working := 0
+	for squad in crews:
+		if sim.cell_index_of(squad) == space.index(node_cell):
+			working += 1
+	assert_gt(working, 1,
+		"only %d of 3 crews reached the node — separation is evicting them from their work"
+		% working)
+
+
+# --- resource positions are fog-gated (D-061) --------------------------
+
+func test_node_entries_can_be_restricted_to_what_a_player_has_seen() -> void:
+	# `node_entries()` sent EVERY node on the map to every client once, at
+	# join. Knowing where every resource sits from the moment you connect
+	# tells you where an opponent must expand and where to raid, without
+	# scouting for any of it — and a modified client could read it
+	# straight out of the packet. That is the class of knowledge D-004's
+	# curve gating and D-025's fog exist to withhold.
+	#
+	# It also hid a real AI bug for a whole session: "the AI cannot find
+	# wood" was diagnosed as fog when the AI in fact knew every node, and
+	# the true fault was reachability.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var economy := Economy.new(space)
+	for cell in [10, 40, 90, 150]:
+		economy.nodes[cell] = {"kind": Economy.ResourceKind.WOOD, "remaining": 100}
+
+	assert_eq(economy.node_entries().size(), 4,
+		"unrestricted, every node should still be listed — that is what the "
+		+ "server needs for its own bookkeeping")
+
+	var seen := economy.node_entries([10, 90])
+	assert_eq(seen.size(), 2, "a restricted list should contain only what was asked for")
+	var cells := []
+	for entry in seen:
+		cells.append(int(entry["cell"]))
+	cells.sort()
+	assert_eq(cells, [10, 90], "the restricted list named the wrong nodes")
+
+
+func test_asking_for_a_node_that_does_not_exist_yields_nothing() -> void:
+	# The boundary: a client that asked about a cell with no node must not
+	# get a phantom entry, or "is there a resource here?" becomes
+	# answerable for any cell on the map — the leak again, one cell at a
+	# time.
+	var economy := Economy.new(TorusSpace.new(16, 8, 1.0))
+	economy.nodes[5] = {"kind": Economy.ResourceKind.FOOD, "remaining": 10}
+	assert_eq(economy.node_entries([99]).size(), 0,
+		"a node was invented for a cell that has none")
+
+
+func test_a_guaranteed_resource_is_one_the_spawn_can_walk_to() -> void:
+	# `balance_for_spawns` placed on any PASSABLE cell in range, which on a
+	# map with water is not the same as reachable. A spawn behind a channel
+	# got its guarantee on the far bank.
+	#
+	# One AI seat in a 700 s ladder match gathered NOTHING — food and wood
+	# still at their starting 220 each — while running 13 worker crews and
+	# giving up on 43 nodes it could not walk to. Same defect as the AI's
+	# own node choice: distance mistaken for reachability.
+	var space := TorusSpace.new(24, 12, 1.0)
+	var economy := Economy.new(space)
+
+	# An island: the spawn's column and the one beside it, walled off by
+	# water from everything else.
+	var passable := PackedByteArray()
+	passable.resize(space.cell_count())
+	passable.fill(0)
+	var spawn := Vector2i(4, 4)
+	var island := [spawn, Vector2i(5, 4), Vector2i(4, 5), Vector2i(5, 5), Vector2i(3, 4)]
+	for cell in island:
+		passable[space.index(cell)] = 1
+
+	economy.balance_for_spawns([spawn], passable, 8, 1)
+
+	for cell_index in economy.nodes:
+		var at := space.from_index(int(cell_index))
+		assert_true(island.has(at),
+			"a guaranteed resource was placed at %s, which the spawn cannot walk to" % at)
+
+	assert_gt(economy.nodes.size(), 0,
+		"nothing was placed at all — the fill found no reachable ground, which "
+		+ "would starve the spawn just as surely")

@@ -59,6 +59,66 @@ var _queues := {}
 # Which squad founded each building, or -1. Parallel to the rest.
 var _builder := PackedInt32Array()
 
+## Where each building sends what it produces, as a cell index, or -1 for
+## "not set" — in which case `rally_of` answers with the default.
+##
+## A produced squad used to appear at `cell + (1, 0)`, one hex from the
+## building's centre, which is INSIDE the 2.4-wide box drawn on a 1.73-wide
+## hex: units materialised standing in the wall of the thing that made
+## them. They now spawn clear of it and walk to this point.
+var _rally := PackedInt32Array()
+
+## How far in front of a building its default rally point sits, in cells.
+## Far enough that a squad standing there is visibly outside the building
+## rather than leaning against it.
+const DEFAULT_RALLY_CELLS := 3
+
+
+## Where this building sends what it produces.
+##
+## Defaults to a few cells "in front", which for a building with no facing
+## means a fixed direction — arbitrary, but it has to be deterministic
+## because both sides derive it, and consistent so a player learns where
+## their troops appear.
+func rally_of(building: int) -> Vector2i:
+	if building < 0 or building >= _cell.size():
+		return Vector2i.ZERO
+	if _rally[building] >= 0:
+		return space.from_index(_rally[building])
+	return space.normalize(space.from_index(_cell[building])
+		+ Vector2i(DEFAULT_RALLY_CELLS, 0))
+
+
+## The living building standing on a cell, or -1.
+##
+## Linear over buildings rather than a cell->building map, because there
+## are orders of magnitude fewer buildings than cells and a map would be a
+## second source of truth to keep in step with `_cell`. If building counts
+## ever reach the thousands this is the thing to index.
+func building_at(cell: Vector2i) -> int:
+	var index := space.index(cell)
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0 and _cell[i] == index:
+			return i
+	return -1
+
+
+## Cells that living buildings stand on, for the simulation's passability
+## (D-007). A squad should walk AROUND a town hall, not through it.
+func occupied_cells() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0:
+			out.append(_cell[i])
+	return out
+
+
+func set_rally(building: int, cell: Vector2i) -> void:
+	if building < 0 or building >= _cell.size():
+		return
+	_rally[building] = space.index(cell)
+	_dirty[building] = true
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -77,6 +137,7 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 		builder: int = -1) -> int:
 	var id := _cell.size()
 	_builder.append(builder)
+	_rally.append(-1)
 	_cell.append(space.index(at))
 	_owner.append(owner)
 	_defs.append(def)
@@ -118,11 +179,18 @@ static func is_building_id(wire: int) -> bool:
 ## Can this building make that unit at all? Data again (D-010): the
 ## `produces` list on the BuildingDef, never a match statement here.
 ## A building site cannot produce, and neither can rubble.
-func can_produce(building: int, unit_def_id: StringName) -> bool:
+## `produces` lists ARCHETYPES, not unit ids (D-047).
+##
+## That is what lets one set of buildings serve every civ: a barracks
+## offers "spearmen", and which spearmen you get depends on who is asking.
+## The caller resolves the archetype against the acting player's civ, so a
+## client cannot even name another civ's unit — criterion 4 of D-046 is
+## structural here rather than a check that could be forgotten.
+func can_produce(building: int, archetype: StringName) -> bool:
 	if is_destroyed(building) or not is_complete(building):
 		return false
 	var def := def_of(building)
-	return def != null and def.produces.has(unit_def_id)
+	return def != null and def.produces.has(archetype)
 
 
 ## Queue a unit. The CALLER has already taken the payment and checked the
@@ -134,6 +202,9 @@ func enqueue(building: int, def: UnitDef) -> void:
 	(_queues[building] as Array).append({
 		"def_id": def.id, "remaining": maxf(def.build_time, 0.001),
 	})
+	# The queue is replicated now, so a change to it has to reach clients
+	# — otherwise a player queues a unit and the panel shows nothing.
+	_dirty[building] = true
 
 
 func queue_length(building: int) -> int:
@@ -159,6 +230,9 @@ func advance_production(dt: float) -> Array:
 		if float(head["remaining"]) <= 0.0:
 			queue.pop_front()
 			done.append({"building": building, "def_id": head["def_id"]})
+			# Queue shortened — tell clients, or the panel keeps showing a
+			# unit that already walked out of the door.
+			_dirty[building] = true
 		else:
 			queue[0] = head
 		_queues[building] = queue
@@ -190,6 +264,10 @@ func info_entries(ids: Array) -> Array:
 	for id in ids:
 		if id < 0 or id >= _cell.size():
 			continue
+		var queue: Array = _queues.get(id, [])
+		var queued_ids := []
+		for item in queue:
+			queued_ids.append(String(item["def_id"]))
 		out.append({
 			"id": wire_id(id),
 			"def_id": String(_defs[id].id),
@@ -197,13 +275,25 @@ func info_entries(ids: Array) -> Array:
 			"cell": _cell[id],
 			"progress": _progress[id],
 			"destroyed": _destroyed[id] == 1,
+			# For the selection panel. A fraction rather than an absolute,
+			# so the client needs no copy of max_health to draw a bar.
+			"health_fraction": _health[id] / maxf(_defs[id].max_health, 0.001),
+			"head_remaining": float(queue[0]["remaining"]) if not queue.is_empty() else 0.0,
+			"queue": queued_ids,
+			# So the client can draw where troops will muster.
+			"rally": space.index(rally_of(id)),
 		})
 	return out
 
 
 ## Ids whose replicated state changed since the last call, and clears the
-## list. Only completion and destruction qualify — the two things a client
-## must be told about, one of which is in the hash.
+## list. Completion, destruction, damage, and any change to the production
+## queue — the things a client must be told about, one of which is in the
+## hash and the rest of which the selection panel draws.
+##
+## Still event-driven, never per tick: a building sitting idle marks
+## nothing, so D-003's zero-bandwidth-when-idle claim holds even though
+## this now carries health and a queue.
 ##
 ## Exists so a building whose state changes AFTER a client already knows
 ## it still gets resent. Without it, destruction would silently diverge
@@ -337,3 +427,39 @@ func composition_entries(ids: Array) -> Array:
 
 func composition_hash(ids: Array) -> int:
 	return NetProtocol.composition_hash(composition_entries(ids))
+
+
+## Every shipped BuildingDef, sorted by id so iteration order is stable
+## (the same reason UnitRoster.load_all sorts).
+##
+## Cached: the AI asks what it could build on a decision tick, and
+## `by_id` above hits ResourceLoader every call. A directory walk inside
+## a think loop is the shape of defect that cost a whole tick budget in
+## D-043 — /buildings is read-only at runtime, so this is memoisation
+## with no correctness cost.
+static var _all_cache: Array[BuildingDef] = []
+
+
+static func all_defs() -> Array[BuildingDef]:
+	if not _all_cache.is_empty():
+		return _all_cache
+
+	var out: Array[BuildingDef] = []
+	var dir := DirAccess.open("res://buildings")
+	if dir == null:
+		push_error("BuildingSim: res://buildings is missing or unreadable")
+		return out
+
+	var names := []
+	for file_name in dir.get_files():
+		var normalised := String(file_name).trim_suffix(".remap")
+		if normalised.ends_with(".tres"):
+			names.append(normalised)
+	names.sort()
+
+	for name in names:
+		var def := load("res://buildings/%s" % name) as BuildingDef
+		if def != null:
+			out.append(def)
+	_all_cache = out
+	return out
