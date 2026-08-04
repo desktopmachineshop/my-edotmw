@@ -408,6 +408,81 @@ func set_alive(squad: int, alive: int) -> void:
 ## A routed squad ignores this (D-024, D-019): it is fleeing under its own
 ## steam and does not take player orders again until it rallies. That is
 ## enforced here, structurally, rather than left to callers to remember.
+## Squads that have ARRIVED do not stack: one settles onto a free cell
+## nearby (D-060).
+##
+## ## Why on arrival, and not by spreading destinations
+##
+## Spreading at order time was the obvious version and it broke D-007:
+## twenty squads sent to one point got twenty DIFFERENT destinations and
+## therefore built twenty flow fields instead of sharing one. That
+## sharing is the whole scaling claim, and `_quantise` (D-038) exists to
+## force nearby orders onto the same destination for exactly this reason.
+## An existing test caught it immediately.
+##
+## So travel is unchanged — one destination, one field, everybody walks
+## the same way — and separation happens only where the pile-up actually
+## shows: at the end.
+##
+## ## Why squad-granular and not per soldier
+##
+## The obvious fix for "units stack" is per-soldier collision, and D-006
+## names that specifically as out of bounds: "local avoidance, collision
+## push-back, jostling" each give a soldier integration state and fire the
+## revisit trigger. That purity is what lets client and server agree on
+## 40,000 soldier positions without sending any of them, which is not a
+## small thing to trade for spacing.
+##
+## The GOAL though — armies taking up room instead of heaping — is a
+## squad-level property, and squads are the atomic unit (D-005).
+##
+## Deterministic tie-break: the LOWER squad id keeps the cell and the
+## higher one moves. Without that, two squads would each decide the other
+## was there first and swap places forever.
+func _separate_arrivals() -> void:
+	var occupants := {}
+	for i in range(_cell.size()):
+		if _alive[i] <= 0:
+			continue
+		# Only settled squads: one still walking is passing through, and
+		# shoving it aside mid-journey is the per-tick avoidance D-006
+		# rules out.
+		if _cell[i] != _destination[i]:
+			continue
+		var cell := _cell[i]
+		if not occupants.has(cell):
+			occupants[cell] = i
+			continue
+
+		# Someone is already here. Lower id stays.
+		var sitting: int = occupants[cell]
+		var mover := i if i > sitting else sitting
+		if mover == sitting:
+			occupants[cell] = i
+		var spot := _free_cell_near(space.from_index(cell), mover)
+		if spot != space.from_index(cell):
+			_destination[mover] = space.index(spot)
+			_rebuild_curve(mover)
+
+
+## The nearest cell to `cell` that no living squad is sitting on.
+func _free_cell_near(cell: Vector2i, asking: int) -> Vector2i:
+	for offset in TorusSpace.disk_offsets(4):
+		var candidate := space.normalize(cell + offset)
+		if not is_passable(candidate):
+			continue
+		var index := space.index(candidate)
+		var taken := false
+		for i in range(_cell.size()):
+			if i != asking and _alive[i] > 0 and _cell[i] == index:
+				taken = true
+				break
+		if not taken:
+			return candidate
+	# Nowhere free within reach: standing too close beats never settling.
+	return cell
+
+
 ## `cell` if a squad can stand there, otherwise the nearest cell it can.
 ##
 ## Walks outward in `disk_offsets` order, which is deterministic, so two
@@ -869,6 +944,12 @@ func tick() -> void:
 		# exactly at the end would leave a gap at the horizon.
 		if time >= curve.end_time() - (1.0 / TICK_HZ):
 			_rebuild_curve(squad)
+
+	# Squads that have arrived shuffle off each other's cell (D-060), so
+	# an army settles as a body rather than a heap. Only touches squads
+	# already at their destination, so it costs nothing while everyone is
+	# walking and never interferes with a journey in progress.
+	_separate_arrivals()
 
 	last_curves_usec = Time.get_ticks_usec() - curves_started
 

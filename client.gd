@@ -238,6 +238,7 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	_now += delta
+	_frame_delta = delta
 	_service_network()
 	_pan_camera(delta)
 
@@ -574,7 +575,14 @@ func _refresh_squads() -> void:
 			squad_id, _now, _detail_for(centre + offset))
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
-		var decorated := CosmeticOffset.decorate_all(transforms, _now, 1.0)
+		#
+		# Eased FIRST, so soldiers walk to their slots when the squad turns
+		# instead of the whole block snapping round (D-059), then decorated
+		# with sway, footfall and whatever the squad is visibly doing.
+		var eased := _motion.ease(squad_id, transforms, _frame_delta)
+		var doing := _activity_of(squad_id)
+		var decorated := CosmeticOffset.decorate_activity(
+			eased, _now, 1.0, doing, _activity_target(squad_id, doing))
 		unit.set_slot_transforms(decorated)
 
 		# A selection circle under EVERY soldier, from the transforms we
@@ -1374,6 +1382,77 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 
 
 var _node_meshes := {}
+
+## Per-soldier render easing (D-059). Client-only, one-way, never read
+## back by anything authoritative — see soldier_motion.gd's header for
+## exactly where that line sits.
+var _motion := SoldierMotion.new()
+
+## This frame's delta, so the render path can ease at a framerate-
+## independent rate without every function taking a delta parameter.
+var _frame_delta := 0.0
+
+
+## What a squad is visibly DOING, from state the client already has
+## (D-059). No new protocol: `shape` is replicated and tells us a crew is
+## working a node, and enemy squads in vision tell us who is fighting.
+func _activity_of(squad_id) -> int:
+	var info: Dictionary = _state.composition.get(squad_id, {})
+	if info.is_empty():
+		return CosmeticOffset.Activity.IDLE
+
+	# A gathering crew rings its node (D-058), and that shape reaches us
+	# over the wire — so "is this crew working?" needs nothing new.
+	if String(info.get("shape", "")) == "ring":
+		return CosmeticOffset.Activity.WORKING
+
+	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
+	if def == null or def.damage <= 0.0:
+		return CosmeticOffset.Activity.IDLE
+	return CosmeticOffset.Activity.FIGHTING \
+		if _nearest_enemy_within(squad_id, def.attack_range) != null \
+		else CosmeticOffset.Activity.IDLE
+
+
+## What the squad is leaning toward: the ground it works, or the enemy it
+## is engaging.
+func _activity_target(squad_id, activity: int) -> Vector3:
+	match activity:
+		CosmeticOffset.Activity.WORKING:
+			# The node is under the crew's own centre — they were ordered
+			# onto it — so leaning inward is leaning at the resource.
+			return _state.squad_world_position(squad_id, _now)
+		CosmeticOffset.Activity.FIGHTING:
+			var enemy = _nearest_enemy_within(squad_id, 1e9)
+			return enemy if enemy != null else Vector3.ZERO
+		_:
+			return Vector3.ZERO
+
+
+## The world position of the nearest VISIBLE enemy squad within `reach`,
+## or null. Squad-granular, so it costs one distance test per enemy per
+## squad per frame rather than anything per soldier.
+func _nearest_enemy_within(squad_id, reach: float):
+	if _state.space == null:
+		return null
+	var here := _state.squad_world_position(squad_id, _now)
+	var mine := int(_state.composition.get(squad_id, {}).get("owner", -1))
+
+	var best = null
+	var best_distance := reach
+	for other in _state.composition:
+		if other == squad_id:
+			continue
+		if int(_state.composition[other].get("owner", -2)) == mine:
+			continue
+		if _state.alive_of(other) <= 0 or not _state.curves.has(other):
+			continue
+		var there := _state.squad_world_position(other, _now)
+		var d := here.distance_to(there)
+		if d < best_distance:
+			best_distance = d
+			best = there
+	return best
 
 ## The building armed for placement, or "" — a ghost of it follows the
 ## cursor until you click the ground or cancel.
