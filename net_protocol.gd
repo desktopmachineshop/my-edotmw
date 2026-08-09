@@ -54,8 +54,18 @@ const FNV_PRIME := 16777619
 ## where anyone starts: the capture-mode scenario used to duplicate
 ## server.gd's spawn formula to do exactly that, and went silently wrong
 ## the moment spawns became map data. One definition, on the wire.
+## `squad_cap` and `match_tick` are the HUD's, and both must come from the
+## server for the same reason everything else here does: the cap is
+## MapConfig data the client has no copy of, and a clock each client ran
+## for itself would show a different match length to every player and drift
+## further apart the longer the game went on. `match_tick` is the server's
+## own tick counter at the moment of welcome, which at a fixed 10 Hz
+## (D-020) IS the elapsed time — and the client re-anchors on every later
+## tick it hears, so it cannot drift (D-003's derive-between-messages
+## pattern, the same one construction progress uses).
 static func encode_welcome(player: int, width: int, height: int, squads: Array,
-		spawn_cells: Array = []) -> PackedByteArray:
+		spawn_cells: Array = [], squad_cap: int = 0,
+		match_tick: int = 0) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_WELCOME)
 	buf.put_u32(player)
@@ -67,6 +77,8 @@ static func encode_welcome(player: int, width: int, height: int, squads: Array,
 	buf.put_u32(spawn_cells.size())
 	for cell_index in spawn_cells:
 		buf.put_u32(cell_index)
+	buf.put_u32(squad_cap)
+	buf.put_u32(match_tick)
 	return buf.data_array
 
 
@@ -95,12 +107,20 @@ static func decode_welcome(data: PackedByteArray) -> Dictionary:
 	for i in range(spawn_count):
 		spawns.append(buf.get_u32())
 
+	# Trailing fields, read the same forgiving way `spawns` is: a packet
+	# written before these existed reads back as 0, which the HUD shows as
+	# "no cap known" rather than as a wrong number.
+	var squad_cap := buf.get_u32()
+	var match_tick := buf.get_u32()
+
 	return {
 		"player": player,
 		"width": width,
 		"height": height,
 		"squads": squads,
 		"spawns": spawns,
+		"squad_cap": squad_cap,
+		"match_tick": match_tick,
 	}
 
 

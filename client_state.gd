@@ -27,6 +27,18 @@ var squads := PackedInt32Array()
 ## when something did.
 var spawn_cells := PackedInt32Array()
 
+## The per-player squad ceiling (MatchState.squad_cap, from MapConfig).
+## Told to us rather than read from a local .tres, so the HUD's "n/cap"
+## can never disagree with the rule the server actually enforces. 0 means
+## the server never said, which the HUD shows as no cap rather than as 0.
+var squad_cap: int = 0
+
+## The highest server tick this client has been told about, and the local
+## clock reading when it heard it. Together they are the match timer —
+## see note_server_tick and match_elapsed.
+var server_tick: int = 0
+var server_tick_at: float = 0.0
+
 ## Buildings this client has ever been shown, by wire id (D-029/D-030).
 ## Never pruned: buildings are persistent-explored, so leaving vision
 ## freezes what is known rather than forgetting it.
@@ -186,7 +198,39 @@ func _handle_welcome(data: PackedByteArray) -> void:
 	space = TorusSpace.new(int(welcome["width"]), int(welcome["height"]), 1.0)
 	squads = welcome["squads"]
 	spawn_cells = welcome["spawns"]
+	squad_cap = int(welcome.get("squad_cap", 0))
+	note_server_tick(int(welcome.get("match_tick", 0)))
 	welcomed = true
+
+
+## The server's tick counter, whenever a message states it.
+##
+## At a fixed 10 Hz (D-020) the tick count IS the elapsed match time, so
+## this is the whole clock — no separate timestamp on the wire, and no way
+## for the clock and the simulation to disagree about how long the match
+## has been running.
+##
+## Monotonic on purpose. Messages are reliable-ordered (D-042) so ticks
+## should arrive in order, but a clock that could ever run BACKWARDS is
+## worse than one that is briefly stale: a match timer that jumps back is
+## read as a bug by every player who sees it.
+func note_server_tick(tick: int) -> void:
+	if tick > server_tick:
+		server_tick = tick
+		server_tick_at = Time.get_ticks_msec() / 1000.0
+
+
+## Seconds since the match began, derived between messages.
+##
+## The same shape as construction progress and the production countdown:
+## anchor on what the server last stated, run locally from there (D-003).
+## Streaming a clock at 10 Hz would be a per-tick snapshot of a number
+## both sides can compute.
+func match_elapsed() -> float:
+	if server_tick <= 0:
+		return 0.0
+	var stated := float(server_tick) / SquadSim.TICK_HZ
+	return stated + maxf(Time.get_ticks_msec() / 1000.0 - server_tick_at, 0.0)
 
 
 ## Where `player` (1-based) starts, or (-1, -1) if the server sent no
@@ -333,6 +377,24 @@ func is_ghost(squad: int) -> bool:
 	return _ghosts.has(squad)
 
 
+## How many living squads this player has, counted the way the SERVER
+## counts them for the squad cap (`MatchState.has_squad_capacity`):
+## this player's own, still alive, gatherers included.
+##
+## Deliberately not `squads.size()`, which only ever grows — it is the
+## list of ids this client has been told it owns, and nothing removes a
+## squad from it when that squad dies. A HUD reading "41/40" is what that
+## would produce, and it would look like a broken cap rather than a
+## miscount.
+func living_squad_count() -> int:
+	var n := 0
+	for id in composition:
+		var entry: Dictionary = composition[id]
+		if int(entry.get("owner", 0)) == player and int(entry.get("alive", 0)) > 0:
+			n += 1
+	return n
+
+
 ## Squad ids currently held as ghosts.
 func ghost_squad_ids() -> Array:
 	return _ghosts.keys()
@@ -358,6 +420,10 @@ func live_squad_ids() -> Array:
 func _handle_state_hash(data: PackedByteArray) -> void:
 	var decoded := NetProtocol.decode_state_hash(data)
 	state_hash_checks += 1
+	# Re-anchors the match clock. This message already carries the server's
+	# tick and already arrives regularly, so the timer costs no bandwidth
+	# of its own and cannot drift away from the simulation.
+	note_server_tick(int(decoded["tick"]))
 	var ours := composition_hash()
 	var theirs := int(decoded["hash"])
 	if ours != theirs:
