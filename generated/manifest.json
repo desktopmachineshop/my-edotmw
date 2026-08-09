@@ -1,5 +1,27 @@
 {
-  "source_hash": "c5fae7b2cc5bb1e85e9eb18dbf6a78b2bde704ce8711b4f7e083ba860b1a6523",
+  "buildings": {
+    "barracks": {
+      "model": "generated/models/barracks.glb",
+      "triangles": 72,
+      "vertices": 216
+    },
+    "storehouse": {
+      "model": "generated/models/storehouse.glb",
+      "triangles": 84,
+      "vertices": 252
+    },
+    "tower": {
+      "model": "generated/models/tower.glb",
+      "triangles": 144,
+      "vertices": 432
+    },
+    "town_centre": {
+      "model": "generated/models/town_centre.glb",
+      "triangles": 96,
+      "vertices": 288
+    }
+  },
+  "source_hash": "ee46a610d8d34e76fd19e07c2659c698aa5ca093e3ba2677989d9e430c5507b0",
   "terrain": {
     "biomes": [
       "deep_water",

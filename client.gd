@@ -1725,6 +1725,34 @@ func _refresh_resource_nodes() -> void:
 		marker.position = world + _lattice_offset_for(world)
 
 
+## The placeholder mesh for a building whose authored model is missing.
+##
+## Sized so the four shapes read differently from each other at a glance, which
+## is the entire reason `BuildingDef.mesh_primitive` exists. It carried no
+## meaning at all until M7 because nothing read it.
+func _building_primitive(def: BuildingDef) -> Mesh:
+	match def.mesh_primitive:
+		"cylinder":
+			var cylinder := CylinderMesh.new()
+			cylinder.top_radius = 1.0
+			cylinder.bottom_radius = 1.2
+			cylinder.height = 3.0
+			return cylinder
+		"capsule":
+			var capsule := CapsuleMesh.new()
+			capsule.radius = 1.1
+			capsule.height = 3.4
+			return capsule
+		"hull":
+			var hull := BoxMesh.new()
+			hull.size = Vector3(3.6, 2.0, 2.4)
+			return hull
+		_:
+			var box := BoxMesh.new()
+			box.size = Vector3(2.4, 3.0, 2.4)
+			return box
+
+
 func _refresh_buildings() -> void:
 	if _state.space == null:
 		return
@@ -1737,15 +1765,31 @@ func _refresh_buildings() -> void:
 			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
 			if def == null:
 				continue
-			var mesh := BoxMesh.new()
-			mesh.size = Vector3(2.4, 3.0, 2.4)
-			var material := StandardMaterial3D.new()
 			# Owner colour, like units (D-052) — a town hall you cannot
 			# attribute at a glance is worse than a squad you cannot,
 			# because it tells you whose ground you are standing on.
-			material.albedo_color = _state.colour_of(int(info["owner"])).lerp(
-				def.mesh_color, 0.25)
-			material.roughness = 0.9
+			var owner_colour := _state.colour_of(int(info["owner"]))
+			var mesh: Mesh = null
+			var material: Material = null
+
+			if def.model_id != &"":
+				mesh = UnitMesh.mesh_for(def.model_id)
+			if mesh != null:
+				# Authored model (D-064). The owner-colour mask is baked into
+				# vertex alpha, so the shader mixes rather than tinting the
+				# whole structure one colour.
+				material = UnitMesh.static_material_for(owner_colour)
+			else:
+				# The primitive, which now actually reads `mesh_primitive`.
+				# It had no readers at all until M7 — every building on the
+				# map was a hardcoded box while the field sat in the schema
+				# looking authoritative.
+				mesh = _building_primitive(def)
+				var standard := StandardMaterial3D.new()
+				standard.albedo_color = owner_colour.lerp(def.mesh_color, 0.25)
+				standard.roughness = 0.9
+				material = standard
+
 			instance = MeshInstance3D.new()
 			instance.mesh = mesh
 			instance.material_override = material

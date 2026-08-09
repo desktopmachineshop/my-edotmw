@@ -28,6 +28,7 @@ const VAT_DIR := "res://generated/vat"
 
 const OPAQUE_SHADER := "res://shaders/unit_anim.gdshader"
 const GHOST_SHADER := "res://shaders/unit_anim_ghost.gdshader"
+const STATIC_SHADER := "res://shaders/building_static.gdshader"
 
 static var _manifest := {}
 static var _manifest_loaded := false
@@ -151,6 +152,21 @@ static func material_for(model_id: StringName, team_colour: Color,
 		float(layout.get("colour_row", 128)))
 	material.set_shader_parameter("frames_per_clip",
 		float(layout.get("frames_per_clip", 16)))
+	material.set_shader_parameter("team_colour", team_colour)
+	return material
+
+
+## A material for an authored model with no VAT — buildings (D-064).
+##
+## Separate from `material_for` because the two answer different questions: a
+## unit needs its clips and a building needs none, and giving buildings the
+## animated shader would make every one of them carry a texture sampler it
+## never reads.
+static func static_material_for(team_colour: Color) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	if not _shaders.has(STATIC_SHADER):
+		_shaders[STATIC_SHADER] = load(STATIC_SHADER) as Shader
+	material.shader = _shaders[STATIC_SHADER]
 	material.set_shader_parameter("team_colour", team_colour)
 	return material
 

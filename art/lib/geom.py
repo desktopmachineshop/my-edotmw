@@ -39,18 +39,40 @@ Vec3 = tuple[float, float, float]
 # counter-clockwise when viewed from outside. Godot and glTF both use
 # counter-clockwise front faces, so getting this wrong shows up as a model
 # lit from the inside rather than as an error.
+#
+# It DID go wrong, and is worth knowing about because of how long it hid.
+# `box` had every one of its twelve triangles wound backwards, so every box in
+# the game was inside-out. Nothing failed. Soldiers still looked like soldiers,
+# because a small convex object seen from outside with back-face culling shows
+# you its far side instead of its near side and the silhouette is identical.
+#
+# What it actually cost was LIGHTING: `bake.py` derives normals from the
+# winding, so every normal pointed inward and every surface was lit by the
+# inverse of the sun. It only became visible when buildings got big enough to
+# see through — you could look straight into a town hall and read the inside of
+# its far wall.
+#
+# The lesson is the one this project keeps relearning: the check that catches
+# this is a picture of something LARGE, not a triangle count.
 
 
 def box(size: Vec3, centre: Vec3 = (0.0, 0.0, 0.0),
-        taper: float = 1.0) -> tuple[list[Vec3], list[tuple[int, int, int]]]:
+        taper: float = 1.0,
+        taper_z: float | None = None) -> tuple[list[Vec3], list[tuple[int, int, int]]]:
     """An axis-aligned box, optionally tapered toward +Y.
 
-    `taper` scales the top face in X and Z: 1.0 is a plain box, 0.7 gives the
-    slight wedge that reads as a torso rather than a crate. 12 triangles.
+    `taper` scales the top face: 1.0 is a plain box, 0.7 gives the slight wedge
+    that reads as a torso rather than a crate. 12 triangles.
+
+    `taper_z` tapers the depth independently. That is what turns a pyramid into
+    a RIDGE — a gable roof needs to keep its width and lose its depth, and
+    tapering both axes equally produces a tent that reads, from a strategy
+    camera, as a flat plate on legs.
     """
     sx, sy, sz = size[0] / 2.0, size[1] / 2.0, size[2] / 2.0
     cx, cy, cz = centre
-    tx, tz = sx * taper, sz * taper
+    tx = sx * taper
+    tz = sz * (taper if taper_z is None else taper_z)
 
     verts: list[Vec3] = [
         (cx - sx, cy - sy, cz - sz), (cx + sx, cy - sy, cz - sz),
@@ -59,12 +81,12 @@ def box(size: Vec3, centre: Vec3 = (0.0, 0.0, 0.0),
         (cx + tx, cy + sy, cz + tz), (cx - tx, cy + sy, cz + tz),
     ]
     faces = [
-        (0, 2, 1), (0, 3, 2),          # bottom
-        (4, 5, 6), (4, 6, 7),          # top
-        (0, 1, 5), (0, 5, 4),          # -Z
-        (2, 3, 7), (2, 7, 6),          # +Z
-        (1, 2, 6), (1, 6, 5),          # +X
-        (3, 0, 4), (3, 4, 7),          # -X
+        (0, 1, 2), (0, 2, 3),          # bottom (-Y)
+        (4, 6, 5), (4, 7, 6),          # top    (+Y)
+        (0, 5, 1), (0, 4, 5),          # -Z
+        (2, 7, 3), (2, 6, 7),          # +Z
+        (1, 6, 2), (1, 5, 6),          # +X
+        (3, 4, 0), (3, 7, 4),          # -X
     ]
     return verts, faces
 
@@ -95,8 +117,8 @@ def prism(radius: float, height: float, sides: int = 6,
         lo_i, lo_j, hi_i, hi_j = i, j, sides + i, sides + j
         faces.append((lo_i, hi_i, hi_j))
         faces.append((lo_i, hi_j, lo_j))
-        faces.append((bottom_centre, lo_j, lo_i))
-        faces.append((top_centre, hi_i, hi_j))
+        faces.append((bottom_centre, lo_i, lo_j))
+        faces.append((top_centre, hi_j, hi_i))
     return verts, faces
 
 

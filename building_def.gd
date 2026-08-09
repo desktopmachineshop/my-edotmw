@@ -75,4 +75,14 @@ class_name BuildingDef
 # Primitive-tier mesh (D-011), same tiering as units.
 @export_enum("box", "cylinder", "capsule", "hull") var mesh_primitive: String = "box"
 @export var mesh_color: Color = Color(0.7, 0.68, 0.6)
+
+## Which authored model this building wears (D-064). Schema addition
+## 2026-08-09 (M7), mirroring `UnitDef.model_id`.
+##
+## Empty means "use the primitive", and the primitive now actually reads
+## `mesh_primitive` above. It did not until M7: every building rendered as a
+## hardcoded 2.4x3.0x2.4 box, and `mesh_primitive` sat with no readers at all
+## for four milestones — the fifth instance of the declared-and-unread defect
+## class after `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()`.
+@export var model_id: StringName = &""
 @export var footprint_radius: int = 1

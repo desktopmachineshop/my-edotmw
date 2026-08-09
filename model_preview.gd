@@ -33,7 +33,36 @@ func _ready() -> void:
 	_parse_arguments()
 	_build_environment()
 	_build_terrain()
+	_build_buildings()
 	_build_squads()
+
+
+## Authored buildings, in front of the squads (D-064).
+##
+## Two owners again, for the same reason the squads have two: a town hall you
+## cannot attribute at a glance is worse than a squad you cannot, because it
+## tells you whose ground you are standing on (D-052).
+func _build_buildings() -> void:
+	var defs := BuildingSim.all_defs()
+	var colours := [PlayerColours.of_index(0), PlayerColours.of_index(1)]
+
+	for i in range(defs.size()):
+		var def: BuildingDef = defs[i]
+		if def.model_id == &"":
+			continue
+		var mesh := UnitMesh.mesh_for(def.model_id)
+		if mesh == null:
+			continue
+		var instance := MeshInstance3D.new()
+		instance.mesh = mesh
+		instance.material_override = UnitMesh.static_material_for(
+			colours[i % colours.size()])
+		var at := Vector3((float(i) - float(defs.size() - 1) / 2.0) * 6.4, 0.0, 6.5)
+		if _terrain_sampler.is_valid():
+			at.y = _terrain_sampler.call(at.x, at.z)
+		instance.position = at
+		add_child(instance)
+	print("model_preview: %d buildings" % defs.size())
 
 
 ## Real terrain under the models (D-066), so one picture answers whether the
@@ -96,8 +125,8 @@ func _parse_arguments() -> void:
 
 func _build_environment() -> void:
 	var camera := Camera3D.new()
-	camera.position = Vector3(0.0, 9.0, 15.0)
-	camera.rotation_degrees = Vector3(-26.0, 0.0, 0.0)
+	camera.position = Vector3(0.0, 12.5, 24.0)
+	camera.rotation_degrees = Vector3(-27.0, 0.0, 0.0)
 	camera.fov = 50.0
 	add_child(camera)
 	camera.make_current()

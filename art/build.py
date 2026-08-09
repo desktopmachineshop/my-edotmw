@@ -39,6 +39,8 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
+from art.buildings import build as build_building                  # noqa: E402
 from art.lib.bake import flatten, write_glb, write_vat          # noqa: E402
 from art.lib.godot_import import (                               # noqa: E402
     ATLAS_PARAMS, VAT_PARAMS, ensure_import_params,
@@ -49,6 +51,9 @@ from art.units import ROSTER                                    # noqa: E402
 
 TRIANGLE_BUDGET = 300
 MOUNTED_TRIANGLE_BUDGET = 460   # a horse is a second body; stated, not implied
+# Buildings are few and never instanced in the thousands, so their budget is
+# about silhouette clarity rather than throughput.
+BUILDING_TRIANGLE_BUDGET = 400
 
 GENERATED = os.path.join(_ROOT, "generated")
 
@@ -111,6 +116,33 @@ def build_units(only: str | None) -> dict:
     return entries
 
 
+def build_buildings() -> dict:
+    """Buildings: mesh only, no VAT (D-064). A town hall does not walk."""
+    models_dir = os.path.join(GENERATED, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    entries: dict[str, dict] = {}
+    for building in sorted(BUILDING_ROSTER):
+        model = build_building(building, BUILDING_ROSTER[building])
+        tris = model.triangle_count()
+        if tris > BUILDING_TRIANGLE_BUDGET:
+            raise SystemExit(
+                f"{building}: {tris} triangles exceeds the "
+                f"{BUILDING_TRIANGLE_BUDGET} budget (D-064).")
+
+        flat = flatten(model)
+        glb_path = os.path.join(models_dir, f"{building}.glb")
+        write_glb(model, flat, glb_path)
+
+        entries[building] = {
+            "model": f"generated/models/{building}.glb",
+            "triangles": tris,
+            "vertices": len(flat["positions"]),
+        }
+        print(f"  {building:16s} {tris:4d} tris  {len(flat['positions']):5d} verts")
+    return entries
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", default=None,
@@ -121,6 +153,9 @@ def main() -> None:
     os.makedirs(GENERATED, exist_ok=True)
     print("building units:")
     units = build_units(args.only)
+
+    print("building structures:")
+    buildings = build_buildings()
 
     terrain = {}
     if not args.skip_terrain:
@@ -134,6 +169,7 @@ def main() -> None:
     manifest = {
         "source_hash": source_hash(),
         "units": units,
+        "buildings": buildings,
         "terrain": terrain,
     }
     # sort_keys + trailing newline: two runs must diff clean.
