@@ -208,9 +208,13 @@ func _handle_curve(data: PackedByteArray) -> void:
 func _handle_squad_info(data: PackedByteArray) -> void:
 	for entry in NetProtocol.decode_squad_info(data):
 		var def_id := String(entry["def_id"])
-		# Shape and spacing come from the UnitDef rather than the wire, so
-		# there is exactly one definition of them and no opportunity for
-		# client and server to drift (D-010).
+		# SPACING comes from the UnitDef rather than the wire, so there is
+		# exactly one definition of it and no opportunity to drift (D-010).
+		# SHAPE cannot: it is mutable squad state since D-058 — a player
+		# orders it, and a gathering crew switches between working and
+		# walking order — so resolving it from the def would pin every
+		# squad to its spawn formation forever, and desync the client the
+		# moment the server changed one, because shape is hashed.
 		var def := UnitRoster.by_id(StringName(def_id))
 		if def == null:
 			push_error("ClientState: server referenced unknown UnitDef '%s'" % def_id)
@@ -235,7 +239,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 		composition[id] = {
 			"def_id": def_id,
 			"alive": int(entry["alive"]),
-			"shape": def.formation_shape,
+			"shape": String(entry["shape"]),
 			"spacing": def.formation_spacing,
 			# Kept so the client can tell an ally's squad from an enemy's
 			# (D-050). Deliberately NOT part of composition_hash, which
