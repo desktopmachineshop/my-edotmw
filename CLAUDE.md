@@ -282,6 +282,19 @@ a rule. No test can see it, because the code under test is correct. This
 is the one defect class this project's testing discipline is blind to by
 construction.
 
+**And there is a harder variant of it, found by playing (D-061).** Three
+of the four interface bugs fixed there were rules that WERE fully written
+and DID have callers — the caller was simply unreachable. Rally orders
+were encoded, validated server-side and drawn on the ground, and the
+client returned two lines before the branch that sends them, because
+selecting a building clears `_selected` and the guard against ordering an
+empty selection fired first. `health_fraction` was on the wire, in
+`ClientState` and drawn by the panel, and only ever carried 1.0 because
+nothing marked a damaged building dirty. A grep for uncalled members
+finds none of these. **Nothing but using the thing does** — so when
+something that plainly ought to work does not, suspect an unreachable
+branch before suspecting the mechanic is missing.
+
 **Its sibling, found the same way (D-065): a decision entry saying a
 field is on the wire is not evidence that it is.** D-058 made formation
 mutable, replicated state and describes the server resending "ordinary
@@ -521,6 +534,16 @@ render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
                         of a squad to draw — is testable without a GPU.
+hud_layout.gd            Where the HUD's pieces go, for a window of any
+                        size (D-061). Scale AND anchoring — either alone
+                        looks sufficient and is not. All-static, pure.
+                        Also owns the HUD's non-obvious arithmetic: the
+                        match clock, the n/cap readout, and the compass
+                        dial's geometry (D-063).
+selection_pick.gd        Which thing a click selected, from every
+                        candidate's screen geometry (D-061). Same split
+                        as render_cull.gd: the client needs a GPU, the
+                        ranking that was wrong does not.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -628,8 +651,10 @@ Dev loop and tests:
 - `just run-server` — headless authoritative server
 - `just run-client [ADDRESS] [PORT]` — GUI client for a human to look at.
   **Native only**; needs a GPU (D-014), so it ignores `EDOTMW_RUNTIME` and
-  says so if portable Godot is missing. WASD pans, wheel zooms,
-  right-click orders.
+  says so if portable Godot is missing. WASD pans (relative to where the
+  camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
+  compass snaps back to north, right-click orders, ESC opens the game
+  menu (D-063).
 - `just test-client [SECONDS]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker
@@ -638,7 +663,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 402 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 449 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

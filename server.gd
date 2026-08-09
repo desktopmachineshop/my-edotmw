@@ -551,8 +551,13 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	_match.add_player(player)
 	if _match.phase == MatchState.Phase.LOBBY:
 		_broadcast_lobby()
+		# Tick 0 while still in the lobby: the match has not begun, so
+		# there is no elapsed time to report and the HUD's clock stays at
+		# zero rather than counting how long people have been sitting in
+		# the seat-picking screen.
 		peer.send(0, NetProtocol.encode_welcome(player, _settings.width, _settings.height,
-			PackedInt32Array(), _spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
+			PackedInt32Array(), _spawn_cell_indices(), _match.squad_cap, 0),
+			ENetPacketPeer.FLAG_RELIABLE)
 		_peak_clients = maxi(_peak_clients, _clients.size())
 		return
 
@@ -604,8 +609,12 @@ func _admit_player(peer, player: int) -> void:
 	# enough that paying a full rebuild here is not a real cost concern.
 	_sim.recompute_vision_now()
 
+	# The cap and the clock, so a client joining a match already in
+	# progress starts its HUD at the right numbers rather than at zero and
+	# counting up from whenever IT arrived.
 	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads,
-		_spawn_cell_indices()), ENetPacketPeer.FLAG_RELIABLE)
+		_spawn_cell_indices(), _match.squad_cap, _sim.tick_count),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 	# Composition for everything each client can see, not just what it
 	# owns — clients derive soldiers for other players' squads too, and
