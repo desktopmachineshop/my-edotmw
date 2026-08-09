@@ -20,6 +20,251 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-067 · 2026-08-04 · Accepted — a shoved squad steps aside, and one squad cannot take a base
+**Decision:** Two things, found together because the second could not be
+delivered without the first.
+
+1. **`TorusSpace.disk_offsets` is sorted nearest-first.** It enumerated
+   dq-major from `-radius`, so its first entries are the FAR edge of the
+   disk. Three callers walk it looking for "the nearest free cell" and
+   each silently took one up to `radius` away, always in the same
+   direction.
+2. **The anti-rush rule the owner asked for**, now that the first fix
+   makes it expressible: **one squad of any starting troop must fail
+   against a defended building; two must succeed.** Town centre damage
+   **45 → 60**; tower **80 → 85** and **1400 → 1700 HP**.
+
+**How the ordering defect showed itself.** Two militia squads ordered
+onto one town centre dealt 1560 damage in 30 s against a single squad's
+1461 — the second squad was displaced four cells by `_separate_arrivals`,
+which is outside a 1.9-range unit's one-cell reach, so it stood there for
+the rest of the match doing nothing. Ranged units never showed it: they
+were displaced within their own range and kept firing, which is why the
+symptom read as "buildings feel weak" rather than "half my army is idle".
+
+`_free_cell_near`'s doc comment said "the nearest cell"; `_approachable`
+said "walks outward"; `_spawn_cell_near` said "prefers to stand a new
+squad right at the door". All three were describing an order the table
+did not have. Sorting it (cached per radius, ties broken by (dq, dr) so
+it stays a total order for replays) made all three true at once, and the
+two-squad damage went to ~2x on the first run.
+
+**The rule, and what it cost to find.** Measured across every unit in the
+roster, both buildings, one squad and two, 600 s cap:
+
+| | result |
+|---|---|
+| town centre 60 | no unit takes it solo; every line troop takes it with two |
+| tower 85 / 1700 HP | no unit takes it solo; every line troop but one takes it with two |
+
+**Two exceptions, both deliberate and both tested.** *Founders* are
+excluded from the two-squad rule: a player has exactly one founding party
+and spends it raising the town hall (D-031), so two of them is not a
+situation the game can produce. *northmen_skirmishers* cannot take a
+tower with two squads — they are the cheapest, flimsiest unit (30 food,
+42 HP a man, 1260 to a squad), the tower outranges them 5 cells to 3, and
+each shell kills two of them at once, so they rout (threshold 36) and
+spend the fight cycling. **No tower HP/damage pair exists that stops a
+lone militia squad and still loses to two skirmisher squads** — swept
+across (1400–2400 HP) x (75–140 damage). The roster spans 1260 to 3360
+effective squad HP; one flat number cannot separate those two cases.
+Wanting it needs a mechanic (siege equipment, a damage type), not another
+number. A test asserts skirmishers still do real damage to a tower, so
+the carve-out cannot quietly become "harmless".
+
+**Rejected alternatives:**
+- *Tuning damage without fixing the ordering* (rejected — impossible: two
+  melee squads were not twice one squad, so no value could satisfy both
+  halves of the rule).
+- *Giving `disk_offsets` a second, sorted table* (rejected — two tables
+  and a choice at every call site, when no caller wants the unsorted one).
+- *Stopping a lone squad by raising building HP alone* (rejected — HP
+  lengthens the fight for attacker and defender alike; it moves both
+  halves of the rule the same direction).
+
+**Consequences:** every "nearest cell" search in the sim changed
+behaviour — production spawns, approach cells, arrival separation — all
+in the direction their comments already claimed. Sieges are now
+manpower-limited by the contact ring, which is realistic and which nobody
+has designed: a building can only be surrounded by so many squads, and
+the rest queue behind. Ladder decidability is the thing to watch (D-055).
+
+**Decidability held** (`just ai-ladder 3 600`): **2 of 3 decided, 1 draw
+at the cap**, one win each civ, first attack ~195 s — the same 2-of-3
+D-055 reports for the pre-change baseline. An earlier 3-of-3-draw reading
+was taken at a **420 s** cap and was not comparable: stronger defence
+lengthens matches, so a cap that used to be generous now truncates them.
+**When a change makes matches longer, the cap is part of the measurement**
+— re-read a ladder result against the cap it was taken at before
+concluding anything from it.
+
+**Measured after, through the wire** (`just test-load 4 120`): clean
+verdict, 0 desyncs over 476 hash checks, `buildings_known=7`, and
+**59.60 µs/squad at 52 squads** against 60.72 for the same scenario
+before — the sort is per radius and cached, so it costs nothing per call.
+Worst tick 76.6 ms, 0 dropped ticks.
+
+**A note on how nearly this was misattributed.** Two load runs failed
+first, both reporting `buildings_known=0` with byte-identical numbers,
+and the obvious suspect was this change. It reproduced with the change
+reverted, and server-side instrumentation printed nothing at all —
+because a second server container held port 4433 and the bots were
+reaching it, not the one under test. The rule from D-038's amendment
+applies to the harness as well as the code: **read the log before
+theorising, and if the instrumentation is silent, doubt the setup before
+the diagnosis.**
+
+**Revisit trigger:** if a later unit lands outside the measured band —
+tankier than legion_heavy or flimsier than skirmishers — the single flat
+`BuildingDef.damage` stops expressing this rule and needs to become
+something that scales.
+
+---
+
+### D-066 · 2026-08-04 · Provisional — building damage is on its own scale, and was authored on the wrong one
+**Decision:** `BuildingDef.damage` raised on both shipped shooters. First
+pass, on evidence that the defence was invisible: town centre **12 → 45**,
+watch tower **20 → 80**. **Superseded within the day by D-067**, which
+raised them again (60, and 85 at 1700 HP) to meet an explicit anti-rush
+rule — read D-067 for the shipped values. No code change in either: the
+mechanism was never broken.
+
+**The report was "the town hall was meant to have some ranged defensive
+ability but doesn't seem to".** It has one, and it fires: measured, a
+shipped town centre engages at 4 cells, on schedule, every 2 s. It simply
+did almost nothing.
+
+**The cause is a scale mismatch between two fields with the same name.**
+A squad's volley is `UnitDef.damage x alive` — 36 militia at 9.5 is
+**342 per second**. A building fires one flat `BuildingDef.damage`,
+multiplied by nothing: a town centre was **6 per second**, or 1.8% of one
+squad. The numbers look comparable in the `.tres` files; they are a
+factor of ~40 apart. Measured, one militia squad against each shipped
+defence, no support on either side (the "after" column is this pass's
+45/80, not the shipped values — see D-067):
+
+| | before | this pass |
+|---|---|---|
+| town centre razed in | 63 s, costing **4 of 36** | 82 s, costing **20 of 36** |
+| tower razed in | 30 s, costing **4 of 36** | 44 s, costing **26 of 36** |
+
+**Why not higher.** At 65 the town centre wipes a lone militia squad and
+survives on 408 of 3000 — which matches the code comment's intent ("an
+early rush cannot simply walk into a base"), and is deliberately NOT what
+shipped. D-055 is the reason: this project has already had every ladder
+match end in a draw because buildings could not be destroyed, and read it
+as an AI weakness for several rounds. Defence that is *felt* is the goal;
+defence that *repels* trades a real risk to decidability for it. 45 keeps
+a lone squad able to take a town centre while losing over half its men.
+Raising it further is a live option and a one-line data change.
+
+**Why the tower is 80.** It is bought with 120 stone and is the only
+building whose purpose is fighting, so attacking it must be decisively
+worse than attacking the town centre you start with — otherwise nobody
+builds one. It still falls to a single squad in ~44 s, which keeps a
+tower a delay rather than a wall.
+
+**The test gap this went through, which is the part worth keeping.** The
+buildings-shoot tests all used a synthetic def — damage 40, a 0.1 s
+interval, 20 HP defenders — chosen so a five-tick test can observe a
+casualty. They prove the MECHANISM and are silent about the shipped
+numbers, and the only test that touched the real `.tres` asserted
+`damage > 0`. So: mechanism correct, data nonzero, feature invisible,
+everything green. Two tests now run a whole encounter with shipped defs
+and assert what it COSTS an attacker, as a floor (a third of the squad
+for a town centre, half for a tower) rather than an exact number, so
+ordinary tuning does not thrash them.
+
+**Rejected alternatives:**
+- *Scaling building damage by something, so the two fields read alike*
+  (rejected — a building has no `alive`; the honest fix is to document
+  the scale, which `building_def.gd` now does at the field).
+- *Leaving it and calling it balance* (rejected — the owner reported it
+  as a missing feature, which is what a 1.8%-of-a-squad defence is).
+- *Raising building damage generally* (rejected — barracks and storehouse
+  are targets by design, and that is D-032's data-driven point).
+
+**Consequences:** attacking into a base is now a real cost, so matches
+lengthen — the direction D-056 wants, though nowhere near its 1–2 hours,
+and for D-056's own reason: there is still no progression to spend the
+time on. AI ladder behaviour is affected and was checked for
+decidability, not tuned for.
+
+**Revisit trigger:** if ladder matches start drawing at the time cap
+again, this is the first number to look at — and D-055's lesson says
+check whether anything can still die before concluding the AI is weak.
+
+---
+
+### D-065 · 2026-08-04 · Accepted — shape travels, and a player's choice latches
+**Decision:** Two fixes to D-058, which shipped its server half only.
+
+1. **`SQUAD_INFO` carries `shape`.** It never did. The client resolved
+   shape from `UnitDef.formation_shape`, which was correct before D-058
+   made shape mutable and was never revisited.
+2. **A player order latches.** `SquadSim.set_shape` (the player's entry
+   point, via `ORDER_FORMATION`) marks the squad chosen; the simulation's
+   own switching goes through the new `SquadSim.suggest_shape`, which
+   ignores a chosen squad. The economy now suggests rather than sets.
+
+**Rationale:** the reported symptom was "the formation buttons don't
+change the formation of the workers". There were two independent causes
+and the second one hid behind the first.
+
+*Workers specifically:* `Economy._tick_hauls` asserted `ring`/`sparse` on
+every gathering crew every tick, so a player's choice was undone within
+100 ms — one tick. The button worked perfectly and its effect lasted less
+than a frame.
+
+*Everybody, invisibly:* shape was not on the wire at all, so no client
+ever learned about any shape change. D-058's own text says the server
+"resends ordinary `SQUAD_INFO` — the message that already carries shape".
+It did not carry shape. The server-side plumbing it describes
+(`take_shape_dirty`, per-client visibility filtering, the no-op guard) is
+all real, correct, and was sending a message with the field missing.
+
+**This was also a live desync**, not only a cosmetic bug. Shape is in
+`composition_hash`: the server hashed the real shape, the client hashed
+the UnitDef's. Every gathering crew that reached a node — which is every
+gathering crew — put its owner into permanent disagreement with the
+server. A test now reproduces it (`test_client_state.gd`), and it fails
+by exactly one desync before the fix.
+
+**Why latch rather than let the sim keep switching:** the automatic
+ring-while-working switch is a convenience for crews nobody has an
+opinion about. A player who presses a button has an opinion, and a rule
+that silently reverts a direct order is worse than no rule. The cost is
+stated plainly: a crew you have shaped by hand stops auto-switching for
+the rest of the match. That is the deal the button makes.
+
+**Rejected alternatives:**
+- *Clearing the latch on the next gather order* (rejected — "sometimes
+  your order sticks" is harder to learn than "it sticks").
+- *Hiding the formation buttons for gatherers* (rejected — it makes the
+  symptom go away by removing the feature, and leaves the wire bug).
+- *Sending shape in the curve stream* (rejected — that is D-058's own
+  revisit trigger, and it fires on bandwidth evidence, which does not
+  exist. `SQUAD_INFO` per change is still the cheap answer).
+- *Deriving shape on the client from replicated haul phase* (rejected —
+  D-058 already rejected replicating the phase, and this bug is not a
+  reason to reopen it).
+
+**Consequences:** `SQUAD_INFO` grew a length-prefixed string per squad —
+a handful of bytes on a message sent per change, not per tick. Replays
+are the wire format byte-for-byte (D-016), so **replay files recorded
+before this change no longer decode**. `D-059`'s "ring means working"
+client-side inference is now defeatable: a player who parks workers in
+`ring` on the road gets the working animation while they walk. Cosmetic,
+one-way, and left alone.
+
+**Revisit trigger:** if any future system wants to change a squad's shape
+automatically (a shield wall on contact, skirmishers spreading under
+fire), it must use `suggest_shape` — and if such a rule is important
+enough that it should override a player, that is a real design decision
+and belongs here, not in a call site.
+
+---
+
 ### D-060 · 2026-08-04 · Accepted — squads take up room, at squad granularity
 **Decision:** Squads that have ARRIVED do not share a cell: the
 higher-id one settles onto the nearest free cell
