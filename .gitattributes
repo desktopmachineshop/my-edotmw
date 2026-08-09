@@ -17,3 +17,11 @@ Dockerfile text eol=lf
 
 # Read by `just`, whose recipe bodies are handed to bash.
 justfile text eol=lf
+
+# Generated art (D-064). These are committed so a fresh clone plays without
+# installing Blender, and they must never be touched by the line-ending
+# machinery — the dev machine has core.autocrlf=true, and a CRLF substitution
+# inside a .glb or a .png corrupts it silently rather than loudly.
+*.glb binary
+*.exr binary
+*.png binary

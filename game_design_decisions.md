@@ -20,6 +20,294 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-066 · 2026-08-09 · Accepted — terrain texturing: the atlas modulates, vertex colour decides
+**Decision:** Terrain gains UVs and a per-biome texture atlas, applied as a
+**multiplier over the existing vertex colour**, not as a replacement for it.
+`TerrainGen.biome_color()` remains the single source of truth for what a cell
+looks like.
+
+**Rationale:** `terrain_gen.gd`'s header states the invariant this milestone
+must not break — "`biome_color` paints whatever this returns, so colour and
+gameplay cannot drift apart — a cell that looks like forest is a cell that
+yields wood, by construction rather than by two threshold ladders being kept in
+sync by hand." That one function feeds three renderers: the 3D chunk mesh
+(`terrain_chunk.gd`), the minimap (`client.gd`) and the preview PNG
+(`terrain_preview.gd`).
+
+Making the texture a *modulation* of vertex colour means the minimap and the
+preview keep working **without being touched**, and cannot drift from the 3D
+view, because they still read the same function. Replacing vertex colour with
+texture would have made three renderers that must be kept in agreement by hand —
+which is the exact failure mode the invariant exists to prevent.
+
+**UVs are derived from the CELL, not from world position.** `terrain_chunk.gd`
+already documents that geometry is unwrapped while data is wrapped. A world-space
+or triplanar UV would have to match the lattice step exactly or the nine tiled
+copies (D-035) would show different texture phase, and the seam would tear.
+Cell-derived UVs are identical across all nine copies by construction, which
+sidesteps the torus tax (D-008) rather than paying it again.
+
+Each cell's hex is mapped into its biome's tile in an 8-tile atlas, with a
+per-cell rotation hashed from the wrapped cell coordinates so the hex grid does
+not read as a visible repeating pattern.
+
+**Rejected alternatives:**
+- *Texture replaces vertex colour* (rejected — breaks the biome↔appearance
+  identity and puts three renderers out of sync by hand).
+- *Triplanar / world-space UVs* (rejected — must match the lattice step exactly
+  or the seam tears; cell UVs get it right by construction).
+- *A ShaderMaterial splat with a texture array* (rejected for now — the atlas
+  needs no shader at all, and D-065 is already spending the project's first
+  shader budget on animation. Revisit if per-cell biome blending is wanted).
+- *One surface per biome per chunk* (rejected — multiplies draw calls by the
+  biome count and then by nine for the lattice copies).
+
+**Consequences:** `terrain_chunk.gd` gains `ARRAY_TEX_UV`. Its existing test
+asserting 7 vertices and 6 triangles per cell is unaffected, since adding a
+vertex attribute changes neither count. Normal mapping would additionally require
+`ARRAY_TANGENT` and is deliberately deferred until the albedo pass is measured.
+
+**Revisit trigger:** if biomes need to blend into each other rather than meeting
+at hex edges, that needs per-vertex weights and a real splat shader, and this
+entry is superseded rather than amended.
+
+---
+
+### D-065 · 2026-08-09 · Accepted — animated soldiers, with phase derived rather than integrated
+**Decision:** Soldiers are animated by a **vertex animation texture** (VAT) baked
+in Blender and sampled in a vertex shader, with per-soldier variation carried in
+`MultiMesh` custom data. **Animation phase is a pure function of (slot index,
+squad speed, global time) — never an accumulator.**
+
+**The problem this exists to solve.** D-009 renders a squad as one `MultiMesh`,
+which has no skeleton, so conventional skeletal animation of 40,000 soldiers is
+not available. And D-006 clause 1 forbids per-soldier integration state — "no
+velocity, no accumulated offset, no history carried across ticks" — while its
+revisit trigger names this exact shape: "emergent per-soldier movement… Any of
+those gives a soldier its own integration state and breaks clause 1." **A walk
+cycle with a per-soldier phase counter is a D-006 violation**, not a grey area.
+
+**The escape is that phase is derived, not integrated:**
+
+```
+clip           = f(squad state: moving / idle / fighting / routing)
+rate           = squad_speed / stride_length          # from the curve
+phase(slot, t) = fract( t * rate + hash(slot) )
+```
+
+Every input is already known to the client: the curve gives speed, the squad's
+own replicated state gives the clip, the slot index gives the offset. Nothing
+accumulates, nothing is stored per soldier, nothing is read back by simulation,
+and nothing enters `composition_hash()`. This is the same move D-052 made with
+colour — derived from state both sides already hold, so no wire message and no
+possibility of disagreement — and it satisfies D-006 by construction rather than
+by care.
+
+**Compliance with D-006's three clauses, stated explicitly so a later change can
+be checked against it:**
+
+1. *Purity* — animation adds no per-soldier state. Phase is recomputed from
+   `TIME` every frame and stored nowhere.
+2. *Cosmetic offsets are one-way* — the shader displaces vertices for display
+   only. Simulation never reads a vertex position.
+3. *Deterministic casualty reassignment* — unaffected. `alive` still restamps
+   the formation; animation reads slot index, which the formation already
+   assigns deterministically.
+
+**What would break it,** recorded so it is recognisable: any per-soldier phase
+counter advanced by delta time; any animation blend weight carried across
+frames; any attempt to make a soldier's footfall depend on where that soldier
+was last frame. All three are integration state wearing a cosmetic disguise.
+
+**Two implementation choices made to de-risk the renderer,** since this is the
+project's first shader and it must run under GL Compatibility — the only
+renderer `just test-client` can use (D-014's amendment):
+
+- **Vertex index travels in `UV2.x`, not `VERTEX_ID`**, so the shader does not
+  depend on a built-in whose availability under `gl_compatibility` is not
+  guaranteed.
+- **Custom data is written on clip *change*, not per frame.** D-045 measured the
+  frame at 97% CPU in derivation; the per-frame hot loop stays transforms only.
+
+D-021 permits this: "GPU acceleration is available to the client renderer, not
+to the server-side solver." The server holds no art and runs no shader.
+
+**Rejected alternatives:**
+- *Skeletal animation with one node per soldier* (rejected — D-009; 40,000 nodes).
+- *A per-soldier phase counter* (rejected — D-006 clause 1, as above).
+- *No animation, static posed meshes* (considered and explicitly chosen against
+  by the owner, 2026-08-09, having been shown the risk. Retained as the cut line
+  if the spike fails — see Consequences).
+- *CPU-side vertex animation* (rejected — the frame is already CPU-bound; this
+  is the one place where moving work to the GPU is spending the resource that
+  has headroom).
+
+**Consequences:** the project acquires its first `.gdshader`, and unit materials
+move from `StandardMaterial3D` to `ShaderMaterial`. That relocates two existing
+behaviours onto uniforms: D-052's owner colour (now a team-colour mix against a
+texture mask) and the fog-ghost fade (`client.gd` currently mutates
+`albedo_color.a` in place). Vertex throughput becomes a budget nobody has
+measured — roughly 24M animated vertex invocations at D-018's full scale — and
+mesh LOD is the lever if it bites.
+
+**The cut line, if the spike fails:** ship static posed meshes and defer
+animation. That still delivers real models and textured terrain, and it is a
+clean boundary rather than a scramble.
+
+**Revisit trigger:** if animation ever needs to know what a soldier did last
+frame — blending between clips, reacting to a neighbour, a footfall that lands
+on terrain — that is integration state and this entry must be reopened against
+D-006 rather than quietly extended.
+
+---
+
+### D-064 · 2026-08-09 · Accepted — art direction and the asset pipeline; supersedes D-011, closes Q12
+**Decision:** Art is **stylised low-poly with strong silhouettes**, budgeted at
+roughly 300 triangles per soldier, and it is **generated by committed Python
+scripts** running Blender headless as a library (`bpy`). Both the generators and
+their outputs are committed.
+
+**Rationale — the look.** The camera is a strategy camera and the readable unit
+is a formation, not a face. D-052 already fixed the priority order: whose units
+those are is read first, which kind they are second, "and shape still carries
+it." Stylised low-poly optimises for exactly that ordering — silhouette and
+colour block over surface detail — and it is what a script can generate well,
+which the other candidate styles are not. Semi-realistic figures at ~2,000
+triangles would be roughly 10x the geometry at 26,644 visible soldiers and would
+need a mesh LOD chain that does not exist; painterly detail lives in hand-painted
+texture, which is the weakest thing to produce procedurally.
+
+**Rationale — the pipeline, which is the part that matters more.** This project
+exists in plain text so that it is directly editable by Claude Code; `CLAUDE.md`
+calls that "a design constraint, not an afterthought" and asks that any
+"forced binary-only or GUI-only step (hand-sculpted final meshes…)" be flagged as
+an exception rather than treated as the default path. Hand-sculpting in Blender's
+GUI would make every model an opaque binary that cannot be read, reviewed or
+iterated on in this workflow.
+
+So **the generator is the source of truth**: committed Python under `art/`,
+building meshes with `bmesh` and exporting glTF, run by `just build-assets`.
+`bpy` is a PyPI wheel needing neither GPU nor GUI, so this runs in the same
+headless containers everything else does.
+
+**Outputs are committed as well as generators.** A fresh clone plays without
+installing Blender, which keeps `bpy` off the critical path for anyone who only
+wants to run the game. The cost is binary churn in git, accepted deliberately and
+bounded by rebuilding assets on art changes rather than code changes.
+
+**Determinism is required, not hoped for:** fixed seeds, sorted iteration, no
+timestamps. `generated/manifest.json` records source hashes so a stale committed
+build fails the test suite instead of silently shipping.
+
+**Rejected alternatives:**
+- *Hand-authored `.blend` files* (rejected — the GUI-only step `CLAUDE.md` names;
+  it removes the whole workflow premise).
+- *Generators only, outputs gitignored* (rejected — makes Blender a hard
+  dependency of running the game).
+- *Semi-realistic and painterly styles* (rejected on cost and on
+  procedural-generability, above).
+
+**Consequences:** supersedes **D-011**, whose revisit trigger ("once M3 is
+complete… or once tiers 2/3 are explicitly prioritized") has now fired on both
+halves. Closes **Q12** ("art direction for mesh tiers 2 and 3, and who produces
+it"): the answer to *who* is a script in this repo. Tier 2 (modular/parametric)
+is absorbed rather than skipped — parametric composition is how the generators
+are written.
+
+`UnitDef` and `BuildingDef` gain `model_id`, defaulting empty so the primitive
+path still works for bots, tests and a missing `generated/`. Logged against
+D-010. `model_id` is keyed by archetype, never by civ — D-046 criterion 3 has a
+test asserting no `.gd` file names a civ.
+
+**Revisit trigger:** if a unit ever needs art a script cannot express, take the
+hand-authored exception deliberately for that one asset and amend this entry —
+do not let the pipeline erode silently.
+
+---
+
+### D-063 · 2026-08-09 · Accepted — M7's exit criteria
+**Decision:** M7 is **"it looks like a game"** — real authored unit models,
+animated, on textured terrain, with the asset pipeline itself reproducible from
+plain text. Written before the code, per D-043's standing rule.
+
+**The ladder changes.** D-015's ladder ended "M6 (second civ) → M7 (Steam)".
+Art becomes **M7** and Steam becomes **M8**.
+
+**The governing constraint.** Every previous milestone could be judged by a
+number. This one mostly cannot, and the project has already been bitten twice by
+that gap: M1's first client frame passed every numeric check while containing no
+soldiers, and M6's capture reported a healthy 96 soldiers and 97 colours over a
+frame with **no terrain in it at all**. So the criteria below pair every
+automated check with a picture somebody looked at, and the standing rule from
+that second incident applies in full: **a green verdict is not the same as a
+correct picture.**
+
+**The criteria:**
+
+*The pipeline (D-064)*
+
+1. `just build-assets` produces every model and texture from committed Python,
+   headless, with no GPU and no Blender GUI. Run twice, the output is
+   **byte-identical**.
+2. A test fails if `generated/` is stale with respect to `art/` — a committed
+   build that no longer matches its generator is caught by `just test-unit`, not
+   by eye.
+3. A fresh clone with no Blender installed still runs the game.
+
+*Units (D-064, D-065)*
+
+4. Every unit archetype has an authored model within the triangle budget, and a
+   squad still renders as **exactly one `MultiMesh`** (D-009's structural test
+   unchanged and unamended).
+5. **Owner colour still reads first** (D-052). Judged on a picture: two armies of
+   the same civ, at play distance, told apart at a glance.
+6. Soldiers animate, and **a test proves animation adds no per-soldier state**:
+   same inputs give same outputs, and `composition_hash()` is unchanged by every
+   animation input. This is D-065's falsifiable criterion and the one the
+   milestone turns on architecturally.
+7. **A routing squad is visibly routing.** D-019's rout has existed since M2 and
+   has never been legible on screen.
+
+*Terrain (D-066)*
+
+8. Terrain is textured, and the **minimap and terrain preview still agree with
+   it** — verified by construction (both still read `biome_color`) and by
+   looking at both pictures.
+9. No seam artefact: a screenshot spanning the wrap shows continuous texture.
+
+*It has to hold up*
+
+10. `just test-unit` green. `just test-load 4 120` unchanged — the server holds
+    no art, so any movement there means something leaked across the
+    client/server boundary.
+11. `just bench-render` run on a **discrete GPU**, three times: baseline before,
+    after static meshes, after animation. Every number quoted with its squad
+    count and the adapter name. This simultaneously discharges **Q15's re-armed
+    trigger**, which asks for exactly this measurement before M7.
+12. `just test-client` green **and the PNG opened by a human**.
+13. Every new check **observed to fail** before it is trusted (D-022), with
+    perturbation and revert applied atomically (D-044).
+
+*The judgement no check can make*
+
+14. **Does it look good enough to want to play?** Judged by a human at
+    `just run-client`. M3 and M6 both carried a criterion of this shape; this
+    milestone is the one where it is the actual point.
+
+**Rejected alternatives:** Shipping art without exit criteria (rejected —
+D-043's standing rule exists because M4 broke it and the audit was the cost).
+Judging art solely by frame time (rejected — the failure mode here is a correct
+number over a wrong picture, twice observed).
+
+**Consequences:** M7 is the first milestone whose primary deliverable cannot be
+fully verified headlessly. Criteria 5, 7, 9, 12 and 14 need a human with a GPU.
+
+**Revisit trigger:** if the VAT spike fails under GL Compatibility, criteria 6
+and 7 are deferred with D-065's cut line and this entry is amended to say so —
+not quietly dropped.
+
+---
+
 ### D-060 · 2026-08-04 · Accepted — squads take up room, at squad granularity
 **Decision:** Squads that have ARRIVED do not share a cell: the
 higher-id one settles onto the nearest free cell
@@ -3084,7 +3372,7 @@ just in code):
 
 ---
 
-### D-011 · 2026-07-28 · Accepted
+### D-011 · 2026-07-28 · Superseded by D-064 (2026-08-09)
 **Decision:** Mesh generation stays at the primitive tier (capsules,
 boxes, cylinders composed from `UnitDef` data) through M3. Modular/
 parametric (tier 2) and Blender/`bpy` final-fidelity (tier 3) are
@@ -3104,6 +3392,11 @@ needed through M3.
 **Revisit trigger:** Revisit once M3 is complete and playtesting
 suggests visual fidelity is limiting engagement, or once tiers 2/3 are
 explicitly prioritized.
+
+**Trigger fired 2026-08-09, on both halves** — M3 completed three
+milestones ago and the owner prioritised tiers 2/3 explicitly. Superseded
+by D-064, which sets the art direction and makes the generator, rather
+than the mesh, the thing that is committed.
 
 ---
 
@@ -3583,8 +3876,12 @@ items resolved as:
 - **Q11 — Anti-cheat posture.** Authoritative server (D-002) helps; the
   leak surfaces are curve horizon clipping (D-003) and client-derived
   soldier positions (D-006).
-- **Q12 — Art direction** for mesh tiers 2 and 3 (D-011), and who
-  produces it.
+- ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
+  produces it.~~ → **D-064** (2026-08-09): stylised low-poly with strong
+  silhouettes, ~300 tris/soldier; produced by committed Python scripts
+  driving Blender headless as a library, not by hand in the GUI. Tier 2
+  is absorbed rather than skipped — parametric composition is how the
+  generators are written.
 - **Q13 — Persistence/saves** for long matches on a seamless map.
 - **Q14 — Terminology: what does "seamless" mean here** — no loading
   screens between regions, or one contiguous map? Implies very different

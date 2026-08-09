@@ -1,0 +1,23 @@
+{
+  "source_hash": "d73c3e2e2c7a04627be33a249f193b0c05893b92462d9aff062917c10cd8ab0f",
+  "terrain": {},
+  "units": {
+    "militia": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "frames_per_clip": 16,
+      "height": 128,
+      "model": "generated/models/militia.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 132,
+      "vat": "generated/vat/militia.exr",
+      "vertices": 396,
+      "width": 396
+    }
+  }
+}
