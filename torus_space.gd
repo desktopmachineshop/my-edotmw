@@ -326,5 +326,27 @@ static func disk_offsets(radius: int) -> Array[Vector2i]:
 		for dr in range(dr_min, dr_max + 1):
 			offsets.append(Vector2i(dq, dr))
 
+	# Sorted NEAREST FIRST, which the bound above does not give: it
+	# enumerates dq-major from -radius, so the first entries are the far
+	# edge of the disk. Set-consumers (vision stamping, combat's disk scan)
+	# never cared about order, but every "walk outward until you find a
+	# free cell" caller did, and each of them silently took a cell up to
+	# `radius` away in a fixed direction — see SquadSim._free_cell_near,
+	# which cost a besieging squad its place in the fight (D-067).
+	#
+	# Ties broken by (dq, dr) so the order is a total one: two squads
+	# ordered onto the same cell must pick the same way out on the server
+	# and in a replay.
+	offsets.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var la := hex_length(a)
+		var lb := hex_length(b)
+		if la != lb:
+			return la < lb
+		if a.x != b.x:
+			return a.x < b.x
+		return a.y < b.y)
+
+	# Sorted once per radius and cached, so this costs nothing per call —
+	# the table is reused by every squad, every rebuild (see above).
 	_disk_offset_cache[radius] = offsets
 	return offsets

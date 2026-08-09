@@ -93,6 +93,10 @@ var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
 ## Squads whose shape changed and whose clients have not been told yet.
 var _shape_dirty := {}
+## Squads whose player has chosen a formation, and which therefore ignore
+## the simulation's automatic switching (see set_shape/suggest_shape). A
+## set rather than an array: it is read once per gathering crew per tick.
+var _shape_chosen := {}
 var _spacing := PackedFloat32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
@@ -247,10 +251,40 @@ func shape_of(squad: int) -> String:
 ## out; that is the whole reason this cannot just assign to `_shape`.
 ##
 ## Ignores a no-op, so a caller may set the same shape every tick without
-## generating wire traffic. That matters: the economy sets a gathering
-## crew to `ring` on every tick it is at a node.
+## generating wire traffic. That matters: the economy suggests a shape for
+## a gathering crew on every tick (see `suggest_shape`).
+##
+## This is the PLAYER's entry point, and it latches: from here on the
+## squad keeps the shape it was given and `suggest_shape` is ignored for
+## it. Without the latch the economy re-asserted a gathering crew's shape
+## on the very next tick, so a player pressing a formation button on
+## workers saw it undone within 100 ms and concluded the button did
+## nothing (D-058 amendment).
 func set_shape(squad: int, shape: String) -> void:
-	if squad < 0 or squad >= _shape.size() or _shape[squad] == shape:
+	if squad < 0 or squad >= _shape.size():
+		return
+	# Latched even when the shape is unchanged: choosing the shape a squad
+	# is already in is still a choice, and it must stop the economy
+	# switching away from it on the next phase change.
+	_shape_chosen[squad] = true
+	_apply_shape(squad, shape)
+
+
+## The SIMULATION's entry point for shape: a default, not an override.
+##
+## Identical to `set_shape` except that a squad whose player has chosen a
+## formation ignores it. Automatic switching (D-058's ring-while-working)
+## is a convenience for crews nobody has given an opinion about; a player
+## who has expressed one outranks it, and keeps it for the rest of the
+## match.
+func suggest_shape(squad: int, shape: String) -> void:
+	if squad < 0 or squad >= _shape.size() or _shape_chosen.has(squad):
+		return
+	_apply_shape(squad, shape)
+
+
+func _apply_shape(squad: int, shape: String) -> void:
+	if _shape[squad] == shape:
 		return
 	_shape[squad] = shape
 	_shape_dirty[squad] = true
@@ -350,7 +384,7 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			continue
 		out.append({
 			"id": id, "def_id": String(_def_id[id]),
-			"alive": _alive[id], "owner": _owner[id],
+			"alive": _alive[id], "shape": _shape[id], "owner": _owner[id],
 		})
 	return out
 

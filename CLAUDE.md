@@ -295,6 +295,74 @@ finds none of these. **Nothing but using the thing does** — so when
 something that plainly ought to work does not, suspect an unreachable
 branch before suspecting the mechanic is missing.
 
+**Its sibling, found the same way (D-065): a decision entry saying a
+field is on the wire is not evidence that it is.** D-058 made formation
+mutable, replicated state and describes the server resending "ordinary
+`SQUAD_INFO` — the message that already carries shape". `SQUAD_INFO` did
+not carry shape, and still resolved it from `UnitDef` on the client. Every
+server-side part D-058 describes was real and correct, so nothing failed;
+the formation buttons simply did nothing, and every gathering crew that
+reached a node desynced its owner permanently. **When a decision says a
+field is replicated, open the encoder and look for it.** And when a
+feature "does nothing", suspect the wire before the UI — the button had
+been correct all along.
+
+The second half of the same bug is worth its own rule: **a per-tick
+assertion silently outranks a player's order.** The economy re-asserted a
+gathering crew's shape every tick, so a player's choice survived 100 ms.
+Anything the simulation sets every tick now goes through
+`SquadSim.suggest_shape`, which a player's `set_shape` latches out.
+
+**And a third of the same family (D-066): a mechanism can be correct, its
+data nonzero, and the feature still absent.** Buildings shot exactly as
+designed; a town centre cost a lone attacking squad **4 men out of 36**,
+because `BuildingDef.damage` is a FLAT per-shot number while a squad's
+volley is `UnitDef.damage x alive` — the same word, ~40x apart. Every
+buildings-shoot test used a caricature def (damage 40, 0.1 s interval) to
+see a casualty in five ticks, and the only test touching shipped data
+asserted `damage > 0`. **A test that proves the mechanism says nothing
+about whether the shipped numbers do anything** — for anything a player
+is supposed to FEEL, run the whole encounter with shipped defs and assert
+what it costs.
+
+**The shipped rule is now D-067's** (D-066's 45/80 lasted a day): **one
+squad of any starting troop cannot raze a defended building; two can.**
+Town centre damage 60; tower 85 at 1700 HP. Two measured exceptions,
+both tested and both in D-067 — founders (a player only ever has one
+party) and northmen_skirmishers against a tower (no tower HP/damage pair
+exists that stops a lone militia squad and still loses to two of them).
+
+**And the defect that was hiding under it: `TorusSpace.disk_offsets` was
+not sorted by distance.** It enumerates dq-major from `-radius`, so its
+first entries are the far edge of the disk — while three callers walked
+it looking for "the nearest free cell". A second melee squad sent at a
+building was shoved four cells away, outside its own reach, and stood
+idle for the rest of the match: two squads dealt 1560 damage where one
+dealt 1461. The table is sorted nearest-first now, which made all three
+callers' doc comments true at once. **The standing "reach for
+`disk_offsets` before `distance()`" rule still holds — and the table is
+ordered, so "walk outward until you find one" is now a thing you may
+actually do with it.** Measured after: `test-load 4 120` clean,
+**59.60 µs/squad at 52 squads** against 60.72 before, so the per-radius
+sort costs nothing.
+
+**The ladder still decides at these values:** `just ai-ladder 3 600` gives
+**2 of 3 decided, 1 draw**, one win each civ, first attack ~195 s — the
+same 2-of-3 D-055 measured before the buff. Read at **420 s** the same
+build reported 3 of 3 drawn, which was the CAP truncating longer matches,
+not a weaker AI. **A stronger defence lengthens matches, so quote a
+ladder result with its cap** — the same rule as quoting µs/squad with a
+squad count.
+
+**Check for a stray server before believing a load-test failure.** Two
+runs failed with `buildings_known=0` and identical numbers, and it looked
+exactly like the change under test. A second container held port 4433 and
+the bots were reaching that one — the tell was **server-side
+instrumentation printing nothing at all**, which no code-level bug can
+do. `docker ps` first. Note also that `just down` (and every recipe that
+tears down) will remove containers in the pinned `edotmw` project that
+somebody else started.
+
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
 one 36-strong militia squad razed a 900 HP town centre in **2.1 seconds**
@@ -595,7 +663,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 438 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 449 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

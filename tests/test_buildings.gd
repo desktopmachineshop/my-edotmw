@@ -335,6 +335,184 @@ func test_an_armed_building_damages_an_enemy_squad_in_range() -> void:
 	assert_lt(sim.alive_of(squad), before, "A tower in range must actually shoot")
 
 
+## A whole encounter with SHIPPED data: one militia squad walks onto a
+## defended building and razes it. Returns what it cost the attacker.
+##
+## Every other test in this section uses a synthetic def with damage 40 on
+## a 0.1 s interval against 20 HP men — a caricature, chosen so a five-tick
+## test can see a casualty. That proves the MECHANISM and says nothing
+## about whether the shipped numbers do anything, which is exactly the gap
+## D-066 fell through: `damage > 0` passed for two milestones while a town
+## centre cost an attacking squad 4 men out of 36 and players reported the
+## defence as missing.
+func _rush_cost(building_id: StringName, unit_id: StringName, squad_count: int) -> Dictionary:
+	var space := TorusSpace.new(42, 48, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var def := BuildingSim.def_by_id(building_id)
+	assert_not_null(def, "buildings/%s.tres is missing, so nothing was tested" % building_id)
+	var unit := UnitRoster.by_id(unit_id)
+	assert_not_null(unit, "the roster should ship %s" % unit_id)
+
+	var target := buildings.add_building(def, 1, Vector2i(20, 20), true)
+	var squads := []
+	var started_with := 0
+	for i in range(squad_count):
+		# Ordered in from outside the building's reach, so the approach
+		# under fire is part of what is measured — range is half of what a
+		# defence is. All ordered onto the SAME cell, which is what a
+		# player does and what arrival separation then has to resolve
+		# sensibly (D-067).
+		var squad := sim.add_squad(unit, 2, Vector2i(26, 20 + i * 2))
+		sim.order_attack_move(squad, Vector2i(21, 20))
+		squads.append(squad)
+		started_with += sim.alive_of(squad)
+
+	# 300 s, and an early exit the moment either side is finished. Long
+	# enough for rout-and-rally cycles to resolve, so "did not raze" means
+	# beaten rather than merely unfinished; bounded so a stalemate fails
+	# the test instead of hanging it.
+	var razed_at := -1
+	for i in range(3000):
+		sim.tick()
+		var alive := 0
+		for squad in squads:
+			alive += sim.alive_of(squad)
+		if buildings.is_destroyed(target):
+			razed_at = i
+			break
+		if alive <= 0:
+			break
+
+	var left := 0
+	for squad in squads:
+		left += sim.alive_of(squad)
+	return {
+		"razed": razed_at >= 0,
+		"seconds": (razed_at + 1) / 10.0,
+		"casualties": started_with - left,
+		"started_with": started_with,
+		"health": buildings.health_of(target),
+	}
+
+
+func test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one() -> void:
+	# The rule this project wants — "one squad cannot take a base, two can"
+	# — is not reachable by tuning damage while this is false, and it WAS
+	# false: a second melee squad ordered onto the same building was shoved
+	# four cells away by arrival separation, outside its 1-cell reach, and
+	# contributed nothing. Measured, 30 s against a passive town centre:
+	# one squad 1461, two squads 1560.
+	#
+	# Ranged units never showed it — they were displaced within their own
+	# range and kept firing — which is why the numbers looked merely
+	# ungenerous rather than broken.
+	var space := TorusSpace.new(42, 48, 1.0)
+	var militia := UnitRoster.by_id(&"legion_militia")
+	assert_not_null(militia)
+
+	var dealt := []
+	for squad_count in [1, 2]:
+		var sim := SquadSim.new(space, CurveReplicator.new())
+		var buildings := BuildingSim.new(space)
+		sim.buildings = buildings
+
+		# A passive target: this is about how much the attackers can
+		# deliver, not about who wins.
+		var def: BuildingDef = BuildingSim.def_by_id(&"town_centre").duplicate()
+		def.damage = 0.0
+		var target := buildings.add_building(def, 1, Vector2i(20, 20), true)
+
+		for i in range(squad_count):
+			var squad := sim.add_squad(militia, 2, Vector2i(26, 20 + i * 2))
+			sim.order_attack_move(squad, Vector2i(21, 20))
+		for _i in range(300):
+			sim.tick()
+		dealt.append(def.max_health - buildings.health_of(target))
+
+	assert_gt(float(dealt[1]), float(dealt[0]) * 1.7,
+		"two squads dealt %.0f against one squad's %.0f — the second squad is not in the fight"
+		% [dealt[1], dealt[0]])
+
+
+## Every unit a player can put in the field early. Founders and gatherers
+## are deliberately absent from the PAIR rule below and present in the
+## SOLO one — see each test.
+const STARTING_TROOPS := [
+	&"legion_militia", &"legion_spearmen", &"legion_archers", &"legion_heavy",
+	&"northmen_militia", &"northmen_spearmen", &"northmen_skirmishers",
+	&"northmen_cavalry",
+]
+
+
+func test_no_single_starting_squad_can_raze_a_defended_building() -> void:
+	# The anti-rush rule (D-067), stated as the owner asked for it: ONE
+	# squad of anything available at the start must fail against either
+	# defended building. This is the half that prevents a two-minute win.
+	#
+	# Every troop type is checked rather than a representative one: the
+	# roster spans 1260 to 3360 effective squad HP and 24 to 51 damage per
+	# second against buildings, so "the strongest solo attacker" is not
+	# obvious by inspection and changes whenever a `.tres` does.
+	for building in [&"town_centre", &"tower"]:
+		for unit_id in STARTING_TROOPS + [&"founders", &"gatherers"]:
+			var result := _rush_cost(building, unit_id, 1)
+			assert_false(bool(result["razed"]),
+				"one squad of %s razed a defended %s in %.0fs — that is the early rush this rule exists to stop"
+					% [unit_id, building, result["seconds"]])
+
+
+func test_two_squads_of_any_line_troop_can_take_a_town_centre() -> void:
+	# The other half: the rule must not make bases untakeable, which is how
+	# D-055's every-match-a-draw happened. Two squads of any line troop
+	# must finish a town centre.
+	#
+	# Founders are excluded because a player has exactly one founding party
+	# and spends it raising the town hall (D-031), so "two founder parties"
+	# is not a situation the game can produce. Gatherers are workers.
+	for unit_id in STARTING_TROOPS:
+		var result := _rush_cost(&"town_centre", unit_id, 2)
+		assert_true(bool(result["razed"]),
+			"two squads of %s could not take a town centre (%.0f HP left) — defence has passed decidable"
+				% [unit_id, result["health"]])
+
+
+func test_two_squads_of_any_line_troop_but_light_skirmishers_can_take_a_tower() -> void:
+	# Same rule against the purpose-built defence, with ONE measured
+	# exception that is a design statement rather than an oversight:
+	# northmen_skirmishers are the cheapest, flimsiest unit in the roster
+	# (30 food, 42 HP a man, 1260 to a squad) and the tower outranges them
+	# 5 cells to 3, so they take fire on the approach and while shooting,
+	# and break — they rout at 36 morale and each tower shell kills two of
+	# them at once. Light raiders do not crack a fortification; their own
+	# side's militia, spearmen and cavalry all do.
+	#
+	# No tower HP/damage pair was found that stops a lone militia squad and
+	# still loses to two skirmisher squads — the sweep is in D-067. If one
+	# is ever wanted, it needs a mechanic (siege equipment, a damage type),
+	# not another number.
+	for unit_id in STARTING_TROOPS:
+		if unit_id == &"northmen_skirmishers":
+			continue
+		var result := _rush_cost(&"tower", unit_id, 2)
+		assert_true(bool(result["razed"]),
+			"two squads of %s could not take a tower (%.0f HP left)"
+				% [unit_id, result["health"]])
+
+
+func test_light_skirmishers_still_hurt_a_tower_even_though_two_cannot_take_it() -> void:
+	# Guards the exception above from becoming an excuse: skirmishers must
+	# still be doing real damage, so a future change that makes them
+	# harmless to buildings fails here rather than hiding behind the
+	# documented carve-out.
+	var result := _rush_cost(&"tower", &"northmen_skirmishers", 2)
+	assert_lt(float(result["health"]), 1700.0 * 0.75,
+		"two skirmisher squads left the tower on %.0f HP — they are not fighting it at all"
+			% result["health"])
+
+
 func test_a_building_site_does_not_shoot() -> void:
 	# A half-built tower is a target, not a garrison.
 	var setup := _shooting_sim()

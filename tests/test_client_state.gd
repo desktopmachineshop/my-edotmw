@@ -173,14 +173,14 @@ func test_living_squad_count_matches_what_the_cap_actually_limits() -> void:
 	var state := ClientState.new()
 	state.handle_packet(NetProtocol.encode_welcome(1, W, H, []))
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 1, "def_id": "legion_militia", "alive": 10, "owner": 1},
-		{"id": 2, "def_id": "legion_militia", "alive": 10, "owner": 1},
-		{"id": 3, "def_id": "legion_militia", "alive": 10, "owner": 2},
+		{"id": 1, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 1},
+		{"id": 2, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 1},
+		{"id": 3, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 2},
 	]))
 	assert_eq(state.living_squad_count(), 2, "only this player's squads")
 
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 2, "def_id": "legion_militia", "alive": 0, "owner": 1},
+		{"id": 2, "def_id": "legion_militia", "alive": 0, "shape": "line", "owner": 1},
 	]))
 	assert_eq(state.living_squad_count(), 1, "and only the living ones")
 
@@ -305,8 +305,70 @@ func test_client_learns_composition_rather_than_assuming_it() -> void:
 	assert_eq(state.alive_of(id), def.squad_size,
 		"Client's squad strength should come from the server, not a guess")
 	assert_eq(state.shape_of(id), def.formation_shape,
-		"Client's formation shape should come from the UnitDef the server named")
+		"A freshly spawned squad should be in its UnitDef's shape")
 	assert_almost_eq(state.spacing_of(id), def.formation_spacing, 0.0001)
+
+
+func test_a_formation_change_reaches_the_client() -> void:
+	# D-058's client half. Shape is MUTABLE replicated state, so a client
+	# that resolves it from the UnitDef instead of the wire is stuck with
+	# the spawn default forever: the formation buttons look inert, and every
+	# soldier stands somewhere the server did not put him.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(2, 2))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	# Curves too: soldier positions are derived from one, so without this
+	# the comparison below would pass by both sides deriving nothing.
+	_pump(sim, state, 1, 2)
+
+	var ordered := "ring" if def.formation_shape != "ring" else "tight"
+	sim.set_shape(id, ordered)
+	# Exactly what server.gd sends for a shape change: an ordinary
+	# SQUAD_INFO for the squads take_shape_dirty() reports.
+	state.handle_packet(NetProtocol.encode_squad_info(
+		sim.squad_info_entries(sim.take_shape_dirty())))
+
+	assert_eq(state.shape_of(id), ordered,
+		"The client should be deriving from the shape the server put the squad in")
+
+	# And the point of the shape: where the soldiers actually stand.
+	var server_side := sim.soldier_transforms(id)
+	var client_side := state.soldier_transforms(id, sim.time)
+	assert_eq(client_side.size(), server_side.size(),
+		"Client and server disagree about how many soldiers this squad has")
+	for i in range(server_side.size()):
+		assert_almost_eq(client_side[i].origin.x, server_side[i].origin.x, 0.001,
+			"Soldier %d x diverges after a formation change" % i)
+		assert_almost_eq(client_side[i].origin.z, server_side[i].origin.z, 0.001,
+			"Soldier %d z diverges after a formation change" % i)
+
+
+func test_a_formation_change_does_not_desync_a_client_that_was_told() -> void:
+	# Shape is hashed, so a client that never learns the new one is not
+	# merely drawing the wrong picture — it reports a desync on a perfectly
+	# healthy system, which is the failure mode D-026 criterion 8 warns
+	# about. Gatherers switch shape by themselves (D-058), so this would
+	# have fired for every crew that ever worked a node.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(3, 3))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+
+	sim.set_shape(id, "ring" if def.formation_shape != "ring" else "tight")
+	state.handle_packet(NetProtocol.encode_squad_info(
+		sim.squad_info_entries(sim.take_shape_dirty())))
+	state.handle_packet(NetProtocol.encode_state_hash(
+		sim.tick_count, sim.composition_hash(sim.visible_to(1))))
+
+	assert_eq(state.state_hash_checks, 1,
+		"The client must actually have been checked")
+	assert_eq(state.desync_count, 0,
+		"A client that was told about the shape change must agree with the server")
 
 
 func test_squad_with_no_composition_derives_nothing_rather_than_guessing() -> void:
@@ -393,16 +455,21 @@ func test_world_to_cell_picks_the_nearest_cell_near_boundaries() -> void:
 
 func test_squad_info_roundtrips() -> void:
 	var entries := [
-		{"id": 4, "def_id": "test_alpha", "alive": 40},
-		{"id": 9, "def_id": "test_beta", "alive": 32},
+		{"id": 4, "def_id": "test_alpha", "alive": 40, "shape": "ring"},
+		{"id": 9, "def_id": "test_beta", "alive": 32, "shape": "tight"},
 	]
 	var decoded := NetProtocol.decode_squad_info(NetProtocol.encode_squad_info(entries))
 	assert_eq(decoded.size(), 2)
 	assert_eq(int(decoded[0]["id"]), 4)
 	assert_eq(String(decoded[0]["def_id"]), "test_alpha")
 	assert_eq(int(decoded[0]["alive"]), 40)
+	# Shape is mutable squad state (D-058), so it travels rather than being
+	# resolved from the UnitDef — that is the whole difference between a
+	# formation a player can change and one baked in at spawn.
+	assert_eq(String(decoded[0]["shape"]), "ring")
 	assert_eq(String(decoded[1]["def_id"]), "test_beta")
 	assert_eq(int(decoded[1]["alive"]), 32)
+	assert_eq(String(decoded[1]["shape"]), "tight")
 
 
 func test_state_hash_roundtrips() -> void:

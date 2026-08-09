@@ -208,8 +208,17 @@ static func decode_order_attack_move(data: PackedByteArray) -> Dictionary:
 ## D-006 says client and server agree "by construction, not by
 ## synchronization". That is only true if both are handed identical
 ## inputs, which makes supplying those inputs a protocol obligation.
-## Shape and spacing are not sent: they are properties of the UnitDef, so
-## the client resolves them through UnitRoster.by_id and cannot drift.
+##
+## SHAPE travels; SPACING does not. That asymmetry is D-058: shape became
+## mutable squad state (a player orders it, and the economy switches a
+## gathering crew between working and walking order), while spacing is
+## still a fixed property of the UnitDef and cannot drift. This header
+## previously said neither was sent, and it was right when it was written
+## — but shape stopped being a UnitDef property and this did not change,
+## so every formation change was invisible to clients AND desynced them,
+## since shape is hashed. `shape` is read without a default deliberately:
+## a caller that omits it is a bug that must be loud, because the silent
+## version puts every soldier in the squad somewhere the server did not.
 static func encode_squad_info(entries: Array) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_SQUAD_INFO)
@@ -220,6 +229,11 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		buf.put_u16(def_id.size())
 		buf.put_data(def_id)
 		buf.put_u32(int(entry["alive"]))
+		# A name rather than an ordinal, exactly as ORDER_FORMATION carries
+		# it: adding a formation should not renumber the wire.
+		var shape := String(entry["shape"]).to_utf8_buffer()
+		buf.put_u16(shape.size())
+		buf.put_data(shape)
 		# Owner rides along so a client learns it owns a squad it did not
 		# start with. The welcome message lists what a player begins with,
 		# and nothing updated that list when a building PRODUCED a squad —
@@ -243,7 +257,12 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
 		var def_id := name_bytes.get_string_from_utf8()
 		var alive := buf.get_u32()
-		out.append({"id": id, "def_id": def_id, "alive": alive, "owner": buf.get_u32()})
+		var shape_length := buf.get_u16()
+		var shape_bytes: PackedByteArray = buf.get_data(shape_length)[1]
+		out.append({
+			"id": id, "def_id": def_id, "alive": alive,
+			"shape": shape_bytes.get_string_from_utf8(), "owner": buf.get_u32(),
+		})
 	return out
 
 
