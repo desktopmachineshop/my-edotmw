@@ -102,6 +102,89 @@ func test_welcome_establishes_the_clients_view_of_the_map() -> void:
 	assert_false(state.owns(99), "A client should not think it owns a squad it wasn't given")
 
 
+func test_welcome_carries_the_squad_cap_and_the_match_clock() -> void:
+	# Both are the HUD's, and both must come from the server: the cap is
+	# MapConfig data this side has no copy of, and a clock each client ran
+	# for itself would show every player a different match length.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(2, W, H, [4], [], 40, 1200))
+
+	assert_eq(state.squad_cap, 40)
+	# 1200 ticks at 10 Hz is two minutes in.
+	assert_almost_eq(state.match_elapsed(), 120.0, 1.0)
+
+
+func test_a_welcome_carrying_everything_still_reads_the_spawn_table() -> void:
+	# The fields added for the HUD sit AFTER the spawn table on the wire,
+	# so a mistake in either length prefix silently shifts the other. The
+	# bots found their town hall at `spawn_cell_of`, so a shifted spawn
+	# table does not error — it just means nobody ever builds anything,
+	# which is a load-test verdict of buildings_known=0 and no clue why.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(2, W, H, [4, 5], [11, 22], 40, 1200))
+
+	assert_true(state.owns(4) and state.owns(5), "squads survive the added fields")
+	assert_eq(Array(state.spawn_cells), [11, 22], "and so does the spawn table")
+	assert_eq(state.squad_cap, 40)
+	assert_almost_eq(state.match_elapsed(), 120.0, 1.0)
+
+
+func test_a_welcome_without_the_new_fields_still_reads() -> void:
+	# The trailing-field rule this protocol already uses for spawns: a
+	# packet written before these existed must read back as "not stated"
+	# rather than as garbage.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(2, W, H, [4]))
+	assert_eq(state.squad_cap, 0, "no cap stated")
+	assert_eq(state.match_elapsed(), 0.0, "no clock stated")
+
+
+func test_the_match_clock_reanchors_on_later_server_ticks() -> void:
+	# The clock derives locally between messages (D-003) and re-anchors
+	# whenever the server states a tick, which is what stops it drifting
+	# over a match this project wants to run for one to two hours (D-056).
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(2, W, H, [4], [], 40, 100))
+	assert_almost_eq(state.match_elapsed(), 10.0, 1.0)
+
+	state.note_server_tick(6000)
+	assert_almost_eq(state.match_elapsed(), 600.0, 1.0)
+
+
+func test_the_match_clock_never_runs_backwards() -> void:
+	# A stale or out-of-order tick must not rewind the timer. A match
+	# clock that jumps back is read as a bug by every player who sees it,
+	# and it would be a plausible thing to see if any path ever stated an
+	# older tick.
+	var state := ClientState.new()
+	state.note_server_tick(6000)
+	var later := state.match_elapsed()
+	state.note_server_tick(100)
+	assert_true(state.match_elapsed() >= later - 0.01,
+		"an older tick must not rewind the clock")
+
+
+func test_living_squad_count_matches_what_the_cap_actually_limits() -> void:
+	# The HUD prints this against `squad_cap`, so it has to count the same
+	# things the server counts in MatchState.has_squad_capacity: this
+	# player's own living squads. Counting every squad on screen — which
+	# is what `curves` holds — would put other players' armies into a
+	# number printed beside YOUR ceiling.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, []))
+	state.handle_packet(NetProtocol.encode_squad_info([
+		{"id": 1, "def_id": "legion_militia", "alive": 10, "owner": 1},
+		{"id": 2, "def_id": "legion_militia", "alive": 10, "owner": 1},
+		{"id": 3, "def_id": "legion_militia", "alive": 10, "owner": 2},
+	]))
+	assert_eq(state.living_squad_count(), 2, "only this player's squads")
+
+	state.handle_packet(NetProtocol.encode_squad_info([
+		{"id": 2, "def_id": "legion_militia", "alive": 0, "owner": 1},
+	]))
+	assert_eq(state.living_squad_count(), 1, "and only the living ones")
+
+
 func test_a_squad_wiped_out_stops_being_one_this_client_owns() -> void:
 	# Ownership has to shrink, not only grow. It did not, and the symptom
 	# was invisible for a long time because the server refused the orders

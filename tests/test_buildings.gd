@@ -142,6 +142,73 @@ func test_damage_destroys_a_building_once_and_only_once() -> void:
 		"Hitting rubble must not report a second destruction — the caller announces what this returns")
 
 
+func test_surviving_damage_replicates_and_not_only_fatal_damage() -> void:
+	# The defect: `damage()` marked the building dirty only when the blow
+	# killed it, so a client was told a building's health exactly twice —
+	# 100% on reveal, and nothing again until it was rubble. Every bar in
+	# the game therefore read full green right up to the moment the
+	# building vanished, and a player had no way to see a base being taken
+	# apart while there was still time to answer it.
+	#
+	# Nothing failed: the sim's health was correct throughout, the wire
+	# format already carried `health_fraction`, and the client already drew
+	# it. The rule was simply never delivered — the declared-and-unread
+	# shape this project keeps meeting.
+	var buildings := BuildingSim.new(_space())
+	var id := buildings.add_building(_building_def(), 1, Vector2i(4, 4), true)
+	buildings.take_dirty()
+
+	assert_false(buildings.damage(id, 30.0), "not a killing blow")
+	assert_eq(buildings.take_dirty(), [id],
+		"a surviving hit still has to reach the client")
+
+
+func test_scratches_too_small_to_see_do_not_resend_the_building() -> void:
+	# The other half of the rule, and the reason health is quantised at
+	# all: a besieged building takes damage every attack cooldown, and
+	# marking each scratch dirty would resend its whole entry several times
+	# a second per attacker — D-003's per-tick snapshot, wearing a health
+	# bar. Steps finer than the drawn bar resolves are not worth a packet.
+	var buildings := BuildingSim.new(_space())
+	var id := buildings.add_building(_building_def(), 1, Vector2i(4, 4), true)
+	# Off the boundary first. Full health sits exactly ON a step edge, so
+	# the very first scratch of a building's life always crosses one — that
+	# is correct (a player should see the instant a building is touched at
+	# all) but it is not what this test is about.
+	buildings.damage(id, 2.0)
+	buildings.take_dirty()
+
+	# A hundredth of full health, against a step three times that wide.
+	buildings.damage(id, 1.0)
+	assert_eq(buildings.take_dirty(), [],
+		"a scratch within one step is not worth a packet")
+
+	# Enough to cross a step boundary, however small the step.
+	buildings.damage(id, 100.0 / BuildingSim.HEALTH_REPLICATION_STEPS)
+	assert_eq(buildings.take_dirty(), [id],
+		"crossing a step does reach the client")
+
+
+func test_a_whole_siege_costs_a_bounded_number_of_health_messages() -> void:
+	# Stated as a bound rather than described, because the bound is the
+	# claim: quantising is what lets `take_dirty`'s "event-driven, never
+	# per tick" promise survive a building being drawn health.
+	var buildings := BuildingSim.new(_space())
+	var id := buildings.add_building(_building_def(), 1, Vector2i(4, 4), true)
+	buildings.take_dirty()
+
+	var messages := 0
+	# 200 blows of half a percent each — far more attack rounds than any
+	# real siege, and the answer must still be small.
+	for _i in range(200):
+		buildings.damage(id, 0.5)
+		messages += buildings.take_dirty().size()
+
+	assert_true(messages <= int(BuildingSim.HEALTH_REPLICATION_STEPS) + 1,
+		"200 blows cost %d messages, not one each" % messages)
+	assert_true(messages >= 8, "but the bar still moves: %d updates" % messages)
+
+
 func test_an_unfinished_building_can_still_be_destroyed() -> void:
 	# A half-built tower is a real thing standing on the map, not a plan.
 	var buildings := BuildingSim.new(_space())
