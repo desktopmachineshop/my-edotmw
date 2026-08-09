@@ -468,6 +468,32 @@ func squad_world_position(squad: int, now: float) -> Vector3:
 	return (curves[squad] as StateCurve).sample_world(now, space)
 
 
+## Ground speed in world units per second, from the curve alone (D-065).
+##
+## Feeds the walk cycle's playback rate, so footfalls match travel instead of
+## soldiers skating. Pure: a function of the curve and the time, holding no
+## state and reading nothing it has to remember — which is what keeps animation
+## inside D-006 clause 1.
+##
+## Differences the CONTINUOUS AXIAL samples, not `squad_world_position`. Those
+## are wrapped (`sample_world` applies fposmod), so a squad crossing a seam
+## would appear to cross the whole map in one interval and its soldiers would
+## sprint on the spot. The axial-to-world scaling is linear, so it applies to
+## the delta unchanged — the wrap is the only nonlinear step, and skipping it is
+## exactly the point. The recurring torus tax D-008 warns about.
+func squad_speed(squad: int, now: float, interval: float = 0.2) -> float:
+	if space == null or not curves.has(squad) or interval <= 0.0:
+		return 0.0
+	var curve := curves[squad] as StateCurve
+	var before := curve.sample_axial(now - interval)
+	var after := curve.sample_axial(now)
+	var delta := after - before
+	var world := Vector2(
+		space.hex_size * TorusSpace.SQRT_3 * (delta.x + delta.y * 0.5),
+		space.hex_size * 1.5 * delta.y)
+	return world.length() / interval
+
+
 ## Composition accessors. These are the values fed to Formation, so they
 ## are also exactly what composition_hash() hashes — the check therefore
 ## verifies what the client actually derives from, not merely that a

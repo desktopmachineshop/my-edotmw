@@ -29,6 +29,19 @@ var _is_ghost := false
 var _last_clip := -1
 var _last_rate := -1.0
 
+## How many times the per-soldier animation buffer has actually been rewritten.
+##
+## Exists to be TESTABLE. Under `--headless` Godot uses a dummy rendering
+## server, and MultiMesh per-instance buffers do not round-trip through it at
+## all — `get_instance_custom_data` returns zeros, and so does
+## `get_instance_transform`. So a test cannot read back what was written and
+## must count the writes instead.
+##
+## Counting is the better check anyway: what D-045 cares about is that a squad
+## walking at a steady speed rewrites NOTHING, and an absence of work is
+## exactly what a read-back cannot show.
+var custom_data_writes := 0
+
 
 func _ready() -> void:
 	if unit_def:
@@ -54,6 +67,7 @@ func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 	_model_id = def.model_id
 	_last_clip = -1
 	_last_rate = -1.0
+	custom_data_writes = 0
 
 	# Authored model first, primitive as the fallback (D-064). A missing
 	# `generated/` degrades to the capsule rather than failing, which is what
@@ -143,6 +157,7 @@ func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
 		return
 	_last_clip = clip
 	_last_rate = rate
+	custom_data_writes += 1
 
 	for i in range(mm.instance_count):
 		mm.set_instance_custom_data(

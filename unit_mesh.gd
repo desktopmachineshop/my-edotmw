@@ -100,8 +100,18 @@ static func mesh_for(model_id: StringName) -> Mesh:
 				mesh = found.mesh
 			root.queue_free()
 			load_count += 1
-	if mesh == null:
-		push_warning("UnitMesh: no authored model for '%s'; using the primitive" % model_id)
+	# Warn only when the manifest CLAIMS this model exists and it still would
+	# not load — that is the surprising case, and it means `generated/` is
+	# damaged rather than absent.
+	#
+	# A model_id with no manifest entry is quiet on purpose: either nobody has
+	# run `just build-assets` (in which case capsules everywhere is the designed
+	# behaviour, not news), or a `.tres` names a model that was never built —
+	# and tests/test_art_assets.gd fails loudly on exactly that, which is a
+	# better place to catch it than a runtime warning nobody reads.
+	if mesh == null and not layout_for(model_id).is_empty():
+		push_warning("UnitMesh: '%s' is in the manifest but did not load; "
+			% model_id + "using the primitive")
 
 	_meshes[model_id] = mesh
 	return mesh

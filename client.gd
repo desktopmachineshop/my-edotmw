@@ -117,6 +117,12 @@ var _explored := {}
 ## as a distant formation being sparse rather than as a smaller unit —
 ## which matters, because unit size is tactical information a player is
 ## entitled to read off the screen correctly.
+## Below this ground speed a squad is standing still as far as animation is
+## concerned. Not zero: a curve sampled either side of a keyframe produces a
+## little numerical drift, and a squad that flickered between idle and walk on
+## that drift would twitch.
+const MOVING_SPEED_EPSILON := 0.15
+
 const LOD_TIERS := [
 	{"distance": 55.0, "soldiers": 1 << 30},
 	{"distance": 110.0, "soldiers": 12},
@@ -424,9 +430,10 @@ func _build_terrain() -> void:
 		var cell := space.world_to_cell(Vector3(x, 0.0, z))
 		return elevation[space.index(cell)] * terrain.height_scale
 
-	var material := StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.roughness = 0.95
+	# One shared definition (D-066), so the benchmark renders what the game
+	# renders. Textured when generated/ has been built, vertex colour alone
+	# when it has not.
+	var material := TerrainChunk.make_material()
 
 	var meshes := []
 	for cy in range(grid.y):
@@ -585,6 +592,19 @@ func _refresh_squads() -> void:
 			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
+		# Which clip these soldiers play (D-065). Derived from state the
+		# client already holds — the curve gives speed, `_activity_for` gives
+		# fighting, `routed_of` gives the rout — so nothing is sent for it and
+		# every client agrees by construction, the same shape as D-052's
+		# colour. Writes into the MultiMesh only when the clip or the rate
+		# actually changes; the per-frame cost here is a comparison.
+		var speed := _state.squad_speed(squad_id, _now)
+		var clip := AnimationState.clip_for(
+			_state.routed_of(squad_id),
+			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
+			speed > MOVING_SPEED_EPSILON)
+		unit.set_clip_data(int(squad_id), clip, speed)
+
 		# A selection circle under EVERY soldier, from the transforms we
 		# just derived — so the highlight follows the formation's real
 		# shape as it changes, for free. A single disc could only ever
@@ -661,23 +681,18 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 ## since it would look correct on a native `run-client` GPU and invisible
 ## in the one place D-026 criterion 11 requires it to actually be checked.
 ##
-## So this instead toggles the MATERIAL's own alpha blending — a
-## StandardMaterial3D `material_override` PrimitiveUnit already attaches
-## to this exact node (see primitive_unit.gd's rebuild()), reached via its
-## public property, not by reconstructing or replacing it. Alpha blending
+## So this instead toggles the MATERIAL's own alpha blending. Alpha blending
 ## is a baseline feature of every rendering method this project uses, so
 ## unlike the instance shortcut this actually shows up in a screenshot.
+##
+## Since M7 the mechanism differs by which path a squad renders on — a
+## primitive mutates its StandardMaterial3D's alpha, an authored model swaps
+## to a different shader program, because whether a material is transparent is
+## decided at shader COMPILE time (see unit_vat.gdshaderinc). PrimitiveUnit
+## owns that choice; this function exists only so the call site above reads the
+## same as it did before.
 func _set_ghost_look(unit: PrimitiveUnit, is_ghost: bool) -> void:
-	for child in unit.get_children():
-		if child is MultiMeshInstance3D:
-			var material := (child as MultiMeshInstance3D).material_override
-			if material is StandardMaterial3D:
-				var mat := material as StandardMaterial3D
-				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if is_ghost else BaseMaterial3D.TRANSPARENCY_DISABLED
-				var albedo := mat.albedo_color
-				albedo.a = 0.35 if is_ghost else 1.0
-				mat.albedo_color = albedo
-			return
+	unit.set_ghost(is_ghost)
 
 
 ## Capture-mode-only scripted maneuver (see the constants above this file).

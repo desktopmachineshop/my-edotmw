@@ -23,6 +23,8 @@ const SOLDIERS_PER_SQUAD := 12
 @export var out_path: String = "res://artifacts/models-godot.png"
 
 var _units: Array[PrimitiveUnit] = []
+var _space: TorusSpace
+var _terrain_sampler: Callable
 var _elapsed := 0.0
 var _shot := false
 
@@ -30,7 +32,51 @@ var _shot := false
 func _ready() -> void:
 	_parse_arguments()
 	_build_environment()
+	_build_terrain()
 	_build_squads()
+
+
+## Real terrain under the models (D-066), so one picture answers whether the
+## atlas reads at play distance and whether soldiers sit ON the ground.
+##
+## Built through `TerrainChunk` with the shared material, not a stand-in plane:
+## a preview that invented its own ground would be checking nothing about the
+## thing that ships. Small and flat-seeded because this is a model preview —
+## the seam and the full map are `test-client`'s job.
+func _build_terrain() -> void:
+	var config := MapConfig.new()
+	config.width = 24
+	config.height = 16
+	_space = TorusSpace.new(config.width, config.height)
+
+	var terrain := TerrainGen.new()
+	var elevation := terrain.elevation_field(_space)
+	_terrain_sampler = func(x: float, z: float) -> float:
+		var cell := _space.world_to_cell(Vector3(x, 0.0, z))
+		return elevation[_space.index(cell)] * terrain.height_scale
+
+	var material := TerrainChunk.make_material()
+	var chunk_size := 16
+	var grid := TerrainChunk.chunk_grid(_space, chunk_size)
+	var root := Node3D.new()
+	# Centre the patch under the squads rather than moving the camera, so the
+	# framing stays comparable with earlier shots.
+	root.position = -_space.to_world(Vector2i(config.width / 2, config.height / 2))
+	add_child(root)
+
+	for cy in range(grid.y):
+		for cx in range(grid.x):
+			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size)
+			if mesh == null:
+				continue
+			var instance := MeshInstance3D.new()
+			instance.mesh = mesh
+			instance.material_override = material
+			root.add_child(instance)
+
+	print("model_preview: terrain %dx%d, atlas=%s"
+		% [config.width, config.height,
+			"yes" if material.albedo_texture != null else "NO (generated/ not built)"])
 
 
 ## `--seconds=` and `--out=`, after a bare `--`.
@@ -105,8 +151,15 @@ func _build_squads() -> void:
 			for i in range(SOLDIERS_PER_SQUAD):
 				var col := i % 4
 				var rank := i / 4
-				transforms.append(Transform3D(Basis(), Vector3(
-					(float(col) - 1.5) * 1.15, 0.0, float(rank) * -1.25)))
+				var local := Vector3(
+					(float(col) - 1.5) * 1.15, 0.0, float(rank) * -1.25)
+				# Soldiers stand ON the terrain, as in client.gd. Deriving at
+				# y = 0 puts them inside every hill — which is exactly how the
+				# first client frame this project ever rendered came out empty.
+				if _terrain_sampler.is_valid():
+					local.y = _terrain_sampler.call(
+						origin.x + local.x, origin.z + local.z) - origin.y
+				transforms.append(Transform3D(Basis(), local))
 			unit.set_slot_transforms(transforms)
 			unit.set_clip_data(row * 10 + clip, clip, 3.2)
 			_units.append(unit)
