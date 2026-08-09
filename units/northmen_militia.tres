@@ -22,6 +22,7 @@ armour_class = "infantry"
 bonus_vs = {}
 mesh_primitive = "capsule"
 mesh_color = Color(0.72, 0.45, 0.3, 1)
+model_id = &"militia"
 build_time = 5.0
 cost = 45
 cost_food = 40

@@ -21,10 +21,25 @@ built-in may not be.
 ## Texture layout
 
     width  = vertex count
-    height = total_frames * 2
+    height = total_frames * 2 + 1
 
     rows [0, total_frames)              position OFFSET from the rest pose
     rows [total_frames, total_frames*2) animated normal
+    row  total_frames*2                 rgb = part colour, a = owner mask
+
+## Why colour lives in the texture rather than in the mesh
+
+The model carries COLOR_0 too, and it survives the glTF round trip — but a
+MultiMesh overrides the shader's `COLOR` with its own per-instance colour, so a
+vertex colour attribute never reaches the fragment stage on the path this game
+actually renders through. That was observed, not assumed: a diagnostic render
+showed UV2 arriving correctly and COLOR arriving as a flat zero, which is why
+every soldier came out black.
+
+Putting colour in the VAT costs one more texel fetch and removes the dependency
+entirely — the same column index already in hand addresses position, normal and
+colour alike. The mesh keeps COLOR_0 because `art/preview.py` and any external
+tool still read it.
 
 Offsets rather than absolute positions: the rest pose is already in the mesh, so
 storing the delta keeps values small and centred on zero, which matters for
@@ -172,7 +187,13 @@ def write_glb(model: Model, flat: dict, path: str) -> None:
         export_texcoords=True,
         export_all_vertex_colors=True,
         export_active_vertex_color_when_no_material=True,
-        export_yup=True,
+        # NOT yup. Blender is Z-up and glTF is Y-up, so the exporter normally
+        # rotates on the way out — but `geom.py` authors in Y-up already, to
+        # match Godot. Letting the exporter convert would rotate the mesh while
+        # the VAT offsets stayed in the authored space, and the two would
+        # disagree: soldiers rendered lying on their backs, animated sideways.
+        # Observed as a 0.37-tall bounding box on a model built 1.8 tall.
+        export_yup=False,
         use_selection=False,
     )
 
@@ -185,17 +206,18 @@ def write_vat(model: Model, flat: dict, path: str) -> dict:
     rest = flat["positions"]
     width = len(rest)
     total_frames = len(positions_per_frame)
-    height = total_frames * 2
+    colour_row = total_frames * 2
+    height = colour_row + 1
 
     # Blender image pixels are a flat RGBA list, bottom row first.
     pixels = [0.0] * (width * height * 4)
 
-    def put(row: int, col: int, value) -> None:
+    def put(row: int, col: int, value, alpha: float = 1.0) -> None:
         i = (row * width + col) * 4
         pixels[i] = value[0]
         pixels[i + 1] = value[1]
         pixels[i + 2] = value[2]
-        pixels[i + 3] = 1.0
+        pixels[i + 3] = alpha
 
     for f in range(total_frames):
         frame_positions = positions_per_frame[f]
@@ -204,6 +226,10 @@ def write_vat(model: Model, flat: dict, path: str) -> dict:
             p, r = frame_positions[c], rest[c]
             put(f, c, (p[0] - r[0], p[1] - r[1], p[2] - r[2]))
             put(total_frames + f, c, frame_normals[c])
+
+    for c in range(width):
+        colour = flat["colours"][c]
+        put(colour_row, c, colour, alpha=colour[3])
 
     image = bpy.data.images.new(f"{model.name}_vat", width=width, height=height,
                                 alpha=True, float_buffer=True, is_data=True)
@@ -233,6 +259,7 @@ def write_vat(model: Model, flat: dict, path: str) -> dict:
         "width": width,
         "height": height,
         "total_frames": total_frames,
+        "colour_row": colour_row,
         "frames_per_clip": FRAMES_PER_CLIP,
         "clips": list(CLIP_ORDER),
     }

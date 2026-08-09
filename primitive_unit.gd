@@ -14,6 +14,21 @@ class_name PrimitiveUnit
 
 var _multimesh_instance: MultiMeshInstance3D
 
+## Whether this squad is wearing an authored model (D-064) rather than a
+## primitive. Decides which material path applies and whether the MultiMesh
+## carries the per-soldier animation data D-065 needs.
+var _authored := false
+var _model_id: StringName = &""
+var _owner_colour := Color(0, 0, 0, 0)
+var _is_ghost := false
+
+## The last animation state written into custom data. Custom data is rewritten
+## on CHANGE, not per frame: D-045 measured the client frame at 97% CPU in
+## per-soldier derivation, and this is that same loop. Phase advances in the
+## shader from TIME, so a squad walking at a steady speed writes nothing.
+var _last_clip := -1
+var _last_rate := -1.0
+
 
 func _ready() -> void:
 	if unit_def:
@@ -35,22 +50,103 @@ func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 		_multimesh_instance = MultiMeshInstance3D.new()
 		add_child(_multimesh_instance)
 
+	_owner_colour = owner_colour
+	_model_id = def.model_id
+	_last_clip = -1
+	_last_rate = -1.0
+
+	# Authored model first, primitive as the fallback (D-064). A missing
+	# `generated/` degrades to the capsule rather than failing, which is what
+	# keeps the bots, the tests and an unbuilt fresh clone running.
+	var mesh: Mesh = null
+	if _model_id != &"":
+		mesh = UnitMesh.mesh_for(_model_id)
+	_authored = mesh != null
+	if not _authored:
+		mesh = _build_primitive_mesh(def)
+
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = _build_primitive_mesh(def)
+	# Per-soldier clip, phase and rate (D-065). Declared before instance_count,
+	# because changing the format after allocation discards the buffer.
+	mm.use_custom_data = _authored
+	mm.mesh = mesh
 	mm.instance_count = def.squad_size
 
 	_multimesh_instance.multimesh = mm
+	_apply_material(def)
 
-	var material := StandardMaterial3D.new()
+
+## Attach the right material for the current model, owner and ghost state.
+##
+## Split out of `rebuild` because the ghost toggle needs it too, and because the
+## authored path swaps the whole material (the opaque and ghost shaders are
+## different programs — see unit_vat.gdshaderinc) rather than mutating a
+## property on one.
+func _apply_material(def: UnitDef) -> void:
+	if _authored:
+		var colour := _owner_colour
+		if colour.a <= 0.0:
+			colour = def.mesh_color
+		var material := UnitMesh.material_for(_model_id, colour, _is_ghost)
+		if material != null:
+			_multimesh_instance.material_override = material
+			return
+		# The mesh loaded but its VAT did not. Fall through rather than render
+		# an un-materialled model.
+		push_warning("PrimitiveUnit: no VAT for '%s'; falling back" % _model_id)
+		_authored = false
+
+	var standard := StandardMaterial3D.new()
 	# The unit's own colour survives as a tint on the player's, so two
 	# unit types are still distinguishable within one army without
 	# muddying whose army it is.
-	if owner_colour.a <= 0.0:
-		material.albedo_color = def.mesh_color
+	if _owner_colour.a <= 0.0:
+		standard.albedo_color = def.mesh_color
 	else:
-		material.albedo_color = owner_colour.lerp(def.mesh_color, 0.25)
-	_multimesh_instance.material_override = material
+		standard.albedo_color = _owner_colour.lerp(def.mesh_color, 0.25)
+	if _is_ghost:
+		standard.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		standard.albedo_color.a = 0.35
+	_multimesh_instance.material_override = standard
+
+
+## Show this squad as a fog ghost, or stop (D-025, D-026 criterion 11).
+##
+## Lives here rather than in the client because the two rendering paths need
+## opposite mechanisms — the primitive path mutates a StandardMaterial3D's alpha
+## blending, the authored path swaps to a different shader program — and the
+## caller should not have to know which one a squad is using.
+func set_ghost(is_ghost: bool) -> void:
+	if _is_ghost == is_ghost or unit_def == null:
+		return
+	_is_ghost = is_ghost
+	_apply_material(unit_def)
+
+
+## Per-soldier animation state (D-065).
+##
+## `clip` comes from `AnimationState.clip_for`, `speed` from the squad's curve.
+## Writes only when the state actually changed: at a steady walk this costs one
+## comparison per squad per frame and nothing else.
+func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
+	if not _authored or _multimesh_instance == null:
+		return
+	var mm := _multimesh_instance.multimesh
+	if mm == null or not mm.use_custom_data:
+		return
+
+	var rate := AnimationState.rate_for(clip, speed)
+	# A rate that drifts by a fraction of a percent is not worth rewriting the
+	# buffer for; a squad accelerating out of a stand is.
+	if clip == _last_clip and absf(rate - _last_rate) < maxf(_last_rate, 0.01) * 0.05:
+		return
+	_last_clip = clip
+	_last_rate = rate
+
+	for i in range(mm.instance_count):
+		mm.set_instance_custom_data(
+			i, AnimationState.custom_data(squad_id, i, clip, speed))
 
 
 ## Sets per-soldier slot transforms. Caller (formation/curve code, not

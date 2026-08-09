@@ -25,6 +25,7 @@ carry_capacity = 60
 gather_rate = 0.35
 mesh_primitive = "capsule"
 mesh_color = Color(0.62, 0.72, 0.45, 1)
+model_id = &"gatherers"
 build_time = 2.5
 cost = 50
 cost_food = 16
