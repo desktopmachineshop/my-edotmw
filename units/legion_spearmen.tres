@@ -24,6 +24,7 @@ bonus_vs = {
 }
 mesh_primitive = "box"
 mesh_color = Color(0.32, 0.4, 0.62, 1)
+model_id = &"spearmen"
 build_time = 11.0
 cost = 45
 cost_food = 70

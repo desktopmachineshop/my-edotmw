@@ -37,10 +37,19 @@ class_name BuildingDef
 ## twenty seconds and the ground may be claimed by the time it gets there.
 @export var no_build_radius: int = 4
 
-# Combat (D-032). Only the tower has an attack; everything else leaves
-# `damage` at zero and is simply a target. Buildings resolve attacks in a
-# pass separate from the squad path — `Combat._check_rout` calls
-# `force_move`, and a building has neither morale nor the ability to move.
+# Combat (D-032). The tower and the town centre have an attack; everything
+# else leaves `damage` at zero and is simply a target. Buildings resolve
+# attacks in a pass separate from the squad path — `Combat._check_rout`
+# calls `force_move`, and a building has neither morale nor the ability to
+# move.
+#
+# READ THIS BEFORE TUNING `damage` (D-066). It is NOT on the same scale as
+# `UnitDef.damage`, and the difference is a factor of ~40. A squad's volley
+# is `damage x alive` — 36 militia at 9.5 is 342 per second. A building
+# fires one flat `damage`, multiplied by nothing, so a number that looks
+# comparable to a unit's is worth about one soldier. The shipped values
+# were authored that way and the defence was invisible in play: a town
+# centre cost a lone attacking squad 4 men out of 36.
 @export var attack_range: float = 0.0
 @export var damage: float = 0.0
 @export var attack_interval: float = 1.0
@@ -75,4 +84,14 @@ class_name BuildingDef
 # Primitive-tier mesh (D-011), same tiering as units.
 @export_enum("box", "cylinder", "capsule", "hull") var mesh_primitive: String = "box"
 @export var mesh_color: Color = Color(0.7, 0.68, 0.6)
+
+## Which authored model this building wears (D-064). Schema addition
+## 2026-08-09 (M7), mirroring `UnitDef.model_id`.
+##
+## Empty means "use the primitive", and the primitive now actually reads
+## `mesh_primitive` above. It did not until M7: every building rendered as a
+## hardcoded 2.4x3.0x2.4 box, and `mesh_primitive` sat with no readers at all
+## for four milestones — the fifth instance of the declared-and-unread defect
+## class after `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()`.
+@export var model_id: StringName = &""
 @export var footprint_radius: int = 1

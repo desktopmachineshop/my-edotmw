@@ -282,6 +282,87 @@ a rule. No test can see it, because the code under test is correct. This
 is the one defect class this project's testing discipline is blind to by
 construction.
 
+**And there is a harder variant of it, found by playing (D-061).** Three
+of the four interface bugs fixed there were rules that WERE fully written
+and DID have callers — the caller was simply unreachable. Rally orders
+were encoded, validated server-side and drawn on the ground, and the
+client returned two lines before the branch that sends them, because
+selecting a building clears `_selected` and the guard against ordering an
+empty selection fired first. `health_fraction` was on the wire, in
+`ClientState` and drawn by the panel, and only ever carried 1.0 because
+nothing marked a damaged building dirty. A grep for uncalled members
+finds none of these. **Nothing but using the thing does** — so when
+something that plainly ought to work does not, suspect an unreachable
+branch before suspecting the mechanic is missing.
+
+**Its sibling, found the same way (D-065): a decision entry saying a
+field is on the wire is not evidence that it is.** D-058 made formation
+mutable, replicated state and describes the server resending "ordinary
+`SQUAD_INFO` — the message that already carries shape". `SQUAD_INFO` did
+not carry shape, and still resolved it from `UnitDef` on the client. Every
+server-side part D-058 describes was real and correct, so nothing failed;
+the formation buttons simply did nothing, and every gathering crew that
+reached a node desynced its owner permanently. **When a decision says a
+field is replicated, open the encoder and look for it.** And when a
+feature "does nothing", suspect the wire before the UI — the button had
+been correct all along.
+
+The second half of the same bug is worth its own rule: **a per-tick
+assertion silently outranks a player's order.** The economy re-asserted a
+gathering crew's shape every tick, so a player's choice survived 100 ms.
+Anything the simulation sets every tick now goes through
+`SquadSim.suggest_shape`, which a player's `set_shape` latches out.
+
+**And a third of the same family (D-066): a mechanism can be correct, its
+data nonzero, and the feature still absent.** Buildings shot exactly as
+designed; a town centre cost a lone attacking squad **4 men out of 36**,
+because `BuildingDef.damage` is a FLAT per-shot number while a squad's
+volley is `UnitDef.damage x alive` — the same word, ~40x apart. Every
+buildings-shoot test used a caricature def (damage 40, 0.1 s interval) to
+see a casualty in five ticks, and the only test touching shipped data
+asserted `damage > 0`. **A test that proves the mechanism says nothing
+about whether the shipped numbers do anything** — for anything a player
+is supposed to FEEL, run the whole encounter with shipped defs and assert
+what it costs.
+
+**The shipped rule is now D-067's** (D-066's 45/80 lasted a day): **one
+squad of any starting troop cannot raze a defended building; two can.**
+Town centre damage 60; tower 85 at 1700 HP. Two measured exceptions,
+both tested and both in D-067 — founders (a player only ever has one
+party) and northmen_skirmishers against a tower (no tower HP/damage pair
+exists that stops a lone militia squad and still loses to two of them).
+
+**And the defect that was hiding under it: `TorusSpace.disk_offsets` was
+not sorted by distance.** It enumerates dq-major from `-radius`, so its
+first entries are the far edge of the disk — while three callers walked
+it looking for "the nearest free cell". A second melee squad sent at a
+building was shoved four cells away, outside its own reach, and stood
+idle for the rest of the match: two squads dealt 1560 damage where one
+dealt 1461. The table is sorted nearest-first now, which made all three
+callers' doc comments true at once. **The standing "reach for
+`disk_offsets` before `distance()`" rule still holds — and the table is
+ordered, so "walk outward until you find one" is now a thing you may
+actually do with it.** Measured after: `test-load 4 120` clean,
+**59.60 µs/squad at 52 squads** against 60.72 before, so the per-radius
+sort costs nothing.
+
+**The ladder still decides at these values:** `just ai-ladder 3 600` gives
+**2 of 3 decided, 1 draw**, one win each civ, first attack ~195 s — the
+same 2-of-3 D-055 measured before the buff. Read at **420 s** the same
+build reported 3 of 3 drawn, which was the CAP truncating longer matches,
+not a weaker AI. **A stronger defence lengthens matches, so quote a
+ladder result with its cap** — the same rule as quoting µs/squad with a
+squad count.
+
+**Check for a stray server before believing a load-test failure.** Two
+runs failed with `buildings_known=0` and identical numbers, and it looked
+exactly like the change under test. A second container held port 4433 and
+the bots were reaching that one — the tell was **server-side
+instrumentation printing nothing at all**, which no code-level bug can
+do. `docker ps` first. Note also that `just down` (and every recipe that
+tears down) will remove containers in the pinned `edotmw` project that
+somebody else started.
+
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
 one 36-strong militia squad razed a 900 HP town centre in **2.1 seconds**
@@ -298,6 +379,92 @@ is that **there is no progression at all** — four buildings and four
 units per civ, no ages, no tech, no upgrades — so after roughly three
 minutes there is nothing to do but fight. **Don't try to reach an hour by
 tuning health.**
+
+**And a fourth instance of the `distance()`-per-candidate defect** landed
+in the same change and was caught by `test-load`: scanning every building
+per squad cost ~15 µs/squad, bucketing it cost ~1.3. After vision (M2),
+`UnitRoster.by_id` (M4) and terrain noise (M5), treat this as a standing
+rule — **any radius scan reaches for `TorusSpace.disk_offsets` before it
+reaches for `distance()`.**
+
+Two M6 numbers left honestly open. The rise from M4's **40.8 µs/squad at
+120 squads** to **~77** is *not* the siege pass (measured with it
+disabled) and is still unattributed to whichever of civs/teams/economy
+caused it. And worst-tick figures from that session are unreliable — a
+run with strictly *less* work reported 146 ms where a fuller run reported
+52 ms, because the host was building containers throughout. Zero dropped
+ticks in both.
+
+**M7 (real models and textures) — in progress.** The ladder gained a
+rung: art is M7 and Steam becomes M8. Exit criteria are **D-063**;
+the work is **D-064** (art direction and pipeline, superseding D-011 and
+closing Q12), **D-065** (animation) and **D-066** (terrain texturing).
+`just test-unit` is green at **424 tests** across 29 scripts.
+
+Landed: eight authored unit archetypes and four buildings, animated,
+on textured terrain, all generated from committed Python and rendering
+through the shipping path. See "Mesh pipeline" below for the rules that
+came out of it — they matter more than the asset list.
+
+**Two of M7's defects were invisible to every number and visible in a
+picture**, which is now three milestones running. Every soldier rendered
+black because a MultiMesh overrides the shader's `COLOR` with its own
+per-instance colour, so vertex colours never reach the fragment stage on
+the path this game renders through. And every `box()` was wound
+inside-out, which cost nothing but lighting until a building got big
+enough to look inside. Neither would have failed a test that counted
+things.
+
+**Still open in M7:** `just bench-render` has NOT been re-run on a
+discrete GPU since authored models landed, so the cost of animated
+vertices at D-018's full scale is unmeasured — that is D-063 criterion 11
+and it also discharges Q15's re-armed trigger. Nobody has played a match
+with the new art (criterion 14). Until both happen, M7 is landed, not
+complete — the same distinction M2 and M6 both had to learn.
+
+**The gaps between hexes are fixed (D-067).** They were pre-existing
+rather than M7's, but textured ground made them the most obvious thing on
+screen. Each hex corner now takes the mean of the three cells meeting
+there, so neighbours agree and the surface is watertight; the centre
+vertex keeps its own elevation, which leaves each hex a very shallow
+pillow. Normals are derived instead of hardcoded `Vector3.UP`, so slopes
+finally shade.
+
+**The simulation did not change and must not.** `elevation_at` stays
+discrete per cell and `passability` still thresholds it — only the
+picture interpolates. That split is what made this a rendering change
+with no desync surface, and **it stops being free the moment elevation
+acquires tactical meaning** (terrain-occluded line of sight is still
+open).
+
+`TerrainGen.surface_field` is one array of 7 heights per cell, read by
+BOTH the mesher and the client's ground sampler
+(`TerrainChunk.height_at`), which is why they live in the same file. A
+sampler that matched the mesh only by being written correctly twice would
+eventually drift, and the symptom is an army floating with every number
+green. The sampler is also a hot path — once per soldier per frame — and
+is no longer a single array index; its cost on real hardware is
+unmeasured.
+
+D-006 (derived soldier positions) is Accepted and implemented in
+`formation.gd`. Its three binding clauses are load-bearing for
+everything built so far: soldier position is a **pure function** of
+(squad curve, formation shape, slot index, terrain sample) with no
+per-soldier integration state; client-side cosmetic offsets are
+**one-way** and never read back by simulation; casualty slot
+reassignment is **deterministic** (the formation restamps — soldiers
+don't walk into a vacated slot). Emergent per-soldier movement of any
+kind — local avoidance, collision push-back, jostling — is out of bounds
+and is the explicit revisit trigger.
+
+`Formation` is an all-static class on purpose: there is nowhere to put
+per-soldier state, so the purity clause is enforced rather than merely
+documented. Cosmetic motion lives in its own file (`cosmetic_offset.gd`)
+for the same reason — the one-way boundary is structural. Combat's
+resolution of Q7 (D-024) satisfies this trivially rather than delicately:
+`alive` is the only formation input a death changes, so casualty
+reassignment needs no per-soldier identity anywhere, and `Formation`
+gained no instance state to support combat.
 
 **M9 (epochs, six civs) is PLANNED but NOT BUILT** — the planning
 milestone Q15 reserved ran on 2026-08-04 and produced **D-068 through
@@ -338,41 +505,6 @@ power and cost-efficiency for both civs**, and that `legion_heavy` has
 lower DPS than `legion_militia` at 2.5× the cost. Two rules came out of
 it: price must buy power, and no unit may lead on both axes within its
 role.
-
-**And a fourth instance of the `distance()`-per-candidate defect** landed
-in the same change and was caught by `test-load`: scanning every building
-per squad cost ~15 µs/squad, bucketing it cost ~1.3. After vision (M2),
-`UnitRoster.by_id` (M4) and terrain noise (M5), treat this as a standing
-rule — **any radius scan reaches for `TorusSpace.disk_offsets` before it
-reaches for `distance()`.**
-
-Two M6 numbers left honestly open. The rise from M4's **40.8 µs/squad at
-120 squads** to **~77** is *not* the siege pass (measured with it
-disabled) and is still unattributed to whichever of civs/teams/economy
-caused it. And worst-tick figures from that session are unreliable — a
-run with strictly *less* work reported 146 ms where a fuller run reported
-52 ms, because the host was building containers throughout. Zero dropped
-ticks in both.
-
-D-006 (derived soldier positions) is Accepted and implemented in
-`formation.gd`. Its three binding clauses are load-bearing for
-everything built so far: soldier position is a **pure function** of
-(squad curve, formation shape, slot index, terrain sample) with no
-per-soldier integration state; client-side cosmetic offsets are
-**one-way** and never read back by simulation; casualty slot
-reassignment is **deterministic** (the formation restamps — soldiers
-don't walk into a vacated slot). Emergent per-soldier movement of any
-kind — local avoidance, collision push-back, jostling — is out of bounds
-and is the explicit revisit trigger.
-
-`Formation` is an all-static class on purpose: there is nowhere to put
-per-soldier state, so the purity clause is enforced rather than merely
-documented. Cosmetic motion lives in its own file (`cosmetic_offset.gd`)
-for the same reason — the one-way boundary is structural. Combat's
-resolution of Q7 (D-024) satisfies this trivially rather than delicately:
-`alive` is the only formation input a death changes, so casualty
-reassignment needs no per-soldier identity anywhere, and `Formation`
-gained no instance state to support combat.
 
 ## What this project is
 
@@ -473,6 +605,9 @@ curve_replicator.gd      Per-client gating, horizon clipping and the
                         budgeted invalidation scheduler (D-003/D-004).
 formation.gd             Derived soldier positions (D-006). All-static
                         and pure — no instance state, by construction.
+animation_state.gd       Which clip a soldier plays and at what phase
+                        (D-065). All-static, so there is nowhere for the
+                        phase accumulator D-006 forbids to live.
 cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
                         must never read it back (D-006 clause 2).
 squad_sim.gd             The authoritative 10 Hz sim (D-020) over packed
@@ -492,6 +627,16 @@ render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
                         of a squad to draw — is testable without a GPU.
+hud_layout.gd            Where the HUD's pieces go, for a window of any
+                        size (D-061). Scale AND anchoring — either alone
+                        looks sufficient and is not. All-static, pure.
+                        Also owns the HUD's non-obvious arithmetic: the
+                        match clock, the n/cap readout, and the compass
+                        dial's geometry (D-063).
+selection_pick.gd        Which thing a click selected, from every
+                        candidate's screen geometry (D-061). Same split
+                        as render_cull.gd: the client needs a GPU, the
+                        ranking that was wrong does not.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -528,8 +673,24 @@ unit_roster.gd          Loads /units in a stable order. Server, client
 /maps/*.tres            MapConfig resources (torus dimensions, squads
                         per player). Height must be even — D-008.
 map_config.gd           MapConfig schema.
-primitive_unit.gd       Tier-1 mesh generation (capsule/box/cylinder/
-                        hull primitives) — see "Mesh pipeline" below.
+primitive_unit.gd       One MultiMesh per squad (D-009). Wears an
+                        authored model when the UnitDef names one, the
+                        tier-1 primitive when it does not.
+unit_mesh.gd            Loads authored models, their VATs and their
+                        materials. CACHED — a .glb is a scene, and
+                        loading one per squad is the M4 `by_id` defect
+                        with a bigger constant.
+/shaders/*.gdshader     The project's first shaders (D-065). Unit opaque,
+                        unit ghost, building static; VAT sampling shared
+                        via a .gdshaderinc.
+/art/**.py              Committed asset GENERATORS (D-064) — the source
+                        of truth for every model and texture. Plain
+                        Python; `bpy` is imported only by art/lib/bake.py.
+/generated/             Committed build output: .glb, VAT .exr, the
+                        terrain atlas, and a manifest whose source hash
+                        makes a stale build a test failure.
+model_preview.gd         Renders every authored model, animated, and
+                        screenshots it. The picture is the point.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -560,20 +721,60 @@ docker-compose.yml       server / bots / test services. Teardown-scoped:
                         only) portable Godot. `just nuke` deletes it.
 ```
 
-## Mesh pipeline — respect the tiers
+## Mesh pipeline — the tiers, as they now stand
 
-1. **Primitive tier** (current MVP state): capsules/boxes/cylinders,
-   composed from `UnitDef` data, zero art dependency. This is where the
-   project is right now — don't jump ahead to importing art assets
-   unless explicitly asked.
-2. **Modular/parametric tier**: interchangeable parts combined
-   programmatically. Not started yet.
-3. **Final-fidelity tier**: Blender via `bpy`, headless, exported as
-   glTF. Not started yet.
+D-011's three tiers are **superseded by D-064**. Tier 1 (primitives) is
+still there as the fallback, tier 2 (parametric composition) turned out to
+be *how* tier 3 is written rather than a stop on the way, and tier 3 is
+built:
 
-Terrain follows the same philosophy: biome-colored hex mesh + elevation
-vertex offset, chunked (not one mesh per cell — that's a performance
-requirement at 10,000+ cell map sizes, not a style choice).
+- **Authored tier (current):** stylised low-poly, ~300 tris/soldier,
+  silhouette first. Generated by committed Python under `art/` driving
+  **Blender headless as a library** (`bpy`, a PyPI wheel — no GUI, no GPU,
+  no system Blender). `just build-assets` writes `generated/`.
+- **Primitive tier (fallback):** `UnitDef.model_id` / `BuildingDef.model_id`
+  default EMPTY, and an empty id means "use the capsule". So bots, tests
+  and a clone that has never run `build-assets` all still work — a failed
+  art build costs fidelity, not the game.
+
+**Both the generators and their output are committed** (D-064). The
+generators are the source of truth; `generated/` is committed anyway so a
+fresh clone plays without installing anything. Two runs of
+`build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
+no timestamps — and a test fails if `generated/` is stale with respect to
+`art/`.
+
+**Soldiers are animated by a vertex animation texture (D-065), and the
+phase is DERIVED, never accumulated.** `phase = fract(t*rate + hash(slot))`,
+computed in the shader from `TIME`. That is the whole reason animation is
+legal under D-006 clause 1: there is nowhere for per-soldier state to
+live. `animation_state.gd` is all-static for the same structural reason
+`formation.gd` and `cosmetic_offset.gd` are. **A phase counter advanced by
+delta time, or a blend weight carried between frames, breaks it** — those
+are integration state in a cosmetic disguise.
+
+Terrain is textured by a **per-biome atlas that MODULATES the vertex
+colour** (D-066) — `TerrainGen.biome_color()` is still the single source
+of truth, which is what keeps the minimap and the preview PNG from
+drifting from the 3D view without either of them being touched. Terrain
+UVs come from the **cell**, never from world position, so all nine torus
+copies agree by construction.
+
+Three things bought the hard way, all in one milestone:
+
+- **Godot's `detect_3d/compress_to` silently re-imports any texture used
+  in 3D with VRAM block compression and mipmaps.** On a vertex animation
+  texture that is corruption — neighbouring texels are unrelated vertices.
+  Import settings are generated data now, not something remembered.
+- **A rebuild is invisible to Godot until it re-imports.** Verifying a
+  fresh bake against a stale `.godot` cache gives confident wrong answers;
+  `build-assets` ends in an import for this reason.
+- **Every `box()` was wound inside-out for a whole milestone.** Nothing
+  failed — a small convex object under back-face culling shows its far
+  side and the silhouette is identical — but normals derive from the
+  winding, so everything was lit by the inverse of the sun. It was only
+  visible once a *building* was big enough to see through. **The check
+  that catches this class is a picture of something large.**
 
 ## Testing — use the justfile, and use it before claiming something works
 
@@ -599,8 +800,10 @@ Dev loop and tests:
 - `just run-server` — headless authoritative server
 - `just run-client [ADDRESS] [PORT]` — GUI client for a human to look at.
   **Native only**; needs a GPU (D-014), so it ignores `EDOTMW_RUNTIME` and
-  says so if portable Godot is missing. WASD pans, wheel zooms,
-  right-click orders.
+  says so if portable Godot is missing. WASD pans (relative to where the
+  camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
+  compass snaps back to north, right-click orders, ESC opens the game
+  menu (D-063).
 - `just test-client [SECONDS]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker
@@ -609,8 +812,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 392 tests across
-  25 scripts, measured 2026-08-04)*
+- `just test-unit` — GUT unit tests, headless *(green: 449 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on
@@ -620,6 +822,18 @@ Dev loop and tests:
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost. Vary CHUNK_SIZE to settle D-017 with data.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
+- `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
+  ~1 GB, and ONLY asset work needs it: everything else, including running
+  and testing the game, works from the committed `generated/`.
+- `just build-assets [ARCHETYPE]` — rebuild models and textures from
+  `art/`. Ends in an `--import`, because Godot serves assets from its
+  cache and a rebuild it has not imported is invisible.
+- `just gen-model-preview [SECONDS]` — every authored model, animated, on
+  real terrain, through the REAL path (a `UnitDef`, a `PrimitiveUnit`,
+  the shipping shaders). Software-rasterised, so unlike `bench-render` it
+  needs no GPU. It renders TWICE and fails if the two frames are
+  byte-identical — a frozen VAT would otherwise produce a perfectly
+  plausible still. **Look at `artifacts/models-godot.png`.**
 
 Every recipe listed is real and verified; none are stubs.
 

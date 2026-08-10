@@ -545,6 +545,62 @@ func test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk() -> void:
 		"a crew standing on its node should work AROUND it")
 
 
+func test_a_player_ordered_formation_is_not_overwritten_by_the_economy() -> void:
+	# The economy asserts a crew's shape on EVERY tick, so a player who
+	# pressed a formation button on gatherers had his choice undone within
+	# 100 ms and the button looked broken. A player order latches: the
+	# automatic switch is a default, not an override.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var def := UnitRoster.by_id(&"gatherers")
+	assert_not_null(def, "the roster should ship gatherers")
+	var node_cell := Vector2i(9, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
+	}
+
+	var squad := sim.add_squad(def, 1, Vector2i(2, 8))
+	economy.order_gather(sim, squad, space.index(node_cell))
+	sim.set_shape(squad, "tight")
+
+	# Long enough to walk there and start working — every tick of which the
+	# economy would otherwise have re-asserted "sparse" then "ring".
+	for _i in range(400):
+		sim.tick()
+	assert_eq(sim.shape_of(squad), "tight",
+		"the economy overwrote a formation the player chose")
+
+
+func test_a_crew_the_player_has_never_touched_still_switches_itself() -> void:
+	# The other half of the same rule: latching must not disable the
+	# automatic switch for everybody else. Guards against "fixing" the test
+	# above by simply deleting the economy's shape control.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	sim.buildings = BuildingSim.new(space)
+
+	var node_cell := Vector2i(9, 8)
+	economy.nodes[space.index(node_cell)] = {
+		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
+	}
+	var squad := sim.add_squad(UnitRoster.by_id(&"gatherers"), 1, Vector2i(2, 8))
+	economy.order_gather(sim, squad, space.index(node_cell))
+
+	for _i in range(400):
+		sim.tick()
+		if sim.shape_of(squad) == "ring":
+			break
+	assert_eq(sim.shape_of(squad), "ring",
+		"an untouched crew should still ring the node it works")
+
+
 func test_a_shape_change_is_offered_to_the_server_exactly_once() -> void:
 	# The replication contract. `set_shape` ignores a no-op, which is what
 	# lets the economy call it every tick without generating wire traffic —

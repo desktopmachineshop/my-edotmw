@@ -24,6 +24,7 @@ bonus_vs = {
 }
 mesh_primitive = "hull"
 mesh_color = Color(0.6, 0.38, 0.28, 1)
+model_id = &"cavalry"
 build_time = 8.0
 cost = 45
 cost_food = 60

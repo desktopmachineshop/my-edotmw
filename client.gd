@@ -22,6 +22,15 @@ const CAMERA_ZOOM_STEP := 4.0
 const CAMERA_MIN_HEIGHT := 8.0
 const CAMERA_MAX_HEIGHT := 90.0
 
+## How far Q/E turn the view per press. 15 degrees: small enough to aim a
+## formation along a ridge, large enough that getting back to north is a
+## few taps rather than a chore — and the compass is one click for that
+## anyway.
+const CAMERA_YAW_STEP := deg_to_rad(15.0)
+## Ctrl+wheel turns by this much per notch. Finer than Q/E, because a
+## wheel invites small adjustments.
+const CAMERA_YAW_WHEEL_STEP := deg_to_rad(7.5)
+
 ## Slack around the viewport, in pixels, when deciding whether a squad is
 ## worth deriving (D-045). Culling tests a squad's CENTRE, but a squad has
 ## real extent, so a formation whose centre is just off screen can still
@@ -88,6 +97,16 @@ var _terrain_root: Node3D
 var _camera: Camera3D
 var _camera_target := Vector3.ZERO
 var _camera_height := 40.0
+## Which way the view is turned, in radians about UP. 0 is north-up, which
+## is the orientation every map, minimap and spawn diagram is drawn in —
+## hence the compass snapping back to exactly this.
+var _camera_yaw := 0.0
+
+## Settings the player has chosen (D-063), loaded from disk at startup.
+## `_hud_scale_override` of 0 means "scale automatically with the window",
+## which is the default and what HudLayout works out for itself.
+var _pan_speed := CAMERA_PAN_SPEED
+var _hud_scale_override := 0.0
 
 ## Zoom ceiling, derived from the map rather than fixed. Terrain is tiled
 ## in every direction so the world has no edge (D-035) — but zoom out far
@@ -117,6 +136,12 @@ var _explored := {}
 ## as a distant formation being sparse rather than as a smaller unit —
 ## which matters, because unit size is tactical information a player is
 ## entitled to read off the screen correctly.
+## Below this ground speed a squad is standing still as far as animation is
+## concerned. Not zero: a curve sampled either side of a keyframe produces a
+## little numerical drift, and a squad that flickered between idle and walk on
+## that drift would twitch.
+const MOVING_SPEED_EPSILON := 0.15
+
 const LOD_TIERS := [
 	{"distance": 55.0, "soldiers": 1 << 30},
 	{"distance": 110.0, "soldiers": 12},
@@ -213,7 +238,12 @@ func _ready() -> void:
 	_terrain_root = Node3D.new()
 	add_child(_terrain_root)
 
+	# Settings first: the HUD reads `_hud_scale_override` while laying
+	# itself out, so loading them afterwards would build the HUD once at
+	# the wrong scale and only correct it on the first resize.
+	_load_settings()
 	_build_hud()
+	_build_game_menu()
 	_build_lobby_ui()
 
 	_host = ENetConnection.new()
@@ -419,19 +449,26 @@ func _build_terrain() -> void:
 	# render benchmark measured as the dominant term in a frame that was
 	# 97% CPU. The field holds identical values by construction, so this
 	# is memoisation and not a change to where anyone stands.
-	var elevation := terrain.elevation_field(space)
+	#
+	# Since D-067 the ground is a continuous surface rather than one flat
+	# height per cell, so this interpolates within the hex — through the SAME
+	# array the chunks below are built from, and the same code the mesher
+	# uses. That sharing is the point: a sampler that agreed with the mesh
+	# only by construction-in-two-places is a sampler that will eventually
+	# disagree, and the symptom is a floating army with every number green.
+	var surface := terrain.surface_field(space)
 	_state.terrain_sampler = func(x: float, z: float) -> float:
-		var cell := space.world_to_cell(Vector3(x, 0.0, z))
-		return elevation[space.index(cell)] * terrain.height_scale
+		return TerrainChunk.height_at(space, surface, x, z)
 
-	var material := StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.roughness = 0.95
+	# One shared definition (D-066), so the benchmark renders what the game
+	# renders. Textured when generated/ has been built, vertex colour alone
+	# when it has not.
+	var material := TerrainChunk.make_material()
 
 	var meshes := []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size)
+			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, surface)
 			if mesh != null:
 				meshes.append(mesh)
 
@@ -585,6 +622,19 @@ func _refresh_squads() -> void:
 			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
+		# Which clip these soldiers play (D-065). Derived from state the
+		# client already holds — the curve gives speed, `_activity_for` gives
+		# fighting, `routed_of` gives the rout — so nothing is sent for it and
+		# every client agrees by construction, the same shape as D-052's
+		# colour. Writes into the MultiMesh only when the clip or the rate
+		# actually changes; the per-frame cost here is a comparison.
+		var speed := _state.squad_speed(squad_id, _now)
+		var clip := AnimationState.clip_for(
+			_state.routed_of(squad_id),
+			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
+			speed > MOVING_SPEED_EPSILON)
+		unit.set_clip_data(int(squad_id), clip, speed)
+
 		# A selection circle under EVERY soldier, from the transforms we
 		# just derived — so the highlight follows the formation's real
 		# shape as it changes, for free. A single disc could only ever
@@ -661,23 +711,18 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 ## since it would look correct on a native `run-client` GPU and invisible
 ## in the one place D-026 criterion 11 requires it to actually be checked.
 ##
-## So this instead toggles the MATERIAL's own alpha blending — a
-## StandardMaterial3D `material_override` PrimitiveUnit already attaches
-## to this exact node (see primitive_unit.gd's rebuild()), reached via its
-## public property, not by reconstructing or replacing it. Alpha blending
+## So this instead toggles the MATERIAL's own alpha blending. Alpha blending
 ## is a baseline feature of every rendering method this project uses, so
 ## unlike the instance shortcut this actually shows up in a screenshot.
+##
+## Since M7 the mechanism differs by which path a squad renders on — a
+## primitive mutates its StandardMaterial3D's alpha, an authored model swaps
+## to a different shader program, because whether a material is transparent is
+## decided at shader COMPILE time (see unit_vat.gdshaderinc). PrimitiveUnit
+## owns that choice; this function exists only so the call site above reads the
+## same as it did before.
 func _set_ghost_look(unit: PrimitiveUnit, is_ghost: bool) -> void:
-	for child in unit.get_children():
-		if child is MultiMeshInstance3D:
-			var material := (child as MultiMeshInstance3D).material_override
-			if material is StandardMaterial3D:
-				var mat := material as StandardMaterial3D
-				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if is_ghost else BaseMaterial3D.TRANSPARENCY_DISABLED
-				var albedo := mat.albedo_color
-				albedo.a = 0.35 if is_ghost else 1.0
-				mat.albedo_color = albedo
-			return
+	unit.set_ghost(is_ghost)
 
 
 ## Capture-mode-only scripted maneuver (see the constants above this file).
@@ -974,15 +1019,14 @@ var _drag_start := Vector2.ZERO
 ## the game. That cannot say what a building is producing, how hurt it is,
 ## or what is queued behind the current unit — and it made the keys look
 ## like the only way to act.
-const PANEL_X := 12.0
-const PANEL_Y := 408.0
-const PANEL_W := 430.0
-const PANEL_H := 300.0
-const ACTION_BUTTON_W := 128.0
-const ACTION_BUTTON_H := 34.0
-
+##
+## Its geometry — and every other HUD element's — comes from `HudLayout`
+## against the CURRENT window, not from constants written for one window
+## size. See that file for what the literals used to be and what they cost.
 var _resource_bar: Panel = null
 var _resource_labels: Array[Label] = []
+## The four resource swatches, kept so they can be re-placed on a resize.
+var _resource_swatches: Array[ColorRect] = []
 var _selection_panel: Panel = null
 var _selection_title: Label = null
 var _selection_detail: Label = null
@@ -1026,18 +1070,36 @@ func _layout_minimap(space: TorusSpace) -> void:
 	if x_period <= 0.0 or z_period <= 0.0:
 		return
 
-	_minimap_bounds = Rect2(_minimap_bounds.position,
-		Vector2(MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX * z_period / x_period))
-	_minimap_rect.position = _minimap_bounds.position
-	_minimap_rect.size = _minimap_bounds.size
-	_minimap_rect.custom_minimum_size = _minimap_bounds.size
+	# Size only. WHERE it goes is `_layout_hud`'s business, so there is one
+	# answer to that question rather than two that have to agree.
+	_minimap_size = Vector2(MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX * z_period / x_period)
+	_layout_hud()
 var _control_groups := {}
+
+## The HUD's magnification (see `HudLayout.scale_for`). Applied as the
+## CanvasLayer's transform, so anything drawn in the HUD from a MOUSE
+## position — which arrives in real screen pixels — has to be divided by
+## it first. `_to_hud` is that conversion and the only place it happens.
+var _hud_scale := 1.0
 
 var _hud_status: Label = null
 var _hud_notice: Label = null
+## The compass dial and the top bar's Menu button (D-063).
+var _compass: Control = null
+var _menu_button: Button = null
+## The in-game menu, and the settings pane inside it. Its own CanvasLayer
+## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
+var _game_menu_layer: CanvasLayer = null
+var _settings_panel: Control = null
 var _notice_seen := 0
 var _notice_until := 0.0
 var _building_nodes := {}
+## wire id -> { "back": MeshInstance3D, "fill": MeshInstance3D,
+## "fraction": float } — the health bar drawn OVER a damaged building.
+var _health_bars := {}
+## A shade wider than the 2.4-wide box, so the bar reads as belonging to
+## the building rather than as part of its roof.
+const HEALTH_BAR_SIZE := Vector2(2.8, 0.34)
 var _founded := false
 var _selected_building := -1
 
@@ -1046,6 +1108,9 @@ var _selected_building := -1
 ## cell maps to a pixel directly and there is no seam to handle.
 const MINIMAP_INTERVAL := 0.25
 var _minimap_rect: TextureRect = null
+## The minimap's SHAPE, from the map's proportions (see `_layout_minimap`).
+## Its position comes from `_layout_hud` and lands in `_minimap_bounds`.
+var _minimap_size := Vector2(MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX)
 var _minimap_bounds := Rect2()
 var _minimap_base: Image = null
 var _minimap_texture: ImageTexture = null
@@ -1103,39 +1168,40 @@ func _bar(at: Vector2, width: float, colour: Color) -> Array:
 	return [back, fill]
 
 
+## Build the panel's children. Positions are placeholders — `_layout_hud`
+## sets them all against the real window, and does so again on every
+## resize.
 func _build_selection_panel(layer: CanvasLayer) -> void:
-	_selection_panel = _panel(Rect2(PANEL_X, PANEL_Y, PANEL_W, PANEL_H),
+	_selection_panel = _panel(Rect2(Vector2.ZERO, HudLayout.PANEL_SIZE),
 		Color(0.05, 0.07, 0.12, 0.86))
 	layer.add_child(_selection_panel)
 
-	_selection_title = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 8.0), 18)
+	_selection_title = _hud_label(Vector2.ZERO, 18)
 	layer.add_child(_selection_title)
-	_selection_detail = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 32.0), 13)
+	_selection_detail = _hud_label(Vector2.ZERO, 13)
 	layer.add_child(_selection_detail)
 
-	var health := _bar(Vector2(PANEL_X + 12.0, PANEL_Y + 56.0), PANEL_W - 24.0,
-		Color(0.35, 0.85, 0.4))
+	var bar_width := HudLayout.PANEL_SIZE.x - HudLayout.PANEL_PAD * 2.0
+	var health := _bar(Vector2.ZERO, bar_width, Color(0.35, 0.85, 0.4))
 	_health_bar_back = health[0]
 	_health_bar_fill = health[1]
 	layer.add_child(_health_bar_back)
 	layer.add_child(_health_bar_fill)
 
-	var progress := _bar(Vector2(PANEL_X + 12.0, PANEL_Y + 88.0), PANEL_W - 24.0,
-		Color(0.4, 0.7, 1.0))
+	var progress := _bar(Vector2.ZERO, bar_width, Color(0.4, 0.7, 1.0))
 	_progress_bar_back = progress[0]
 	_progress_bar_fill = progress[1]
 	layer.add_child(_progress_bar_back)
 	layer.add_child(_progress_bar_fill)
-	_progress_caption = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 70.0), 12)
+	_progress_caption = _hud_label(Vector2.ZERO, 12)
 	layer.add_child(_progress_caption)
 
 	# The production queue, as one swatch per waiting unit. A count would
 	# not show that four spearmen are stacked behind a militia.
-	_queue_caption = _hud_label(Vector2(PANEL_X + 12.0, PANEL_Y + 104.0), 12)
+	_queue_caption = _hud_label(Vector2.ZERO, 12)
 	layer.add_child(_queue_caption)
 	for i in range(8):
 		var swatch := ColorRect.new()
-		swatch.position = Vector2(PANEL_X + 12.0 + float(i) * 20.0, PANEL_Y + 126.0)
 		swatch.size = Vector2(16.0, 16.0)
 		swatch.color = Color(0.55, 0.75, 1.0, 0.9)
 		swatch.visible = false
@@ -1148,10 +1214,7 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 	# _process is how a frame budget goes.
 	for i in range(9):
 		var button := Button.new()
-		button.position = Vector2(
-			PANEL_X + 12.0 + float(i % 3) * (ACTION_BUTTON_W + 8.0),
-			PANEL_Y + 152.0 + float(i / 3) * (ACTION_BUTTON_H + 6.0))
-		button.size = Vector2(ACTION_BUTTON_W, ACTION_BUTTON_H)
+		button.size = HudLayout.ACTION_BUTTON
 		button.visible = false
 		# Styled rather than left at Godot's default grey, which reads as
 		# an unfinished editor widget sitting on top of the game.
@@ -1188,31 +1251,38 @@ func _build_hud() -> void:
 	# Swatch colours come from `_node_colour`, the same function the
 	# minimap and the world markers use, so a pink pile on the ground and
 	# a pink counter in the bar are the same resource by construction.
-	_resource_bar = _panel(Rect2(0.0, 0.0, 1280.0, 34.0), Color(0.05, 0.07, 0.12, 0.82))
+	_resource_bar = _panel(Rect2(0.0, 0.0, HudLayout.REFERENCE.x, HudLayout.BAR_HEIGHT),
+		Color(0.05, 0.07, 0.12, 0.82))
 	layer.add_child(_resource_bar)
 	var kinds := [Economy.ResourceKind.FOOD, Economy.ResourceKind.WOOD,
 		Economy.ResourceKind.GOLD, Economy.ResourceKind.STONE]
 	var names := ["Food", "Wood", "Gold", "Stone"]
 	for i in range(kinds.size()):
-		var x := 16.0 + float(i) * 150.0
 		var swatch := ColorRect.new()
 		swatch.color = _node_colour(kinds[i])
-		swatch.position = Vector2(x, 9.0)
 		swatch.size = Vector2(16.0, 16.0)
 		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_resource_swatches.append(swatch)
 		layer.add_child(swatch)
 
-		var value := _hud_label(Vector2(x + 24.0, 6.0))
+		var value := _hud_label(Vector2.ZERO)
 		value.text = "%s —" % names[i]
 		_resource_labels.append(value)
 		layer.add_child(value)
 
-	_hud_status = _hud_label(Vector2(700.0, 6.0))
+	# Right-aligned against the window's edge rather than left at a fixed
+	# x, so it neither collides with the stone count on a narrow window nor
+	# strands itself mid-bar on a wide one.
+	_hud_status = _hud_label(Vector2.ZERO)
+	_hud_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(_hud_status)
 
 	# Notices sit under the bar, in the middle, where a refusal is
-	# actually noticed. In the corner they were routinely missed.
-	_hud_notice = _hud_label(Vector2(460.0, 44.0))
+	# actually noticed. In the corner they were routinely missed. Centred
+	# by spanning the window and centring the text — the previous fixed x
+	# was only centred on the one window size it was written for.
+	_hud_notice = _hud_label(Vector2.ZERO)
+	_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.82, 0.45))
 	layer.add_child(_hud_notice)
 
@@ -1265,18 +1335,194 @@ func _build_hud() -> void:
 	#
 	# Shaped in _layout_minimap once the map is known — the HUD is built
 	# in _ready, long before any welcome packet says how big the world is.
-	_minimap_bounds = Rect2(12.0, 168.0, MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX)
-
 	_minimap_rect = TextureRect.new()
-	_minimap_rect.position = _minimap_bounds.position
-	_minimap_rect.size = _minimap_bounds.size
-	_minimap_rect.custom_minimum_size = _minimap_bounds.size
 	_minimap_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	# Nearest-neighbour: one cell is one pixel, and smoothing it would
 	# blur the squad dots into the terrain they sit on.
 	_minimap_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	_minimap_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_minimap_rect)
+
+	_build_compass(layer)
+	_build_menu_button(layer)
+
+	# Place everything against the real window, and keep doing so. Without
+	# the signal the HUD is correct exactly until someone presses F11.
+	get_viewport().size_changed.connect(_layout_hud)
+	_layout_hud()
+
+
+## The compass dial: which way is north, and one click to face that way.
+##
+## A Control drawn through its own `draw` SIGNAL rather than a subclass
+## with a `_draw` override. The whole HUD is built in code (client.tscn is
+## a bare Node3D), and a one-file widget does not justify a new script on
+## disk — but it does need real drawing, because a needle that rotates is
+## not expressible as positioned rectangles the way every other piece of
+## this HUD is.
+func _build_compass(layer: CanvasLayer) -> void:
+	_compass = Control.new()
+	_compass.custom_minimum_size = Vector2(HudLayout.COMPASS_SIZE, HudLayout.COMPASS_SIZE)
+	_compass.size = _compass.custom_minimum_size
+	_compass.tooltip_text = "Click to face north  ·  Q/E or Ctrl+wheel to turn"
+	# MOUSE_FILTER_STOP, unlike everything else in this HUD: the compass is
+	# the one piece that is meant to be clicked rather than looked past.
+	_compass.mouse_filter = Control.MOUSE_FILTER_STOP
+	_compass.draw.connect(_draw_compass)
+	_compass.gui_input.connect(_on_compass_input)
+	layer.add_child(_compass)
+
+
+func _on_compass_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		_set_camera_yaw(0.0)
+
+
+## Draw the dial. The ring and the cardinal letters turn with the view;
+## the needle stays pointing up the screen.
+##
+## That is the correct way round and worth stating, because the other way
+## is an easy mistake to make and looks almost right: a compass answers
+## "which way am I facing", so the WORLD's north moves around the dial
+## while the direction you are looking stays fixed at the top. A dial with
+## a spinning needle over fixed letters is a magnetic compass, which is a
+## different instrument answering a different question.
+func _draw_compass() -> void:
+	var r := HudLayout.COMPASS_SIZE * 0.5
+	var centre := Vector2(r, r)
+	var rim := Color(0.45, 0.62, 0.8, 0.85)
+
+	_compass.draw_circle(centre, r - 1.0, Color(0.05, 0.07, 0.12, 0.86))
+	_compass.draw_arc(centre, r - 1.0, 0.0, TAU, 48, rim, 1.5, true)
+
+	# North on the dial. Screen y grows downward while world +z does too,
+	# and the camera sits at +z looking back toward its target — so the
+	# world direction the player is facing appears UP the screen, and north
+	# lands at -yaw from vertical.
+	var font := ThemeDB.fallback_font
+	var size := 13
+	for i in range(4):
+		var label: String = ["N", "E", "S", "W"][i]
+		var at := centre + HudLayout.compass_offset(_camera_yaw, i, r - 12.0)
+		var measured := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+		var tint := Color(1.0, 0.45, 0.4) if label == "N" else Color(0.75, 0.82, 0.92)
+		_compass.draw_string(font, at - Vector2(measured.x * 0.5, -measured.y * 0.35),
+			label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, tint)
+
+	# The fixed needle: where you are looking, always up.
+	_compass.draw_line(centre, centre - Vector2(0.0, r - 18.0),
+		Color(0.93, 0.96, 1.0), 2.0, true)
+
+
+## The Menu button, at the right end of the top bar.
+func _build_menu_button(layer: CanvasLayer) -> void:
+	_menu_button = _styled_button("Menu", Color(0.55, 0.62, 0.78))
+	_menu_button.add_theme_font_size_override("font_size", 13)
+	_menu_button.pressed.connect(_toggle_game_menu)
+	layer.add_child(_menu_button)
+
+
+## Place every HUD element against the CURRENT window.
+##
+## Called on build and on every resize. The arithmetic lives in
+## `HudLayout`, which is pure and tested; this function only reads the
+## viewport and assigns what comes back.
+##
+## Scale is applied as the CanvasLayer's TRANSFORM rather than by adjusting
+## font sizes and widths one at a time — one multiplication carries the
+## borders, the fonts, the button padding and the bar thicknesses together,
+## and none of them can be forgotten.
+func _layout_hud() -> void:
+	if _hud_layer == null or _resource_bar == null:
+		return
+
+	var viewport := get_viewport().get_visible_rect().size
+	# A player's explicit choice wins over the automatic fit (D-063). Zero
+	# means they never made one.
+	_hud_scale = _hud_scale_override if _hud_scale_override > 0.0 \
+		else HudLayout.scale_for(viewport)
+	_hud_layer.transform = Transform2D().scaled(Vector2(_hud_scale, _hud_scale))
+	if _lobby_layer != null:
+		_lobby_layer.transform = _hud_layer.transform
+
+	# Design space is the window divided by the scale ACTUALLY applied
+	# above, not by the automatic one — with an override in force those two
+	# differ, and using the automatic figure would lay the HUD out for a
+	# window shape that is not on screen.
+	var design := Vector2(maxf(viewport.x, 1.0), maxf(viewport.y, 1.0)) / _hud_scale
+	var at := HudLayout.compute(design, _minimap_size)
+
+	var bar: Rect2 = at["resource_bar"]
+	_resource_bar.position = bar.position
+	_resource_bar.size = bar.size
+	for i in range(_resource_swatches.size()):
+		var slot := HudLayout.resource_slot(i)
+		_resource_swatches[i].position = slot
+		_resource_labels[i].position = slot + Vector2(24.0, -3.0)
+
+	var status: Rect2 = at["status"]
+	_hud_status.position = status.position
+	_hud_status.size = status.size
+
+	var menu: Rect2 = at["menu_button"]
+	_menu_button.position = menu.position
+	_menu_button.size = menu.size
+
+	var compass: Rect2 = at["compass"]
+	_compass.position = compass.position
+	_compass.size = compass.size
+	_compass.queue_redraw()
+
+	var notice: Rect2 = at["notice"]
+	_hud_notice.position = notice.position
+	_hud_notice.size = notice.size
+
+	var panel: Rect2 = at["panel"]
+	_selection_panel.position = panel.position
+	_selection_panel.size = panel.size
+	var pad := Vector2(HudLayout.PANEL_PAD, 0.0)
+	_selection_title.position = panel.position + pad + Vector2(0.0, HudLayout.TITLE_Y)
+	_selection_detail.position = panel.position + pad + Vector2(0.0, HudLayout.DETAIL_Y)
+	_place_bar(_health_bar_back, _health_bar_fill,
+		panel.position + pad + Vector2(0.0, HudLayout.HEALTH_Y))
+	_place_bar(_progress_bar_back, _progress_bar_fill,
+		panel.position + pad + Vector2(0.0, HudLayout.PROGRESS_Y))
+	_progress_caption.position = panel.position + pad \
+		+ Vector2(0.0, HudLayout.PROGRESS_CAPTION_Y)
+	_queue_caption.position = panel.position + pad \
+		+ Vector2(0.0, HudLayout.QUEUE_CAPTION_Y)
+	for i in range(_queue_swatches.size()):
+		_queue_swatches[i].position = panel.position + pad + Vector2(
+			float(i) * HudLayout.QUEUE_SWATCH_PITCH, HudLayout.QUEUE_SWATCH_Y)
+	for i in range(_action_buttons.size()):
+		_action_buttons[i].position = panel.position + HudLayout.action_slot(i)
+
+	# `_minimap_bounds` stays the ONE definition of where the minimap is,
+	# because it is also the hit-test rect — reading the size back off the
+	# TextureRect once made the whole screen behave as minimap.
+	_minimap_bounds = at["minimap"]
+	_minimap_rect.position = _minimap_bounds.position
+	_minimap_rect.size = _minimap_bounds.size
+	_minimap_rect.custom_minimum_size = _minimap_bounds.size
+
+
+## Move a two-piece bar, keeping the fill's 1px inset. Its WIDTH is set by
+## `_set_bar` from whatever fraction it is showing, so this must not touch
+## it — doing so would silently reset every bar to full on a resize.
+func _place_bar(back: ColorRect, fill: ColorRect, at: Vector2) -> void:
+	back.position = at
+	fill.position = at + Vector2(1.0, 1.0)
+
+
+## A real screen position in HUD coordinates.
+##
+## Godot routes input through a CanvasLayer's transform for Controls by
+## itself, so buttons need none of this. It is only for the places that do
+## their own pixel arithmetic against HUD geometry — the minimap hit-test
+## and the drag box — which the engine cannot know about.
+func _to_hud(at: Vector2) -> Vector2:
+	return at / maxf(_hud_scale, 0.0001)
 
 
 ## Draw the buildings this client knows about (D-029).
@@ -1710,6 +1956,34 @@ func _refresh_resource_nodes() -> void:
 		marker.position = world + _lattice_offset_for(world)
 
 
+## The placeholder mesh for a building whose authored model is missing.
+##
+## Sized so the four shapes read differently from each other at a glance, which
+## is the entire reason `BuildingDef.mesh_primitive` exists. It carried no
+## meaning at all until M7 because nothing read it.
+func _building_primitive(def: BuildingDef) -> Mesh:
+	match def.mesh_primitive:
+		"cylinder":
+			var cylinder := CylinderMesh.new()
+			cylinder.top_radius = 1.0
+			cylinder.bottom_radius = 1.2
+			cylinder.height = 3.0
+			return cylinder
+		"capsule":
+			var capsule := CapsuleMesh.new()
+			capsule.radius = 1.1
+			capsule.height = 3.4
+			return capsule
+		"hull":
+			var hull := BoxMesh.new()
+			hull.size = Vector3(3.6, 2.0, 2.4)
+			return hull
+		_:
+			var box := BoxMesh.new()
+			box.size = Vector3(2.4, 3.0, 2.4)
+			return box
+
+
 func _refresh_buildings() -> void:
 	if _state.space == null:
 		return
@@ -1722,15 +1996,31 @@ func _refresh_buildings() -> void:
 			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
 			if def == null:
 				continue
-			var mesh := BoxMesh.new()
-			mesh.size = Vector3(2.4, 3.0, 2.4)
-			var material := StandardMaterial3D.new()
 			# Owner colour, like units (D-052) — a town hall you cannot
 			# attribute at a glance is worse than a squad you cannot,
 			# because it tells you whose ground you are standing on.
-			material.albedo_color = _state.colour_of(int(info["owner"])).lerp(
-				def.mesh_color, 0.25)
-			material.roughness = 0.9
+			var owner_colour := _state.colour_of(int(info["owner"]))
+			var mesh: Mesh = null
+			var material: Material = null
+
+			if def.model_id != &"":
+				mesh = UnitMesh.mesh_for(def.model_id)
+			if mesh != null:
+				# Authored model (D-064). The owner-colour mask is baked into
+				# vertex alpha, so the shader mixes rather than tinting the
+				# whole structure one colour.
+				material = UnitMesh.static_material_for(owner_colour)
+			else:
+				# The primitive, which now actually reads `mesh_primitive`.
+				# It had no readers at all until M7 — every building on the
+				# map was a hardcoded box while the field sat in the schema
+				# looking authoritative.
+				mesh = _building_primitive(def)
+				var standard := StandardMaterial3D.new()
+				standard.albedo_color = owner_colour.lerp(def.mesh_color, 0.25)
+				standard.roughness = 0.9
+				material = standard
+
 			instance = MeshInstance3D.new()
 			instance.mesh = mesh
 			instance.material_override = material
@@ -1739,6 +2029,13 @@ func _refresh_buildings() -> void:
 
 		if bool(info["destroyed"]):
 			instance.visible = false
+			# And its health bar, which this loop would otherwise never
+			# reach again — the update below is past this `continue`. The
+			# bar would hang in the air over the rubble showing the last
+			# health the building had, and it would do so EVERY time one
+			# died, since a destroyed building is by definition one that
+			# took damage and therefore had a bar.
+			_hide_building_health_bar(int(wire_id))
 			continue
 		instance.visible = true
 
@@ -1756,13 +2053,128 @@ func _refresh_buildings() -> void:
 		# terrain tiles nine times and the things standing on it did not.
 		instance.position = world + _lattice_offset_for(world)
 
+		_update_building_health_bar(int(wire_id), instance, progress,
+			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
+
+
+## Health, over the building itself.
+##
+## The selection panel has drawn a building's health for a while, and it
+## was the only place that did — so seeing a town centre come under attack
+## required already having it selected, which nobody does until they
+## already know. In the world it is the thing that TELLS you: a bar
+## appearing over a distant barracks is how a player finds out a raid is
+## happening at all.
+##
+## Shown only below full health, so an untouched base is not fenced in
+## green bars. Same two colours as the panel's bar, from the same
+## threshold, because a building at 20% should not read as one colour up
+## close and another across the map.
+##
+## Bars are pooled per building and hidden rather than freed — a besieged
+## base flickers between damaged and destroyed, and churning meshes on
+## that edge is how a frame budget goes (the same reason the action
+## buttons are pooled).
+func _update_building_health_bar(wire_id: int, building: MeshInstance3D,
+		progress: float, fraction: float) -> void:
+	if not building.visible or fraction >= 0.999:
+		_hide_building_health_bar(wire_id)
+		return
+	var bar: Dictionary = _health_bars.get(wire_id, {})
+
+	if bar.is_empty():
+		bar = {
+			"back": _health_bar_quad(Color(0.06, 0.07, 0.1, 0.85), HEALTH_BAR_SIZE, 0),
+			"fill": _health_bar_quad(Color(0.35, 0.85, 0.4), HEALTH_BAR_SIZE, 1),
+			"fraction": -1.0,
+		}
+		_health_bars[wire_id] = bar
+		add_child(bar["back"])
+		add_child(bar["fill"])
+
+	var back: MeshInstance3D = bar["back"]
+	var fill: MeshInstance3D = bar["fill"]
+	back.visible = true
+	fill.visible = true
+
+	# Above the box, which is drawn short while it is still going up — so
+	# the bar rises with it rather than hanging in the air over a
+	# foundation.
+	var above := building.position + Vector3(0.0, 1.5 * progress + 0.9, 0.0)
+	back.position = above
+	fill.position = above
+
+	# Only when it actually changed. Health replicates in steps (see
+	# BuildingSim.HEALTH_REPLICATION_STEPS), so this is a handful of
+	# rebuilds across a whole siege rather than one per frame.
+	if is_equal_approx(float(bar["fraction"]), fraction):
+		return
+	bar["fraction"] = fraction
+
+	# Grown from the LEFT edge via the mesh's own offset. A quad scaled
+	# about its centre would empty from both ends at once, which reads as
+	# the bar shrinking rather than as health being lost.
+	var mesh := fill.mesh as QuadMesh
+	mesh.size = Vector2(HEALTH_BAR_SIZE.x * fraction, HEALTH_BAR_SIZE.y * 0.72)
+	mesh.center_offset = Vector3(
+		-HEALTH_BAR_SIZE.x * (1.0 - fraction) * 0.5, 0.0, 0.0)
+	var material := fill.material_override as StandardMaterial3D
+	material.albedo_color = Color(0.35, 0.85, 0.4) if fraction > 0.35 \
+		else Color(0.9, 0.4, 0.35)
+
+
+## Hide a building's health bar, if it has one. Kept rather than freed —
+## see the pooling note above.
+func _hide_building_health_bar(wire_id: int) -> void:
+	var bar: Dictionary = _health_bars.get(wire_id, {})
+	if bar.is_empty():
+		return
+	bar["back"].visible = false
+	bar["fill"].visible = false
+
+
+## One billboarded, unshaded quad for a health bar.
+##
+## Billboarded so it faces the player at any camera angle, and depth-test
+## free so it is not swallowed by the building it is describing — the same
+## treatment the selection footprints get, and for the same reason.
+func _health_bar_quad(colour: Color, size: Vector2, priority: int) -> MeshInstance3D:
+	var mesh := QuadMesh.new()
+	mesh.size = size
+	var material := StandardMaterial3D.new()
+	material.albedo_color = colour
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	material.billboard_keep_scale = true
+	material.no_depth_test = true
+	material.render_priority = priority
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	instance.material_override = material
+	return instance
+
 
 func _update_hud() -> void:
 	if _hud_status == null:
 		return
 
-	_hud_status.text = "%d squads · %d ghosts · %d buildings" % [
-		_state.curves.size(), _state.ghost_squad_ids().size(), _state.buildings.size()]
+	# What a player can ACT on: how much army they are allowed to have left
+	# to build, and how long the match has run.
+	#
+	# The ghost count that used to sit here was diagnostic — it measured
+	# fog of war working, which is worth tracking and is not worth a slot
+	# in the one line a player reads at a glance. It is still counted, and
+	# still asserted on, in the capture verdict (`ghosts` and
+	# `ghosts_peak`), which is where a measurement belongs.
+	#
+	# Squads counted the same way the SERVER counts them for the cap: this
+	# player's living squads, gatherers included. `_state.curves` would
+	# have counted every squad on screen including other players' — a
+	# number that has nothing to do with the ceiling it is printed beside.
+	_hud_status.text = "%s  ·  %s" % [
+		HudLayout.squad_count_text(_state.living_squad_count(), _state.squad_cap),
+		HudLayout.clock_text(_state.match_elapsed())]
 
 	# Only OUR four. Wallets are private, so the protocol never carries
 	# anyone else's (D-028).
@@ -1830,24 +2242,93 @@ func _update_selection_panel() -> void:
 		_set_actions([])
 		return
 
+	# A MIXED selection is named for what it contains, not for whichever
+	# squad happened to be clicked first.
+	#
+	# This read `_selected[0]`'s unit and printed that name against the
+	# whole count, so box-selecting an army of militia, archers and
+	# cavalry reported "Militia x9" — a readout that is confidently wrong
+	# rather than merely unhelpful, and one a player would act on. The
+	# strength bar had the same fault twice over: `squad_size` came from
+	# that one unit, so full strength for nine mixed squads was nine times
+	# a militia's size and the bar sat wherever that arithmetic landed.
+	var counts := {}
 	var strength := 0
+	var full := 0
 	for squad in _selected:
 		strength += _state.alive_of(squad)
-	var def_id := StringName(String(_state.composition.get(_selected[0], {}).get("def_id", "")))
-	var unit := UnitRoster.by_id(def_id)
-	_selection_title.text = "%s  x%d" % [
-		unit.display_name if unit != null else String(def_id), _selected.size()]
-	_selection_detail.text = "%d soldiers" % strength
+		var id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
+		counts[id] = int(counts.get(id, 0)) + 1
+		var squad_def := UnitRoster.by_id(id)
+		if squad_def != null:
+			full += squad_def.squad_size
+
+	if counts.size() == 1:
+		var only := StringName(String(counts.keys()[0]))
+		var unit := UnitRoster.by_id(only)
+		_selection_title.text = "%s  x%d" % [
+			unit.display_name if unit != null else String(only), _selected.size()]
+	else:
+		_selection_title.text = "Mixed force  x%d" % _selected.size()
+
+	_selection_detail.text = "%d soldiers  ·  %s" % [strength, _composition_summary(counts)]
 
 	# Strength as a bar too: "84 soldiers" means nothing without knowing
-	# what full strength was.
-	if unit != null and unit.squad_size > 0:
-		var full := unit.squad_size * _selected.size()
+	# what full strength was. Full strength is now summed per squad from
+	# each squad's OWN unit, so it is right for a mixed force.
+	if full > 0:
 		var fraction := clampf(float(strength) / float(full), 0.0, 1.0)
 		_set_bar(_health_bar_back, _health_bar_fill, fraction,
 			Color(0.35, 0.85, 0.4) if fraction > 0.35 else Color(0.9, 0.4, 0.35))
 
-	_set_actions(_squad_actions(def_id))
+	# Actions offered are the ones EVERY selected squad can do. Offering a
+	# build button because one founder is in the box would produce an
+	# order most of the selection must refuse.
+	_set_actions(_shared_squad_actions(counts.keys()))
+
+
+## "3 Militia, 2 Archers" — what a mixed selection is made of, commonest
+## first so the shape of the force reads at a glance.
+func _composition_summary(counts: Dictionary) -> String:
+	var kinds := counts.keys()
+	kinds.sort_custom(func(a, b): return int(counts[a]) > int(counts[b]))
+	var parts := []
+	for id in kinds:
+		var unit := UnitRoster.by_id(StringName(String(id)))
+		parts.append("%d %s" % [int(counts[id]),
+			unit.display_name if unit != null else String(id)])
+	return ", ".join(parts)
+
+
+## The actions common to every unit type in the selection.
+##
+## Intersection rather than union: a button that most of the selection
+## would refuse is worse than an absent one, because the refusal arrives
+## as a notice per squad and reads as the game being broken.
+func _shared_squad_actions(def_ids: Array) -> Array:
+	if def_ids.is_empty():
+		return []
+	var shared := _squad_actions(StringName(String(def_ids[0])))
+	for i in range(1, def_ids.size()):
+		var theirs := {}
+		for action in _squad_actions(StringName(String(def_ids[i]))):
+			theirs[_action_key(action)] = true
+		var kept := []
+		for action in shared:
+			if theirs.has(_action_key(action)):
+				kept.append(action)
+		shared = kept
+	return shared
+
+
+## What makes two offered actions the same action.
+##
+## Kind and id, NOT the label: the formation entries mark the current one
+## with a leading asterisk, so two squads in different formations would
+## have every formation button "differ" and a mixed selection would be
+## offered no formations at all.
+func _action_key(action: Dictionary) -> String:
+	return "%s/%s" % [String(action.get("kind", "")), String(action.get("id", ""))]
 
 
 func _set_bar(back: ColorRect, fill: ColorRect, fraction: float, colour: Color) -> void:
@@ -2214,14 +2695,23 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
 	match event.button_index:
+		# Ctrl+wheel TURNS, plain wheel zooms. Zoom keeps the bare gesture
+		# because it is the one used constantly; rotation is occasional and
+		# can afford a modifier.
 		MOUSE_BUTTON_WHEEL_UP:
 			if event.pressed:
-				_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
-				_update_camera()
+				if event.ctrl_pressed:
+					_set_camera_yaw(_camera_yaw + CAMERA_YAW_WHEEL_STEP)
+				else:
+					_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
+					_update_camera()
 		MOUSE_BUTTON_WHEEL_DOWN:
 			if event.pressed:
-				_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
-				_update_camera()
+				if event.ctrl_pressed:
+					_set_camera_yaw(_camera_yaw - CAMERA_YAW_WHEEL_STEP)
+				else:
+					_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
+					_update_camera()
 		MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				# A click on the minimap jumps the view there instead of
@@ -2266,10 +2756,15 @@ func _minimap_cell_at(screen_position: Vector2) -> Vector2i:
 	if _minimap_rect == null or _state.space == null:
 		return Vector2i(-1, -1)
 
-	if _minimap_bounds.size.x <= 0.0 or not _minimap_bounds.has_point(screen_position):
+	# In HUD space, because `_minimap_bounds` is. A raw mouse position
+	# compared against a scaled HUD's rect is off by the scale factor, and
+	# the failure is silent: the minimap simply stops answering clicks over
+	# part of itself and starts answering them over the map beside it.
+	var at := _to_hud(screen_position)
+	if _minimap_bounds.size.x <= 0.0 or not _minimap_bounds.has_point(at):
 		return Vector2i(-1, -1)
 
-	var local := (screen_position - _minimap_bounds.position) / _minimap_bounds.size
+	var local := (at - _minimap_bounds.position) / _minimap_bounds.size
 	return Vector2i(
 		clampi(int(local.x * float(_state.space.width)), 0, _state.space.width - 1),
 		clampi(int(local.y * float(_state.space.height)), 0, _state.space.height - 1))
@@ -2288,13 +2783,24 @@ func _jump_camera_to(cell: Vector2i) -> void:
 	_update_camera()
 
 
+## Draw the drag box. Both corners are converted into HUD space: the box
+## is a HUD child and the mouse is not, so on a scaled HUD an unconverted
+## rect is drawn somewhere the player is not dragging.
+##
+## Only the DRAWING converts. `_finish_selection` keeps working in real
+## pixels, because what it compares against — projected world positions —
+## are real pixels too.
 func _update_selection_rect(to: Vector2) -> void:
 	if _selection_rect == null:
 		return
-	var rect := Rect2(_drag_start, to - _drag_start).abs()
+	var rect := Rect2(_to_hud(_drag_start), _to_hud(to) - _to_hud(_drag_start)).abs()
 	_selection_rect.position = rect.position
 	_selection_rect.size = rect.size
-	var showing := rect.size.length() > DRAG_THRESHOLD_PX
+	# Tested in REAL pixels, so the threshold that decides click-versus-drag
+	# is the same gesture on every window — and the same one
+	# `_finish_selection` applies. Measuring the scaled rect instead would
+	# make a drag count as a click on a big monitor and not on a small one.
+	var showing := (to - _drag_start).length() > DRAG_THRESHOLD_PX
 	_selection_rect.visible = showing
 
 	if _selection_edges.size() == 4:
@@ -2406,9 +2912,11 @@ func _squad_screen_position(squad: int) -> Vector2:
 	return _camera.unproject_position(world)
 
 
+## What a click selected. Gathers every candidate's screen geometry and
+## hands the RANKING to SelectionPick, which is pure and tested — the
+## comparison is where this went wrong before, not the projection.
 func _select_nearest(at: Vector2) -> void:
-	var best := -1
-	var best_distance := SELECT_CLICK_RADIUS_PX
+	var squads := []
 	for squad in _state.squads:
 		if not _state.curves.has(squad):
 			continue
@@ -2421,21 +2929,17 @@ func _select_nearest(at: Vector2) -> void:
 		# the squad. The tolerance is now the squad's own on-screen size,
 		# so a big formation is a big target and a small one is not.
 		var print := _squad_footprint(squad)
-		var distance := _screen_of(print["centre"]).distance_to(at)
-		var allowance := maxf(_screen_radius_of(print), SELECT_CLICK_RADIUS_PX * 0.35)
-		# Ranked by how far INSIDE the footprint the click landed, so two
-		# overlapping squads resolve to the one you actually clicked on
-		# rather than to whichever has the nearer centre.
-		if distance > allowance:
-			continue
-		if distance - allowance < best_distance:
-			best_distance = distance - allowance
-			best = squad
+		squads.append({
+			"id": squad,
+			"distance": _screen_of(print["centre"]).distance_to(at),
+			"allowance": maxf(_screen_radius_of(print), SELECT_CLICK_RADIUS_PX * 0.35),
+		})
 
-	# Buildings are selectable the same way, and compete on the same
-	# distance — clicking a town hall should select the hall, not a squad
-	# standing behind it.
-	var best_building := -1
+	# Buildings compete on the same NORMALISED scale (see SelectionPick).
+	# They were compared in raw pixels against the squads' "how far inside
+	# the footprint" score, which is negative — so a building standing in
+	# the middle of its own garrison could not win a click at all.
+	var buildings := []
 	for wire_id in _state.buildings:
 		var info: Dictionary = _state.buildings[wire_id]
 		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
@@ -2443,20 +2947,38 @@ func _select_nearest(at: Vector2) -> void:
 		var node: MeshInstance3D = _building_nodes.get(wire_id, null)
 		if node == null or _camera.is_position_behind(node.position):
 			continue
-		var distance := _camera.unproject_position(node.position).distance_to(at)
-		if distance < best_distance:
-			best_distance = distance
-			best_building = int(wire_id)
-			best = -1
+		buildings.append({
+			"id": int(wire_id),
+			"distance": _camera.unproject_position(node.position).distance_to(at),
+			"allowance": _building_screen_radius(node),
+		})
 
+	var picked := SelectionPick.choose(squads, buildings)
+	var best_building := int(picked["building"])
 	if best_building >= 0:
 		_selected_building = best_building
 		_selected.clear()
 		return
 
 	_selected_building = -1
+	var best := int(picked["squad"])
 	if best >= 0 and not _selected.has(best):
 		_selected.append(best)
+
+
+## A building's clickable radius in SCREEN pixels.
+##
+## Measured across the drawn box rather than assumed, so the target
+## matches what is on screen at any zoom — the same reason a squad's
+## allowance is its projected footprint and not a constant.
+func _building_screen_radius(node: MeshInstance3D) -> float:
+	var mesh := node.mesh as BoxMesh
+	var half := 1.2 if mesh == null else mesh.size.x * 0.5
+	var edge := node.position + Vector3(half, 0.0, 0.0)
+	if _camera.is_position_behind(node.position) or _camera.is_position_behind(edge):
+		return 0.0
+	return _camera.unproject_position(node.position).distance_to(
+		_camera.unproject_position(edge))
 
 
 func _select_within(rect: Rect2) -> void:
@@ -2476,6 +2998,30 @@ func _select_within(rect: Rect2) -> void:
 func _handle_key(event: InputEventKey) -> void:
 	if event.keycode == KEY_X:
 		_stop_selected()
+		return
+
+	# Q/E turn the view; ESC opens and closes the game menu.
+	#
+	# Deliberately BEFORE the build/train tables below, and worth knowing
+	# why: those are driven by `OS.get_keycode_string`, so a letter added
+	# to BUILD_KEYS or TRAIN_KEYS silently steals it from here. Q and E are
+	# not in either table today — this ordering is what keeps that a
+	# deliberate choice rather than a race between two lookups.
+	if event.keycode == KEY_Q:
+		_set_camera_yaw(_camera_yaw + CAMERA_YAW_STEP)
+		return
+	if event.keycode == KEY_E:
+		_set_camera_yaw(_camera_yaw - CAMERA_YAW_STEP)
+		return
+	if event.keycode == KEY_ESCAPE:
+		# A pending building placement is what ESC cancels FIRST. Opening a
+		# menu while the player is mid-gesture, and leaving the ghost armed
+		# underneath it, is the kind of thing that gets a town centre put
+		# somewhere nobody meant.
+		if _placing != &"":
+			_cancel_placement()
+		else:
+			_toggle_game_menu()
 		return
 
 	# Build keys. The server checks everything that matters — who may
@@ -2531,20 +3077,20 @@ func _cell_under(screen_position: Vector2) -> Vector2i:
 ## criterion 3). With nothing selected it does nothing: quietly marching
 ## an army the player never chose is worse than ignoring the click.
 func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
-	if not _connected or _state.space == null or _selected.is_empty():
+	if not _connected or _state.space == null:
 		return
 
-	# Right-clicking an ENEMY attacks it. No modifier, no separate key.
+	# The BUILDING branch comes before the empty-selection guard, and that
+	# ordering is the whole of it.
 	#
-	# Attack-move was Ctrl+right-click and also the A key — and A is bound
-	# to camera pan (WASD), so it could never have worked. The result was a
-	# player with no way to attack that they would find. Every RTS since
-	# the nineties answers this the same way: right-click means "do the
-	# obvious thing to that", which is move for ground and attack for an
-	# enemy.
-	# With a BUILDING selected, right-click sets its rally point — where
-	# what it produces will muster. Same gesture as ordering a squad, and
-	# it is what a player will try first.
+	# Selecting a building CLEARS `_selected` (a building and a squad are
+	# not selected together), so with a barracks selected `_selected` is
+	# always empty — and the guard that turns a stray right-click on empty
+	# ground into a no-op was also swallowing every rally-point order ever
+	# issued. Nothing failed: the click was read, the branch below was
+	# simply never reached, and the marker on the ground stayed where it
+	# was. Reported as right-click not moving the muster point, which is
+	# exactly what it did.
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var info: Dictionary = _state.buildings[_selected_building]
 		if int(info["owner"]) == _state.player:
@@ -2556,6 +3102,17 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 				print("client: rally point set to %s" % rally_cell)
 			return
 
+	if _selected.is_empty():
+		return
+
+	# Right-clicking an ENEMY attacks it. No modifier, no separate key.
+	#
+	# Attack-move was Ctrl+right-click and also the A key — and A is bound
+	# to camera pan (WASD), so it could never have worked. The result was a
+	# player with no way to attack that they would find. Every RTS since
+	# the nineties answers this the same way: right-click means "do the
+	# obvious thing to that", which is move for ground and attack for an
+	# enemy.
 	var target := _enemy_cell_at(screen_position)
 
 	# Right-clicking a RESOURCE puts workers on it, the same way
@@ -2848,6 +3405,14 @@ func _stop_selected() -> void:
 		print("client: stopped %d squad(s)" % sent)
 
 
+## WASD pans relative to WHERE THE CAMERA IS LOOKING, not to world axes.
+##
+## Once the view can rotate this is the only defensible reading of "W":
+## the player means "up the screen", and after a 90-degree turn the world
+## axis that used to mean up-screen means right-screen. Panning in world
+## space with a rotated camera makes the keys feel like they have been
+## shuffled, which is the standard complaint about RTS cameras that get
+## this wrong.
 func _pan_camera(delta: float) -> void:
 	var move := Vector3.ZERO
 	if Input.is_key_pressed(KEY_W):
@@ -2860,8 +3425,18 @@ func _pan_camera(delta: float) -> void:
 		move.x += 1.0
 	if move == Vector3.ZERO:
 		return
-	_camera_target += move.normalized() * CAMERA_PAN_SPEED * delta
+	_camera_target += move.normalized().rotated(Vector3.UP, _camera_yaw) \
+		* _pan_speed * delta
 	_wrap_camera_target()
+	_update_camera()
+
+
+## Turn the view. `to` is absolute radians; the compass calls this with 0.
+##
+## Normalised so the stored yaw can never wander off after a few hundred
+## turns and so the compass has one canonical value to draw.
+func _set_camera_yaw(to: float) -> void:
+	_camera_yaw = fposmod(to, TAU)
 	_update_camera()
 
 
@@ -2888,11 +3463,24 @@ func _wrap_camera_target() -> void:
 	_camera_target.z = 1.5 * space.hex_size * r
 
 
+## Place the camera behind and above its target, spun by `_camera_yaw`.
+##
+## The offset is the same one this always used; it is simply rotated about
+## UP now. Everything that reads the camera back — ray-picking a cell,
+## projecting a squad's footprint for selection, choosing which lattice
+## copy of a thing to draw (D-035/D-045) — goes through `project_ray_*` or
+## `unproject_position` and therefore follows the rotation for free. That
+## is the whole reason rotation could be added without touching selection,
+## culling or terrain tiling: none of them ever assumed a fixed heading.
 func _update_camera() -> void:
 	if _camera == null:
 		return
-	_camera.position = _camera_target + Vector3(0.0, _camera_height, _camera_height * 0.6)
+	var offset := Vector3(0.0, _camera_height, _camera_height * 0.6) \
+		.rotated(Vector3.UP, _camera_yaw)
+	_camera.position = _camera_target + offset
 	_camera.look_at(_camera_target, Vector3.UP)
+	if _compass != null:
+		_compass.queue_redraw()
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:
@@ -3017,6 +3605,258 @@ func _styled_button(text: String, accent: Color) -> Button:
 	return button
 
 
+# --- in-game menu (D-063) ---------------------------------------------
+#
+# ## It does not pause, and that is not a shortcut
+#
+# The server is the authority and runs its own clock (D-002/D-020). A
+# client cannot pause a match any more than it can move a squad — and in
+# a multiplayer game it must not, because "pause" would either stop
+# everyone else's game or, worse, stop only this player's view while their
+# army kept being attacked. So the menu is an overlay over a running
+# match, and the world keeps moving behind it. That is the honest
+# behaviour rather than a missing feature, which is why the menu says so
+# on its face.
+#
+# The one real consequence: the menu must never swallow the whole screen's
+# input, or a player could not react to what they can see happening behind
+# it. Only the panel itself takes clicks; the backdrop is deliberately
+# thin and non-blocking.
+
+
+## Settings the client can actually honour today.
+##
+## Deliberately short. Everything here maps to a real knob that exists —
+## anything else would be a control that appears to do something and does
+## not, which is worse than an absent option. Graphics quality, resolution
+## and keybind remapping are all missing for the same reason: there is no
+## LOD toggle to bind, no resolution list, and no keybind indirection to
+## rewrite (the keys are read straight from the event in `_handle_key`).
+const SETTINGS_PATH := "user://settings.cfg"
+
+
+func _build_game_menu() -> void:
+	_game_menu_layer = CanvasLayer.new()
+	# Above the HUD (0) but BELOW the lobby (10): the lobby is a screen
+	# that replaces the world, and the in-game menu is an overlay on it.
+	_game_menu_layer.layer = 5
+	_game_menu_layer.visible = false
+	add_child(_game_menu_layer)
+
+	# A dim wash rather than an opaque backdrop, and one that does NOT
+	# take mouse input — see the note above about not blindfolding a
+	# player whose base is being attacked while they read a menu.
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.02, 0.03, 0.05, 0.55)
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_game_menu_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_game_menu_layer.add_child(centre)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 18)
+	centre.add_child(row)
+
+	var column := _lobby_panel("GAME MENU", row)
+	column.custom_minimum_size = Vector2(300.0, 0.0)
+
+	var running := Label.new()
+	running.text = "The match keeps running while this is open."
+	running.add_theme_font_size_override("font_size", 12)
+	running.modulate = Color(0.62, 0.68, 0.78)
+	running.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	running.custom_minimum_size = Vector2(280.0, 0.0)
+	column.add_child(running)
+
+	var resume := _styled_button("Resume", Color(0.42, 0.78, 0.48))
+	resume.pressed.connect(_toggle_game_menu)
+	column.add_child(resume)
+
+	var settings := _styled_button("Settings", Color(0.55, 0.62, 0.78))
+	settings.pressed.connect(_toggle_settings)
+	column.add_child(settings)
+
+	# Disabled, and it says why rather than pretending to be busy. There is
+	# no save system: the authority is the server, so a save is a snapshot
+	# of ITS sims (squads, buildings, economy, match state, RNG position
+	# and tick), and none of that is serialised anywhere yet. A button that
+	# silently did nothing would be the declared-and-unread shape this
+	# project keeps meeting (D-061), built on purpose.
+	var save := _styled_button("Save game", Color(0.55, 0.62, 0.78))
+	save.disabled = true
+	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
+	column.add_child(save)
+
+	var to_lobby := _styled_button("Leave match", Color(0.85, 0.62, 0.35))
+	to_lobby.tooltip_text = "Disconnect. Your army is removed from the match."
+	to_lobby.pressed.connect(_on_leave_match_pressed)
+	column.add_child(to_lobby)
+
+	var quit := _styled_button("Exit game", Color(0.9, 0.45, 0.4))
+	quit.pressed.connect(_on_quit_pressed)
+	column.add_child(quit)
+
+	_settings_panel = _build_settings_panel(row)
+	_settings_panel.visible = false
+
+
+## The settings pane, opened beside the menu rather than replacing it, so
+## a player can see what they are leaving.
+func _build_settings_panel(parent: Control) -> Control:
+	var frame := VBoxContainer.new()
+	parent.add_child(frame)
+	var column := _lobby_panel("SETTINGS", frame)
+	column.custom_minimum_size = Vector2(320.0, 0.0)
+
+	var fullscreen := CheckBox.new()
+	fullscreen.text = "Fullscreen"
+	fullscreen.focus_mode = Control.FOCUS_NONE
+	fullscreen.button_pressed = DisplayServer.window_get_mode() in [
+		DisplayServer.WINDOW_MODE_FULLSCREEN,
+		DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN]
+	fullscreen.toggled.connect(_on_fullscreen_toggled)
+	column.add_child(fullscreen)
+
+	column.add_child(_settings_slider("Camera pan speed", 6.0, 48.0,
+		_pan_speed, _on_pan_speed_changed))
+	column.add_child(_settings_slider("HUD scale", HudLayout.MIN_SCALE,
+		HudLayout.MAX_SCALE, _hud_scale_override if _hud_scale_override > 0.0 else 1.0,
+		_on_hud_scale_changed))
+
+	var auto_hud := CheckBox.new()
+	auto_hud.text = "Scale HUD to window automatically"
+	auto_hud.focus_mode = Control.FOCUS_NONE
+	auto_hud.button_pressed = _hud_scale_override <= 0.0
+	auto_hud.toggled.connect(_on_hud_auto_toggled)
+	column.add_child(auto_hud)
+
+	var close := _styled_button("Back", Color(0.55, 0.62, 0.78))
+	close.pressed.connect(_toggle_settings)
+	column.add_child(close)
+	return frame
+
+
+## A labelled slider that shows its own value. Its own function because
+## three of them differing only in range is exactly the kind of thing that
+## drifts when copy-pasted.
+func _settings_slider(label_text: String, low: float, high: float, value: float,
+		on_change: Callable) -> Control:
+	var box := VBoxContainer.new()
+	var label := Label.new()
+	label.text = "%s: %.1f" % [label_text, value]
+	label.add_theme_font_size_override("font_size", 13)
+	box.add_child(label)
+
+	var slider := HSlider.new()
+	slider.min_value = low
+	slider.max_value = high
+	slider.step = 0.1
+	slider.value = value
+	slider.custom_minimum_size = Vector2(280.0, 0.0)
+	slider.focus_mode = Control.FOCUS_NONE
+	slider.value_changed.connect(func(v: float) -> void:
+		label.text = "%s: %.1f" % [label_text, v]
+		on_change.call(v))
+	box.add_child(slider)
+	return box
+
+
+func _toggle_game_menu() -> void:
+	if _game_menu_layer == null:
+		return
+	_game_menu_layer.visible = not _game_menu_layer.visible
+	if not _game_menu_layer.visible and _settings_panel != null:
+		_settings_panel.visible = false
+
+
+func _toggle_settings() -> void:
+	if _settings_panel != null:
+		_settings_panel.visible = not _settings_panel.visible
+
+
+func _on_fullscreen_toggled(on: bool) -> void:
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if on
+		else DisplayServer.WINDOW_MODE_WINDOWED)
+	# The HUD re-lays-out from the viewport's own size_changed signal, so
+	# nothing else is needed here.
+	_save_settings()
+
+
+func _on_pan_speed_changed(value: float) -> void:
+	_pan_speed = value
+	_save_settings()
+
+
+func _on_hud_scale_changed(value: float) -> void:
+	_hud_scale_override = value
+	_layout_hud()
+	_save_settings()
+
+
+func _on_hud_auto_toggled(automatic: bool) -> void:
+	_hud_scale_override = 0.0 if automatic else _hud_scale
+	_layout_hud()
+	_save_settings()
+
+
+## Leave the match: disconnect, and go back to the lobby screen.
+##
+## Disconnecting is genuinely what "leave" means here — the server owns
+## the match, and D-033's ordinary rule then wipes the abandoned army,
+## which is the same path a dropped connection takes. There is no
+## half-way "spectate" state to fall into, and inventing one would be a
+## rule nobody asked for.
+func _on_leave_match_pressed() -> void:
+	_toggle_game_menu()
+	print("client: leaving match")
+	if _peer != null:
+		_peer.peer_disconnect()
+	_connected = false
+
+
+func _on_quit_pressed() -> void:
+	if _peer != null:
+		_peer.peer_disconnect()
+	get_tree().quit(0)
+
+
+## Settings persist to `user://settings.cfg` — a plain ConfigFile, because
+## it is three values and a text format that a human can read and delete
+## is worth more here than anything cleverer.
+func _save_settings() -> void:
+	var config := ConfigFile.new()
+	config.set_value("client", "pan_speed", _pan_speed)
+	config.set_value("client", "hud_scale_override", _hud_scale_override)
+	config.set_value("client", "fullscreen",
+		DisplayServer.window_get_mode() in [
+			DisplayServer.WINDOW_MODE_FULLSCREEN,
+			DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN])
+	config.save(SETTINGS_PATH)
+
+
+func _load_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load(SETTINGS_PATH) != OK:
+		return
+	_pan_speed = clampf(float(config.get_value("client", "pan_speed", CAMERA_PAN_SPEED)),
+		6.0, 48.0)
+	_hud_scale_override = float(config.get_value("client", "hud_scale_override", 0.0))
+	if _hud_scale_override > 0.0:
+		_hud_scale_override = clampf(_hud_scale_override,
+			HudLayout.MIN_SCALE, HudLayout.MAX_SCALE)
+	# Fullscreen is NOT restored in capture mode: a headless render is
+	# given its resolution on the command line, and a saved preference
+	# fighting that would make screenshots depend on whoever ran last.
+	if _run_seconds <= 0.0 and bool(config.get_value("client", "fullscreen", false)):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
 func _build_lobby_ui() -> void:
 	_lobby_layer = CanvasLayer.new()
 	# Above the HUD, not merely after it: CanvasLayers draw in layer
@@ -3025,6 +3865,9 @@ func _build_lobby_ui() -> void:
 	_lobby_layer.layer = 10
 	_lobby_layer.visible = false
 	add_child(_lobby_layer)
+	# Scaled with the HUD, and built after it — so it takes the scale here
+	# rather than waiting for the first resize to be laid out correctly.
+	_lobby_layer.transform = Transform2D().scaled(Vector2(_hud_scale, _hud_scale))
 
 	var backdrop := ColorRect.new()
 	# Fully opaque: there is no world behind the lobby yet, because the

@@ -163,19 +163,22 @@ func _build_terrain() -> void:
 	# Soldiers stand ON the terrain, as in client.gd — deriving at y=0
 	# would put them inside every hill AND skip the sampler call, which is
 	# part of the per-soldier cost this is measuring.
-	var elevation := terrain.elevation_field(_space)
+	# The same continuous surface the client uses (D-067), through the same
+	# helper — a benchmark that sampled the ground differently would be pricing
+	# something the game does not do.
+	var surface := terrain.surface_field(_space)
 	_terrain_sampler = func(x: float, z: float) -> float:
-		var cell := _space.world_to_cell(Vector3(x, 0.0, z))
-		return elevation[_space.index(cell)] * terrain.height_scale
+		return TerrainChunk.height_at(_space, surface, x, z)
 
-	var material := StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.roughness = 0.95
+	# One shared definition (D-066), so the benchmark renders what the game
+	# renders. Textured when generated/ has been built, vertex colour alone
+	# when it has not.
+	var material := TerrainChunk.make_material()
 
 	var meshes: Array = []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size)
+			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, surface)
 			if mesh != null:
 				meshes.append(mesh)
 

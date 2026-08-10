@@ -438,6 +438,32 @@ func test_squads_ordered_to_one_point_do_not_end_up_stacked() -> void:
 		seen[cell] = squad
 
 
+func test_a_displaced_squad_steps_aside_rather_than_teleporting() -> void:
+	# D-060 says the displaced squad takes "the nearest free cell". It did
+	# not: `_free_cell_near` walks `TorusSpace.disk_offsets`, which
+	# enumerates dq-major from -radius rather than by distance, so the
+	# first free cell it met was up to four cells away and always in the
+	# same direction. Two squads ordered onto one point ended up four cells
+	# apart, which is how a second melee squad sent at a building landed
+	# outside its own reach and stood there for the rest of the match.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.first()
+
+	var first := sim.add_squad(def, 1, Vector2i(4, 8))
+	var second := sim.add_squad(def, 1, Vector2i(6, 8))
+	sim.order_move(first, Vector2i(16, 8))
+	sim.order_move(second, Vector2i(16, 8))
+
+	for _i in range(600):
+		sim.tick()
+
+	var apart := space.distance(sim.cell_of(first), sim.cell_of(second))
+	assert_eq(apart, 1,
+		"the two squads settled %d cells apart — a squad shoved aside should " % apart
+		+ "take the cell NEXT to the contested one, not the first one a scan finds")
+
+
 func test_separation_does_not_cost_extra_flow_fields() -> void:
 	# The regression the first attempt caused, and the reason separation
 	# moved to arrival: spreading DESTINATIONS gave twenty squads twenty

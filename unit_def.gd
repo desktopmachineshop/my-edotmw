@@ -117,6 +117,20 @@ class_name UnitDef
 @export_enum("capsule", "box", "cylinder", "hull") var mesh_primitive: String = "capsule"
 @export var mesh_color: Color = Color.WHITE
 
+## Which authored model this unit wears (D-064). Schema addition 2026-08-09
+## (M7, against D-010).
+##
+## Names a build product under `generated/models/<model_id>.glb` with a
+## matching vertex animation texture. EMPTY means "use the primitive above",
+## and that is the default on purpose: bots, tests and a fresh clone whose
+## `generated/` has not been built all keep working, so a failed art build
+## costs fidelity rather than the game.
+##
+## Keyed by ARCHETYPE, never by civ. D-046 criterion 3 has a test asserting no
+## `.gd` file names a civ id, and a model keyed by civ would make civ three an
+## art task exactly as a code branch would make it a programming task.
+@export var model_id: StringName = &""
+
 # Economy
 # Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).
 # A unit with carry_capacity > 0 IS a gatherer — no separate boolean to
