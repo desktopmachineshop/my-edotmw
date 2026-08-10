@@ -24,6 +24,7 @@ bonus_vs = {
 }
 mesh_primitive = "cylinder"
 mesh_color = Color(0.42, 0.5, 0.7, 1)
+model_id = &"archers"
 build_time = 11.0
 cost = 45
 cost_food = 55

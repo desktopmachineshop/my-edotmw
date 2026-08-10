@@ -1,0 +1,190 @@
+{
+  "buildings": {
+    "barracks": {
+      "model": "generated/models/barracks.glb",
+      "triangles": 72,
+      "vertices": 216
+    },
+    "storehouse": {
+      "model": "generated/models/storehouse.glb",
+      "triangles": 84,
+      "vertices": 252
+    },
+    "tower": {
+      "model": "generated/models/tower.glb",
+      "triangles": 144,
+      "vertices": 432
+    },
+    "town_centre": {
+      "model": "generated/models/town_centre.glb",
+      "triangles": 96,
+      "vertices": 288
+    }
+  },
+  "source_hash": "ee46a610d8d34e76fd19e07c2659c698aa5ca093e3ba2677989d9e430c5507b0",
+  "terrain": {
+    "biomes": [
+      "deep_water",
+      "water",
+      "beach",
+      "dry_grassland",
+      "grassland",
+      "forest",
+      "mountain",
+      "peak"
+    ],
+    "columns": 4,
+    "height": 1024,
+    "neutral_mean": 0.92,
+    "path": "generated/textures/terrain_atlas.png",
+    "rows": 2,
+    "tile": 512,
+    "width": 2048
+  },
+  "units": {
+    "archers": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/archers.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 100,
+      "vat": "generated/vat/archers.exr",
+      "vertices": 300,
+      "width": 300
+    },
+    "cavalry": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/cavalry.glb",
+      "mounted": true,
+      "total_frames": 64,
+      "triangles": 256,
+      "vat": "generated/vat/cavalry.exr",
+      "vertices": 768,
+      "width": 768
+    },
+    "founders": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/founders.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 172,
+      "vat": "generated/vat/founders.exr",
+      "vertices": 516,
+      "width": 516
+    },
+    "gatherers": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/gatherers.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 72,
+      "vat": "generated/vat/gatherers.exr",
+      "vertices": 216,
+      "width": 216
+    },
+    "heavy_infantry": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/heavy_infantry.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 156,
+      "vat": "generated/vat/heavy_infantry.exr",
+      "vertices": 468,
+      "width": 468
+    },
+    "militia": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/militia.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 132,
+      "vat": "generated/vat/militia.exr",
+      "vertices": 396,
+      "width": 396
+    },
+    "skirmishers": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/skirmishers.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 96,
+      "vat": "generated/vat/skirmishers.exr",
+      "vertices": 288,
+      "width": 288
+    },
+    "spearmen": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/spearmen.glb",
+      "mounted": false,
+      "total_frames": 64,
+      "triangles": 148,
+      "vat": "generated/vat/spearmen.exr",
+      "vertices": 444,
+      "width": 444
+    }
+  }
+}

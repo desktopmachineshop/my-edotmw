@@ -396,6 +396,57 @@ run with strictly *less* work reported 146 ms where a fuller run reported
 52 ms, because the host was building containers throughout. Zero dropped
 ticks in both.
 
+**M7 (real models and textures) — in progress.** The ladder gained a
+rung: art is M7 and Steam becomes M8. Exit criteria are **D-063**;
+the work is **D-064** (art direction and pipeline, superseding D-011 and
+closing Q12), **D-065** (animation) and **D-066** (terrain texturing).
+`just test-unit` is green at **424 tests** across 29 scripts.
+
+Landed: eight authored unit archetypes and four buildings, animated,
+on textured terrain, all generated from committed Python and rendering
+through the shipping path. See "Mesh pipeline" below for the rules that
+came out of it — they matter more than the asset list.
+
+**Two of M7's defects were invisible to every number and visible in a
+picture**, which is now three milestones running. Every soldier rendered
+black because a MultiMesh overrides the shader's `COLOR` with its own
+per-instance colour, so vertex colours never reach the fragment stage on
+the path this game renders through. And every `box()` was wound
+inside-out, which cost nothing but lighting until a building got big
+enough to look inside. Neither would have failed a test that counted
+things.
+
+**Still open in M7:** `just bench-render` has NOT been re-run on a
+discrete GPU since authored models landed, so the cost of animated
+vertices at D-018's full scale is unmeasured — that is D-063 criterion 11
+and it also discharges Q15's re-armed trigger. Nobody has played a match
+with the new art (criterion 14). Until both happen, M7 is landed, not
+complete — the same distinction M2 and M6 both had to learn.
+
+**The gaps between hexes are fixed (D-067).** They were pre-existing
+rather than M7's, but textured ground made them the most obvious thing on
+screen. Each hex corner now takes the mean of the three cells meeting
+there, so neighbours agree and the surface is watertight; the centre
+vertex keeps its own elevation, which leaves each hex a very shallow
+pillow. Normals are derived instead of hardcoded `Vector3.UP`, so slopes
+finally shade.
+
+**The simulation did not change and must not.** `elevation_at` stays
+discrete per cell and `passability` still thresholds it — only the
+picture interpolates. That split is what made this a rendering change
+with no desync surface, and **it stops being free the moment elevation
+acquires tactical meaning** (terrain-occluded line of sight is still
+open).
+
+`TerrainGen.surface_field` is one array of 7 heights per cell, read by
+BOTH the mesher and the client's ground sampler
+(`TerrainChunk.height_at`), which is why they live in the same file. A
+sampler that matched the mesh only by being written correctly twice would
+eventually drift, and the symptom is an army floating with every number
+green. The sampler is also a hot path — once per soldier per frame — and
+is no longer a single array index; its cost on real hardware is
+unmeasured.
+
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
 everything built so far: soldier position is a **pure function** of
@@ -515,6 +566,9 @@ curve_replicator.gd      Per-client gating, horizon clipping and the
                         budgeted invalidation scheduler (D-003/D-004).
 formation.gd             Derived soldier positions (D-006). All-static
                         and pure — no instance state, by construction.
+animation_state.gd       Which clip a soldier plays and at what phase
+                        (D-065). All-static, so there is nowhere for the
+                        phase accumulator D-006 forbids to live.
 cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
                         must never read it back (D-006 clause 2).
 squad_sim.gd             The authoritative 10 Hz sim (D-020) over packed
@@ -580,8 +634,24 @@ unit_roster.gd          Loads /units in a stable order. Server, client
 /maps/*.tres            MapConfig resources (torus dimensions, squads
                         per player). Height must be even — D-008.
 map_config.gd           MapConfig schema.
-primitive_unit.gd       Tier-1 mesh generation (capsule/box/cylinder/
-                        hull primitives) — see "Mesh pipeline" below.
+primitive_unit.gd       One MultiMesh per squad (D-009). Wears an
+                        authored model when the UnitDef names one, the
+                        tier-1 primitive when it does not.
+unit_mesh.gd            Loads authored models, their VATs and their
+                        materials. CACHED — a .glb is a scene, and
+                        loading one per squad is the M4 `by_id` defect
+                        with a bigger constant.
+/shaders/*.gdshader     The project's first shaders (D-065). Unit opaque,
+                        unit ghost, building static; VAT sampling shared
+                        via a .gdshaderinc.
+/art/**.py              Committed asset GENERATORS (D-064) — the source
+                        of truth for every model and texture. Plain
+                        Python; `bpy` is imported only by art/lib/bake.py.
+/generated/             Committed build output: .glb, VAT .exr, the
+                        terrain atlas, and a manifest whose source hash
+                        makes a stale build a test failure.
+model_preview.gd         Renders every authored model, animated, and
+                        screenshots it. The picture is the point.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -612,20 +682,60 @@ docker-compose.yml       server / bots / test services. Teardown-scoped:
                         only) portable Godot. `just nuke` deletes it.
 ```
 
-## Mesh pipeline — respect the tiers
+## Mesh pipeline — the tiers, as they now stand
 
-1. **Primitive tier** (current MVP state): capsules/boxes/cylinders,
-   composed from `UnitDef` data, zero art dependency. This is where the
-   project is right now — don't jump ahead to importing art assets
-   unless explicitly asked.
-2. **Modular/parametric tier**: interchangeable parts combined
-   programmatically. Not started yet.
-3. **Final-fidelity tier**: Blender via `bpy`, headless, exported as
-   glTF. Not started yet.
+D-011's three tiers are **superseded by D-064**. Tier 1 (primitives) is
+still there as the fallback, tier 2 (parametric composition) turned out to
+be *how* tier 3 is written rather than a stop on the way, and tier 3 is
+built:
 
-Terrain follows the same philosophy: biome-colored hex mesh + elevation
-vertex offset, chunked (not one mesh per cell — that's a performance
-requirement at 10,000+ cell map sizes, not a style choice).
+- **Authored tier (current):** stylised low-poly, ~300 tris/soldier,
+  silhouette first. Generated by committed Python under `art/` driving
+  **Blender headless as a library** (`bpy`, a PyPI wheel — no GUI, no GPU,
+  no system Blender). `just build-assets` writes `generated/`.
+- **Primitive tier (fallback):** `UnitDef.model_id` / `BuildingDef.model_id`
+  default EMPTY, and an empty id means "use the capsule". So bots, tests
+  and a clone that has never run `build-assets` all still work — a failed
+  art build costs fidelity, not the game.
+
+**Both the generators and their output are committed** (D-064). The
+generators are the source of truth; `generated/` is committed anyway so a
+fresh clone plays without installing anything. Two runs of
+`build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
+no timestamps — and a test fails if `generated/` is stale with respect to
+`art/`.
+
+**Soldiers are animated by a vertex animation texture (D-065), and the
+phase is DERIVED, never accumulated.** `phase = fract(t*rate + hash(slot))`,
+computed in the shader from `TIME`. That is the whole reason animation is
+legal under D-006 clause 1: there is nowhere for per-soldier state to
+live. `animation_state.gd` is all-static for the same structural reason
+`formation.gd` and `cosmetic_offset.gd` are. **A phase counter advanced by
+delta time, or a blend weight carried between frames, breaks it** — those
+are integration state in a cosmetic disguise.
+
+Terrain is textured by a **per-biome atlas that MODULATES the vertex
+colour** (D-066) — `TerrainGen.biome_color()` is still the single source
+of truth, which is what keeps the minimap and the preview PNG from
+drifting from the 3D view without either of them being touched. Terrain
+UVs come from the **cell**, never from world position, so all nine torus
+copies agree by construction.
+
+Three things bought the hard way, all in one milestone:
+
+- **Godot's `detect_3d/compress_to` silently re-imports any texture used
+  in 3D with VRAM block compression and mipmaps.** On a vertex animation
+  texture that is corruption — neighbouring texels are unrelated vertices.
+  Import settings are generated data now, not something remembered.
+- **A rebuild is invisible to Godot until it re-imports.** Verifying a
+  fresh bake against a stale `.godot` cache gives confident wrong answers;
+  `build-assets` ends in an import for this reason.
+- **Every `box()` was wound inside-out for a whole milestone.** Nothing
+  failed — a small convex object under back-face culling shows its far
+  side and the silhouette is identical — but normals derive from the
+  winding, so everything was lit by the inverse of the sun. It was only
+  visible once a *building* was big enough to see through. **The check
+  that catches this class is a picture of something large.**
 
 ## Testing — use the justfile, and use it before claiming something works
 
@@ -673,6 +783,18 @@ Dev loop and tests:
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost. Vary CHUNK_SIZE to settle D-017 with data.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
+- `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
+  ~1 GB, and ONLY asset work needs it: everything else, including running
+  and testing the game, works from the committed `generated/`.
+- `just build-assets [ARCHETYPE]` — rebuild models and textures from
+  `art/`. Ends in an `--import`, because Godot serves assets from its
+  cache and a rebuild it has not imported is invisible.
+- `just gen-model-preview [SECONDS]` — every authored model, animated, on
+  real terrain, through the REAL path (a `UnitDef`, a `PrimitiveUnit`,
+  the shipping shaders). Software-rasterised, so unlike `bench-render` it
+  needs no GPU. It renders TWICE and fails if the two frames are
+  byte-identical — a frozen VAT would otherwise produce a perfectly
+  plausible still. **Look at `artifacts/models-godot.png`.**
 
 Every recipe listed is real and verified; none are stubs.
 

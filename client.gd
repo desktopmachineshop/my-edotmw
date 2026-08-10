@@ -136,6 +136,12 @@ var _explored := {}
 ## as a distant formation being sparse rather than as a smaller unit —
 ## which matters, because unit size is tactical information a player is
 ## entitled to read off the screen correctly.
+## Below this ground speed a squad is standing still as far as animation is
+## concerned. Not zero: a curve sampled either side of a keyframe produces a
+## little numerical drift, and a squad that flickered between idle and walk on
+## that drift would twitch.
+const MOVING_SPEED_EPSILON := 0.15
+
 const LOD_TIERS := [
 	{"distance": 55.0, "soldiers": 1 << 30},
 	{"distance": 110.0, "soldiers": 12},
@@ -443,19 +449,26 @@ func _build_terrain() -> void:
 	# render benchmark measured as the dominant term in a frame that was
 	# 97% CPU. The field holds identical values by construction, so this
 	# is memoisation and not a change to where anyone stands.
-	var elevation := terrain.elevation_field(space)
+	#
+	# Since D-067 the ground is a continuous surface rather than one flat
+	# height per cell, so this interpolates within the hex — through the SAME
+	# array the chunks below are built from, and the same code the mesher
+	# uses. That sharing is the point: a sampler that agreed with the mesh
+	# only by construction-in-two-places is a sampler that will eventually
+	# disagree, and the symptom is a floating army with every number green.
+	var surface := terrain.surface_field(space)
 	_state.terrain_sampler = func(x: float, z: float) -> float:
-		var cell := space.world_to_cell(Vector3(x, 0.0, z))
-		return elevation[space.index(cell)] * terrain.height_scale
+		return TerrainChunk.height_at(space, surface, x, z)
 
-	var material := StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.roughness = 0.95
+	# One shared definition (D-066), so the benchmark renders what the game
+	# renders. Textured when generated/ has been built, vertex colour alone
+	# when it has not.
+	var material := TerrainChunk.make_material()
 
 	var meshes := []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size)
+			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, surface)
 			if mesh != null:
 				meshes.append(mesh)
 
@@ -609,6 +622,19 @@ func _refresh_squads() -> void:
 			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
+		# Which clip these soldiers play (D-065). Derived from state the
+		# client already holds — the curve gives speed, `_activity_for` gives
+		# fighting, `routed_of` gives the rout — so nothing is sent for it and
+		# every client agrees by construction, the same shape as D-052's
+		# colour. Writes into the MultiMesh only when the clip or the rate
+		# actually changes; the per-frame cost here is a comparison.
+		var speed := _state.squad_speed(squad_id, _now)
+		var clip := AnimationState.clip_for(
+			_state.routed_of(squad_id),
+			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
+			speed > MOVING_SPEED_EPSILON)
+		unit.set_clip_data(int(squad_id), clip, speed)
+
 		# A selection circle under EVERY soldier, from the transforms we
 		# just derived — so the highlight follows the formation's real
 		# shape as it changes, for free. A single disc could only ever
@@ -685,23 +711,18 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 ## since it would look correct on a native `run-client` GPU and invisible
 ## in the one place D-026 criterion 11 requires it to actually be checked.
 ##
-## So this instead toggles the MATERIAL's own alpha blending — a
-## StandardMaterial3D `material_override` PrimitiveUnit already attaches
-## to this exact node (see primitive_unit.gd's rebuild()), reached via its
-## public property, not by reconstructing or replacing it. Alpha blending
+## So this instead toggles the MATERIAL's own alpha blending. Alpha blending
 ## is a baseline feature of every rendering method this project uses, so
 ## unlike the instance shortcut this actually shows up in a screenshot.
+##
+## Since M7 the mechanism differs by which path a squad renders on — a
+## primitive mutates its StandardMaterial3D's alpha, an authored model swaps
+## to a different shader program, because whether a material is transparent is
+## decided at shader COMPILE time (see unit_vat.gdshaderinc). PrimitiveUnit
+## owns that choice; this function exists only so the call site above reads the
+## same as it did before.
 func _set_ghost_look(unit: PrimitiveUnit, is_ghost: bool) -> void:
-	for child in unit.get_children():
-		if child is MultiMeshInstance3D:
-			var material := (child as MultiMeshInstance3D).material_override
-			if material is StandardMaterial3D:
-				var mat := material as StandardMaterial3D
-				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if is_ghost else BaseMaterial3D.TRANSPARENCY_DISABLED
-				var albedo := mat.albedo_color
-				albedo.a = 0.35 if is_ghost else 1.0
-				mat.albedo_color = albedo
-			return
+	unit.set_ghost(is_ghost)
 
 
 ## Capture-mode-only scripted maneuver (see the constants above this file).
@@ -1935,6 +1956,34 @@ func _refresh_resource_nodes() -> void:
 		marker.position = world + _lattice_offset_for(world)
 
 
+## The placeholder mesh for a building whose authored model is missing.
+##
+## Sized so the four shapes read differently from each other at a glance, which
+## is the entire reason `BuildingDef.mesh_primitive` exists. It carried no
+## meaning at all until M7 because nothing read it.
+func _building_primitive(def: BuildingDef) -> Mesh:
+	match def.mesh_primitive:
+		"cylinder":
+			var cylinder := CylinderMesh.new()
+			cylinder.top_radius = 1.0
+			cylinder.bottom_radius = 1.2
+			cylinder.height = 3.0
+			return cylinder
+		"capsule":
+			var capsule := CapsuleMesh.new()
+			capsule.radius = 1.1
+			capsule.height = 3.4
+			return capsule
+		"hull":
+			var hull := BoxMesh.new()
+			hull.size = Vector3(3.6, 2.0, 2.4)
+			return hull
+		_:
+			var box := BoxMesh.new()
+			box.size = Vector3(2.4, 3.0, 2.4)
+			return box
+
+
 func _refresh_buildings() -> void:
 	if _state.space == null:
 		return
@@ -1947,15 +1996,31 @@ func _refresh_buildings() -> void:
 			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
 			if def == null:
 				continue
-			var mesh := BoxMesh.new()
-			mesh.size = Vector3(2.4, 3.0, 2.4)
-			var material := StandardMaterial3D.new()
 			# Owner colour, like units (D-052) — a town hall you cannot
 			# attribute at a glance is worse than a squad you cannot,
 			# because it tells you whose ground you are standing on.
-			material.albedo_color = _state.colour_of(int(info["owner"])).lerp(
-				def.mesh_color, 0.25)
-			material.roughness = 0.9
+			var owner_colour := _state.colour_of(int(info["owner"]))
+			var mesh: Mesh = null
+			var material: Material = null
+
+			if def.model_id != &"":
+				mesh = UnitMesh.mesh_for(def.model_id)
+			if mesh != null:
+				# Authored model (D-064). The owner-colour mask is baked into
+				# vertex alpha, so the shader mixes rather than tinting the
+				# whole structure one colour.
+				material = UnitMesh.static_material_for(owner_colour)
+			else:
+				# The primitive, which now actually reads `mesh_primitive`.
+				# It had no readers at all until M7 — every building on the
+				# map was a hardcoded box while the field sat in the schema
+				# looking authoritative.
+				mesh = _building_primitive(def)
+				var standard := StandardMaterial3D.new()
+				standard.albedo_color = owner_colour.lerp(def.mesh_color, 0.25)
+				standard.roughness = 0.9
+				material = standard
+
 			instance = MeshInstance3D.new()
 			instance.mesh = mesh
 			instance.material_override = material

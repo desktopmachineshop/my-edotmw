@@ -3579,7 +3579,7 @@ just in code):
 
 ---
 
-### D-011 · 2026-07-28 · Accepted
+### D-011 · 2026-07-28 · Superseded by D-064 (2026-08-09)
 **Decision:** Mesh generation stays at the primitive tier (capsules,
 boxes, cylinders composed from `UnitDef` data) through M3. Modular/
 parametric (tier 2) and Blender/`bpy` final-fidelity (tier 3) are
@@ -3599,6 +3599,11 @@ needed through M3.
 **Revisit trigger:** Revisit once M3 is complete and playtesting
 suggests visual fidelity is limiting engagement, or once tiers 2/3 are
 explicitly prioritized.
+
+**Trigger fired 2026-08-09, on both halves** — M3 completed three
+milestones ago and the owner prioritised tiers 2/3 explicitly. Superseded
+by D-064, which sets the art direction and makes the generator, rather
+than the mesh, the thing that is committed.
 
 ---
 
@@ -3882,6 +3887,12 @@ experimentation fast.
 **Revisit trigger:** Pick a concrete chunk size once M1's terrain work
 starts and can be profiled.
 
+**Amended 2026-08-10 by D-067.** Chunking is unchanged — still one mesh per
+chunk, still 7 vertices and 6 triangles per cell, and the count tests here
+still hold. What changed is only what those vertices DO: a cell's corners now
+take the mean height of the three cells meeting at each one, so the ground is a
+continuous surface rather than a field of plateaus. Chunk size remains open.
+
 ---
 
 ## 2. Open Questions / Not Yet Decided
@@ -4078,8 +4089,12 @@ items resolved as:
 - **Q11 — Anti-cheat posture.** Authoritative server (D-002) helps; the
   leak surfaces are curve horizon clipping (D-003) and client-derived
   soldier positions (D-006).
-- **Q12 — Art direction** for mesh tiers 2 and 3 (D-011), and who
-  produces it.
+- ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
+  produces it.~~ → **D-064** (2026-08-09): stylised low-poly with strong
+  silhouettes, ~300 tris/soldier; produced by committed Python scripts
+  driving Blender headless as a library, not by hand in the GUI. Tier 2
+  is absorbed rather than skipped — parametric composition is how the
+  generators are written.
 - **Q13 — Persistence/saves** for long matches on a seamless map.
 - **Q14 — Terminology: what does "seamless" mean here** — no loading
   screens between regions, or one contiguous map? Implies very different

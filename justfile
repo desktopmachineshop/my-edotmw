@@ -42,6 +42,9 @@ runtime := env_var_or_default("EDOTMW_RUNTIME", "docker")
 tools_dir := justfile_directory() + "/tools"
 artifacts_dir := justfile_directory() + "/artifacts"
 native_godot := tools_dir + "/godot"
+blender_version := `cat .blender-version`
+blender_venv := tools_dir + "/blender-venv"
+blender_python := blender_venv + "/bin/python"
 
 # Single source of truth for the M1 server entry scene, so the recipes
 # that depend on it agree about when it exists.
@@ -673,6 +676,91 @@ gen-terrain-preview CHUNK_SIZE="16": _import
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
     fi
+
+# Build every model and texture from art/ (D-064).
+#
+# Runs Blender HEADLESS AS A LIBRARY (`bpy`, a PyPI wheel) — no GUI, no
+# GPU, no system Blender install. The generators under art/ are the source
+# of truth; generated/ is a build product that is nonetheless committed, so
+# a fresh clone plays without any of this.
+#
+# The `--import` at the end is not optional and not tidiness. Godot serves
+# assets from its import cache, so a rebuilt .glb or .exr is INVISIBLE to
+# the engine until it re-imports — verifying a fresh bake against a stale
+# cache produced a confident wrong answer for several rounds during M7.
+[doc("Rebuild models/textures from art/ (needs the bpy venv; see bootstrap-art)")]
+build-assets ONLY="": 
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    args=""
+    [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
+    "{{blender_python}}" art/build.py $args
+    {{just_executable()}} _import
+
+# Fetch the pinned bpy into a gitignored venv under tools/.
+#
+# Separate from `bootstrap` because it is ~1 GB and only asset work needs
+# it: everything else in this project, including running and testing the
+# game, works from the committed generated/ output.
+[doc("Install the pinned bpy for asset builds")]
+bootstrap-art:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m venv "{{blender_venv}}"
+    "{{blender_venv}}/bin/pip" install --quiet --upgrade pip
+    "{{blender_venv}}/bin/pip" install "bpy=={{blender_version}}"
+    # Godot scans every directory under the project. Without this it walks
+    # ~1 GB of Blender's own bundled textures and imports them.
+    : > "{{tools_dir}}/.gdignore"
+    "{{blender_python}}" -c "import bpy; print('bpy', bpy.app.version_string)"
+
+# Contact sheet of every authored model, animated, on real terrain (D-063).
+#
+# Software-rasterised, so unlike `bench-render` this needs no GPU and runs
+# anywhere. It answers "is the picture right", never "how fast" — and the
+# PNG is meant to be LOOKED AT, which is a rule this project has paid for
+# twice: M1's first client frame contained no soldiers and M6's contained
+# no terrain, both while every number reported healthy.
+#
+# Renders TWICE at different times and fails if the two are identical:
+# animation is driven from TIME in the shader (D-065), so a frozen VAT
+# would otherwise produce a perfectly plausible still.
+[doc("Render every model, animated, to artifacts/models-godot.png")]
+gen-model-preview SECONDS="1.2": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-model-preview needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    run() {
+        if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+                --rendering-method gl_compatibility --resolution 1400x900 \
+                model_preview.tscn -- --seconds="$1" --out="$2"
+        else
+            "$godot" --path . --rendering-method gl_compatibility \
+                --resolution 1400x900 model_preview.tscn -- --seconds="$1" --out="$2"
+        fi
+    }
+    run "{{SECONDS}}" "res://artifacts/models-godot.png"
+    run "$(echo "{{SECONDS}} + 1.7" | bc)" "res://artifacts/models-godot-b.png"
+    if cmp -s "{{artifacts_dir}}/models-godot.png" "{{artifacts_dir}}/models-godot-b.png"; then
+        echo "VERDICT: FAIL - two renders 1.7s apart are byte-identical;"
+        echo "         the vertex animation texture is not advancing (D-065)."
+        exit 1
+    fi
+    rm -f "{{artifacts_dir}}/models-godot-b.png"
+    echo "VERDICT: ok - models rendered and animating; LOOK AT artifacts/models-godot.png"
 
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #

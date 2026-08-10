@@ -197,9 +197,28 @@ func axial_offset_to_world(d: Vector2) -> Vector3:
 ## orders landing one cell off exactly where the player was aiming
 ## carefully.
 func world_to_cell(world: Vector3) -> Vector2i:
+	return normalize(round_axial(world_to_axial(world)))
+
+
+## Continuous axial coordinates for a world position — `world_to_cell` without
+## the rounding or the wrap.
+##
+## Exists so a caller that needs to know WHERE INSIDE a cell a point falls can
+## get the fractional part without doing the conversion a second time by hand.
+## The ground sampler (D-067) needs exactly that, and it needs the UNWRAPPED
+## cell: subtracting a wrapped cell centre from a world position gives a
+## garbage offset for anything near a seam.
+func world_to_axial(world: Vector3) -> Vector2:
 	var r := world.z / (1.5 * hex_size)
-	var q := world.x / (SQRT_3 * hex_size) - r * 0.5
-	return normalize(_axial_round(Vector2(q, r)))
+	return Vector2(world.x / (SQRT_3 * hex_size) - r * 0.5, r)
+
+
+## Round continuous axial coordinates to the containing cell, unwrapped.
+##
+## Cube rounding rather than rounding q and r independently — see
+## `world_to_cell`, which this is factored out of.
+func round_axial(fractional: Vector2) -> Vector2i:
+	return _axial_round(fractional)
 
 
 func _axial_round(fractional: Vector2) -> Vector2i:
