@@ -135,6 +135,50 @@ func test_an_ai_seat_counts_toward_starting() -> void:
 	assert_true(m.request_start(1), "One human and one AI should be startable")
 
 
+func test_seating_ai_before_players_expected_accounts_for_them_leaves_later_seats_unresolved() -> void:
+	# Documents the failure mode behind a real bug: server.gd's no-lobby
+	# quick-start (`run-server AI=N`) seats AI opponents through
+	# add_player, exactly like a human join (D-051, see server.gd's
+	# _seat_ai). If players_expected is not adjusted for them, the FIRST
+	# seat alone satisfies _start_if_ready and locks phase RUNNING before
+	# the rest — including the human who plays — has joined. Every later
+	# seat's civ choice is then never resolved and stays the literal
+	# "random" sentinel, which matches no unit's `civ` field: a
+	# civ-specific building (a barracks) offers nothing to train, while a
+	# neutral one (the town centre) looks fine, because gatherers matches
+	# regardless.
+	var m := MatchState.new()
+	m.require_admin_start = false
+	m.civ_rng.seed = 7
+	m.players_expected = 1  # the bug: not widened for the AI seats about to join
+	m.add_player(1000)  # first AI — this alone starts the match
+	m.add_player(1001)  # second AI — joins after start, never resolved
+	m.add_player(5)  # the human — same fate
+
+	assert_eq(m.phase, MatchState.Phase.RUNNING, "the first seat alone started the match")
+	assert_eq(m.civ_of(1001), CivRoster.RANDOM, "a seat added after start never resolves")
+	assert_eq(m.civ_of(5), CivRoster.RANDOM, "even the human is left stuck on Random")
+
+
+func test_players_expected_counting_every_seat_resolves_them_all() -> void:
+	# The fix: players_expected counts every seat about to be added
+	# through add_player, so none of them alone starts the match before
+	# the rest — including the human — has joined. This is exactly what
+	# server.gd now computes (players + ai_wanted) before seating any AI.
+	var m := MatchState.new()
+	m.require_admin_start = false
+	m.civ_rng.seed = 7
+	m.players_expected = 3  # 2 AI + the human
+	m.add_player(1000)
+	m.add_player(1001)
+	m.add_player(5)
+
+	for player in [1000, 1001, 5]:
+		var civ := m.civ_of(player)
+		assert_ne(civ, CivRoster.RANDOM, "player %d's civ was never resolved" % player)
+		assert_not_null(CivRoster.by_id(civ), "player %d ended up with an unknown civ" % player)
+
+
 func test_random_is_still_random_when_the_match_starts() -> void:
 	# Resolved at START, not at selection: a player sees "Random" in the
 	# lobby and genuinely does not know what they will get.

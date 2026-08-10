@@ -187,8 +187,20 @@ func _ready() -> void:
 	_settings.seed = int(args.get("seed", 1337))
 	_settings.apply_preset(TerrainPresetRoster.by_id(_settings.preset))
 
+	# AI seats are registered through the same `add_player` path a human
+	# join uses (D-051), which is what lets `_start_if_ready` auto-start a
+	# no-lobby match the moment enough participants are in. Counted into
+	# `players_expected` up front so seating the FIRST ai does not start
+	# the match early — before the rest of the AIs, or the human,
+	# have joined and had their `Random` civ resolved. A seat added after
+	# the match is already RUNNING never gets its civ resolved at all: it
+	# keeps the literal string "random", which matches no unit's `civ`
+	# field, so every civ-specific building (a barracks, never a neutral
+	# one like the town centre) offers nothing to train.
+	var ai_wanted := int(args.get("ai", 0))
+
 	_match = MatchState.new()
-	_match.players_expected = maxi(1, int(args.get("players", 1)))
+	_match.players_expected = maxi(1, int(args.get("players", 1))) + ai_wanted
 	_match.require_admin_start = int(args.get("lobby", 0)) != 0
 	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
 	_match.squad_cap = _config.squad_cap
@@ -203,8 +215,8 @@ func _ready() -> void:
 	if not _match.require_admin_start:
 		_build_world()
 		# AI opponents without a lobby, so `run-client` and the load test can
-		# have real opposition (D-051).
-		var ai_wanted := int(args.get("ai", 0))
+		# have real opposition (D-051). `ai_wanted` is computed above, not
+		# here, so it can also fold into `players_expected`.
 		var civs := CivRoster.ids()
 		for i in range(ai_wanted):
 			_seat_ai(1000 + i, civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
