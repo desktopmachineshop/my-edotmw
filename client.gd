@@ -278,6 +278,7 @@ func _process(delta: float) -> void:
 
 	_refresh_squads()
 	_refresh_buildings()
+	_update_missiles()
 	_refresh_resource_nodes()
 	# After both, so a ring can sit on the position they just set.
 	_refresh_selection_rings()
@@ -634,6 +635,15 @@ func _refresh_squads() -> void:
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
 			speed > MOVING_SPEED_EPSILON)
 		unit.set_clip_data(int(squad_id), clip, speed)
+
+		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
+				and bool(doing["is_ranged"]):
+			var launch := _missile_ground(centre + offset, MISSILE_RELEASE_HEIGHT)
+			var landing := _missile_ground(
+				_missile_landing(centre + offset, centre, doing["toward"]),
+				MISSILE_IMPACT_HEIGHT)
+			_maybe_launch_missile(
+				"squad:%d" % int(squad_id), launch, landing, float(doing["interval"]))
 
 		# A selection circle under EVERY soldier, from the transforms we
 		# just derived — so the highlight follows the formation's real
@@ -1094,6 +1104,9 @@ var _settings_panel: Control = null
 var _notice_seen := 0
 var _notice_until := 0.0
 var _building_nodes := {}
+## wire id -> BuildingDef, cached alongside _building_nodes so the missile
+## visual (see _refresh_buildings) doesn't re-load one from disk per frame.
+var _building_defs := {}
 ## wire id -> { "back": MeshInstance3D, "fill": MeshInstance3D,
 ## "fraction": float } — the health bar drawn OVER a damaged building.
 var _health_bars := {}
@@ -1678,7 +1691,10 @@ func _refresh_enemy_scan() -> void:
 ## Returned together because finding the enemy is the expensive half and
 ## asking twice was doing it twice.
 func _activity_for(squad_id) -> Dictionary:
-	var idle := {"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO}
+	var idle := {
+		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
+		"is_ranged": false, "interval": 0.0,
+	}
 	var info: Dictionary = _state.composition.get(squad_id, {})
 	if info.is_empty() or _state.space == null:
 		return idle
@@ -1690,6 +1706,7 @@ func _activity_for(squad_id) -> Dictionary:
 		return {
 			"activity": CosmeticOffset.Activity.WORKING,
 			"toward": _state.squad_world_position(squad_id, _now),
+			"is_ranged": false, "interval": 0.0,
 		}
 
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
@@ -1710,7 +1727,153 @@ func _activity_for(squad_id) -> Dictionary:
 			toward = entry["at"]
 	if toward == Vector3.ZERO:
 		return idle
-	return {"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward}
+	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
+	# see UnitDef's header on the field: a squad's cadence toward the arrow
+	# visual is its own attack_interval, the same value the server gates
+	# real shots on, even though the shot itself is never named on the wire.
+	return {
+		"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward,
+		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
+	}
+
+
+## Arrow visuals for ranged attacks (squads and buildings alike). Purely
+## cosmetic and entirely client-inferred, the same way `_activity_for`
+## above infers "fighting" with zero protocol changes: combat.gd never
+## names an individual shot (see its header — `resolve()` returns only a
+## squad-level alive/routed diff), so there is no wire event to draw one
+## from. Instead each ranged attacker gets an arrow launched at its own
+## attack_interval while it has a target in range, which tracks the real
+## firing rate without claiming to reproduce it exactly.
+
+## Each entry: {"node": MeshInstance3D, "from": Vector3, "to": Vector3,
+## "start": float, "duration": float}.
+var _missiles: Array = []
+## Source key ("squad:<id>" / "building:<wire id>") -> the `_now` before
+## which another launch from that key is suppressed.
+var _missile_next_launch := {}
+var _arrow_mesh: Mesh = null
+var _arrow_material: Material = null
+
+const MISSILE_SPEED := 16.0
+const MISSILE_ARC_HEIGHT := 1.4
+const MISSILE_RELEASE_HEIGHT := 1.6
+const MISSILE_IMPACT_HEIGHT := 0.8
+
+
+## Where an arrow leaves or lands: sampled terrain height (the same
+## sampler buildings use to sit on the ground rather than float or sink)
+## plus a fixed release/impact height so it reads as chest-height, not
+## ankle-height.
+func _missile_ground(world: Vector3, extra_height: float) -> Vector3:
+	var out := world
+	if _state.terrain_sampler.is_valid():
+		out.y = _state.terrain_sampler.call(world.x, world.z)
+	out.y += extra_height
+	return out
+
+
+## The on-screen landing point for a shot toward `to_canonical`, given the
+## shooter's own canonical position `from_canonical` and its already-chosen
+## render position `from_render` (D-045's per-frame lattice-copy pick).
+##
+## Squads and buildings near a seam can be geometrically close while
+## numerically far apart in canonical (wrapped) world space — D-008's
+## recurring wrap tax. `TorusSpace.world_delta` gives the shortest vector
+## between the two CELLS, which is short whenever the shot itself is
+## (every shipped attack_range is under ten world units), so adding it to
+## the shooter's render position keeps the arrow on the same lattice copy
+## the shooter is drawn at instead of flying off toward a different one.
+func _missile_landing(from_render: Vector3, from_canonical: Vector3, to_canonical: Vector3) -> Vector3:
+	var space := _state.space
+	var wrap_delta := space.world_delta(
+		space.world_to_cell(from_canonical), space.world_to_cell(to_canonical))
+	return from_render + wrap_delta
+
+
+## Built once and reused (the usual reason, D-045: rebuilding a mesh per
+## shot is a per-frame cost for an effect that fires far less than once a
+## frame). Flat and pointing +Z at rest, so it can be yawed exactly the way
+## `formation.gd` yaws a soldier to face its heading: `angle =
+## atan2(dir.x, dir.z)` into `Basis(Vector3.UP, angle)` / `rotation.y`.
+func _arrow_visual() -> Array:
+	if _arrow_mesh == null:
+		const HALF_WIDTH := 0.05
+		const HEAD_HALF_WIDTH := 0.16
+		const SHAFT_END := 0.15
+		const TIP := 0.5
+		const TAIL := -0.5
+
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var a := Vector3(-HALF_WIDTH, 0.0, TAIL)
+		var b := Vector3(HALF_WIDTH, 0.0, TAIL)
+		var c := Vector3(HALF_WIDTH, 0.0, SHAFT_END)
+		var d := Vector3(-HALF_WIDTH, 0.0, SHAFT_END)
+		st.add_vertex(a); st.add_vertex(b); st.add_vertex(c)
+		st.add_vertex(a); st.add_vertex(c); st.add_vertex(d)
+		var head_left := Vector3(-HEAD_HALF_WIDTH, 0.0, SHAFT_END)
+		var head_right := Vector3(HEAD_HALF_WIDTH, 0.0, SHAFT_END)
+		var tip := Vector3(0.0, 0.0, TIP)
+		st.add_vertex(head_left); st.add_vertex(tip); st.add_vertex(head_right)
+		st.generate_normals()
+		_arrow_mesh = st.commit()
+
+		var material := StandardMaterial3D.new()
+		material.albedo_color = Color(0.82, 0.68, 0.36)
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_arrow_material = material
+	return [_arrow_mesh, _arrow_material]
+
+
+## Launches an arrow flying from `from` to `to`, unless `key` already fired
+## within its own `interval` — the client's only substitute for a real
+## per-shot event (see the header comment above `_missiles`).
+func _maybe_launch_missile(key: String, from: Vector3, to: Vector3, interval: float) -> void:
+	var next := float(_missile_next_launch.get(key, 0.0))
+	if _now < next:
+		return
+	_missile_next_launch[key] = _now + maxf(interval, 0.1)
+
+	var visual := _arrow_visual()
+	var instance := MeshInstance3D.new()
+	instance.mesh = visual[0]
+	instance.material_override = visual[1]
+	add_child(instance)
+
+	var flat := Vector3(to.x - from.x, 0.0, to.z - from.z)
+	if flat.length_squared() > 0.0001:
+		instance.rotation.y = atan2(flat.x, flat.z)
+
+	var duration := maxf(from.distance_to(to) / MISSILE_SPEED, 0.1)
+	_missiles.append({
+		"node": instance, "from": from, "to": to,
+		"start": _now, "duration": duration,
+	})
+
+
+## Advances every in-flight arrow and frees the ones that have landed. The
+## parabolic height bump is not a real trajectory, just decoration — but a
+## straight slide along the ground reads as sliding, not flying.
+func _update_missiles() -> void:
+	var i := _missiles.size() - 1
+	while i >= 0:
+		var shot: Dictionary = _missiles[i]
+		var node: MeshInstance3D = shot["node"]
+		var t := (_now - float(shot["start"])) / float(shot["duration"])
+		if t >= 1.0:
+			node.queue_free()
+			_missiles.remove_at(i)
+			i -= 1
+			continue
+		var from: Vector3 = shot["from"]
+		var to: Vector3 = shot["to"]
+		var pos := from.lerp(to, t)
+		pos.y += sin(t * PI) * MISSILE_ARC_HEIGHT
+		node.position = pos
+		i -= 1
+
 
 ## The building armed for placement, or "" — a ghost of it follows the
 ## cursor until you click the ground or cancel.
@@ -2025,6 +2188,11 @@ func _refresh_buildings() -> void:
 			instance.mesh = mesh
 			instance.material_override = material
 			_building_nodes[wire_id] = instance
+			# Cached alongside the node rather than re-resolved every frame:
+			# BuildingSim.def_by_id() loads from disk, the same cost shape as
+			# M4's UnitRoster.by_id defect, and this loop already runs once
+			# per building per frame.
+			_building_defs[wire_id] = def
 			add_child(instance)
 
 		if bool(info["destroyed"]):
@@ -2055,6 +2223,33 @@ func _refresh_buildings() -> void:
 
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
+
+		# Armed and complete (a half-built town centre has no garrison to
+		# fire from). Same client-inferred approach as `_activity_for`:
+		# nearest enemy squad within range, using the enemy scan squads
+		# already refresh once a frame — no separate wire event exists for
+		# a building's shot either (Combat.resolve_buildings() returns only
+		# a squad-level alive/routed diff, same as the squad path).
+		var def: BuildingDef = _building_defs.get(wire_id, null)
+		if def != null and def.damage > 0.0 and progress >= 0.999:
+			_refresh_enemy_scan()
+			var mine := int(info["owner"])
+			var best_distance := def.attack_range
+			var target := Vector3.ZERO
+			for entry in _enemy_scan:
+				if int(entry["owner"]) == mine:
+					continue
+				var d := world.distance_to(entry["at"])
+				if d < best_distance:
+					best_distance = d
+					target = entry["at"]
+			if target != Vector3.ZERO:
+				var launch := _missile_ground(instance.position, MISSILE_RELEASE_HEIGHT)
+				var landing := _missile_ground(
+					_missile_landing(instance.position, world, target),
+					MISSILE_IMPACT_HEIGHT)
+				_maybe_launch_missile(
+					"building:%d" % int(wire_id), launch, landing, def.attack_interval)
 
 
 ## Health, over the building itself.
