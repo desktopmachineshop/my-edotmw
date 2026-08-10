@@ -79,10 +79,10 @@ func _build_terrain() -> void:
 	_space = TorusSpace.new(config.width, config.height)
 
 	var terrain := TerrainGen.new()
-	var elevation := terrain.elevation_field(_space)
+	# The continuous ground surface (D-067), shared with the mesh below.
+	var surface := terrain.surface_field(_space)
 	_terrain_sampler = func(x: float, z: float) -> float:
-		var cell := _space.world_to_cell(Vector3(x, 0.0, z))
-		return elevation[_space.index(cell)] * terrain.height_scale
+		return TerrainChunk.height_at(_space, surface, x, z)
 
 	var material := TerrainChunk.make_material()
 	var chunk_size := 16
@@ -95,7 +95,7 @@ func _build_terrain() -> void:
 
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size)
+			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, surface)
 			if mesh == null:
 				continue
 			var instance := MeshInstance3D.new()

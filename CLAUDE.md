@@ -342,12 +342,29 @@ and it also discharges Q15's re-armed trigger. Nobody has played a match
 with the new art (criterion 14). Until both happen, M7 is landed, not
 complete — the same distinction M2 and M6 both had to learn.
 
-**The gaps between hexes are pre-existing and not M7's**, but textured
-ground makes them obvious: terrain is 7 independent vertices per cell
-with no shared edges and hard elevation steps. If that gets fixed, it is
-a terrain-geometry decision, and note that the client's per-soldier
-terrain sampler must keep agreeing with the mesh or soldiers stand off
-the ground.
+**The gaps between hexes are fixed (D-067).** They were pre-existing
+rather than M7's, but textured ground made them the most obvious thing on
+screen. Each hex corner now takes the mean of the three cells meeting
+there, so neighbours agree and the surface is watertight; the centre
+vertex keeps its own elevation, which leaves each hex a very shallow
+pillow. Normals are derived instead of hardcoded `Vector3.UP`, so slopes
+finally shade.
+
+**The simulation did not change and must not.** `elevation_at` stays
+discrete per cell and `passability` still thresholds it — only the
+picture interpolates. That split is what made this a rendering change
+with no desync surface, and **it stops being free the moment elevation
+acquires tactical meaning** (terrain-occluded line of sight is still
+open).
+
+`TerrainGen.surface_field` is one array of 7 heights per cell, read by
+BOTH the mesher and the client's ground sampler
+(`TerrainChunk.height_at`), which is why they live in the same file. A
+sampler that matched the mesh only by being written correctly twice would
+eventually drift, and the symptom is an army floating with every number
+green. The sampler is also a hot path — once per soldier per frame — and
+is no longer a single array index; its cost on real hardware is
+unmeasured.
 
 D-006 (derived soldier positions) is Accepted and implemented in
 `formation.gd`. Its three binding clauses are load-bearing for
@@ -663,7 +680,7 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 424 tests)*
+- `just test-unit` — GUT unit tests, headless *(green: 432 tests)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

@@ -20,6 +20,92 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-067 · 2026-08-10 · Accepted — the ground is a continuous surface; elevation stays discrete
+**Decision:** Terrain renders as a **continuous surface**. Each hex corner takes
+the mean of the three cells meeting there, so neighbours agree and the mesh is
+watertight; the centre vertex keeps its own cell's elevation. Normals are
+derived from the surface instead of being hardcoded to `Vector3.UP`.
+
+**The simulation is untouched.** `elevation_at` stays discrete per cell, and
+`passability` still thresholds it — the flow field routes around exactly the
+cells it did before. Only the picture interpolates.
+
+**The problem.** Every vertex of a cell sat at that cell's single elevation, so
+each hex was a flat plateau. Elevation comes from continuous noise sampled per
+cell, so essentially **no two neighbours shared a height** — there was a small
+vertical wall at almost every boundary and nothing drew it. On the default
+preset (`height_scale` 2.0, `elevation_frequency` 2.5 on 84x96) a trough-to-peak
+run is about 17 cells, giving **~0.12 world units of step at every boundary**,
+roughly 7% of a soldier's height. Individually invisible; at a grazing camera
+angle they line up and read as dark seams across the whole map.
+
+It was pre-existing and had been survivable while the ground was flat colour.
+M7's textured terrain made it the most obvious thing on screen, which is the
+usual way a latent visual defect gets prioritised.
+
+**Two defects, one fix.** The *gaps* (nothing draws the wall) and the *stepping*
+(each hex is flat) are separable — the gaps alone could have been closed with
+vertical skirts — but fixing the stepping fixes both, and the stepping is the
+part that actually looked wrong.
+
+**Water clamps to sea level before averaging.** Every contributing elevation is
+raised to `sea_level` first, so sub-sea variation flattens and the sea reads as
+a sea. Clamping *before* the average rather than special-casing water cells
+afterwards is what keeps the shoreline watertight: a water cell and the beach
+beside it still agree at their shared corner. The cost is that water within one
+cell of land lifts by a fraction of the land's height above sea level — a few
+hundredths of a world unit at `beach_level - sea_level`.
+
+**One array, two readers.** `TerrainGen.surface_field` returns 7 heights per
+cell, and both the mesher and the client's ground sampler
+(`TerrainChunk.height_at`) read it. They live in the same file deliberately. A
+sampler that agreed with the mesh only by being written correctly twice is a
+sampler that eventually disagrees, and the symptom is an army floating above
+ground while every numeric check stays green — the same shape as M1's first
+client frame, which rendered no visible soldiers because they derived at y = 0
+inside the hills.
+
+**Corner normals come from the FIELD, not from triangles.** A corner's normal is
+the plane through the three cell centres meeting there, so all three owners
+compute the same vector. Accumulating each cell's own triangle normals would
+light every hex slightly differently and put the grid straight back into the
+picture after the geometry stopped showing it.
+
+**Rejected alternatives:**
+- *Keep the plateaus, add vertical skirts* (cheapest; the sampler would not
+  change at all, and it preserves a deliberate board-game look) — rejected
+  because the stepping is what looks wrong, not only the gaps.
+- *Terraces with bevelled rims* — more vertices per cell, breaks the 7-vertex
+  assumption and D-017's count tests, needs tuning, and lands between two
+  better answers.
+- *Continuous per-vertex noise, abandoning per-cell quantisation* — rejected on
+  two counts: the picture would disagree with the `elevation_at` that
+  `passability` thresholds, so a cell could look like a slope and be uniformly
+  walkable; and it reintroduces noise evaluation per soldier, which is the exact
+  defect D-045 removed.
+
+**Consequences:** still **7 vertices and 6 triangles per cell**, so D-017's
+chunking contract and its count tests are unchanged — D-017 is amended, not
+superseded. `TerrainChunk.build_mesh` gains an optional surface argument so a
+caller meshing many chunks builds the field once; `build_all`, the client, the
+render benchmark and the model preview all pass it.
+
+The ground sampler is no longer a single array index — it is an `atan2` and a
+handful of multiplies, **per soldier per frame**, in the loop D-045 measured at
+97% CPU. That cost is real and is not yet measured on hardware; see the revisit
+trigger.
+
+**Revisit trigger:** two, and they are different in kind.
+- If `just bench-render` on a discrete GPU shows the ground sampler as a
+  significant share of the frame, the sector search is the thing to attack
+  first — the barycentric solve is already constant-time.
+- If elevation ever acquires **tactical** meaning — terrain-occluded line of
+  sight is an open question, and would want vision to care about slope — then
+  the split this entry rests on (simulation discrete, rendering continuous)
+  stops being free and this decision must be reopened rather than extended.
+
+---
+
 ### D-066 · 2026-08-09 · Accepted — terrain texturing: the atlas modulates, vertex colour decides
 **Decision:** Terrain gains UVs and a per-biome texture atlas, applied as a
 **multiplier over the existing vertex colour**, not as a replacement for it.
@@ -3679,6 +3765,12 @@ experimentation fast.
 
 **Revisit trigger:** Pick a concrete chunk size once M1's terrain work
 starts and can be profiled.
+
+**Amended 2026-08-10 by D-067.** Chunking is unchanged — still one mesh per
+chunk, still 7 vertices and 6 triangles per cell, and the count tests here
+still hold. What changed is only what those vertices DO: a cell's corners now
+take the mean height of the three cells meeting at each one, so the ground is a
+continuous surface rather than a field of plateaus. Chunk size remains open.
 
 ---
 

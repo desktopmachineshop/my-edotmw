@@ -163,6 +163,75 @@ func elevation_field(space: TorusSpace) -> PackedFloat32Array:
 	return out
 
 
+## Vertices per cell in `surface_field`: the centre, then 6 corners in the
+## same order `TerrainChunk` emits them.
+const SURFACE_STRIDE := 7
+
+
+## The RENDERED height of every vertex of every cell, in world units (D-067).
+##
+## This is the surface the ground is drawn as, and it is deliberately NOT the
+## same thing as `elevation_field`. Elevation stays discrete per cell — it is
+## what `passability` thresholds and what the flow field routes around — while
+## the surface interpolates, so the picture is continuous without the simulation
+## acquiring a notion of slope.
+##
+## ## Why corners are shared
+##
+## Each hex corner is a point where three cells meet, and it takes the MEAN of
+## those three elevations. Neighbours therefore agree at every shared corner and
+## the surface is watertight. Before this, every vertex of a cell sat at that
+## cell's single elevation, so each hex was a flat plateau — and since elevation
+## comes from continuous noise sampled per cell, essentially no two neighbours
+## shared a height. The result was a small vertical wall at almost every
+## boundary that nothing drew, which read as dark seams across the whole map.
+##
+## The CENTRE vertex keeps the cell's own elevation. That makes each hex a very
+## shallow pillow rather than a flat plane, which keeps the hex grid faintly
+## readable in the ground without any hard edge, and keeps a cell's true height
+## meaningful at its centre.
+##
+## ## Water
+##
+## Every contributing elevation is clamped up to `sea_level` first, so all
+## sub-sea variation flattens and the sea reads as a sea. Clamping BEFORE the
+## average rather than special-casing water cells afterwards is what keeps the
+## shoreline watertight: a water cell and the beach beside it still agree at
+## their shared corner. The cost is that the water within one cell of land lifts
+## by a fraction of the land's height above sea level, which at beach_level -
+## sea_level is a few hundredths of a world unit.
+##
+## Returns `SURFACE_STRIDE` floats per cell: centre first, then corners 0..5.
+## One array, read by both the mesher and the client's ground sampler, so the
+## two cannot disagree about where the ground is — which is exactly the bug that
+## would leave soldiers floating.
+func surface_field(space: TorusSpace) -> PackedFloat32Array:
+	var count := space.cell_count()
+	var raw := elevation_field(space)
+
+	# Clamped once up front rather than inside the corner loop, where each cell
+	# is read six times by its neighbours.
+	var clamped := PackedFloat32Array()
+	clamped.resize(count)
+	for i in range(count):
+		clamped[i] = maxf(raw[i], sea_level)
+
+	var out := PackedFloat32Array()
+	out.resize(count * SURFACE_STRIDE)
+	for i in range(count):
+		var base := i * SURFACE_STRIDE
+		out[base] = clamped[i] * height_scale
+		for k in range(6):
+			# Corner k lies between two neighbours. With TorusSpace.DIRECTIONS
+			# ordered counter-clockwise from east and corner k drawn at
+			# (60k - 30) degrees, those are directions (1 - k) and (-k).
+			var a := space.neighbor_index(i, 1 - k)
+			var b := space.neighbor_index(i, -k)
+			out[base + 1 + k] = (clamped[i] + clamped[a] + clamped[b]) \
+				/ 3.0 * height_scale
+	return out
+
+
 ## Squads cannot cross water or mountains in M1. This is the array the
 ## flow field routes around (D-007), which is what makes terrain interact
 ## with pathfinding rather than being decoration.

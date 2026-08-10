@@ -425,10 +425,16 @@ func _build_terrain() -> void:
 	# render benchmark measured as the dominant term in a frame that was
 	# 97% CPU. The field holds identical values by construction, so this
 	# is memoisation and not a change to where anyone stands.
-	var elevation := terrain.elevation_field(space)
+	#
+	# Since D-067 the ground is a continuous surface rather than one flat
+	# height per cell, so this interpolates within the hex — through the SAME
+	# array the chunks below are built from, and the same code the mesher
+	# uses. That sharing is the point: a sampler that agreed with the mesh
+	# only by construction-in-two-places is a sampler that will eventually
+	# disagree, and the symptom is a floating army with every number green.
+	var surface := terrain.surface_field(space)
 	_state.terrain_sampler = func(x: float, z: float) -> float:
-		var cell := space.world_to_cell(Vector3(x, 0.0, z))
-		return elevation[space.index(cell)] * terrain.height_scale
+		return TerrainChunk.height_at(space, surface, x, z)
 
 	# One shared definition (D-066), so the benchmark renders what the game
 	# renders. Textured when generated/ has been built, vertex colour alone
@@ -438,7 +444,7 @@ func _build_terrain() -> void:
 	var meshes := []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size)
+			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, surface)
 			if mesh != null:
 				meshes.append(mesh)
 
