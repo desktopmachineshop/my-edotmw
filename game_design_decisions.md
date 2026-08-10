@@ -20,377 +20,498 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-067 · 2026-08-10 · Accepted — the ground is a continuous surface; elevation stays discrete
-**Decision:** Terrain renders as a **continuous surface**. Each hex corner takes
-the mean of the three cells meeting there, so neighbours agree and the mesh is
-watertight; the centre vertex keeps its own cell's elevation. Normals are
-derived from the surface instead of being hardcoded to `Vector3.UP`.
+### D-063 · 2026-08-06 · Accepted — the HUD a player actually reads, and a view that turns
+**Decision:** The HUD's contents are chosen for what a player can ACT on,
+and the camera gains a yaw.
 
-**The simulation is untouched.** `elevation_at` stays discrete per cell, and
-`passability` still thresholds it — the flow field routes around exactly the
-cells it did before. Only the picture interpolates.
+1. **Top bar:** resources, then `12/40 squads`, then the match clock, then
+   a **Menu** button at the right edge.
+2. **The ghost count is gone from the HUD.** It measured fog of war
+   working — a diagnostic, kept in the capture verdict where measurements
+   belong, not in the one line a player reads at a glance.
+3. **The view rotates.** Q/E in 15-degree steps, Ctrl+wheel in 7.5-degree
+   steps, plain wheel still zooms. A **compass** under the top-right
+   snaps back to north on click.
+4. **The selection panel handles a mixed force**: named for what it
+   contains, strength summed per squad, and only actions EVERY selected
+   squad can perform.
+5. **An in-game menu that does not pause**, with Resume, Settings, Save
+   (disabled — see below), Leave match and Exit.
+6. **Settings** covers only what there is a real system for: fullscreen,
+   camera pan speed, HUD scale (with an automatic default), persisted to
+   `user://settings.cfg`.
 
-**The problem.** Every vertex of a cell sat at that cell's single elevation, so
-each hex was a flat plateau. Elevation comes from continuous noise sampled per
-cell, so essentially **no two neighbours shared a height** — there was a small
-vertical wall at almost every boundary and nothing drew it. On the default
-preset (`height_scale` 2.0, `elevation_frequency` 2.5 on 84x96) a trough-to-peak
-run is about 17 cells, giving **~0.12 world units of step at every boundary**,
-roughly 7% of a soldier's height. Individually invisible; at a grazing camera
-angle they line up and read as dark seams across the whole map.
+**Why the clock and the cap come from the SERVER.** The cap is MapConfig
+data the client has no copy of, and a client that read a local `.tres`
+could print a ceiling different from the one the server enforces. The
+clock is worse: a timer each client ran for itself would show every
+player a different match length and drift further apart the longer the
+game ran — and this project is aiming at 1–2 hour matches (D-056), which
+is long enough for that to become visible. So `WELCOME` carries the cap
+and the server's tick, and the client re-anchors on the tick already
+present in every `STATE_HASH`. At a fixed 10 Hz (D-020) the tick count IS
+the elapsed time, so the clock cannot disagree with the simulation and
+costs no bandwidth of its own — D-003's derive-between-messages pattern,
+the same one construction progress and the production countdown use.
 
-It was pre-existing and had been survivable while the ground was flat colour.
-M7's textured terrain made it the most obvious thing on screen, which is the
-usual way a latent visual defect gets prioritised.
+**Why the squad count is not `curves.size()`.** That is every squad on
+screen, including other players' — a number with nothing to do with the
+ceiling printed beside it. It is counted the way
+`MatchState.has_squad_capacity` counts: this player's own living squads,
+gatherers included. Nor is it `squads.size()`, which only ever grows
+(nothing removes a dead squad from the list of ids this client was told
+it owns) and would produce "41/40".
 
-**Two defects, one fix.** The *gaps* (nothing draws the wall) and the *stepping*
-(each hex is flat) are separable — the gaps alone could have been closed with
-vertical skirts — but fixing the stepping fixes both, and the stepping is the
-part that actually looked wrong.
+**Rotation was cheap because nothing ever assumed a fixed heading.**
+Cell-picking goes through `project_ray_*`, selection and culling through
+`unproject_position`, and terrain tiling through lattice offsets around
+the camera target — so all three follow the camera without being told.
+The only thing that had to change was WASD, which now pans relative to
+where the camera looks: after a 90-degree turn the world axis that used
+to mean "up the screen" means "right", and panning in world space is the
+standard complaint about RTS cameras that get this wrong.
 
-**Water clamps to sea level before averaging.** Every contributing elevation is
-raised to `sea_level` first, so sub-sea variation flattens and the sea reads as
-a sea. Clamping *before* the average rather than special-casing water cells
-afterwards is what keeps the shoreline watertight: a water cell and the beach
-beside it still agree at their shared corner. The cost is that water within one
-cell of land lifts by a fraction of the land's height above sea level — a few
-hundredths of a world unit at `beach_level - sea_level`.
+**The compass turns its dial, not its needle.** A compass answers "which
+way am I facing", so the world's north moves around the ring while the
+direction you are looking stays fixed at the top. A spinning needle over
+fixed letters is a magnetic compass — a different instrument answering a
+different question, and an easy thing to build by accident because it
+looks almost right.
 
-**One array, two readers.** `TerrainGen.surface_field` returns 7 heights per
-cell, and both the mesher and the client's ground sampler
-(`TerrainChunk.height_at`) read it. They live in the same file deliberately. A
-sampler that agreed with the mesh only by being written correctly twice is a
-sampler that eventually disagrees, and the symptom is an army floating above
-ground while every numeric check stays green — the same shape as M1's first
-client frame, which rendered no visible soldiers because they derived at y = 0
-inside the hills.
+**Why the menu does not pause, and why that is not a shortcut.** The
+server is the authority and runs its own clock (D-002/D-020). A client
+cannot pause a match any more than it can move a squad, and in
+multiplayer it must not: "pause" would either stop everyone else's game
+or — worse — stop only this player's view while their army carried on
+being attacked. So the menu is an overlay on a running match and says so
+on its face. One consequence is load-bearing: the backdrop must not
+swallow input, or a player could not react to what they can see happening
+behind it.
 
-**Corner normals come from the FIELD, not from triangles.** A corner's normal is
-the plane through the three cell centres meeting there, so all three owners
-compute the same vector. Accumulating each cell's own triangle normals would
-light every hex slightly differently and put the grid straight back into the
-picture after the geometry stopped showing it.
+**Save is a disabled button, deliberately.** There is no save system:
+the authority is the server, so a save is a snapshot of ITS state —
+`SquadSim`, `BuildingSim`, `Economy`, `MatchState`, the RNG position and
+the tick — and none of that is serialised anywhere. The button is present
+and disabled with a tooltip saying why, rather than absent (which hides
+the gap) or present-and-silent (which would be the
+declared-and-unread shape of D-061 and D-055, built on purpose). Owner's
+call, 2026-08-06: saves get their own milestone.
 
 **Rejected alternatives:**
-- *Keep the plateaus, add vertical skirts* (cheapest; the sampler would not
-  change at all, and it preserves a deliberate board-game look) — rejected
-  because the stepping is what looks wrong, not only the gaps.
-- *Terraces with bevelled rims* — more vertices per cell, breaks the 7-vertex
-  assumption and D-017's count tests, needs tuning, and lands between two
-  better answers.
-- *Continuous per-vertex noise, abandoning per-cell quantisation* — rejected on
-  two counts: the picture would disagree with the `elevation_at` that
-  `passability` thresholds, so a cell could look like a slope and be uniformly
-  walkable; and it reintroduces noise evaluation per soldier, which is the exact
-  defect D-045 removed.
+- *A settings screen with graphics quality, resolution and keybind
+  remapping* (rejected — there is no LOD toggle to bind, no resolution
+  list, and no keybind indirection: `_handle_key` reads keycodes straight
+  off the event. Every one of those would be a control that appears to do
+  something and does not).
+- *Plain wheel to rotate* (rejected — zoom is the constant gesture and
+  keeps the bare wheel; rotation is occasional and can afford Ctrl).
+- *Pausing the match from the menu* (rejected — see above; not
+  implementable in a client-server game with an authoritative server).
+- *A "spectate" state on leaving a match* (rejected — leaving disconnects,
+  and D-033's ordinary rule then wipes the abandoned army, exactly as a
+  dropped connection does. Inventing a half-way state would be a rule
+  nobody asked for).
 
-**Consequences:** still **7 vertices and 6 triangles per cell**, so D-017's
-chunking contract and its count tests are unchanged — D-017 is amended, not
-superseded. `TerrainChunk.build_mesh` gains an optional surface argument so a
-caller meshing many chunks builds the field once; `build_all`, the client, the
-render benchmark and the model preview all pass it.
+**Consequences:** Q and E are now taken. `BUILD_KEYS`/`TRAIN_KEYS` are
+driven by `OS.get_keycode_string`, so a future building or unit given the
+letter Q or E would silently steal it — the rotation check runs first,
+which keeps that a deliberate choice rather than a race between two
+lookups. Rotation also means the minimap's view-bounds box is drawn from
+a rotated frustum; it is derived from the camera, so it follows, but it
+is now a quadrilateral rather than an axis-aligned box.
 
-The ground sampler is no longer a single array index — it is an `atan2` and a
-handful of multiplies, **per soldier per frame**, in the loop D-045 measured at
-97% CPU. That cost is real and is not yet measured on hardware; see the revisit
-trigger.
+**An intermittent `test-load` failure was seen while verifying this, and
+it is NOT this change.** One run in several reported `known_squads_max=4
+buildings_known=0` — every bot still holding only its founding party and
+nobody having built anything — on a run that otherwise ticked its full
+137 s with 0 desyncs. The same numbers reproduce with these changes
+stashed, and the immediately following run was clean (`known_squads_max=35
+buildings_known=7`, 522,600 bytes, 65.2 µs/squad at 52 squads, 0 dropped
+ticks).
 
-**Revisit trigger:** two, and they are different in kind.
-- If `just bench-render` on a discrete GPU shows the ground sampler as a
-  significant share of the frame, the sector search is the thing to attack
-  first — the barycentric solve is already constant-time.
-- If elevation ever acquires **tactical** meaning — terrain-occluded line of
-  sight is an open question, and would want vision to care about slope — then
-  the split this entry rests on (simulation discrete, rendering continuous)
-  stops being free and this decision must be reopened rather than extended.
+The likely amplifier is worth writing down: `bot_client.gd` attempts to
+found a town hall EXACTLY ONCE, at `_orders_issued == 0`. Nothing retries
+and nothing checks whether it worked, so any single refusal or lost
+opening order leaves that bot with no base for the whole run — and since
+every bot opens identically, a condition that hits one tends to hit all
+four. That makes the harness's most important precondition a single point
+of failure. Not fixed here (it is the load-test harness, not the game),
+but it is the first thing to look at if this recurs.
+
+**Revisit trigger:** if the camera ever gains PITCH as well as yaw,
+`_cell_under`'s flat-plane assumption (`distance := -from.y /
+direction.y`) still holds, but the fixed `height * 0.6` offset stops
+being a sensible framing and the camera model needs rethinking rather
+than extending.
 
 ---
 
-### D-066 · 2026-08-09 · Accepted — terrain texturing: the atlas modulates, vertex colour decides
-**Decision:** Terrain gains UVs and a per-biome texture atlas, applied as a
-**multiplier over the existing vertex colour**, not as a replacement for it.
-`TerrainGen.biome_color()` remains the single source of truth for what a cell
-looks like.
+### D-067 · 2026-08-04 · Accepted — a shoved squad steps aside, and one squad cannot take a base
+**Decision:** Two things, found together because the second could not be
+delivered without the first.
 
-**Rationale:** `terrain_gen.gd`'s header states the invariant this milestone
-must not break — "`biome_color` paints whatever this returns, so colour and
-gameplay cannot drift apart — a cell that looks like forest is a cell that
-yields wood, by construction rather than by two threshold ladders being kept in
-sync by hand." That one function feeds three renderers: the 3D chunk mesh
-(`terrain_chunk.gd`), the minimap (`client.gd`) and the preview PNG
-(`terrain_preview.gd`).
+1. **`TorusSpace.disk_offsets` is sorted nearest-first.** It enumerated
+   dq-major from `-radius`, so its first entries are the FAR edge of the
+   disk. Three callers walk it looking for "the nearest free cell" and
+   each silently took one up to `radius` away, always in the same
+   direction.
+2. **The anti-rush rule the owner asked for**, now that the first fix
+   makes it expressible: **one squad of any starting troop must fail
+   against a defended building; two must succeed.** Town centre damage
+   **45 → 60**; tower **80 → 85** and **1400 → 1700 HP**.
 
-Making the texture a *modulation* of vertex colour means the minimap and the
-preview keep working **without being touched**, and cannot drift from the 3D
-view, because they still read the same function. Replacing vertex colour with
-texture would have made three renderers that must be kept in agreement by hand —
-which is the exact failure mode the invariant exists to prevent.
+**How the ordering defect showed itself.** Two militia squads ordered
+onto one town centre dealt 1560 damage in 30 s against a single squad's
+1461 — the second squad was displaced four cells by `_separate_arrivals`,
+which is outside a 1.9-range unit's one-cell reach, so it stood there for
+the rest of the match doing nothing. Ranged units never showed it: they
+were displaced within their own range and kept firing, which is why the
+symptom read as "buildings feel weak" rather than "half my army is idle".
 
-**UVs are derived from the CELL, not from world position.** `terrain_chunk.gd`
-already documents that geometry is unwrapped while data is wrapped. A world-space
-or triplanar UV would have to match the lattice step exactly or the nine tiled
-copies (D-035) would show different texture phase, and the seam would tear.
-Cell-derived UVs are identical across all nine copies by construction, which
-sidesteps the torus tax (D-008) rather than paying it again.
+`_free_cell_near`'s doc comment said "the nearest cell"; `_approachable`
+said "walks outward"; `_spawn_cell_near` said "prefers to stand a new
+squad right at the door". All three were describing an order the table
+did not have. Sorting it (cached per radius, ties broken by (dq, dr) so
+it stays a total order for replays) made all three true at once, and the
+two-squad damage went to ~2x on the first run.
 
-Each cell's hex is mapped into its biome's tile in an 8-tile atlas, with a
-per-cell rotation hashed from the wrapped cell coordinates so the hex grid does
-not read as a visible repeating pattern.
+**The rule, and what it cost to find.** Measured across every unit in the
+roster, both buildings, one squad and two, 600 s cap:
+
+| | result |
+|---|---|
+| town centre 60 | no unit takes it solo; every line troop takes it with two |
+| tower 85 / 1700 HP | no unit takes it solo; every line troop but one takes it with two |
+
+**Two exceptions, both deliberate and both tested.** *Founders* are
+excluded from the two-squad rule: a player has exactly one founding party
+and spends it raising the town hall (D-031), so two of them is not a
+situation the game can produce. *northmen_skirmishers* cannot take a
+tower with two squads — they are the cheapest, flimsiest unit (30 food,
+42 HP a man, 1260 to a squad), the tower outranges them 5 cells to 3, and
+each shell kills two of them at once, so they rout (threshold 36) and
+spend the fight cycling. **No tower HP/damage pair exists that stops a
+lone militia squad and still loses to two skirmisher squads** — swept
+across (1400–2400 HP) x (75–140 damage). The roster spans 1260 to 3360
+effective squad HP; one flat number cannot separate those two cases.
+Wanting it needs a mechanic (siege equipment, a damage type), not another
+number. A test asserts skirmishers still do real damage to a tower, so
+the carve-out cannot quietly become "harmless".
 
 **Rejected alternatives:**
-- *Texture replaces vertex colour* (rejected — breaks the biome↔appearance
-  identity and puts three renderers out of sync by hand).
-- *Triplanar / world-space UVs* (rejected — must match the lattice step exactly
-  or the seam tears; cell UVs get it right by construction).
-- *A ShaderMaterial splat with a texture array* (rejected for now — the atlas
-  needs no shader at all, and D-065 is already spending the project's first
-  shader budget on animation. Revisit if per-cell biome blending is wanted).
-- *One surface per biome per chunk* (rejected — multiplies draw calls by the
-  biome count and then by nine for the lattice copies).
+- *Tuning damage without fixing the ordering* (rejected — impossible: two
+  melee squads were not twice one squad, so no value could satisfy both
+  halves of the rule).
+- *Giving `disk_offsets` a second, sorted table* (rejected — two tables
+  and a choice at every call site, when no caller wants the unsorted one).
+- *Stopping a lone squad by raising building HP alone* (rejected — HP
+  lengthens the fight for attacker and defender alike; it moves both
+  halves of the rule the same direction).
 
-**Consequences:** `terrain_chunk.gd` gains `ARRAY_TEX_UV`. Its existing test
-asserting 7 vertices and 6 triangles per cell is unaffected, since adding a
-vertex attribute changes neither count. Normal mapping would additionally require
-`ARRAY_TANGENT` and is deliberately deferred until the albedo pass is measured.
+**Consequences:** every "nearest cell" search in the sim changed
+behaviour — production spawns, approach cells, arrival separation — all
+in the direction their comments already claimed. Sieges are now
+manpower-limited by the contact ring, which is realistic and which nobody
+has designed: a building can only be surrounded by so many squads, and
+the rest queue behind. Ladder decidability is the thing to watch (D-055).
 
-**Revisit trigger:** if biomes need to blend into each other rather than meeting
-at hex edges, that needs per-vertex weights and a real splat shader, and this
-entry is superseded rather than amended.
+**Decidability held** (`just ai-ladder 3 600`): **2 of 3 decided, 1 draw
+at the cap**, one win each civ, first attack ~195 s — the same 2-of-3
+D-055 reports for the pre-change baseline. An earlier 3-of-3-draw reading
+was taken at a **420 s** cap and was not comparable: stronger defence
+lengthens matches, so a cap that used to be generous now truncates them.
+**When a change makes matches longer, the cap is part of the measurement**
+— re-read a ladder result against the cap it was taken at before
+concluding anything from it.
+
+**Measured after, through the wire** (`just test-load 4 120`): clean
+verdict, 0 desyncs over 476 hash checks, `buildings_known=7`, and
+**59.60 µs/squad at 52 squads** against 60.72 for the same scenario
+before — the sort is per radius and cached, so it costs nothing per call.
+Worst tick 76.6 ms, 0 dropped ticks.
+
+**A note on how nearly this was misattributed.** Two load runs failed
+first, both reporting `buildings_known=0` with byte-identical numbers,
+and the obvious suspect was this change. It reproduced with the change
+reverted, and server-side instrumentation printed nothing at all —
+because a second server container held port 4433 and the bots were
+reaching it, not the one under test. The rule from D-038's amendment
+applies to the harness as well as the code: **read the log before
+theorising, and if the instrumentation is silent, doubt the setup before
+the diagnosis.**
+
+**Revisit trigger:** if a later unit lands outside the measured band —
+tankier than legion_heavy or flimsier than skirmishers — the single flat
+`BuildingDef.damage` stops expressing this rule and needs to become
+something that scales.
 
 ---
 
-### D-065 · 2026-08-09 · Accepted — animated soldiers, with phase derived rather than integrated
-**Decision:** Soldiers are animated by a **vertex animation texture** (VAT) baked
-in Blender and sampled in a vertex shader, with per-soldier variation carried in
-`MultiMesh` custom data. **Animation phase is a pure function of (slot index,
-squad speed, global time) — never an accumulator.**
+### D-066 · 2026-08-04 · Provisional — building damage is on its own scale, and was authored on the wrong one
+**Decision:** `BuildingDef.damage` raised on both shipped shooters. First
+pass, on evidence that the defence was invisible: town centre **12 → 45**,
+watch tower **20 → 80**. **Superseded within the day by D-067**, which
+raised them again (60, and 85 at 1700 HP) to meet an explicit anti-rush
+rule — read D-067 for the shipped values. No code change in either: the
+mechanism was never broken.
 
-**The problem this exists to solve.** D-009 renders a squad as one `MultiMesh`,
-which has no skeleton, so conventional skeletal animation of 40,000 soldiers is
-not available. And D-006 clause 1 forbids per-soldier integration state — "no
-velocity, no accumulated offset, no history carried across ticks" — while its
-revisit trigger names this exact shape: "emergent per-soldier movement… Any of
-those gives a soldier its own integration state and breaks clause 1." **A walk
-cycle with a per-soldier phase counter is a D-006 violation**, not a grey area.
+**The report was "the town hall was meant to have some ranged defensive
+ability but doesn't seem to".** It has one, and it fires: measured, a
+shipped town centre engages at 4 cells, on schedule, every 2 s. It simply
+did almost nothing.
 
-**The escape is that phase is derived, not integrated:**
+**The cause is a scale mismatch between two fields with the same name.**
+A squad's volley is `UnitDef.damage x alive` — 36 militia at 9.5 is
+**342 per second**. A building fires one flat `BuildingDef.damage`,
+multiplied by nothing: a town centre was **6 per second**, or 1.8% of one
+squad. The numbers look comparable in the `.tres` files; they are a
+factor of ~40 apart. Measured, one militia squad against each shipped
+defence, no support on either side (the "after" column is this pass's
+45/80, not the shipped values — see D-067):
 
-```
-clip           = f(squad state: moving / idle / fighting / routing)
-rate           = squad_speed / stride_length          # from the curve
-phase(slot, t) = fract( t * rate + hash(slot) )
-```
+| | before | this pass |
+|---|---|---|
+| town centre razed in | 63 s, costing **4 of 36** | 82 s, costing **20 of 36** |
+| tower razed in | 30 s, costing **4 of 36** | 44 s, costing **26 of 36** |
 
-Every input is already known to the client: the curve gives speed, the squad's
-own replicated state gives the clip, the slot index gives the offset. Nothing
-accumulates, nothing is stored per soldier, nothing is read back by simulation,
-and nothing enters `composition_hash()`. This is the same move D-052 made with
-colour — derived from state both sides already hold, so no wire message and no
-possibility of disagreement — and it satisfies D-006 by construction rather than
-by care.
+**Why not higher.** At 65 the town centre wipes a lone militia squad and
+survives on 408 of 3000 — which matches the code comment's intent ("an
+early rush cannot simply walk into a base"), and is deliberately NOT what
+shipped. D-055 is the reason: this project has already had every ladder
+match end in a draw because buildings could not be destroyed, and read it
+as an AI weakness for several rounds. Defence that is *felt* is the goal;
+defence that *repels* trades a real risk to decidability for it. 45 keeps
+a lone squad able to take a town centre while losing over half its men.
+Raising it further is a live option and a one-line data change.
 
-**Compliance with D-006's three clauses, stated explicitly so a later change can
-be checked against it:**
+**Why the tower is 80.** It is bought with 120 stone and is the only
+building whose purpose is fighting, so attacking it must be decisively
+worse than attacking the town centre you start with — otherwise nobody
+builds one. It still falls to a single squad in ~44 s, which keeps a
+tower a delay rather than a wall.
 
-1. *Purity* — animation adds no per-soldier state. Phase is recomputed from
-   `TIME` every frame and stored nowhere.
-2. *Cosmetic offsets are one-way* — the shader displaces vertices for display
-   only. Simulation never reads a vertex position.
-3. *Deterministic casualty reassignment* — unaffected. `alive` still restamps
-   the formation; animation reads slot index, which the formation already
-   assigns deterministically.
-
-**What would break it,** recorded so it is recognisable: any per-soldier phase
-counter advanced by delta time; any animation blend weight carried across
-frames; any attempt to make a soldier's footfall depend on where that soldier
-was last frame. All three are integration state wearing a cosmetic disguise.
-
-**Two implementation choices made to de-risk the renderer,** since this is the
-project's first shader and it must run under GL Compatibility — the only
-renderer `just test-client` can use (D-014's amendment):
-
-- **Vertex index travels in `UV2.x`, not `VERTEX_ID`**, so the shader does not
-  depend on a built-in whose availability under `gl_compatibility` is not
-  guaranteed.
-- **Custom data is written on clip *change*, not per frame.** D-045 measured the
-  frame at 97% CPU in derivation; the per-frame hot loop stays transforms only.
-
-D-021 permits this: "GPU acceleration is available to the client renderer, not
-to the server-side solver." The server holds no art and runs no shader.
+**The test gap this went through, which is the part worth keeping.** The
+buildings-shoot tests all used a synthetic def — damage 40, a 0.1 s
+interval, 20 HP defenders — chosen so a five-tick test can observe a
+casualty. They prove the MECHANISM and are silent about the shipped
+numbers, and the only test that touched the real `.tres` asserted
+`damage > 0`. So: mechanism correct, data nonzero, feature invisible,
+everything green. Two tests now run a whole encounter with shipped defs
+and assert what it COSTS an attacker, as a floor (a third of the squad
+for a town centre, half for a tower) rather than an exact number, so
+ordinary tuning does not thrash them.
 
 **Rejected alternatives:**
-- *Skeletal animation with one node per soldier* (rejected — D-009; 40,000 nodes).
-- *A per-soldier phase counter* (rejected — D-006 clause 1, as above).
-- *No animation, static posed meshes* (considered and explicitly chosen against
-  by the owner, 2026-08-09, having been shown the risk. Retained as the cut line
-  if the spike fails — see Consequences).
-- *CPU-side vertex animation* (rejected — the frame is already CPU-bound; this
-  is the one place where moving work to the GPU is spending the resource that
-  has headroom).
+- *Scaling building damage by something, so the two fields read alike*
+  (rejected — a building has no `alive`; the honest fix is to document
+  the scale, which `building_def.gd` now does at the field).
+- *Leaving it and calling it balance* (rejected — the owner reported it
+  as a missing feature, which is what a 1.8%-of-a-squad defence is).
+- *Raising building damage generally* (rejected — barracks and storehouse
+  are targets by design, and that is D-032's data-driven point).
 
-**Consequences:** the project acquires its first `.gdshader`, and unit materials
-move from `StandardMaterial3D` to `ShaderMaterial`. That relocates two existing
-behaviours onto uniforms: D-052's owner colour (now a team-colour mix against a
-texture mask) and the fog-ghost fade (`client.gd` currently mutates
-`albedo_color.a` in place). Vertex throughput becomes a budget nobody has
-measured — roughly 24M animated vertex invocations at D-018's full scale — and
-mesh LOD is the lever if it bites.
+**Consequences:** attacking into a base is now a real cost, so matches
+lengthen — the direction D-056 wants, though nowhere near its 1–2 hours,
+and for D-056's own reason: there is still no progression to spend the
+time on. AI ladder behaviour is affected and was checked for
+decidability, not tuned for.
 
-**The cut line, if the spike fails:** ship static posed meshes and defer
-animation. That still delivers real models and textured terrain, and it is a
-clean boundary rather than a scramble.
-
-**Revisit trigger:** if animation ever needs to know what a soldier did last
-frame — blending between clips, reacting to a neighbour, a footfall that lands
-on terrain — that is integration state and this entry must be reopened against
-D-006 rather than quietly extended.
+**Revisit trigger:** if ladder matches start drawing at the time cap
+again, this is the first number to look at — and D-055's lesson says
+check whether anything can still die before concluding the AI is weak.
 
 ---
 
-### D-064 · 2026-08-09 · Accepted — art direction and the asset pipeline; supersedes D-011, closes Q12
-**Decision:** Art is **stylised low-poly with strong silhouettes**, budgeted at
-roughly 300 triangles per soldier, and it is **generated by committed Python
-scripts** running Blender headless as a library (`bpy`). Both the generators and
-their outputs are committed.
+### D-065 · 2026-08-04 · Accepted — shape travels, and a player's choice latches
+**Decision:** Two fixes to D-058, which shipped its server half only.
 
-**Rationale — the look.** The camera is a strategy camera and the readable unit
-is a formation, not a face. D-052 already fixed the priority order: whose units
-those are is read first, which kind they are second, "and shape still carries
-it." Stylised low-poly optimises for exactly that ordering — silhouette and
-colour block over surface detail — and it is what a script can generate well,
-which the other candidate styles are not. Semi-realistic figures at ~2,000
-triangles would be roughly 10x the geometry at 26,644 visible soldiers and would
-need a mesh LOD chain that does not exist; painterly detail lives in hand-painted
-texture, which is the weakest thing to produce procedurally.
+1. **`SQUAD_INFO` carries `shape`.** It never did. The client resolved
+   shape from `UnitDef.formation_shape`, which was correct before D-058
+   made shape mutable and was never revisited.
+2. **A player order latches.** `SquadSim.set_shape` (the player's entry
+   point, via `ORDER_FORMATION`) marks the squad chosen; the simulation's
+   own switching goes through the new `SquadSim.suggest_shape`, which
+   ignores a chosen squad. The economy now suggests rather than sets.
 
-**Rationale — the pipeline, which is the part that matters more.** This project
-exists in plain text so that it is directly editable by Claude Code; `CLAUDE.md`
-calls that "a design constraint, not an afterthought" and asks that any
-"forced binary-only or GUI-only step (hand-sculpted final meshes…)" be flagged as
-an exception rather than treated as the default path. Hand-sculpting in Blender's
-GUI would make every model an opaque binary that cannot be read, reviewed or
-iterated on in this workflow.
+**Rationale:** the reported symptom was "the formation buttons don't
+change the formation of the workers". There were two independent causes
+and the second one hid behind the first.
 
-So **the generator is the source of truth**: committed Python under `art/`,
-building meshes with `bmesh` and exporting glTF, run by `just build-assets`.
-`bpy` is a PyPI wheel needing neither GPU nor GUI, so this runs in the same
-headless containers everything else does.
+*Workers specifically:* `Economy._tick_hauls` asserted `ring`/`sparse` on
+every gathering crew every tick, so a player's choice was undone within
+100 ms — one tick. The button worked perfectly and its effect lasted less
+than a frame.
 
-**Outputs are committed as well as generators.** A fresh clone plays without
-installing Blender, which keeps `bpy` off the critical path for anyone who only
-wants to run the game. The cost is binary churn in git, accepted deliberately and
-bounded by rebuilding assets on art changes rather than code changes.
+*Everybody, invisibly:* shape was not on the wire at all, so no client
+ever learned about any shape change. D-058's own text says the server
+"resends ordinary `SQUAD_INFO` — the message that already carries shape".
+It did not carry shape. The server-side plumbing it describes
+(`take_shape_dirty`, per-client visibility filtering, the no-op guard) is
+all real, correct, and was sending a message with the field missing.
 
-**Determinism is required, not hoped for:** fixed seeds, sorted iteration, no
-timestamps. `generated/manifest.json` records source hashes so a stale committed
-build fails the test suite instead of silently shipping.
+**This was also a live desync**, not only a cosmetic bug. Shape is in
+`composition_hash`: the server hashed the real shape, the client hashed
+the UnitDef's. Every gathering crew that reached a node — which is every
+gathering crew — put its owner into permanent disagreement with the
+server. A test now reproduces it (`test_client_state.gd`), and it fails
+by exactly one desync before the fix.
+
+**Why latch rather than let the sim keep switching:** the automatic
+ring-while-working switch is a convenience for crews nobody has an
+opinion about. A player who presses a button has an opinion, and a rule
+that silently reverts a direct order is worse than no rule. The cost is
+stated plainly: a crew you have shaped by hand stops auto-switching for
+the rest of the match. That is the deal the button makes.
 
 **Rejected alternatives:**
-- *Hand-authored `.blend` files* (rejected — the GUI-only step `CLAUDE.md` names;
-  it removes the whole workflow premise).
-- *Generators only, outputs gitignored* (rejected — makes Blender a hard
-  dependency of running the game).
-- *Semi-realistic and painterly styles* (rejected on cost and on
-  procedural-generability, above).
+- *Clearing the latch on the next gather order* (rejected — "sometimes
+  your order sticks" is harder to learn than "it sticks").
+- *Hiding the formation buttons for gatherers* (rejected — it makes the
+  symptom go away by removing the feature, and leaves the wire bug).
+- *Sending shape in the curve stream* (rejected — that is D-058's own
+  revisit trigger, and it fires on bandwidth evidence, which does not
+  exist. `SQUAD_INFO` per change is still the cheap answer).
+- *Deriving shape on the client from replicated haul phase* (rejected —
+  D-058 already rejected replicating the phase, and this bug is not a
+  reason to reopen it).
 
-**Consequences:** supersedes **D-011**, whose revisit trigger ("once M3 is
-complete… or once tiers 2/3 are explicitly prioritized") has now fired on both
-halves. Closes **Q12** ("art direction for mesh tiers 2 and 3, and who produces
-it"): the answer to *who* is a script in this repo. Tier 2 (modular/parametric)
-is absorbed rather than skipped — parametric composition is how the generators
-are written.
+**Consequences:** `SQUAD_INFO` grew a length-prefixed string per squad —
+a handful of bytes on a message sent per change, not per tick. Replays
+are the wire format byte-for-byte (D-016), so **replay files recorded
+before this change no longer decode**. `D-059`'s "ring means working"
+client-side inference is now defeatable: a player who parks workers in
+`ring` on the road gets the working animation while they walk. Cosmetic,
+one-way, and left alone.
 
-`UnitDef` and `BuildingDef` gain `model_id`, defaulting empty so the primitive
-path still works for bots, tests and a missing `generated/`. Logged against
-D-010. `model_id` is keyed by archetype, never by civ — D-046 criterion 3 has a
-test asserting no `.gd` file names a civ.
-
-**Revisit trigger:** if a unit ever needs art a script cannot express, take the
-hand-authored exception deliberately for that one asset and amend this entry —
-do not let the pipeline erode silently.
+**Revisit trigger:** if any future system wants to change a squad's shape
+automatically (a shield wall on contact, skirmishers spreading under
+fire), it must use `suggest_shape` — and if such a rule is important
+enough that it should override a player, that is a real design decision
+and belongs here, not in a call site.
 
 ---
 
-### D-063 · 2026-08-09 · Accepted — M7's exit criteria
-**Decision:** M7 is **"it looks like a game"** — real authored unit models,
-animated, on textured terrain, with the asset pipeline itself reproducible from
-plain text. Written before the code, per D-043's standing rule.
+### D-061 · 2026-08-04 · Accepted — four interface defects, and the one shape three of them share
+**Decision:** Four faults reported from real play are fixed, and two of
+them establish rules rather than just changing a number.
 
-**The ladder changes.** D-015's ladder ended "M6 (second civ) → M7 (Steam)".
-Art becomes **M7** and Steam becomes **M8**.
+1. **The HUD is laid out against the window** (`hud_layout.gd`), by two
+   separate mechanisms: a CanvasLayer **scale** so it is the same physical
+   size on any monitor, and **anchoring** so it fits any window *shape*.
+2. **Surviving damage replicates.** `BuildingSim.damage` marks the
+   building dirty on any change of health, not only on the killing blow —
+   quantised to `HEALTH_REPLICATION_STEPS` (32) so a siege costs a bounded
+   number of messages. The client draws a health bar over the building
+   itself, not only in the selection panel.
+3. **Right-click sets a rally point again.** The building branch of
+   `_order_selected` now runs *before* the empty-selection guard.
+4. **A building covered in units is selectable** (`selection_pick.gd`):
+   squads and buildings are ranked on one scale instead of two.
 
-**The governing constraint.** Every previous milestone could be judged by a
-number. This one mostly cannot, and the project has already been bitten twice by
-that gap: M1's first client frame passed every numeric check while containing no
-soldiers, and M6's capture reported a healthy 96 soldiers and 97 colours over a
-frame with **no terrain in it at all**. So the criteria below pair every
-automated check with a picture somebody looked at, and the standing rule from
-that second incident applies in full: **a green verdict is not the same as a
-correct picture.**
+**The shape three of these share:** each was a rule that was fully
+written, correct in isolation, and never reached. Rally orders were
+encoded, sent-ready, validated server-side and drawn on the ground — and
+the client returned two lines before the branch that sends them, because
+selecting a building clears `_selected` and the guard against ordering an
+empty selection fired first. `health_fraction` was in the wire format, in
+`ClientState`, and drawn by the panel — and only ever carried the value
+1.0, because nothing marked a damaged building dirty. Buildings competed
+for clicks against a score that was negative by construction, so a
+comparison that reads correctly (`if distance < best`) could not be true.
 
-**The criteria:**
+That is the same class as the uncalled `BuildingSim.damage()` of D-055,
+`UnitDef.cost`, and `BuildingDef.cost` — but a step harder to find,
+because the member here *does* have a caller. The caller is simply
+unreachable, or reachable only with an argument that cannot occur. **Grep
+for uncalled public members catches the first kind and not this one.** The
+only thing that found these was playing the game and noticing that a
+thing which plainly ought to work did not.
 
-*The pipeline (D-064)*
+**Why the HUD needs both scale and anchoring:** either alone looks like it
+is enough and is not. On a 16:9 monitor scaling by itself is sufficient,
+which is exactly the trap — every common desktop is 16:9, so an anchoring
+bug hides until someone runs at 21:9 or drags the window. Anchoring by
+itself leaves a 4K HUD the size of a postage stamp. The reference window
+is 1280x720 and the scale is `min(w/1280, h/720)`, so any 16:9 window
+comes back to a design space of exactly 1280x720 and reproduces the
+hand-tuned layout pixel for pixel; other shapes deviate only in where the
+edges are.
 
-1. `just build-assets` produces every model and texture from committed Python,
-   headless, with no GPU and no Blender GUI. Run twice, the output is
-   **byte-identical**.
-2. A test fails if `generated/` is stale with respect to `art/` — a committed
-   build that no longer matches its generator is caught by `just test-unit`, not
-   by eye.
-3. A fresh clone with no Blender installed still runs the game.
+**Why building health is quantised rather than streamed:** a besieged
+building takes damage every attack cooldown, and marking each hit dirty
+would resend its whole entry several times a second per attacker — D-003's
+per-tick snapshot wearing a health bar. 32 steps is finer than the drawn
+bar resolves and bounds a building's whole life to at most 32 health
+messages. Note the first scratch always crosses a step, because full
+health sits on a boundary: "this building has been touched at all" is
+worth a packet.
 
-*Units (D-064, D-065)*
+**Why selection compares two different metrics:** *which squad* is decided
+by distance normalised by each candidate's own footprint, so a small squad
+clicked squarely beats a huge one merely grazed. *Squad or building* is
+decided by raw distance to centre. Normalising both was tried first and
+fails: a formation filling the screen scores near zero almost everywhere
+and still swallows the town centre standing in the middle of it. Which
+centre the cursor is nearer does not care how big either thing is.
 
-4. Every unit archetype has an authored model within the triangle budget, and a
-   squad still renders as **exactly one `MultiMesh`** (D-009's structural test
-   unchanged and unamended).
-5. **Owner colour still reads first** (D-052). Judged on a picture: two armies of
-   the same civ, at play distance, told apart at a glance.
-6. Soldiers animate, and **a test proves animation adds no per-soldier state**:
-   same inputs give same outputs, and `composition_hash()` is unchanged by every
-   animation input. This is D-065's falsifiable criterion and the one the
-   milestone turns on architecturally.
-7. **A routing squad is visibly routing.** D-019's rout has existed since M2 and
-   has never been legible on screen.
+**Rejected alternatives:**
+- *Godot's `canvas_items` stretch mode for the HUD* (rejected — it pins
+  the root viewport to the base resolution, so the 3D world would render
+  at 1280x720 on a 4K monitor. The whole point of a big screen here is
+  seeing more soldiers).
+- *Streaming building health every tick* (rejected — D-003).
+- *"A building always wins an overlapping click"* (rejected — clicking a
+  soldier standing beside a barracks has to select the soldier; the fix
+  must not become the mirror of the bug).
+- *Scaling the HUD by adjusting font sizes and widths individually*
+  (rejected — one transform carries borders, padding and bar thicknesses
+  together, and none of them can be forgotten).
 
-*Terrain (D-066)*
+**Measured, not asserted.** `just test-load 4 120`, the same run with and
+without the change (stashed), 52 squads:
 
-8. Terrain is textured, and the **minimap and terrain preview still agree with
-   it** — verified by construction (both still read `biome_color`) and by
-   looking at both pictures.
-9. No seam artefact: a screenshot spanning the wrap shows continuous texture.
+| | bytes | µs/squad | worst tick |
+|---|---|---|---|
+| before | 523,544 | 73.07 | 58.3 ms |
+| after | 522,880 | 75.52 | 67.3 ms |
 
-*It has to hold up*
+Bandwidth is **unchanged** — the after figure is 664 bytes *lower*, which
+is run-to-run noise, and so is the µs/squad difference (D-020's caveat:
+the order of magnitude is the result, not the third digit). Both runs:
+`VERDICT ok`, 0 desyncs, 0 building desyncs, 0 dropped ticks. So health
+replication at 32 steps costs nothing detectable at this scale, which is
+what quantising was for. It has NOT been measured under a long siege of
+many buildings at once, which is where it would show if anywhere.
 
-10. `just test-unit` green. `just test-load 4 120` unchanged — the server holds
-    no art, so any movement there means something leaked across the
-    client/server boundary.
-11. `just bench-render` run on a **discrete GPU**, three times: baseline before,
-    after static meshes, after animation. Every number quoted with its squad
-    count and the adapter name. This simultaneously discharges **Q15's re-armed
-    trigger**, which asks for exactly this measurement before M7.
-12. `just test-client` green **and the PNG opened by a human**.
-13. Every new check **observed to fail** before it is trusted (D-022), with
-    perturbation and revert applied atomically (D-044).
+**Consequences:** the HUD's scale is clamped to [0.75, 2.0], so a very
+large monitor gets a HUD that stops growing rather than one that keeps
+pace — deliberate, since the reason to own one is seeing more map. Mouse
+positions arrive in real pixels and HUD geometry is in design units, so
+anything doing its own pixel arithmetic against the HUD must convert
+(`Client._to_hud`); Godot handles Controls itself, so this is only the
+minimap hit-test and the drag box. Both are converted; a third such site
+added later and left unconverted would fail silently and look like a
+mis-aimed click rather than a scaling bug.
 
-*The judgement no check can make*
+**What is NOT verified, and should be said plainly:** the health bar's
+DRAWING has not been photographed. The HUD was rendered and looked at at
+1280x720, 1920x1080 and 2560x1080 (the last is the case scale alone
+cannot fix), and the replication fix has a test that was watched failing.
+But getting a building damaged *on camera* under the software rasteriser
+did not happen: `test-client`'s capture scenario never had its base
+attacked, and a ladder match with AI opponents killed the client
+container every time — llvmpipe at 200s+ with four players' armies is
+past what it will carry on this host. One real defect in the drawing was
+found by reading rather than seeing (the bar of a destroyed building was
+never hidden, because `_refresh_buildings` skips past the update on the
+`destroyed` branch — it would have hung over the rubble EVERY time a
+building died). Treat the rest of that path as reviewed, not proven, and
+look at it the next time a real match is played.
 
-14. **Does it look good enough to want to play?** Judged by a human at
-    `just run-client`. M3 and M6 both carried a criterion of this shape; this
-    milestone is the one where it is the actual point.
-
-**Rejected alternatives:** Shipping art without exit criteria (rejected —
-D-043's standing rule exists because M4 broke it and the audit was the cost).
-Judging art solely by frame time (rejected — the failure mode here is a correct
-number over a wrong picture, twice observed).
-
-**Consequences:** M7 is the first milestone whose primary deliverable cannot be
-fully verified headlessly. Criteria 5, 7, 9, 12 and 14 need a human with a GPU.
-
-**Revisit trigger:** if the VAT spike fails under GL Compatibility, criteria 6
-and 7 are deferred with D-065's cut line and this entry is amended to say so —
-not quietly dropped.
+**Revisit trigger:** if the HUD grows a piece that must stay a fixed
+number of REAL pixels regardless of scale — a crosshair, a
+pixel-art-aligned element — the single-transform approach stops being
+sufficient and the layer split has to be reconsidered.
 
 ---
 

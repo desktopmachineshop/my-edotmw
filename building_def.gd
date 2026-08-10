@@ -37,10 +37,19 @@ class_name BuildingDef
 ## twenty seconds and the ground may be claimed by the time it gets there.
 @export var no_build_radius: int = 4
 
-# Combat (D-032). Only the tower has an attack; everything else leaves
-# `damage` at zero and is simply a target. Buildings resolve attacks in a
-# pass separate from the squad path — `Combat._check_rout` calls
-# `force_move`, and a building has neither morale nor the ability to move.
+# Combat (D-032). The tower and the town centre have an attack; everything
+# else leaves `damage` at zero and is simply a target. Buildings resolve
+# attacks in a pass separate from the squad path — `Combat._check_rout`
+# calls `force_move`, and a building has neither morale nor the ability to
+# move.
+#
+# READ THIS BEFORE TUNING `damage` (D-066). It is NOT on the same scale as
+# `UnitDef.damage`, and the difference is a factor of ~40. A squad's volley
+# is `damage x alive` — 36 militia at 9.5 is 342 per second. A building
+# fires one flat `damage`, multiplied by nothing, so a number that looks
+# comparable to a unit's is worth about one soldier. The shipped values
+# were authored that way and the defence was invisible in play: a town
+# centre cost a lone attacking squad 4 men out of 36.
 @export var attack_range: float = 0.0
 @export var damage: float = 0.0
 @export var attack_interval: float = 1.0

@@ -298,7 +298,8 @@ lobby PLAYERS="1":
 # this recipe ignores EDOTMW_RUNTIME and refuses to pretend otherwise.
 #
 # ADDRESS defaults to localhost; pass the server's host when connecting to
-# one running elsewhere. Controls: WASD pans, wheel zooms, right-click
+# one running elsewhere. Controls: WASD pans, wheel zooms, Q/E and
+# Ctrl+wheel turn the view (D-063), ESC opens the game menu, right-click
 # orders every owned squad to the clicked cell.
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT="4433":

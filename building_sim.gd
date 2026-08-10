@@ -369,19 +369,52 @@ func advance_construction(dt: float) -> Array:
 	return completed
 
 
+## How finely a SURVIVING building's health replicates, as steps of full
+## health.
+##
+## Health has to be quantised for the same reason construction progress is
+## not streamed at all (D-003): a besieged building takes damage every
+## attack cooldown, and marking each scratch dirty would resend its whole
+## entry several times a second per attacker — the per-tick snapshot this
+## project exists to avoid. A 32nd of full health is finer than the bar
+## drawn on screen resolves, and it bounds a building's entire life to at
+## most 32 health messages plus one for its death.
+const HEALTH_REPLICATION_STEPS := 32.0
+
+
 ## Apply damage. Returns true if this call destroyed the building.
 ##
 ## An unfinished building takes damage the same way a finished one does —
 ## a half-built tower is a real thing standing on the map, not a plan.
+##
+## SURVIVING damage marks the building dirty too, not only fatal damage.
+## It did not, and the effect on screen was that a building's health was
+## replicated exactly twice — 100% when first revealed, and never again
+## until it vanished. A player watching their town centre being torn down
+## saw a full green bar until the moment it was rubble, so there was no
+## way to tell a raid from a rout, or to know a building needed help while
+## helping it was still possible. `take_dirty`'s own doc comment has said
+## "completion, destruction, damage" since it was written; damage was the
+## one of the three that never happened.
 func damage(building: int, amount: float) -> bool:
 	if _destroyed[building] == 1:
 		return false
-	_health[building] = maxf(_health[building] - amount, 0.0)
+	var before := _health[building]
+	_health[building] = maxf(before - amount, 0.0)
 	if _health[building] > 0.0:
+		var full := maxf(_defs[building].max_health, 0.001)
+		if _health_step(before, full) != _health_step(_health[building], full):
+			_dirty[building] = true
 		return false
 	_destroyed[building] = 1
 	_dirty[building] = true
 	return true
+
+
+## Which replication step a health value falls in. Its own function so the
+## two calls in `damage` cannot drift apart.
+func _health_step(health: float, full: float) -> int:
+	return int(floor(clampf(health / full, 0.0, 1.0) * HEALTH_REPLICATION_STEPS))
 
 
 func living_building_count(player: int) -> int:
