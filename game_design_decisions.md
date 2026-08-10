@@ -512,6 +512,646 @@ look at it the next time a real match is played.
 number of REAL pixels regardless of scale — a crosshair, a
 pixel-art-aligned element — the single-transform approach stops being
 sufficient and the layer split has to be reconsidered.
+---
+
+> **D-068 through D-074 are one argument and read in ascending order**,
+> against this file's usual newest-first convention. They are the output
+> of the age/tech planning milestone Q15 reserved, all dated 2026-08-04.
+> D-068 is the derivation base: every number in the six that follow is
+> supposed to trace back to a line in it. Read it first or the rest look
+> arbitrary.
+>
+> **Numbering note, and a near miss worth recording.** This block was
+> first written as D-063…D-069 against a worktree that was 14 commits
+> behind `origin/main`. Main had meanwhile allocated **D-063 through
+> D-067** for the HUD, formation-on-the-wire, building damage and the
+> anti-rush rule — so the block was renumbered to D-068…D-074 before the
+> merge, while every occurrence was still unambiguously local.
+>
+> **The check that missed it was run against un-fetched refs**, which is
+> the same shape as trusting a stale sweep over a live run (D-043).
+> Allocating a decision number requires `git fetch` first, then a scan of
+> **both** this file's headings and the code citations — D-048, D-049,
+> D-050, D-053, D-054, D-057 and D-062 are all cited by code with no
+> entry here, so the highest heading has never been the highest number
+> in force. That doc debt is unfixed and is its own job.
+>
+> **Milestone numbering moved too:** main's ladder is M7 = real models
+> and textures, M8 = Steam. The epoch work is therefore **M9**.
+
+### D-068 · 2026-08-04 · Provisional — what a 1–2 hour match is made of
+**Decision:** The design centre is a **90-minute match**, with 60 and 120
+as the band edges (D-056 set 1–2 hours). Six phases, and for each one the
+question the player is actually answering. **This table is the derivation
+base for D-069's epoch timings and D-072's costs. A number in either that
+cannot be traced to a row here is unjustified and should be challenged.**
+
+| Phase | Minutes | Epoch | The decision being made |
+|---|---|---|---|
+| Opening | 0–8 | 1 | **Where**, not what. Site quality versus site safety. |
+| Expansion | 8–22 | 1→2 | The first real fork: bank toward the next epoch, or field levy troops now. |
+| First contact | 22–35 | 2 | Contest the middle or concede it. Which archetype to commit to. |
+| Consolidation | 35–55 | 3 | Where your ground actually *is*, and what you are willing to lose. |
+| Mid-war | 55–75 | 3→4 | Commit to a breakthrough, or grind. Siege is an investment that does not defend you. |
+| Decision | 75–95 | 4→5 | The decisive battle, or bleed them. Signature troops arrive and are scarce. |
+
+**Rationale — the gap this has to close is 4×, and it is in the opening.**
+Measured: first contact at ~326 s (5.4 min) and `ai-ladder` deciding at
+~325 s. This account puts first contact at ~22 min and the decision after
+75. **The entire current match fits inside the row labelled "Opening."**
+That is the honest size of the problem, and it is why D-056's tuning
+could not reach the target and said so.
+
+**Both figures predate D-066/D-067**, which raised building damage
+sharply and imposed "one squad must fail, two must succeed" — a change
+that pushes decidedly toward longer matches and was made for its own
+reasons, not for this table. **Re-measure before treating the 4× as
+current.** The direction of the gap is not in doubt; its size is, and a
+number that has been overtaken is exactly what this project's own rules
+say not to quote.
+
+The stretch is not achieved by slowing anything down. It is achieved by
+epoch 1 having no standing army in it at all (D-069): the opening is
+genuinely economic because there is nothing else to spend on yet. D-056's
+2026-08-04 amendment already established that the owner wants the slower
+ramp — this extends the same direction on purpose rather than as a
+side effect of gatherer crew size.
+
+**Time in epoch, derived from the table:** E1 0–15, E2 15–33, E3 33–55,
+E4 55–75, E5 75+. That is 15–22 minutes a rung, against a genre norm of
+8–20. Deliberately at the top of the band: five rungs at genre-typical
+pace produces a 50-minute match, not a 90-minute one.
+
+**This entry also answers Q15's "is an army a ratchet or a running cost?"
+— it is a running cost.** The phase-by-phase account is what the owner
+said should decide it, and the account cannot support its own last three
+rows without it:
+
+- **Rows 4–6 need losing an army to hurt.** Without upkeep a defeat costs
+  only the rebuild time, so there is no such thing as a decisive battle —
+  which is the entire content of the "Decision" row.
+- **Raiding must be strategy, not flavour.** The Northmen identity
+  (D-071) is raiding economy; with no upkeep, killing workers slows an
+  opponent's *rate* of buying and never the *size* of what they hold.
+- **It is already measured.** D-056 found Legion banking a peak stockpile
+  of **2,480 while pinned at the squad cap**. Accumulation with nowhere
+  to go is exactly the endgame texture rows 5–6 need to not have.
+
+**Shape:** a per-soldier food drain per second (`UnitDef.upkeep_food`,
+scaled by `CivDef.upkeep_modifier`). When the wallet cannot pay, **morale
+decays** rather than soldiers vanishing — this reuses D-019's existing
+morale and routing machinery instead of inventing a second failure mode,
+and a starving army breaking is the historically apt outcome.
+
+**Upkeep replaces `squad_cap` as the binding constraint, and that resolves
+Q15's "one mechanism too many" worry.** Both stay, with different jobs:
+`squad_cap` reverts to being the **engineering ceiling** protecting
+D-018's ~50 squads/player and D-020's tick budget, and should be set high
+enough that it is not what a player feels. Upkeep is the **design**
+constraint and is what actually bites. Q15 was right that two caps is one
+too many — the fix is that only one of them is a cap you play against.
+
+**Rejected alternatives:**
+- *No upkeep, reach 90 minutes on epoch costs alone.* Rejected — it
+  produces the D-056 endgame verbatim: two maxed armies and a stockpile
+  nobody can spend.
+- *Upkeep as a hard population cost (AoE-style houses).* Rejected — that
+  is a second hard cap, which is the thing Q15 warned against, and it
+  makes losing an army *free* again.
+- *Unpaid upkeep kills soldiers.* Rejected — a death spiral with no
+  player agency, and it fights D-024's casualty model for ownership of
+  `alive`.
+
+**Consequences:** the AI must learn to value an army it has to keep
+paying for, which is a real change to `ai_player.gd` and not a tuning
+pass. The HUD needs a net-income figure or upkeep is invisible until it
+hurts. And every cost in D-072 is now a *rate* decision as well as a
+price.
+
+**Revisit trigger:** if telemetry (D-074) shows matches landing outside
+60–120 minutes in the majority, this table is wrong and D-069's and
+D-072's numbers must be re-derived from a corrected one — not patched
+individually, which is precisely the failure D-056 recorded.
+
+---
+
+### D-069 · 2026-08-04 · Provisional — the epoch ladder: five rungs, antiquity to high medieval
+**Decision:** **Five epochs**, spanning antiquity to the high medieval
+period. The ladder is **shared by every civ** — same count, same gate
+shape — and civs differ in what each rung *contains*, never in its
+structure.
+
+**The filter every rung had to pass: it must name a new verb, not a
+bigger number.** A rung whose honest one-line justification is "the
+stats go up" was cut rather than rewritten.
+
+| # | The epoch is when… | Verb | Player time |
+|---|---|---|---|
+| 1 | …a **place** becomes possible. Founding party, first town hall, gatherers, levy foot. | settle | 0–15 |
+| 2 | …a **standing army** becomes possible. Barracks-line specialists; the counter triangle arrives whole. | field | 15–33 |
+| 3 | …**combined arms and holding ground** become possible. Cavalry, missile specialists, towers and claimed ground. | hold | 33–55 |
+| 4 | …**siege** becomes possible. Fortified ground becomes attackable again; heavy horse. | break | 55–75 |
+| 5 | …**elite and scarce** troops become possible. Knights, per-civ signature units, the castle tier. | decide | 75+ |
+
+**Epochs 3 and 4 are a matched pair and must ship together.** Epoch 3
+makes ground holdable; epoch 4 makes it breakable again. Shipping 3
+without 4 produces the *turtle-to-last-epoch* failure in its purest form
+— a game where the correct move is always to fortify and wait.
+
+**The advance gate is data, not code:** a new `/epochs/*.tres`
+(`EpochDef`) carrying index, display name, `cost_*`, `research_time` and
+prerequisite building ids. Researched at a town centre, occupying it for
+the duration. Same reasoning as D-010 — the pacing lever most likely to
+need a hundred tuning passes must be editable as text, and **no script
+may name an epoch** any more than it may name a civ (D-047).
+
+**The gate's job is to create the bank-versus-army fork in D-068's row 2**,
+so it has to cost enough that paying it visibly means not fielding troops
+for a stretch. Provisional, and explicitly to be replaced by telemetry:
+
+| Advance | food | wood | gold | stone | research |
+|---|---|---|---|---|---|
+| 1→2 | 500 | 300 | — | — | 90 s |
+| 2→3 | 800 | 500 | 200 | — | 120 s |
+| 3→4 | 1200 | 800 | 500 | — | 150 s |
+| 4→5 | 1800 | 1200 | 900 | 400 | 180 s |
+
+Sanity check against measurement rather than feel: Legion banked a peak
+of 2,480 with no epochs to spend it on (D-056). The 4→5 advance is
+deliberately priced above that peak, because a stockpile that can absorb
+an advance without a decision is not a gate.
+
+**Scope fences — what this milestone does NOT add**, so that the ladder
+is not read as licence: no naval, no heroes or unique-hero mechanics, no
+campaign layer, no per-civ *mechanics* beyond knobs every civ has (D-047),
+and **no wall system**. Epoch 3's "hold" is delivered by towers,
+`no_build_radius` claimed ground (D-062) and building health, all of which
+exist. A real wall system is a substantial piece of pathfinding and
+rendering work and needs its own decision; if epoch 3 proves hollow
+without it, that is the trigger to open one.
+
+**Rejected alternatives:**
+- *Four epochs (AoE2's count).* Rejected — historically produces 25–45
+  minute matches; reaching 90 would need each rung stretched well past
+  the point where its content stays interesting.
+- *Six.* Rejected — a sixth rung could not pass the new-verb filter
+  without either splitting siege in two or reaching into gunpowder, which
+  the chosen span excludes.
+- *Per-civ epoch counts or asymmetric ladders.* Rejected — a balance
+  problem of a different order, and it breaks the shared advance gate
+  that makes "who is ahead" legible to both players and the AI.
+
+**Consequences:** the archetype vocabulary grows from 8 to roughly 25–30.
+D-047 binds the client's train keybinds to *archetype*, so that table
+stops fitting on a keyboard — the UI must become epoch-scoped. This is
+the *unlock overload* failure mode and D-074 owns detecting it.
+
+**Revisit trigger:** any rung that telemetry shows is entered and left
+without the player's behaviour changing is not an epoch, it is a stat
+bump, and should be merged into its neighbour.
+
+---
+
+### D-070 · 2026-08-04 · Accepted — rosters grow by replacement, and what that costs
+**Decision:** Each epoch unlocks **genuinely new archetypes alongside the
+old ones** (owner's call, 2026-08-04), rather than upgrading an existing
+`UnitDef` in place. `spearmen` (E1) and `pikemen` (E3) are different
+archetypes with different `.tres` files, not two versions of one.
+
+**Rationale:** consistent with D-047, which rejected shared UnitDefs plus
+per-civ multipliers because "it hides a unit's real numbers behind
+arithmetic in another file, and this project optimises for stats being
+directly readable and editable as text." The same argument applies across
+epochs exactly as it did across civs. It also needs **no new lookup
+machinery**: `UnitRoster.for_civ_archetype()` still returns one def per
+(civ, archetype) pair, and epoch gating is a filter on top.
+
+**The content bill, accepted up front rather than discovered in epoch 3.**
+At 6 civs × 5 epochs with each civ fielding a subset per rung, the
+endpoint is roughly **90–130 unit `.tres`**, against ~40 for
+upgrade-in-place. That is the price of readable stats and it is being paid
+knowingly. Epoch 1 alone is ~20 files, which is why it is the vertical
+slice (D-072).
+
+**Obsolescence is replacement's known failure mode, and upkeep is the
+answer.** Under a hard squad cap, an epoch-1 levy squad at epoch 5 is
+*strictly* bad: the cap makes power-per-squad the only currency, so cheap
+units are worthless and the player is punished for owning them. Under
+D-068's upkeep, power-per-*resource* matters again, and cheap old units
+have a real job — screening, map presence, garrison, escorting builders —
+because they cost less to keep. **This is the load-bearing connection
+between D-068 and this entry: without upkeep, replacement rosters
+manufacture trash.** If upkeep is ever dropped, this decision has to be
+reopened with it.
+
+**Rejected alternatives:**
+- *Upgrade in place* (militia → man-at-arms). Rejected by the owner —
+  ~40 files instead of ~130 and no obsolescence problem at all, but every
+  unit's real numbers become a chain of edits across epochs.
+- *Hybrid — core lines upgrade, each epoch adds one new archetype.*
+  Rejected as the most design work to keep coherent for a benefit that
+  upkeep already delivers.
+
+**Proposed schema, logged against D-010 — NOT IMPLEMENTED.** This
+milestone is documents only; nothing below exists in code yet, and this
+list is the specification for M9, not a description of the repo:
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `UnitDef.epoch` | `int` | `1` | earliest epoch this unit may be produced |
+| `UnitDef.upkeep_food` | `float` | `0.0` | per soldier per second (D-068) |
+| `BuildingDef.epoch` | `int` | `1` | earliest epoch this building may be founded |
+| `CivDef.upkeep_modifier` | `float` | `1.0` | D-068 |
+| `CivDef.epoch_advance_speed` | `float` | `1.0` | who climbs faster |
+| `CivDef.epoch_names` | `Array[String]` | `[]` | five display strings, flavour only |
+
+Gating is one added clause in the existing chain: a def is producible when
+`def.epoch <= player_epoch`, checked beside the `for_civ_archetype()` null
+test at `server.gd:1115`. Defaults are all chosen so an unaware `.tres`
+is epoch-1 and free to keep — the same safe-default reasoning D-056 used
+for `damage_vs_buildings`.
+
+**Revisit trigger:** if the unit count passes ~130, or if two civs'
+versions of the same rung stop differing by more than numbers, the
+upgrade-in-place model should be re-costed honestly rather than defended.
+
+---
+
+### D-071 · 2026-08-04 · Provisional — the civ design frame, and six civilizations
+**Decision:** Six civs at launch, each filling the **same seven-column
+frame** so that distinctness is structural rather than a matter of taste.
+Governing rule: **no two civs may match on more than one column.**
+
+| | Legion | Northmen | Magyars | Byzantines | Carthaginians | Chinese |
+|---|---|---|---|---|---|---|
+| **Axis** | quality | quantity | mobility | fortification & siege | economy & flexibility | ranged attrition |
+| **Basis** | Rome, Republic → Late Empire | Norse, 790–1100 | Magyar confederation → Kingdom of Hungary | Eastern Rome, 330–1200 | Phoenician-Punic world, 800–146 BC | Warring States → Tang |
+| **Economy** | steady; strong from few well-held sites | raid-supplemented; profits from wrecking yours | low infrastructure early, settles late | slow, secure, stone-heavy | highest gather and the broadest use of gold | infrastructure-heavy, food-led |
+| **Military** | heavy foot + disciplined missile; no light horse | cheap fast foot + skirmishers; no heavy foot | horse archers and light horse; poor foot, no siege | defensive foot, towers, engines | the broadest roster, most of it costing gold | massed crossbow; adequate foot, weak horse |
+| **Best at** | winning even fights; holding a line | early tempo; raiding economy | map control; punishing overextension | holding ground *and* cracking it | out-scaling; adapting late | grinding down at distance |
+| **Bad at** | reacting; map control | pitched battles; sieges | taking fortified ground | open field; early tempo | any specific fight before it is rich | being closed on |
+| **Signature (epoch)** | *comitatenses* — highest morale in the game (E4) | Great Heathen Army — cap and tempo bonus (E2) | mounted missile at reach (E3) | the siege train (E4) | mercenaries — most archetypes, gold-priced (E3) | crossbow volley — earliest strong missile (E2) |
+
+**Frame audit.** The two closest pairs, checked rather than assumed:
+*Byzantines and Chinese* both defend prepared positions, but one holds
+with structures and also **cracks** them, the other holds with fire and
+cannot crack anything — one shared column. *Northmen and Magyars* both
+raid, but one raids on foot with tempo and the other cannot be caught at
+all — one shared column. Rule holds.
+
+**Rationale for the specific factions — the arc test.** With five epochs
+and replacement rosters (D-070), a faction needs **five believable
+development stages**, not one iconic army. That constraint, not
+recognisability, selected this set:
+
+| Civ | settle → field → hold → break → decide |
+|---|---|
+| Legion | village → manipular Republic → Marian legion → Imperial → Late Roman *comitatenses* |
+| Northmen | steading → raiding parties → Great Heathen Army → jarldoms and burhs → Norman-influenced heavy horse |
+| Magyars | nomad clans → horse-archer confederation → raids on Europe → settled Kingdom → knights *and* horse archers |
+| Byzantines | late Roman town → Justinianic reconquest → *thematic* system → Macedonian dynasty → Komnenian |
+| Carthaginians | Phoenician colony → trading city → Punic mercantile empire → mercenary armies → Barcid Spain |
+| Chinese | Warring States → Qin/Han crossbow volley → Three Kingdoms → Sui/Tang → Song-era massed missile |
+
+**Scythians fail this outright** and were rejected for it despite being
+the purest horse-archer culture available: nomadic throughout, with no
+fortification phase to grow into, so epochs 3–5 would have to be invented
+wholesale. Magyars genuinely settle, and that transition **is** their
+epoch 4.
+
+**The dates do not line up, and this entry does not pretend they do.**
+Rome and the Northmen never met. Carthage is destroyed in 146 BC and has
+no historical epoch 4 or 5 at all; its late rungs run through mercenary
+armies and Barcid Spain. **The ladder is a game progression, not a shared
+calendar** — each civ's five rungs are flavoured from that culture's own
+arc, independent of absolute date. This is the AoE convention, adopted
+deliberately and stated so nobody has to rediscover it in review.
+
+**Known flavour redundancy, accepted with eyes open: Byzantines are
+Rome.** Mechanically they are cleanly distinct from Legion — defensive
+doctrine and engineering versus manipular quality — but two Roman civs in
+a six-civ launch roster is something a reviewer will notice.
+**Sassanids** are the alternate and avoid it entirely while giving Legion
+a natural rival; the cost is that they pull hard toward cataphracts and
+start colliding with the Magyars' cavalry column. Also verified clean:
+Huns and Scythians (mobility), Assyrians (fortification), Kushites
+(ranged).
+
+**All six ids verified against `tests/test_civs.gd:43`** — a raw
+substring match of each civ id against every non-test, non-addon `.gd`
+file, comments included. `grep -ril <id> --include=*.gd .` returns
+nothing for all six. This was checked *before* the names were chosen, not
+after, because a late collision means renaming a civ everywhere.
+
+**Rejected alternatives:** *English longbowmen for the ranged slot*
+(rejected — the longbow is a 1300s+ weapon, past the chosen span, and
+cannot carry epochs 1–3). *Venetians or Genoese for the mercantile slot*
+(rejected — no antiquity end; they do not exist before ~700 AD).
+
+**Consequences:** `tests/test_civs.gd:170` draws 4000 random civs and
+expects an even split; at six civs the expectation moves to ~667 with a
+±15% band. Tests that index `CivRoster.ids()[0]`/`[1]` compare a
+different pair once the roster is sorted with six names in it. Both need
+updating with the roster, and both are test-only changes.
+
+**Revisit trigger:** the first civ whose identity cannot be expressed
+through a knob every civ has (D-073). That is D-047's revisit trigger
+inherited, and it is the line between six civs and six special cases.
+
+---
+
+### D-072 · 2026-08-04 · Provisional — epoch 1 in full, and the budget its numbers come from
+**Decision:** Epoch 1 is specified to shipping depth as the vertical
+slice. Every civ fields **four archetypes**: `founders` and `gatherers`
+(neutral pool, unchanged), one shared `levy`, and **exactly one exclusive
+unit that is the civ's thesis in miniature**.
+
+**The power budget, and why it exists.** Costs are derived from a stated
+exchange rate, not authored per unit, because otherwise every unit ends up
+independently slightly too good:
+
+- **DPS** = `squad_size × damage / attack_interval`
+- **EHP** = `squad_size × health`
+- **V** (squad power) = `sqrt(DPS × EHP)` — geometric so it stays roughly
+  linear in squad size rather than quadratic
+- **RP** (resource points) = `food + wood + 1.5 × (gold + stone)`
+
+**What V does not price, stated up front so it is not misread as a
+verdict:** `attack_range`, `move_speed`, `vision_range`, `bonus_vs`,
+`morale`. It is a first-pass screen for line infantry and it
+systematically **undervalues missile and scouting units**.
+
+**The screen was run against the shipped roster first, and it found a
+real defect.** Computed from the `.tres` as they stand:
+
+| unit | V | RP | V/RP |
+|---|---|---|---|
+| legion_militia | 1064 | 75 | **14.2** |
+| legion_spearmen | 802 | 100 | 8.0 |
+| legion_archers | 682 | 105 | 6.5 |
+| legion_heavy | **930** | **190** | 4.9 |
+| northmen_militia | 883 | 40 | **22.1** |
+| northmen_spearmen | 666 | 53 | 12.6 |
+| northmen_skirmishers | 556 | 55 | 10.1 |
+| northmen_cavalry | 656 | 98 | 6.7 |
+
+Two things fall out, and both are arithmetic on shipped data rather than
+opinion:
+
+1. **Militia leads on both V and V/RP for both civs.** Massing militia is
+   correct play, and only `bonus_vs` argues against it — which militia
+   dodges by being a generalist with `bonus_vs = {}`, so it is never hard
+   countered, merely un-bonused.
+2. **`legion_heavy` has lower DPS than `legion_militia` (257 vs 342) and
+   near-identical EHP (3360 vs 3312), at 2.5× the cost.** What it buys is
+   `bonus_vs {cavalry: 1.5}` and better morale — against a Legion mirror,
+   nothing; against Northmen, one of four archetypes. It is very likely
+   overpriced. *Not proven*: range, morale and counters are outside the
+   metric. Recorded as a finding to verify in play, not a fixed defect.
+
+**Two rules follow, and epoch 1 is built to satisfy them:**
+
+- **Price buys power.** Within a role, a more expensive unit must have
+  higher **V**. `legion_heavy` fails this today.
+- **No free lunch.** Within a civ, epoch and role, no unit may lead on
+  both **V** and **V/RP**. (Largely an epoch-2+ rule; at epoch 1 only
+  Legion fields two line units, and it is the test case.)
+
+**Band for epoch-1 line units: V 550–780, V/RP 11–21.** Where a civ sits
+*within* the V/RP range is its quality-versus-quantity axis — that is the
+axis, expressed as one number.
+
+| Unit | role | sz | hp | dmg | int | rng | spd | cost | V | V/RP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `legion_levy` | line | 30 | 78 | 7.5 | 1.0 | 1.9 | 3.3 | 55f | 726 | 13.2 |
+| `legion_veterans` ★ | line | 20 | 130 | 13.0 | 1.05 | 1.8 | 3.2 | 55f 20w | **802** | 10.7 |
+| `northmen_levy` | line | 40 | 55 | 5.5 | 1.0 | 1.9 | 3.8 | 34f | 696 | **20.5** |
+| `northmen_raiders` ★ | spec | 24 | 50 | 7.0 | 1.0 | 1.9 | **5.2** | 30f 10w | 449 | 11.2 |
+| `magyar_levy` | line | 30 | 62 | 6.0 | 1.0 | 1.9 | 3.6 | 38f | 579 | 15.2 |
+| `magyar_outriders` ★ | spec | 16 | 58 | 7.0 | 1.1 | 2.0 | **6.4** | 30f 10g | 307 | 6.8 |
+| `byzantine_levy` | line | 32 | 82 | 6.0 | 1.1 | 1.9 | 3.1 | 50f | 677 | 13.5 |
+| `byzantine_watchmen` ★ | spec | 28 | 105 | 5.5 | 1.2 | 2.0 | 2.6 | 45f 25w | 614 | 8.8 |
+| `carthaginian_levy` | line | 30 | 62 | 6.2 | 1.0 | 1.9 | 3.4 | 30f 20w | 588 | 11.8 |
+| `carthaginian_tradesmen` ★ | econ | 6 | 40 | 1.0 | 2.5 | 2.0 | 3.4 | 22f | *exempt* | — |
+| `chinese_levy` | line | 34 | 64 | 6.0 | 1.0 | 1.9 | 3.4 | 42f | 666 | 15.9 |
+| `chinese_bowmen` ★ | spec | 26 | 52 | 8.5 | 1.6 | **6.8** | 3.0 | 35f 35w | 432 | 6.2 |
+
+★ = the civ's exclusive archetype. All six levies sit in band; Legion's
+veterans beat its levy on V (802 > 726) at lower V/RP (10.7 < 13.2), so
+both rules hold.
+
+**Specialists are exempt from the band, and each one's non-V property is
+named** — this is the metric's blind spot being handled honestly rather
+than by tuning numbers until they hit a target:
+
+- `northmen_raiders` — speed 5.2 and vision 16. Buys tempo and the
+  ability to reach an undefended economy.
+- `magyar_outriders` — speed 6.4, vision 22, `armour_class = cavalry`.
+  Buys information. The clearest case of V being the wrong lens; it is
+  6.8 V/RP and still correct.
+- `byzantine_watchmen` — **105 EHP per soldier, the highest in epoch 1.**
+  Under per-soldier upkeep (D-068) that is durability you do not pay a
+  crowd for, which is precisely what holding ground means.
+- `chinese_bowmen` — range 6.8, the only ranged unit in epoch 1. V cannot
+  price not being hit back.
+- `carthaginian_tradesmen` — economic; exempt entirely, like `gatherers`
+  (V/RP 1.2). Higher `carry_capacity` and gold-weighted gathering.
+
+**Horse archers take `armour_class = cavalry`, not `missile`.** They are
+mounted, so spears must counter them, and D-032's triangle only works if
+the class describes what beats the unit rather than what it carries.
+Reach is expressed by `attack_range`, which is where it belongs.
+
+**Per-soldier upkeep automatically taxes the quantity civs, and that is
+why D-068 made it per soldier rather than per squad.** `northmen_levy`
+carries 40 soldiers to Legion's 30 for comparable squad power, so it pays
+33% more upkeep for the same V. Quantity's advantage is bought back over
+time instead of being free — no extra knob, no special case.
+
+**Test constraints, checked on paper before any file is written:**
+`tests/test_civs.gd:93` requires each civ to field more than two
+archetypes with at least one exclusive — every civ has four and exactly
+one exclusive. `tests/test_civs.gd:113` requires a shared archetype to
+differ across civs in `damage`, `health` and `cost_food` — `levy` differs
+on all three across all six.
+
+**Epochs 2–5, one paragraph each, deliberately no more.** E2 completes the
+counter triangle per civ and lands the Northmen and Chinese signatures.
+E3 adds cavalry, missile specialists and the tower/claimed-ground game,
+plus Carthage's mercenary breadth. E4 adds siege and heavy horse, and the
+Legion and Byzantine signatures. E5 adds scarce elite troops and the
+castle tier. Numbers for these are **not** set here: they should be
+derived from D-068's table after epoch 1 has been played, exactly as
+epoch 1's were derived before it.
+
+**Revisit trigger:** the first time a levy is still the correct
+front-line purchase at epoch 3, the ladder is not delivering new verbs
+and D-069 is wrong, not this table.
+
+---
+
+### D-073 · 2026-08-04 · Accepted — the knob inventory, and what blocks implementation
+**Decision:** Every mechanical claim in D-071 is mapped here to the
+parameter that expresses it. A claim with no knob is either **given a knob
+every civ has, or cut** — settled on paper, before any code, because
+`tests/test_civs.gd:43` makes "no script may name a civ" a test rather
+than a guideline.
+
+| Claim (D-071) | Knob | Status |
+|---|---|---|
+| Legion quality; wins even fights | `UnitDef` `health`/`damage`/`squad_size`/`cost_*` | exists |
+| Legion *comitatenses*: never breaks | `UnitDef` `morale`, `rout_threshold`, `rout_rally_margin`, `morale_recovery_per_second` | exists |
+| Legion bad at reacting | low `move_speed`; no fast archetype in its subset | exists (structural) |
+| Northmen quantity | `squad_size` against `cost_*` | exists |
+| Northmen Great Heathen Army | `CivDef.squad_cap_bonus`, `CivDef.production_speed` | **declared, INERT** |
+| Northmen raiding | `move_speed`, `vision_range` | exists |
+| Northmen no heavy foot | roster subset — which `.tres` name the civ | exists (structural) |
+| Magyar mobility, map control | `move_speed`, `vision_range` | exists |
+| Magyar poor siege | `UnitDef.damage_vs_buildings` (default 0.15) | exists |
+| Magyar low infrastructure early | per-civ building availability | **blocked — defect 3** |
+| Who climbs the ladder faster | `CivDef.epoch_advance_speed` | **new** |
+| Byzantine fortification | `BuildingDef` `max_health`, `no_build_radius`, `attack_range`, `damage` | exists |
+| Byzantine siege train | high `UnitDef.damage_vs_buildings` | exists |
+| Byzantine bad early tempo | `BuildingDef.build_time`/`cost_*`; low `move_speed` | exists |
+| Carthage highest gather | `CivDef.gather_speed` | **declared, INERT** |
+| Carthage broad gold-priced roster | subset size + `cost_gold` | exists (structural) |
+| Chinese reach, earliest missile | `attack_range` + `UnitDef.epoch` | exists + **new** |
+| Chinese infrastructure-heavy | per-civ buildings | **blocked — defect 3** |
+| Army as a running cost (D-068) | `UnitDef.upkeep_food`, `CivDef.upkeep_modifier` | **new** |
+| Epoch gating (D-070) | `UnitDef.epoch`, `BuildingDef.epoch` | **new** |
+| Civ-flavoured epoch names | `CivDef.epoch_names: Array[String]` | **new** |
+
+**Three claims were cut here for having no knob.** Recording them is the
+point of the exercise — each would have become a branch:
+
+1. *"Legion squads do not rout while a friendly squad is adjacent."*
+   Needs adjacency-aware morale that only one civ has. **Cut**, and
+   re-expressed as simply the highest `morale` and `rout_rally_margin` in
+   the game. The fantasy survives; the branch does not.
+2. *"Byzantine builders raise fortifications faster."* **There is no
+   build-speed knob at all** — `building_sim.gd:359` is
+   `_progress += dt / build_time` with no multiplier, and
+   `advance_production` at `:229` is the same. Rather than cut this,
+   **add `CivDef.build_speed: float = 1.0`**, the obvious sibling of the
+   two inert knobs beside it. This is the correct outcome of a
+   parameterisation pass: the claim named a gap that every civ should
+   have access to.
+3. *"Carthage can hire another civ's units."* Would require a script to
+   know another civ exists — the exact failure D-047 exists to prevent.
+   **Cut**, and re-expressed as a broader *own* roster carrying gold
+   costs.
+
+**Four defects that block implementation.** None is caused by this
+milestone; all sit directly under it:
+
+1. **Three `CivDef` knobs are declared, shipped with non-default values,
+   and read by nothing.** `squad_cap_bonus = 4` and
+   `production_speed = 1.3` on northmen are inert —
+   `match_state.gd:420`, `building_sim.gd:229` and `economy.gd:382` apply
+   no multiplier anywhere. Two of D-071's six civ identities depend on
+   them. This is the **fourth** instance of the declared-and-unread class
+   (`UnitDef.cost`, `BuildingDef.cost`, `BuildingSim.damage` per D-055),
+   and it is the defect class this project's testing discipline is blind
+   to by construction: nothing fails, the game simply lacks a rule.
+2. **`built_by` is keyed two ways.** `server.gd:993` passes the builder's
+   **archetype**; `client.gd:1850` and `:1951` pass its **UnitDef id**;
+   `building_def.gd:59` documents the field as ids. It works today only
+   because both builders are neutral units where the two strings
+   coincide. Epoch 3+ adds civ-specific builders and it breaks — the
+   client will offer a build the server refuses.
+3. **`BuildingDef.civ` is dead weight** — declared, always `neutral`,
+   never filtered on anywhere. There is no `BuildingRoster.for_civ()`.
+   Two civ identities above are blocked on it.
+4. **`produces` is documented as UnitDef ids and actually holds
+   archetypes** (`building_def.gd:55` versus `building_sim.gd:182`).
+   Harmless today, actively misleading once epoch-gated production is
+   written against the comment.
+
+**Consequences:** defects 1 and 3 are prerequisites, not cleanup — two of
+six civs cannot be expressed until they are fixed. Per D-022's standing
+rule, each of the three inert knobs must be proved by a test **observed
+to fail before it is trusted**: turn the knob, watch the test go red,
+revert.
+
+**Revisit trigger:** any future civ claim that reaches this table with no
+knob and no general knob worth adding. That is the D-047 boundary, and
+the honest response is to amend D-047, not to quietly add a branch.
+
+---
+
+### D-074 · 2026-08-04 · Accepted — M9's exit criteria, its failure modes, and the telemetry that catches them
+**Decision:** M9 is **"the ladder is real, and a match is worth an
+hour."** Written before the code, per the standing rule that produced
+D-022, D-026, D-027, D-044 and D-046.
+
+**Exit criteria.** Every one asserts something *happened*, not that
+nothing complained — D-022's first rule, bought with M1's vacuous log
+grep:
+
+1. `just ai-ladder` decides a **majority of matches in 60–120 minutes**.
+2. **Every epoch is entered** in a majority of decided matches. An epoch
+   never reached is content nobody has played.
+3. **Time-in-epoch** lands within D-068's bands ±50%. Outside that,
+   D-068's table is wrong and its numbers get re-derived together — not
+   patched one at a time, which is the failure D-056 recorded.
+4. `tests/test_civs.gd:43` still green **at six civs**; no script names a
+   civ.
+5. A sibling test: **no script names an epoch.** The ladder lives in
+   `/epochs/*.tres` and nothing may hardcode a rung.
+6. Each of `squad_cap_bonus`, `production_speed`, `gather_speed` and the
+   new `build_speed` has an **observable effect**, each proved by a test
+   watched to fail first.
+7. **Upkeep demonstrably happens**: a match reports non-zero upkeep paid,
+   and at least one squad routs from starvation. A criterion that could
+   pass with upkeep switched off is worthless.
+8. **Obsolescence check**: epoch-1 units are still being produced after
+   epoch 3 in a measurable fraction of matches. This is the criterion
+   that decides whether D-070's replacement model worked.
+9. **Tick budget holds**: a 20-player match that reaches epoch 5 reports
+   **0 over-budget ticks**, and per-squad cost is re-quoted **with its
+   squad count** (CLAUDE.md's standing rule — the figure is meaningless
+   without one).
+
+**A prerequisite, and M9 should not start without it.** M6 left the rise
+from M4's **40.8 µs/squad at 120 squads** to **~77** unattributed, and
+worst-tick figures from that session are known unreliable (a run with
+strictly less work reported 146 ms where a fuller run reported 52 ms,
+because the host was building containers). **M9 adds load on top of an
+unexplained regression.** Attribute it first, or criterion 9's numbers
+cannot be interpreted. Where the sweep and a live run disagree, believe
+the live run (D-043).
+
+**Failure modes, each paired with the measurement that detects it.**
+Naming the detector is the point; a failure mode with no detector is a
+worry, not a criterion:
+
+| Failure | What it looks like | Detector |
+|---|---|---|
+| *Boom-is-always-right* | advancing dominates; nobody fights early | attacks before epoch 3 ≈ 0; advance timestamps near-identical across civs |
+| *Turtle-to-last-epoch* | fortify and wait is correct | buildings destroyed ≈ 0 before epoch 4; time-in-epoch-5 > 50% of match |
+| *Obsolescence* | epoch-1 units become trash | criterion 8 |
+| *Unlock overload* | the UI collapses under ~30 archetypes | count of simultaneously producible archetypes per building at epoch 5; > ~12 means the train UI must become epoch-scoped |
+
+**Telemetry to add to `AI_STATS` / `ai-ladder`**, extending what D-056
+already proved the value of — `peak_stockpile`, `afford_refusals` and
+`cap_refusals` turned a balance argument into a number:
+
+- `epoch_advance_ticks[]` per player, and `time_in_epoch[5]`
+- `army_value_over_time` — summed **V** per D-072's metric
+- `resource_idle_time` — stockpile sitting unspent
+- `upkeep_paid`, `upkeep_unpaid_ticks`, `routs_from_starvation`
+- `produced_by_epoch` histogram, which is criterion 8's evidence
+
+**Also fix, because M9 depends on it:** `test-client`'s casualty gate is
+already known to pass without any fighting — founding a town hall reports
+through the casualty path (recorded in D-045). M9 changes the opening
+again, so a gate that cannot see combat will hide exactly the regressions
+this milestone is most likely to cause.
+
+**Revisit trigger:** if criteria 1–3 pass but the match is not *enjoyable*
+for an hour, the numbers are right and D-068's phase table is describing
+the wrong game. That is a design failure telemetry cannot detect, and the
+only instrument for it is playing it.
 
 ---
 
@@ -765,6 +1405,33 @@ worth keeping because both were confident and wrong:
 **Revisit trigger:** the age/tech milestone landing, which will re-derive
 these numbers from a phase-by-phase account of what a 1–2 hour match is
 made of, rather than from stopping the worst behaviour.
+
+**Trigger FIRED, 2026-08-04 — see D-068 through D-074.** The
+phase-by-phase account this entry asked for is D-068. What it means for
+the numbers here:
+
+- **`damage_vs_buildings` (0.15) stands**, and gains a second job: it is
+  the knob Byzantine siege and Magyar non-siege are both expressed
+  through (D-073).
+- **The tripled building health is superseded by D-066/D-067**, which
+  landed on main the same day from the other direction: tower **1400 →
+  1700 HP**, town centre damage **12 → 60**, tower damage **20 → 85**,
+  against an explicit rule that **one squad must fail and two must
+  succeed**. Whatever the values, they are now *epoch-1* figures rather
+  than global ones — buildings gain `BuildingDef.epoch` (D-070) and later
+  rungs get their own.
+- **`squad_cap` 40 is superseded in ROLE, not in value.** D-068 makes
+  upkeep the binding constraint and returns `squad_cap` to being the
+  engineering ceiling protecting D-018 and D-020. It should end up set
+  high enough that a player never feels it.
+- **The "still open" AI defect stands** — Legion holding 41 squads
+  against 8, attacking 93 times over 900 s and never finishing. Upkeep
+  makes an unfinished match expensive rather than free, which pressures
+  the symptom but is not a fix for it.
+
+This entry stays **Provisional**: its numbers were tuned to stop the worst
+behaviour, and D-072 is the beginning of replacing them with derived ones,
+not the end.
 
 ---
 
@@ -1243,6 +1910,32 @@ structurally rather than numerically — different formation behaviour, a
 different number of attacks — that is the moment to check whether it is
 still a parameter or has become a branch, and to amend D-046 honestly if
 it has.
+
+**Amended 2026-08-04 — this decision extends to epochs unchanged, and it
+held under pressure.**
+
+D-070 grows rosters by replacement, so an epoch unlocks new *archetypes*
+rather than new versions of existing ones. That needs **no change here**:
+`for_civ_archetype()` still returns one def per (civ, archetype) pair,
+and epoch gating is one filter on top. A civ's roster stays DERIVED — a
+`.tres` declares its `civ` and now its `epoch`, and nothing registers
+anything.
+
+Two consequences worth naming:
+
+- **The archetype vocabulary grows from 8 to roughly 25–30.** This clause
+  — "the client's train keybinds bind to *archetype*, so one key trains
+  your civ's spearmen whatever that civ names them" — stops fitting on a
+  keyboard. The binding stays archetype-based; the UI has to become
+  epoch-scoped. Tracked as *unlock overload* in D-074.
+- **The revisit trigger above did not fire, and was tested.** D-073's
+  parameterisation pass put six civs' identities through it and found
+  three claims with no knob. Two were cut and re-expressed numerically;
+  one — "Byzantine builders raise fortifications faster" — named a
+  genuine gap and became `CivDef.build_speed`, a knob every civ has.
+  That is this decision working as designed rather than being defended.
+
+The trigger stands unchanged for the future.
 
 ---
 
@@ -3577,6 +4270,39 @@ just in code):
   triangle: spears counter cavalry, cavalry counter missile, missile
   counters infantry.
 
+- **2026-08-02, M6 — added `damage_vs_buildings: float = 0.15`.**
+  *Logged retroactively on 2026-08-04.* D-056 introduced this field and
+  called it "a schema addition against D-010", but never recorded it
+  here, which is the omission this log exists to prevent. Defaults to the
+  SAFE end deliberately: an unaware `.tres` is conservative rather than
+  catastrophic, unlike `bonus_vs`, whose missing-key default of 1.0 is
+  right for a counter table and would have been exactly wrong here. See
+  D-056 for the full reasoning.
+
+- **PROPOSED, not implemented — the M9 epoch schema (D-070).** Recorded
+  here so the specification has one home, and marked clearly because
+  **none of it exists in code**. The age/tech planning milestone was
+  documents-only; anything reading this log as a description of the repo
+  would be misled.
+
+  | Field | Type | Default | Purpose |
+  |---|---|---|---|
+  | `UnitDef.epoch` | `int` | `1` | earliest epoch this unit may be produced |
+  | `UnitDef.upkeep_food` | `float` | `0.0` | per soldier per second (D-068) |
+  | `BuildingDef.epoch` | `int` | `1` | earliest epoch this building may be founded |
+  | `CivDef.upkeep_modifier` | `float` | `1.0` | D-068 |
+  | `CivDef.epoch_advance_speed` | `float` | `1.0` | who climbs faster |
+  | `CivDef.build_speed` | `float` | `1.0` | D-073's parameterisation pass found no build-speed knob exists at all |
+  | `CivDef.epoch_names` | `Array[String]` | `[]` | five display strings, flavour only |
+
+  Plus a new resource type, `EpochDef`, in `/epochs/*.tres` — index,
+  display name, `cost_*`, `research_time`, prerequisite building ids —
+  so the ladder itself is editable text and no script names a rung.
+
+  Every default is chosen so an unaware `.tres` is epoch-1, upkeep-free
+  and valid, following the same safe-default reasoning as
+  `damage_vs_buildings` above.
+
 ---
 
 ### D-011 · 2026-07-28 · Superseded by D-064 (2026-08-09)
@@ -4100,8 +4826,29 @@ items resolved as:
   screens between regions, or one contiguous map? Implies very different
   streaming work.
 - **Q15 — Age/tech progression, and what a 1–2 hour match is made of.**
-  **Owner has scheduled this as its own planning milestone** (2026-08-02)
-  — the basics first, this planned separately.
+  **DISCHARGED 2026-08-04 by D-068 through D-074.** The planning
+  milestone the owner reserved on 2026-08-02 ran; the text below is kept
+  as the brief it set, and every bullet in it is answered:
+
+  | Q15 asked | Answered by |
+  |---|---|
+  | Ages: how many, what gates advancing, what each unlocks | **D-069** — five rungs, an `EpochDef` gate in `/epochs/*.tres`, one new verb per rung |
+  | Whether progression is per-civ, declaratively | **D-069/D-070** — the ladder is shared; civs differ in contents only. **D-073** maps every civ claim to a knob and cut three that had none |
+  | The phase-by-phase account of a 1–2 hour match | **D-068** — six phases, and every later number traces to it |
+  | Economy scale, and whether the map is exhausted | **partially — see the correction below** |
+  | Is an army a ratchet or a running cost? | **D-068** — a running cost. Per-soldier food upkeep; unpaid upkeep decays morale via D-019 rather than killing soldiers |
+  | Interaction with D-018's scale and D-020's tick budget | **D-074 criterion 9**, plus a prerequisite: M6's unattributed 40.8 → ~77 µs/squad rise must be explained before M9 adds load on top of it |
+
+  **One correction to the brief below, and one thing left genuinely
+  open.** The economy figures quoted are stale: it says `NODE_STOCK` is
+  900 with a node every 11 cells; `economy.gd:41` and `:50` now read
+  `NODE_EVERY := 60` and `NODE_STOCK := 2400`. **The question the bullet
+  was really asking — whether an hour-long match exhausts the map — was
+  not answered and needs recomputing against the real constants once
+  D-068's phase table has a consumption rate attached to it.** It is the
+  one part of this brief that D-068–D-074 did not close.
+
+  *Original brief, 2026-08-02:*
 
   The target is 1–2 hours (D-056). Matches currently decide in about
   three minutes, and D-056's tuning addresses only the worst of that.

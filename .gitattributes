@@ -18,6 +18,15 @@ Dockerfile text eol=lf
 # Read by `just`, whose recipe bodies are handed to bash.
 justfile text eol=lf
 
+# The art generators (D-064). `art/build.py` writes generated/manifest.json's
+# source_hash by hashing these files' BYTES, and test_art_assets.gd re-hashes
+# the same bytes through Godot to prove generated/ is not stale. A CRLF
+# substitution changes those bytes, so the two disagree and the test reports
+# "generated/ is stale — run `just build-assets`" when nothing is stale at
+# all. Rebuilding on a CRLF checkout would bake a CRLF hash in and move the
+# failure elsewhere rather than fix it.
+*.py text eol=lf
+
 # Generated art (D-064). These are committed so a fresh clone plays without
 # installing Blender, and they must never be touched by the line-ending
 # machinery — the dev machine has core.autocrlf=true, and a CRLF substitution
