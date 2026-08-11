@@ -1880,6 +1880,13 @@ func _update_missiles() -> void:
 var _placing: StringName = &""
 var _placement_ghost: MeshInstance3D = null
 
+## An armed building (wire id, or -1) waiting for a click to name its
+## focus-fire target — the "Target" button's arming half, mirroring
+## `_placing` above. Shift+right-click on an enemy with the building
+## already selected skips this entirely and sends the order directly
+## (see `_order_selected`); this is only for the button-driven path.
+var _targeting_building := -1
+
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
 ## is. Advisory only: the server is the authority and re-checks (D-002).
@@ -2582,6 +2589,14 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
 			"kind": "train", "id": archetype,
 		})
+	# Only an ARMED building offers this (D-032's `damage` gate, the same
+	# one Combat.resolve_buildings itself checks) — a storehouse has
+	# nothing to focus-fire with.
+	if def.damage > 0.0:
+		out.append({
+			"label": "Target\nShift+Right-click an enemy",
+			"kind": "target_select", "id": &"",
+		})
 	return out
 
 
@@ -2663,6 +2678,12 @@ func _on_action_pressed(index: int) -> void:
 			_stop_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
+		"target_select":
+			# Arms the pick — the actual order goes out on the next
+			# right-click, handled in `_handle_mouse_button` /
+			# `_finish_target_pick`, mirroring `_placing`'s ghost-follows-
+			# cursor arm/click split for building placement.
+			_targeting_building = _selected_building
 
 
 ## Put every selected squad into a formation (D-058).
@@ -2922,6 +2943,10 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				# also start a selection drag.
 				if _place_armed_building(event.position):
 					return
+				# A left-click while target-picking is armed abandons it
+				# rather than leaving the mode stuck armed under a
+				# selection the player has visibly moved on from.
+				_targeting_building = -1
 				_dragging = true
 				_drag_start = event.position
 			elif _dragging:
@@ -2936,8 +2961,14 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			if event.pressed and _placing != &"":
 				_cancel_placement()
 				return
+			# The "Target" button's arming half: this click, hit or miss,
+			# is spent on picking (or cancelling) a focus-fire target and
+			# never falls through to an ordinary order.
+			if event.pressed and _targeting_building >= 0:
+				_finish_target_pick(event.position)
+				return
 			if event.pressed and _minimap_cell_at(event.position).x < 0:
-				_order_selected(event.position, event.ctrl_pressed)
+				_order_selected(event.position, event.ctrl_pressed, event.shift_pressed)
 
 
 ## Which cell a screen position corresponds to on the minimap, or
@@ -3271,7 +3302,7 @@ func _cell_under(screen_position: Vector2) -> Vector2i:
 ## Right-click orders the SELECTION, not everything owned (D-027
 ## criterion 3). With nothing selected it does nothing: quietly marching
 ## an army the player never chose is worse than ignoring the click.
-func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
+func _order_selected(screen_position: Vector2, attack_move: bool, shift: bool = false) -> void:
 	if not _connected or _state.space == null:
 		return
 
@@ -3289,6 +3320,20 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var info: Dictionary = _state.buildings[_selected_building]
 		if int(info["owner"]) == _state.player:
+			# Shift+right-click on an enemy focus-fires an armed building on
+			# it — the direct hotkey path, no "Target" button press needed.
+			# A shift-held click that misses an enemy falls through to the
+			# ordinary rally-point branch below rather than eating the click
+			# on nothing, since a miss should still do SOMETHING useful.
+			if shift:
+				var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+				if def != null and def.damage > 0.0:
+					var enemy := _enemy_squad_at(screen_position)
+					if enemy >= 0:
+						_peer.send(0, NetProtocol.encode_order_building_target(
+							_selected_building, enemy), ENetPacketPeer.FLAG_RELIABLE)
+						print("client: building %d targeting squad %d" % [_selected_building, enemy])
+						return
 			var rally_cell := _cell_under(screen_position)
 			if rally_cell.x >= 0:
 				_peer.send(0, NetProtocol.encode_order_rally(
@@ -3344,6 +3389,48 @@ func _order_selected(screen_position: Vector2, attack_move: bool) -> void:
 	if sent > 0:
 		print("client: %s %d squad(s) to cell %s" % [
 			"attacked with" if attacking else "ordered", sent, cell])
+
+
+## The enemy SQUAD id under the cursor, or -1 — the squad half of
+## `_enemy_cell_at` below, kept separate because a building's focus-fire
+## target is named by squad id (so it can be tracked as it moves), not by
+## the cell it happened to be standing on at click time. Buildings are not
+## valid targets here: `Combat.resolve_buildings` only ever fires at
+## squads (see its own `_find_squad_near` call), so offering a building
+## would let a player arm a target the server can never actually use.
+func _enemy_squad_at(screen_position: Vector2) -> int:
+	var best := -1
+	var best_distance := SELECT_CLICK_RADIUS_PX
+	for squad in _state.curves:
+		if not _state.composition.has(squad):
+			continue
+		if int(_state.composition[squad].get("owner", 0)) == _state.player:
+			continue
+		if _state.alive_of(squad) <= 0:
+			continue
+		var distance := _squad_screen_position(squad).distance_to(screen_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = squad
+	return best
+
+
+## The "Target" button's landing click: assigns whatever enemy squad is
+## under the cursor as the armed building's focus-fire target, or does
+## nothing on a miss. Either way the arm-mode is spent — see the call site
+## in `_handle_mouse_button`.
+func _finish_target_pick(screen_position: Vector2) -> void:
+	var building := _targeting_building
+	_targeting_building = -1
+	if not _connected or building < 0 or not _state.buildings.has(building):
+		return
+	var enemy := _enemy_squad_at(screen_position)
+	if enemy < 0:
+		print("client: no enemy under the cursor to target")
+		return
+	_peer.send(0, NetProtocol.encode_order_building_target(building, enemy),
+		ENetPacketPeer.FLAG_RELIABLE)
+	print("client: building %d targeting squad %d" % [building, enemy])
 
 
 ## The cell of an enemy squad or building under the cursor, or (-1,-1).
