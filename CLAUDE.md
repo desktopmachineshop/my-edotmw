@@ -354,14 +354,25 @@ not a weaker AI. **A stronger defence lengthens matches, so quote a
 ladder result with its cap** — the same rule as quoting µs/squad with a
 squad count.
 
-**Check for a stray server before believing a load-test failure.** Two
-runs failed with `buildings_known=0` and identical numbers, and it looked
-exactly like the change under test. A second container held port 4433 and
-the bots were reaching that one — the tell was **server-side
+**Check which instance you are on before believing a load-test failure.**
+Two runs failed with `buildings_known=0` and identical numbers, and it
+looked exactly like the change under test. A second container held port
+4433 and the bots were reaching that one — the tell was **server-side
 instrumentation printing nothing at all**, which no code-level bug can
-do. `docker ps` first. Note also that `just down` (and every recipe that
-tears down) will remove containers in the pinned `edotmw` project that
-somebody else started.
+do.
+
+**D-075 removed that failure mode**, so the advice has changed with it:
+every checkout now gets its own compose project and its own port, and
+every recipe prints `instance=… project=… port=…` before doing anything.
+Read that line first; `just instances` shows every instance on the
+machine, which checkout owns it, and whether it has containers up. A
+cross-checkout collision is now a loud port-bind error rather than a
+silent wrong server — but a *stale* claim or a pre-D-075 leftover project
+is still possible, and `just instances` flags both.
+
+The old warning that `just down` removes containers "somebody else
+started" no longer applies: teardown is scoped to the instance that
+invoked it and cannot reach another checkout's containers.
 
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
@@ -696,6 +707,23 @@ model_preview.gd         Renders every authored model, animated, and
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
+scripts/instance.sh      THE instance derivation (D-075) — which compose
+                        project and which host port a command belongs to.
+                        Sourced by every recipe that touches docker, so
+                        two checkouts cannot fight over either.
+scenario.gd              Applies a mid-game world (D-076). ALL-STATIC,
+                        like formation.gd: a scenario is an opening
+                        position, not a participant. Goes through the
+                        game's own add_squad/add_building/credit, and is
+                        the SAME applier the live server uses.
+scenario_def.gd          The scenario schema; scenario_squad.gd and
+                        scenario_building.gd are its entries. Offsets are
+                        relative to a player's home, so one loadout drops
+                        onto any map.
+scenario_world.gd        A complete headless world for a GUT test, in one
+                        call. Exposes the sim's OWN Vision, never a
+                        second one.
+/scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         needs a real GPU, and prints which one.
 terrain_preview.gd       Headless terrain preview + chunk profiling.
@@ -787,10 +815,66 @@ reason; a bare `just` inside a recipe will not resolve.
 PowerShell, `just` resolves `sh` to WSL's bash and dies with
 `execvpe(/bin/bash) failed` before any recipe body runs.
 
+**Every command belongs to an INSTANCE, and a worktree is isolated
+automatically** (D-075). The instance is derived from the checkout —
+`.claude/worktrees/foo-123` → `test-foo-123`, the main checkout → `dev` —
+and gives that checkout its own compose project and its own port. Several
+agents can run `test-load` at once without touching each other. The rules
+that follow from it:
+
+- **Pass nothing.** Isolation is the default in a worktree; there is no
+  argument to remember and no slot to claim. `scripts/instance.sh` is the
+  one definition, and it prints what it resolved before anything runs.
+- **`dev` is the human's game — never start it and never stop it.**
+  `just lobby` is theirs. Do not set `EDOTMW_INSTANCE=dev`, which is the
+  one way to defeat the guard that protects it, and do not run
+  `just dev-down`. A bare `just down` from the main checkout is refused
+  precisely so this cannot happen by accident.
+- **`just instances`** answers "is this failure mine?" — every instance
+  on the machine, its port, its checkout, and whether it has containers
+  up. See the amended stray-server paragraph above for the session this
+  is standing in for.
+
+**Start mid-game when the opening is not what you are testing** (D-076).
+The real opening costs ~150 s before anything downstream of it exists —
+one founding party, a 40 s town hall that consumes it, production, then
+armies walking across a 128×64 map. A **scenario** skips to a mid-game
+world: bases standing, armies in reach, wallets full.
+
+```
+just scenarios                     # what exists and what each is for
+just test-scenario siege 4 30      # real server + real bots, ~31 s
+just test-unit scenarios           # one test file, ~11 s
+just test-unit "" within_reach     # one test by name
+```
+
+In a GUT test the whole setup is two lines:
+
+```gdscript
+var w := ScenarioWorld.build("clash")   # two armies, already in reach
+w.tick(2.0)                             # two seconds at the real 10 Hz
+```
+
+Three rules come with it:
+
+- **A scenario is applied through the game's own calls** —
+  `SquadSim.add_squad`, `BuildingSim.add_building`, `Economy.credit` —
+  and `Scenario.apply_player` is the SAME function the live server uses.
+  Never add a faster path that builds the world its own way; that is the
+  `profile`-sweep blind spot with a new name.
+- **A scenario cannot see founding, production or spawn placement**,
+  because it skips them. `just test-load 4 120` still plays the real
+  opening and is still the gate a change passes before it is called done.
+- **`_import` is now skipped when nothing changed.** It prints when it
+  skips; `EDOTMW_FORCE_IMPORT=1` forces it. If you ever suspect a stale
+  cache, that flag is the first thing to try.
+
 Lifecycle:
 
 - `just doctor` — preflight: runtime prerequisites actually met?
-- `just up` / `just down` / `just status`
+- `just up` / `just down` / `just status` — all scoped to this instance
+- `just instances` — every instance on the machine; `just instance-free
+  <name>` releases a port claim left by a deleted checkout
 - `just nuke` — full teardown back to pure source. **Deletes `tools/`,
   including the `just` you ran it with** — that's intentional; re-run
   `./bootstrap.ps1` to come back.
@@ -812,8 +896,14 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 489 tests across
-  32 scripts, measured 2026-08-10)*
+- `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
+  502 tests across 33 scripts, measured 2026-08-11)*. FILTER selects
+  files by substring, TEST selects one test by name (D-076).
+- `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
+  loop: a real server and real bots starting mid-match from a scenario
+  (~31 s at DURATION=15, ~50 s at the default 30, against `test-load`'s ~150 s). Fails unless the server's log
+  confirms it actually played the scenario.
+- `just scenarios` — the shipped mid-game scenarios and what each is for
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

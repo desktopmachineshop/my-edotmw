@@ -87,6 +87,18 @@ var _passable := PackedByteArray()
 ## is filled in.
 var _spawn_points: Array[Vector2i] = []
 
+## The scenario this server is playing, or null for a real opening
+## (D-076). Everything about it is decided at startup: which one, where
+## each seat's home is, and which cells are already taken.
+var _scenario: ScenarioDef = null
+## Home cell per SEAT INDEX, not per player id — the same keying as spawn
+## assignment and colours, for the same reason (D-052: any modulo of a
+## player id collides once AI ids start at 1000).
+var _scenario_homes: Array[Vector2i] = []
+## Cells already used by scenario placement, shared across every player so
+## two seats' armies can never be dealt the same cell.
+var _scenario_taken := {}
+
 ## What the world is, or will be once the lobby settles (D-049).
 var _settings: MapSettings
 
@@ -165,6 +177,27 @@ func _ready() -> void:
 	_port = int(args.get("port", DEFAULT_PORT))
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	var map_path := String(args.get("map", DEFAULT_MAP))
+
+	# --scenario=<id> starts the match MID-GAME instead of playing the
+	# opening (D-076). Bases already standing, armies already in reach.
+	#
+	# Loaded and validated HERE, before a socket exists, so a typo is a
+	# refusal to start rather than a server that comes up and quietly
+	# gives every player nothing. A scenario run that silently degraded to
+	# an ordinary one would be the worst outcome: the test would pass, on
+	# a world nobody asked for.
+	var scenario_id := StringName(args.get("scenario", ""))
+	if scenario_id != &"":
+		_scenario = Scenario.by_id(scenario_id)
+		if _scenario == null:
+			push_error("server: no scenario '%s' under res://scenarios" % scenario_id)
+			get_tree().quit(1)
+			return
+		var bad := _scenario.validate()
+		if bad != "":
+			push_error("server: scenario '%s' is invalid: %s" % [scenario_id, bad])
+			get_tree().quit(1)
+			return
 
 	_config = load(map_path) as MapConfig
 	if _config == null:
@@ -316,6 +349,35 @@ func _build_world() -> void:
 		_config.fairness_radius, _config.fairness_quota)
 	_sim.economy = _economy
 	print("server: %d resource nodes generated" % _economy.node_count())
+
+	# Scenario homes, once, now that spawn points and passability exist
+	# (D-076). Computed for every SEAT rather than lazily per join, because
+	# `separation` places seats relative to one another and the second
+	# player's home is not a function of the second player alone.
+	#
+	# Printed as a structured marker, not prose: a scenario run must be
+	# identifiable in a log without anyone having to know what a normal
+	# opening looks like. `test-scenario` greps for exactly this, so a run
+	# that silently played the ordinary opening fails rather than passing
+	# as a very fast scenario.
+	if _scenario != null:
+		# Enough homes for every seat the MAP can hold, not just the
+		# players announced at startup.
+		#
+		# This was `players_expected`, which defaults to 1 and is not
+		# raised by `just up` — so a four-bot scenario run computed ONE
+		# home, every seat indexed into it, and four armies spawned in a
+		# pile ten cells from where the scenario said. It still looked
+		# healthy: bots connected, combat happened, casualties were high
+		# BECAUSE everyone started on top of each other. Sizing on the
+		# map's own seat count makes the number of joiners irrelevant
+		# rather than load-bearing.
+		var seats: int = maxi(maxi(1, _match.players_expected), _spawn_points.size())
+		_scenario_homes = Scenario.homes(_scenario, seats, space,
+			_passable, _spawn_points)
+		print("server: SCENARIO id=%s seats=%d separation=%d squads_each=%d buildings_each=%d" % [
+			_scenario.id, seats, _scenario.separation,
+			_scenario.squad_count(), _scenario.buildings.size()])
 
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
@@ -1233,6 +1295,28 @@ func _handle_order_stop(peer, data: PackedByteArray) -> void:
 
 func _spawn_squads_for(player: int) -> Array:
 	var ids := []
+
+	# A scenario replaces the opening entirely (D-076): this player gets
+	# the loadout the scenario describes, at its seat's home, instead of
+	# one founding party. Applied through `Scenario.apply_player`, which is
+	# the SAME call the headless test fixture uses — one placement
+	# implementation, so a scenario cannot mean one thing in a unit test
+	# and another on a live server.
+	if _scenario != null and not _scenario_homes.is_empty():
+		var seat := _match.spawn_index(player, _scenario_homes.size())
+		var placement := Scenario.apply_player(_scenario, player,
+			_civ_of(player), _scenario_homes[seat], _sim, _buildings,
+			_economy, _passable, _scenario_taken)
+		for problem in placement.skipped:
+			# Loud, never swallowed. An army that quietly failed to place
+			# looks exactly like one the simulation lost.
+			push_warning("server: scenario '%s' player %d: %s" % [
+				_scenario.id, player, problem])
+			print("server: SCENARIO_SKIPPED player=%d %s" % [player, problem])
+		print("server: scenario '%s' seated player %d — %d squads, %d buildings" % [
+			_scenario.id, player, placement.squads.size(),
+			placement.buildings.size()])
+		return placement.squads
 
 	# Spawn points come from the map now, not from a formula here (D-036).
 	# The old version computed lanes from `player * 7` and `player * 5 + i

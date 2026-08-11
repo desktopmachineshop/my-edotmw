@@ -20,6 +20,185 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-076 · 2026-08-11 · Accepted — tests start mid-game, from a scenario
+**Decision:** A **scenario** is a mid-game world described as data
+(`/scenarios/*.tres`), applied through the game's own calls, and usable
+two ways: in-process by a GUT test, and by the real server via
+`--scenario=<id>`.
+
+1. **`ScenarioDef`** holds a per-player loadout — buildings, squads,
+   wallet — plus `separation`, how far apart to place neighbouring
+   players. `ScenarioBuilding` and `ScenarioSquad` are its entries.
+2. **Placement is RELATIVE.** Entries carry an offset from the player's
+   home cell, never an absolute cell, so one loadout drops onto any map.
+   `placement_slack` bounds how far the applier may nudge an offset that
+   lands in water or on another building.
+3. **Squads name an ARCHETYPE, never a unit and never a civ**, resolved
+   per player through `UnitRoster.for_civ_archetype` — so one scenario
+   plays for every civ.
+4. **`Scenario` is all-static**, like `Formation`: a scenario is an
+   opening position, not a participant, and there is nowhere for it to
+   keep state.
+5. **One applier for both worlds.** `Scenario.apply_player` is called by
+   `ScenarioWorld.build` (tests) and by `server.gd:_spawn_squads_for`
+   (live). A scenario cannot mean one thing in a unit test and another on
+   a server.
+6. **Nothing is dropped in silence.** Unplaceable entries land in
+   `Placement.skipped`, which the server prints as `SCENARIO_SKIPPED` and
+   `test-scenario` fails on.
+7. **A scenario run is identifiable in its log** — `server: SCENARIO
+   id=… seats=… separation=…` — and `test-scenario` greps for exactly
+   that.
+8. **`just test-load 4 120` keeps playing the real opening and stays the
+   gate.** A scenario is for iterating.
+
+**Rationale:** The opening is slow on purpose and the cost compounds. A
+player starts with one founding party and no base, a town hall takes 40 s
+and consumes the founders (D-031), production follows, and spawns are
+scattered far apart (D-039). So the cheapest honest integration test of
+anything downstream cost ~150 s of waiting before the thing under test
+existed. Measured, before and after, on the same machine:
+
+| loop | before | after |
+|---|---|---|
+| full unit suite | 39 s | 29 s |
+| one unit test file | 39 s | **11 s** |
+| integration with combat, fog and buildings | ~150 s | **31 s** (at DURATION=15; ~50 s at the default 30) |
+
+The unit suite was already spawning directly into `SquadSim`; what it
+lacked was a shared fixture (32 files, each re-inventing its own
+scaffolding — `test_buildings.gd` alone had 48 `.new()` calls) and any
+way to run less than all 491 tests.
+
+**Rejected alternatives:**
+- **A parallel lightweight simulation for tests.** The fast path would
+  then be a different program from the shipped one. This is the exact
+  shape of M4's `profile` sweep reporting 29 ms for code that spent
+  866 ms live, because the sweep resolved its UnitDefs once at setup and
+  the server did not. Where a harness and a live run disagree, believe
+  the live run — so do not build a harness that CAN disagree.
+- **Scenarios as GDScript builders only.** More expressive, but "unit
+  stats, civ configs, terrain-gen parameters: plain text, not hardcoded"
+  is a standing rule, and a scenario is exactly that kind of data. The
+  builder path remains available by constructing a `ScenarioDef` inline.
+- **Letting scenarios replace the slow run.** Rejected with the user:
+  nothing would then exercise founding, production timing or the opening
+  end to end, which is the class of gap this log keeps recording.
+- **Sizing scenario homes on `players_expected`.** Tried, and wrong: it
+  defaults to 1 and `just up` does not raise it, so four bots all indexed
+  into one home and four armies spawned in a pile. It looked healthy —
+  bots connected, casualties were HIGHER — because they started on top of
+  each other. Homes are sized on the map's own seat count instead, making
+  the number of joiners irrelevant rather than load-bearing.
+
+**Consequences:**
+- `just test-unit FILTER [TEST]` maps to GUT's own `-gselect` /
+  `-gunit_test_name`; `_import` is skipped when no source is newer than a
+  stamp taken BEFORE the previous import, printed when skipped and
+  overridable with `EDOTMW_FORCE_IMPORT=1`. That cache is the one piece
+  here that could produce a confidently wrong answer, which is why it is
+  conservative, loud, and was tested by editing a file and confirming the
+  edit is seen.
+- A scenario cannot catch a bug in founding, production or spawn
+  placement — it skips them. That is stated in the file header, in
+  `just scenarios`, and in CLAUDE.md, because a fixture whose blind spot
+  is undocumented eventually gets trusted for what it cannot see.
+- Three scenarios ship: `clash` (armies in reach, no buildings),
+  `siege` (a defended base plus an attacker, for D-067's razing rule),
+  `developed` (a working base and a full wallet — the default start for
+  feature work).
+
+**Revisit trigger:** a scenario is needed that varies DURING a match
+rather than at t=0 (scripted events, timed reinforcements) — clause 4's
+all-static applier is what to re-examine first; or `test-scenario`
+becomes the thing people quote instead of `test-load`, which is clause 8
+failing in practice rather than in principle.
+
+### D-075 · 2026-08-11 · Accepted — one instance per checkout
+**Decision:** Every command belongs to an **instance**, which resolves to
+exactly two things: a **compose project name** and a **published host
+port**. Nothing else varies.
+
+1. **Identity is derived from the checkout directory, not declared.**
+   `.claude/worktrees/<name>` → `test-<name>`; anywhere else → `dev`.
+   `EDOTMW_INSTANCE=<name>` overrides.
+2. **`dev` is the human's, and is pinned to port 4433.** `just lobby`
+   always starts it, whichever directory it is invoked from. Every other
+   instance takes the first free port from 4434.
+3. **`down` and `nuke` refuse to act on `dev` unless `dev` was named
+   EXPLICITLY.** A bare `just down` in the main checkout is an error
+   naming `just dev-down`; in a worktree it resolves to that worktree's
+   own instance and works bare, as before.
+4. **Ports are claimed in a registry under `$HOME/.edotmw/ports`**, not in
+   the repo, and claimed atomically by creating a file under
+   `set -o noclobber`.
+5. **The container-internal port stays 4433 for everyone.** Only the host
+   publish varies.
+6. **`scripts/instance.sh` is the one definition**, sourced by every
+   recipe that touches docker, and it prints
+   `instance=… project=… port=…` before anything runs.
+7. **One checkout runs one instance.** The override exists for naming, not
+   for running two instances from one tree — two would share the import
+   cache and `artifacts/`.
+
+**Rationale:** Every recipe used to pin `-p edotmw` and port 4433. That
+scoped teardown away from unrelated software (D-014's requirement) but
+NOT away from a second checkout of this project, and there are now seven
+worktrees. The consequences were all real and all observed: `just down`
+in one worktree removed another's containers, a second `just up` could
+not bind the port, and — the expensive one — a run in one checkout
+silently reached a server started by another. CLAUDE.md already carried a
+paragraph about a session lost to exactly that, whose tell was
+"server-side instrumentation printing nothing at all".
+
+Deriving identity from the path rather than having agents claim a slot is
+what makes this hold in practice. The failure being removed is *forgetting
+to isolate*, and a scheme that requires remembering an argument cannot
+remove it — it relocates it. Nothing to pass means nothing to forget.
+
+**Rejected alternatives:**
+- **Require an explicit `EDOTMW_INSTANCE` everywhere, no default.**
+  Considered first and chosen against by the user. An agent that forgets
+  the prefix lands silently on the human's instance, which is precisely
+  the failure being removed, and every bare command a human already types
+  would have had to grow an argument.
+- **A lock-file slot claim (`test-1`, `test-2`, …).** Needs coordination,
+  needs releasing, and goes stale when a worktree is deleted with
+  `rm -rf`. The path already IS a unique name; minting a second one is
+  work with its own failure mode.
+- **Hash the checkout name into a port.** No registry, but a birthday
+  collision at four concurrent worktrees is ~12%, and the symptom is two
+  checkouts sharing a port — the exact bug being fixed.
+- **Scope the import cache, `artifacts/` and replay files per instance
+  too.** Each worktree already has its own copy of all three, so this
+  buys nothing and would move every documented path
+  (`artifacts/client-frame.png`, `artifacts/models-godot.png`).
+- **Vary the container-internal port.** Would force `bot_client.gd` and
+  `client-test` to learn about instances. They reach `server:4433` over
+  their own project's network, which is already isolated.
+
+**Consequences:**
+- **This strengthens D-014 rather than relaxing it.** Teardown was scoped
+  to one pinned project; it is now scoped to one instance, so `just down`
+  is structurally incapable of reaching another checkout's containers.
+  Verified by running it against a live foreign container: the old label
+  filter matched it, the new one does not.
+- The human's game is protected two ways — by project scoping (an agent's
+  teardown cannot name it) and by the explicit-`dev` guard (an agent's
+  bare `down` in the main checkout is refused).
+- A port claim can outlive a checkout deleted with `rm -rf`. `just
+  instances` flags it `STALE`; `just instance-free` releases it. Reported,
+  never auto-removed — deleting state on someone's behalf is how a
+  worktree somebody was still using disappears.
+- Projects created before this change (bare `edotmw`) are owned by no
+  instance and are reported as such rather than silently swept.
+
+**Revisit trigger:** a third party needs the port range (4433–4499
+assumed free); or instances need to differ in more than project and port
+— at which point the "one checkout, one instance" rule in clause 7 is the
+thing to re-examine first, since scoping `artifacts/` is what makes two
+instances per tree safe.
+
 ### D-063 · 2026-08-06 · Accepted — the HUD a player actually reads, and a view that turns
 **Decision:** The HUD's contents are chosen for what a player can ACT on,
 and the camera gains a yaw.
@@ -4412,6 +4591,12 @@ first implemented, not before.
 ---
 
 ### D-014 · 2026-07-28 · Accepted
+*(Amended 2026-08-11 by **D-075**: the teardown scoping below is now
+per INSTANCE rather than per the single pinned `edotmw` project. That
+tightens this decision — `just down` could previously remove containers
+started by a different checkout of this same project, which is teardown
+reaching further than its own work.)*
+
 **Decision:** Headless dev tooling (server, bots, GUT tests, terrain
 preview) is containerized. The GUI Godot editor and the GUI game client
 run natively via a portable, gitignored install — flagged as `CLAUDE.md`
