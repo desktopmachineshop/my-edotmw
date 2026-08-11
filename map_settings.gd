@@ -43,7 +43,7 @@ var beach_level: float = 0.44
 var mountain_level: float = 0.74
 var elevation_frequency: float = 2.5
 var moisture_frequency: float = 4.0
-var height_scale: float = 2.0
+var height_scale: float = 15.0
 
 
 ## The map sizes the lobby offers. Every height is even (D-008), and the

@@ -185,7 +185,14 @@ func _ready() -> void:
 	_settings.height = _config.height
 	_settings.player_slots = _config.player_slots
 	_settings.seed = int(args.get("seed", 1337))
+	# Overridable from the command line for a no-lobby quick start (D-049
+	# normally only reaches these through the lobby UI's sliders). Mirrors
+	# --ai/--map/--seed above.
+	if args.has("preset"):
+		_settings.preset = StringName(args["preset"])
 	_settings.apply_preset(TerrainPresetRoster.by_id(_settings.preset))
+	if args.has("height_scale"):
+		_settings.height_scale = float(args["height_scale"])
 
 	# AI seats are registered through the same `add_player` path a human
 	# join uses (D-051), which is what lets `_start_if_ready` auto-start a
@@ -1092,6 +1099,13 @@ func _handle_order_build(peer, data: PackedByteArray) -> void:
 	if claimed >= 0:
 		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(claimed).display_name)
 		return
+
+	# Another building's footprint, complete or still only pending (see
+	# _footprint_conflict) — checked up front so a second builder is told
+	# immediately rather than walking all the way there to be turned away.
+	if _footprint_conflict(cell, def.footprint_radius, squad):
+		_notify(peer, "Too close to another building")
+		return
 	# Too far? WALK THERE. Do not refuse.
 	#
 	# This used to answer "Too far — move closer", which is the server
@@ -1137,6 +1151,14 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i) -> void:
 	var blocked := _claimed_against(cell, _sim.owner_of(squad))
 	if blocked >= 0:
 		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(blocked).display_name)
+		return
+
+	# Re-checked on arrival too — a second squad may have been ordered to
+	# found something nearby (or the very same site) while this one was
+	# still walking, and only this recheck catches it if that order landed
+	# after this squad's own order-time check already passed.
+	if _footprint_conflict(cell, def.footprint_radius, squad):
+		_notify(peer, "Too close to another building")
 		return
 
 	# Construction costs resources (D-028). This was missing, so
@@ -1286,6 +1308,47 @@ func _claimed_against(cell: Vector2i, player: int) -> int:
 		if _sim.space.distance(cell, _buildings.cell_of(i)) <= def.no_build_radius:
 			return i
 	return -1
+
+
+## Whether founding a `radius`-footprint building at `cell` would overlap
+## another building's own footprint — a completed one, OR one only pending
+## (a squad still walking to its site).
+##
+## `BuildingDef.footprint_radius` was declared in the schema and given real
+## per-building values (town_centre 2, everything else 1) but read by
+## nothing at all — the same "declared and unread" defect `UnitDef.cost`,
+## `BuildingDef.cost` and `BuildingSim.damage()` each cost a milestone
+## before someone noticed (see CLAUDE.md's running list). Without it,
+## `_is_buildable` only ever reserved the single CELL a building was
+## founded on, never the ground its mesh actually covers — irrelevant once
+## a real footprint (2 to 4.6 world units, D-064) is several times wider
+## than one hex (~1.7). Two buildings on merely ADJACENT cells could
+## already render on top of each other, and — the reported bug — a second
+## squad could be sent to found a building at the very same site as a
+## first squad still walking there, because nothing reserved a cell a
+## build was only PENDING at. Checked at order time below and re-checked
+## on arrival in `_finish_build`, the same two-checkpoint shape
+## `_claimed_against` uses for the identical reason: a slow walk should
+## not be able to beat a rule that a fast one would have failed.
+func _footprint_conflict(cell: Vector2i, radius: int, exclude_squad: int = -1) -> bool:
+	for i in range(_buildings.building_count()):
+		if _buildings.is_destroyed(i):
+			continue
+		var other_def := _buildings.def_of(i)
+		if other_def == null:
+			continue
+		if _sim.space.distance(cell, _buildings.cell_of(i)) < radius + other_def.footprint_radius:
+			return true
+	for squad in _pending_builds:
+		if squad == exclude_squad:
+			continue
+		var intent: Dictionary = _pending_builds[squad]
+		var other_def := BuildingSim.def_by_id(StringName(intent["def_id"]))
+		if other_def == null:
+			continue
+		if _sim.space.distance(cell, intent["cell"]) < radius + other_def.footprint_radius:
+			return true
+	return false
 
 
 func _handle_order_stop(peer, data: PackedByteArray) -> void:

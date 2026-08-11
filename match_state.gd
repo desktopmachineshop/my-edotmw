@@ -482,7 +482,10 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		"elevation_frequency":
 			map_settings.elevation_frequency = clampf(value, 0.5, 8.0)
 		"height_scale":
-			map_settings.height_scale = clampf(value, 0.5, 6.0)
+			# Ceiling raised from 6.0 to 20.0 alongside the new 15.0 default
+			# (was 2.0) — a slider that could not reach the default would
+			# clamp it right back down on the first nudge.
+			map_settings.height_scale = clampf(value, 0.5, 20.0)
 		_:
 			return false
 

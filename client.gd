@@ -1107,6 +1107,16 @@ var _building_nodes := {}
 ## wire id -> BuildingDef, cached alongside _building_nodes so the missile
 ## visual (see _refresh_buildings) doesn't re-load one from disk per frame.
 var _building_defs := {}
+## wire id -> float, how far to lift the mesh above the sampled ground so its
+## base (not its centre) rests on it. 0.0 for an authored model, half the
+## mesh's own height for the centred primitive fallback. See _refresh_buildings.
+var _building_ground_lift := {}
+## wire id -> float, how far ABOVE `instance.position` (already ground-lifted)
+## the mesh's own top sits once fully grown — the mesh's full height for an
+## authored model (position is its base), or half its height for the centred
+## primitive fallback (position is already its centre). Used to float the
+## health bar just above the roof regardless of which kind of mesh this is.
+var _building_top_offset := {}
 ## wire id -> { "back": MeshInstance3D, "fill": MeshInstance3D,
 ## "fraction": float } — the health bar drawn OVER a damaged building.
 var _health_bars := {}
@@ -2173,6 +2183,7 @@ func _refresh_buildings() -> void:
 			var mesh: Mesh = null
 			var material: Material = null
 
+			var authored := false
 			if def.model_id != &"":
 				mesh = UnitMesh.mesh_for(def.model_id)
 			if mesh != null:
@@ -2180,6 +2191,7 @@ func _refresh_buildings() -> void:
 				# vertex alpha, so the shader mixes rather than tinting the
 				# whole structure one colour.
 				material = UnitMesh.static_material_for(owner_colour)
+				authored = true
 			else:
 				# The primitive, which now actually reads `mesh_primitive`.
 				# It had no readers at all until M7 — every building on the
@@ -2200,6 +2212,20 @@ func _refresh_buildings() -> void:
 			# M4's UnitRoster.by_id defect, and this loop already runs once
 			# per building per frame.
 			_building_defs[wire_id] = def
+			# How far to lift the mesh so its BASE sits on the ground, not its
+			# centre. Authored building models (art/buildings, D-064) are built
+			# with their origin already at the base — `box(..., centre=(0,
+			# height/2, 0))` spans y=0 to y=height — so an authored mesh needs
+			# no lift at all. The primitive fallback (BoxMesh, CylinderMesh, ...)
+			# is centred on its own origin instead, so it needs to rise by half
+			# its own height. A single hardcoded "1.5" here used to assume every
+			# building was the centred primitive; once authored models landed
+			# in M7 every building was lifted 1.5 units into the air on top of
+			# already sitting on the ground — the floating-buildings bug.
+			var mesh_height := mesh.get_aabb().size.y
+			var lift := 0.0 if authored else mesh_height / 2.0
+			_building_ground_lift[wire_id] = lift
+			_building_top_offset[wire_id] = mesh_height - lift
 			add_child(instance)
 
 		if bool(info["destroyed"]):
@@ -2220,8 +2246,9 @@ func _refresh_buildings() -> void:
 		var world := _state.space.to_world(_state.space.from_index(int(info["cell"])))
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
-		# Sit the box ON the ground rather than half-sunk into it.
-		world.y += 1.5 * progress
+		# Sit the mesh ON the ground rather than half-sunk into it (zero for an
+		# authored, base-pivoted model — see _building_ground_lift above).
+		world.y += float(_building_ground_lift.get(wire_id, 0.0)) * progress
 		# Drawn at the lattice copy the camera can actually see (D-035).
 		# Buildings were placed at their canonical position only, so one
 		# across the seam appeared a whole map from where it stands —
@@ -2301,8 +2328,11 @@ func _update_building_health_bar(wire_id: int, building: MeshInstance3D,
 
 	# Above the box, which is drawn short while it is still going up — so
 	# the bar rises with it rather than hanging in the air over a
-	# foundation.
-	var above := building.position + Vector3(0.0, 1.5 * progress + 0.9, 0.0)
+	# foundation. `building.position` is already ground-lifted (see
+	# _building_ground_lift); `_building_top_offset` is the remaining
+	# distance up to the mesh's own top at full progress.
+	var top_offset := float(_building_top_offset.get(wire_id, 1.5))
+	var above := building.position + Vector3(0.0, top_offset * progress + 0.9, 0.0)
 	back.position = above
 	fill.position = above
 
@@ -3823,7 +3853,7 @@ const MAP_OPTIONS := [
 	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
 	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
 	{"key": "elevation_frequency", "label": "Landmass count", "kind": "slider", "min": 0.5, "max": 8.0},
-	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 6.0},
+	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 20.0},
 ]
 
 

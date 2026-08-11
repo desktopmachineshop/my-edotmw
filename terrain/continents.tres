@@ -12,4 +12,4 @@ beach_level = 0.44
 mountain_level = 0.74
 elevation_frequency = 2.5
 moisture_frequency = 4.0
-height_scale = 2.0
+height_scale = 15.0
