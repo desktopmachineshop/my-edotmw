@@ -217,9 +217,32 @@ func _ready() -> void:
 		# AI opponents without a lobby, so `run-client` and the load test can
 		# have real opposition (D-051). `ai_wanted` is computed above, not
 		# here, so it can also fold into `players_expected`.
+		#
+		# --random-civs=1 draws every seat's civ from the same
+		# CivRoster.resolve(RANDOM, ...) the lobby uses instead of the
+		# default round-robin, and reuses civ_rng so a rerun with the same
+		# --seed reproduces the same draw (D-047's replay obligation). Off
+		# by default: round-robin is what guarantees test-load's "both civs
+		# fielded" check (D-046 criterion 10) without depending on a coin
+		# flip.
+		var random_civs := int(args.get("random-civs", 0)) != 0
 		var civs := CivRoster.ids()
 		for i in range(ai_wanted):
-			_seat_ai(1000 + i, civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
+			var ai_civ: StringName = CivRoster.resolve(CivRoster.RANDOM, _match.civ_rng) \
+				if random_civs \
+				else (civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
+			_seat_ai(1000 + i, ai_civ)
+
+		# Human seats aren't known by id until they connect (`_next_player`
+		# hands them out in `_on_connect`), but the expected COUNT is —
+		# `--players` — and nothing accepts a connection until the ENet host
+		# below is bound. Pre-drawing here means `_civ_of`'s lookup finds a
+		# cached entry the moment a human is admitted, rather than falling
+		# back to round-robin only for AI seats to have been randomised.
+		if random_civs:
+			var human_players := maxi(1, int(args.get("players", 1)))
+			for p in range(1, human_players + 1):
+				_civs[p] = CivRoster.resolve(CivRoster.RANDOM, _match.civ_rng)
 
 	_host = ENetConnection.new()
 	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
@@ -798,6 +821,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_gather(peer, data)
 			NetProtocol.C2S_ORDER_RALLY:
 				_handle_order_rally(peer, data)
+			NetProtocol.C2S_ORDER_BUILDING_TARGET:
+				_handle_order_building_target(peer, data)
 			NetProtocol.C2S_ORDER_FORMATION:
 				_handle_order_formation(peer, data)
 			NetProtocol.C2S_CHAT:
@@ -913,6 +938,46 @@ func _handle_order_rally(peer, data: PackedByteArray) -> void:
 	var cell := _sim.space.from_index(int(order["cell"]))
 	_buildings.set_rally(building, cell)
 	_notify(peer, "Rally point set")
+
+
+## Focus-fire an armed building on one enemy squad (D-032's manual half —
+## `Combat.resolve_buildings` otherwise always picks the nearest enemy
+## itself). Ownership and "is this building even armed" are checked here
+## the same as every other order (D-002); `target == -1` clears it back to
+## automatic. Nothing else validates the target every tick after this —
+## `resolve_buildings` clears it itself the moment the squad dies, so a
+## stale id can never be silently reused for a different squad later.
+func _handle_order_building_target(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null or not _match.is_running():
+		return
+
+	var order := NetProtocol.decode_order_building_target(data)
+	var building := BuildingSim.local_id(int(order["building"]))
+	if building < 0 or building >= _buildings.building_count():
+		return
+	if _buildings.owner_of(building) != int(record["player"]):
+		_notify(peer, "That is not yours to give orders to")
+		return
+
+	var target := int(order["target"])
+	if target == -1:
+		_buildings.set_forced_target(building, -1)
+		_notify(peer, "Target cleared")
+		return
+
+	var def := _buildings.def_of(building)
+	if def == null or def.damage <= 0.0:
+		_notify(peer, "That building cannot be given a target")
+		return
+	if target < 0 or target >= _sim.squad_count() or _sim.alive_of(target) <= 0:
+		return
+	if _sim.are_allied(_sim.owner_of(target), int(record["player"])):
+		_notify(peer, "That is not an enemy")
+		return
+
+	_buildings.set_forced_target(building, target)
+	_notify(peer, "Target set")
 
 
 ## Tell a client about resource nodes it can see and has not been told

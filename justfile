@@ -294,6 +294,54 @@ lobby PLAYERS="1":
     "$godot" --path . client.tscn -- --address=127.0.0.1 --port=4433
     docker logs edotmw-lobby > "$log" 2>&1 || true
 
+# Quick test match: you + 3 AI, no lobby to click through, every seat
+# (yours included) drawn from CivRoster.resolve(RANDOM, ...) instead of the
+# round-robin `run-server`/`lobby` default — so you don't know your own civ
+# going in, same as an AI seat would draw. SEED reruns the same draw
+# (civ_rng is seeded from it, same as everywhere else civs are randomised).
+#
+# Its own recipe rather than `run-server AI=3` flags typed by hand, for the
+# same reason `lobby` is its own recipe: server and client have to agree on
+# port and mode, and skipping the lobby means there is no admin screen to
+# fall back on if you get that wrong.
+[doc("Quick test: you + 3 AI, all random civs, no lobby")]
+quick-test SEED="1337":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
+        echo "      Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+
+    # Whatever happens next, do not leave a server holding port 4433.
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    "{{just_executable()}}" down > /dev/null 2>&1 || true
+
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/quick-test-server.log"
+    "{{just_executable()}}" _import
+    docker compose -p edotmw run --rm --service-ports -d --name edotmw-quick-test \
+        server --path . "{{server_scene}}" -- \
+        --ai=3 --players=1 --lobby=0 --seed={{SEED}} --random-civs=1 > /dev/null
+
+    # Wait for the port rather than sleeping a guessed number of seconds.
+    for _i in $(seq 1 60); do
+        if docker logs edotmw-quick-test 2>&1 | grep -q "listening"; then break; fi
+        sleep 1
+    done
+    if ! docker logs edotmw-quick-test 2>&1 | grep -q "listening"; then
+        echo "FAIL: the server did not come up:" >&2
+        docker logs edotmw-quick-test 2>&1 | tail -20 >&2
+        exit 1
+    fi
+    docker logs edotmw-quick-test 2>&1 | grep -E "listening|AI seated"
+
+    "$godot" --headless --path . --import
+    "$godot" --path . client.tscn -- --address=127.0.0.1 --port=4433
+    docker logs edotmw-quick-test > "$log" 2>&1 || true
+
 # Manual dev loop: run a client. Always native — needs a GPU (D-014), so
 # this recipe ignores EDOTMW_RUNTIME and refuses to pretend otherwise.
 #

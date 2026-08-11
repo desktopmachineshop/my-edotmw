@@ -138,6 +138,48 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	return _diff(sim, before_alive, before_routed)
 
 
+## Idle squads pursue a nearby enemy instead of waiting for one to walk all
+## the way into attack_range. A "for now" default aggressive stance — a
+## per-squad control to opt out (hold position / passive) is future work,
+## not built yet.
+##
+## Only squads that are genuinely idle (arrived, not already under an
+## attack-move or a fresh player order), combat-capable (`damage > 0`), and
+## not a worker (`carry_capacity > 0` — the same signal client.gd's own
+## "Gather" action reads, so a gatherer parked on a node is never yanked
+## off it to go fight) are considered. Detection radius is the squad's own
+## `vision_range`, so a squad only ever reacts to something it could
+## plausibly have seen — reusing `_range_in_cells` the same way `resolve()`
+## and `resolve_buildings` do for their own range stats.
+##
+## Issuing `order_attack_move` reuses D-034's existing halt-on-contact
+## machinery rather than adding a second kind of engagement: once a later
+## tick's `resolve()` finds the target in actual attack_range, the squad
+## halts and fights there exactly as if a player had clicked attack-move.
+## `is_idle()` goes false the moment the order lands, which is what stops
+## this from reissuing the same order — and rebuilding the same flow field
+## — every tick a squad is already en route.
+##
+## Reuses this tick's bucket map and `_engaged` (from `resolve()`, called
+## first every tick): a squad that already found a target standing where
+## it is has nothing to chase.
+func assign_idle_engagements(sim: SquadSim, tick: int) -> void:
+	var buckets: Dictionary = _buckets if _buckets_tick == tick else _build_buckets(sim)
+	for squad in range(sim.squad_count()):
+		if sim.alive_of(squad) <= 0 or sim.is_routed(squad):
+			continue
+		if _engaged.has(squad) or sim.is_attack_moving(squad) or not sim.is_idle(squad):
+			continue
+		var def := sim.def_of(squad)
+		if def == null or def.damage <= 0.0 or def.carry_capacity > 0:
+			continue
+		var target := _find_squad_near(sim, buckets, sim.cell_index_of(squad),
+			sim.owner_of(squad), _range_in_cells(sim.space, def.vision_range))
+		if target == -1:
+			continue
+		sim.order_attack_move(squad, sim.cell_of(target))
+
+
 ## Armed buildings shoot (D-032, D-029).
 ##
 ## A SEPARATE pass from the squad path, deliberately. `_resolve_attack`
@@ -179,8 +221,32 @@ func resolve_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Arra
 		if last >= 0 and tick - last < interval_ticks:
 			continue
 
-		var target := _find_squad_near(sim, buckets, buildings.cell_index_of(building),
-			buildings.owner_of(building), _range_in_cells(sim.space, def.attack_range))
+		var range_cells := _range_in_cells(sim.space, def.attack_range)
+		var target := -1
+
+		# A player-assigned focus-fire target (C2S_ORDER_BUILDING_TARGET)
+		# overrides the automatic nearest-enemy pick. Cleared here the
+		# moment it dies rather than left dangling, so a squad id can never
+		# be silently reused for a different squad later. While it is
+		# alive but OUT of range, the building holds fire rather than
+		# opportunistically switching to whatever else wandered close —
+		# that quiet retarget is exactly what "assign a target" is for the
+		# player to avoid.
+		var forced := buildings.forced_target_of(building)
+		if forced != -1:
+			if forced >= sim.squad_count() or sim.alive_of(forced) <= 0:
+				buildings.set_forced_target(building, -1)
+			else:
+				var origin := sim.space.from_index(buildings.cell_index_of(building))
+				var d := TorusSpace.hex_length(sim.space.delta(origin, sim.cell_of(forced)))
+				if d <= range_cells:
+					target = forced
+				else:
+					continue
+
+		if target == -1 and buildings.forced_target_of(building) == -1:
+			target = _find_squad_near(sim, buckets, buildings.cell_index_of(building),
+				buildings.owner_of(building), range_cells)
 		if target == -1:
 			continue
 

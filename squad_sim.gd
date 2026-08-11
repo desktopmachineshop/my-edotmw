@@ -1020,6 +1020,15 @@ func tick() -> void:
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
 	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
+
+	# Idle combat squads chase a nearby enemy rather than waiting for one to
+	# walk all the way into attack_range — the default "for now" stance
+	# (see combat.gd's assign_idle_engagements). Runs after resolve() so it
+	# can see this tick's _engaged set and skip anyone already fighting
+	# where they stand, and reuses resolve()'s bucket map rather than
+	# rebuilding one.
+	combat.assign_idle_engagements(self, tick_count)
+
 	var buildings_started := Time.get_ticks_usec()
 
 	# Buildings advance and shoot after the squad round (D-029). Their

@@ -34,6 +34,7 @@ const C2S_ORDER_PRODUCE := 14
 const C2S_ORDER_GATHER := 16
 const C2S_ORDER_RALLY := 23
 const C2S_ORDER_FORMATION := 24
+const C2S_ORDER_BUILDING_TARGET := 25
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
@@ -467,6 +468,28 @@ static func decode_order_rally(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"building": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## ORDER_BUILDING_TARGET: focus-fire an armed building on a specific enemy
+## squad, overriding its default nearest-enemy pick (Combat._find_squad_near).
+##
+## Named by SQUAD id, not cell, so the building keeps tracking a target that
+## moves — the whole reason a manual target exists rather than just
+## right-clicking the ground. `target_squad` of -1 clears it, going back to
+## automatic targeting.
+static func encode_order_building_target(building_wire_id: int, target_squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_BUILDING_TARGET)
+	buf.put_u32(building_wire_id)
+	buf.put_32(target_squad)
+	return buf.data_array
+
+
+static func decode_order_building_target(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "target": buf.get_32()}
 
 
 ## NOTICE: a short human-readable line for the player who sent an order.

@@ -50,6 +50,14 @@ var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
 var _destroyed := PackedByteArray()
 var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 
+## Player-assigned focus-fire target (a squad id), or -1 for "automatic —
+## nearest enemy in range" (Combat._find_squad_near's default). Set by
+## C2S_ORDER_BUILDING_TARGET; cleared automatically when the target dies
+## (Combat.resolve_buildings). Server-only — not replicated, since only the
+## owner can set it and nothing downstream needs to know a target is manual
+## versus automatic, only who it currently is.
+var _forced_target := PackedInt32Array()
+
 # Ids whose replicated state changed and have not been sent yet.
 var _dirty := {}
 
@@ -145,6 +153,7 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 	_progress.append(1.0 if complete else 0.0)
 	_destroyed.append(0)
 	_last_attack_tick.append(-1)
+	_forced_target.append(-1)
 	return id
 
 
@@ -159,6 +168,14 @@ func last_attack_tick_of(building: int) -> int:
 
 func set_last_attack_tick(building: int, tick: int) -> void:
 	_last_attack_tick[building] = tick
+
+
+func forced_target_of(building: int) -> int:
+	return _forced_target[building]
+
+
+func set_forced_target(building: int, target: int) -> void:
+	_forced_target[building] = target
 
 
 ## Local id -> the id this building is known by anywhere a squad id could
