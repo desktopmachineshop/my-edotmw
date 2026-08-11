@@ -78,6 +78,12 @@ var _config: MapConfig
 var _sim: SquadSim
 var _replay: ReplayLog
 
+## How many matches this server has finished with. Only a replay filename
+## reads it, and only so that returning to the lobby and starting again
+## (D-075) does not overwrite the previous match's log — a replay IS the
+## curve log (D-016), so silently truncating one is losing the match.
+var _matches_played := 0
+
 var _match: MatchState
 var _buildings: BuildingSim
 var _economy: Economy
@@ -357,7 +363,12 @@ func _build_world() -> void:
 
 	_replay = ReplayLog.new()
 	# Replays are the curve log (D-016), written from M1 onward.
+	# The match counter keeps a second match on the same server from
+	# overwriting the first one's log (D-075); the first match still writes
+	# the plain per-port name every existing recipe and doc expects.
 	var replay_path := "res://artifacts/replay-%d.edmw" % _port
+	if _matches_played > 0:
+		replay_path = "res://artifacts/replay-%d-match%d.edmw" % [_port, _matches_played + 1]
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % replay_path)
@@ -563,6 +574,12 @@ func _service_network() -> void:
 	if _host == null:
 		return
 	while true:
+		# Re-checked every iteration, not just on entry. Handling an event
+		# can end the server from inside this loop: since D-075 the last
+		# client disconnecting calls `_shutdown()`, which destroys the host
+		# and nulls it — and the next `service()` was then made on nothing.
+		if _shutting_down or _host == null:
+			return
 		var event := _host.service(0)
 		var type: int = event[0]
 		if type == ENetConnection.EVENT_NONE:
@@ -778,21 +795,49 @@ func _on_disconnect(peer: ENetPacketPeer) -> void:
 	var record = _record_for(peer)
 	if record != null:
 		var player := int(record["player"])
-		_sim.replicator.forget_client(player)
 
-		# An abandoned army does not get to keep standing on the field
-		# (D-033). Wiping it is the *cause* of defeat; MatchState's
-		# ordinary "no living squads" rule notices the effect on the next
-		# tick, so "defeated" keeps exactly one definition. The wipe comes
-		# back as casualty events, which replicate through the path
-		# clients already understand.
-		_match.mark_disconnected(player)
-		_pending_events.append_array(_sim.eliminate_player(player))
+		# There may be no world to leave. Since D-075 a client spends real
+		# time in the lobby — arriving before the first match and returning
+		# between matches — and `_sim` does not exist in either. This used
+		# to be unconditional, which was survivable only because leaving
+		# always meant a disconnect from a RUNNING match.
+		if _sim != null:
+			_sim.replicator.forget_client(player)
+
+			# An abandoned army does not get to keep standing on the field
+			# (D-033). Wiping it is the *cause* of defeat; MatchState's
+			# ordinary "no living squads" rule notices the effect on the next
+			# tick, so "defeated" keeps exactly one definition. The wipe comes
+			# back as casualty events, which replicate through the path
+			# clients already understand.
+			_match.mark_disconnected(player)
+			_pending_events.append_array(_sim.eliminate_player(player))
+		else:
+			# Gone from the lobby, so the seat goes too — otherwise it sits
+			# there forever as a player who will never arrive, and the admin
+			# role never passes on. `remove_human_seat` had been written for
+			# this and never called from anywhere but its own test.
+			_match.remove_human_seat(player)
 
 		print("server: player %d left (%d connected)" % [player, _clients.size() - 1])
 	_clients.erase(peer)
 	if _clients.is_empty() and _sim != null and _sim.squad_count() > 0:
 		_print_summary("last client left")
+
+	# No humans, no server (D-075).
+	#
+	# AI seats deliberately do not count: they live in `_ai_clients` and
+	# have no socket to disconnect (D-051), so a match of nothing but
+	# computers would otherwise hold the port forever. That is not
+	# hypothetical — this session began by clearing a server that had been
+	# ticking an empty world for six hours with `clients=0`.
+	#
+	# Reached only from a disconnect, so it cannot fire on a server that
+	# nobody has connected to yet: `just lobby` waits as long as you like.
+	if _clients.is_empty():
+		print("server: last human client left — shutting down")
+		_shutdown()
+		get_tree().quit(0)
 
 
 func _on_receive(peer: ENetPacketPeer) -> void:
@@ -836,6 +881,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_chat(peer, data)
 			NetProtocol.C2S_LOBBY:
 				_handle_lobby_command(peer, data)
+			NetProtocol.C2S_LEAVE_MATCH:
+				_handle_leave_match(peer)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -1686,6 +1733,75 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 		_broadcast_lobby()
 
 
+## A player asked to leave the match (D-075).
+##
+## Only a socket may do this. An AI seat reaches `_dispatch` through the
+## same path a human does (D-051), which is the point — but "end the match
+## everyone is playing" is not an order about its own army, and an AI
+## deciding it has had enough would be a rule nobody wrote.
+func _handle_leave_match(peer) -> void:
+	if not _clients.has(peer):
+		return
+	if _match.phase == MatchState.Phase.LOBBY:
+		return
+	print("server: player %d left the match — returning to the lobby" % [
+		int(_clients[peer]["player"])])
+	_return_to_lobby()
+
+
+## Put the server back in the seat-picking screen it started in (D-075).
+##
+## The exact inverse of `_on_match_started`, and deliberately written
+## beside it: anything that function builds, this one has to drop, or the
+## next match inherits the last one's world. `_build_world` guards on
+## `_sim != null` and would otherwise return without building anything,
+## leaving a second match running on the first one's terrain — with the
+## first one's spawn points, resource nodes and combat seed.
+##
+## For now this returns the WHOLE match, not just the leaver. That is
+## right for the solo-versus-AI session this exists to serve and wrong for
+## several humans, where one person leaving would evict everybody; the
+## limitation is recorded in D-075 rather than hidden here.
+func _return_to_lobby() -> void:
+	if not _match.return_to_lobby():
+		return
+
+	# The replay belongs to the MATCH (D-016). Closing it here is what
+	# makes the next one open its own file rather than appending a second
+	# match's curves onto the first's log.
+	if _replay != null and _replay.is_open():
+		print("server: wrote %d replay records" % _replay.records_written)
+		_replay.close()
+	_replay = null
+	_matches_played += 1
+
+	_sim = null
+	_buildings = null
+	_economy = null
+	_passable = PackedByteArray()
+	_spawn_points = []
+	_pending_events.clear()
+	_pending_builds.clear()
+	_civs.clear()
+
+	# AI seats are re-created from the seat list by the next
+	# `_on_match_started`, so the brains go with the world. Keeping them
+	# would leave `_ai_players` thinking about a simulation that no longer
+	# exists, on the very next tick.
+	_ai_players.clear()
+	_ai_clients.clear()
+
+	# Every client is about to be told the match is over; none of them may
+	# keep a reveal baseline from it. Leaving these populated would make
+	# the next match's first reveal diff find "nothing new" for everything
+	# the player could already see — the same defect `_recipients` records.
+	for peer in _clients:
+		_clients[peer]["visible"] = {}
+
+	print("server: returned to the lobby — %d seat(s) held" % _match.seats.size())
+	_broadcast_lobby()
+
+
 ## Everything that has to happen once the seats are final.
 ##
 ## Civs are only real at this point: a seat may have said "Random" right
@@ -1721,8 +1837,15 @@ func _on_match_started() -> void:
 			_seat_ai(player, StringName(seat["civ"]))
 			continue
 		var peer := _peer_of(player)
-		if peer != null:
-			_admit_player(peer, player)
+		if peer == null:
+			continue
+		# Register humans HERE, not only at connect. Registration is
+		# per-match and `return_to_lobby` clears it (D-075), so a second
+		# match on this server would otherwise count only its AI seats —
+		# elimination and victory would ignore every human in it.
+		# `add_player` is idempotent, so the first match is unaffected.
+		_match.add_player(player)
+		_admit_player(peer, player)
 
 
 ## Bring an AI seat to life (D-051).

@@ -824,6 +824,29 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 	return {"admin": admin, "seats": seats, "settings": settings, "phase": phase}
 
 
+## LEAVE_MATCH (D-075). "I am done with this match, but not with you."
+##
+## Its own opcode rather than a LOBBY_* action, because those are lobby
+## commands and this one is only ever legal while a match is RUNNING —
+## the exact phase in which `_handle_lobby_command` rejects everything.
+##
+## It exists at all because leaving used to be a disconnect, and a
+## disconnect cannot come back: the server tore the seat down and the
+## client had nothing to return TO. Staying connected is the whole point,
+## so the transport-level goodbye is precisely the wrong tool.
+##
+## No payload. Who is leaving is read from the connection it arrived on,
+## for the same reason chat attaches its speaker server-side: a client
+## that named its own player could send another player home.
+const C2S_LEAVE_MATCH := 26
+
+
+static func encode_leave_match() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_LEAVE_MATCH)
+	return buf.data_array
+
+
 static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_LOBBY)
