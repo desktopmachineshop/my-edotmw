@@ -42,8 +42,12 @@ class_name TerrainGen
 ## tied to the player count: 2 serves 4, 2 or 1 players. Changing the
 ## player count is therefore a map-generation change, not a config tweak.
 @export var axis_repeats: int = 1
-## Vertical exaggeration applied when building meshes.
-@export var height_scale: float = 2.0
+## Vertical exaggeration applied when building meshes. 15.0 (up from 2.0) is
+## the "for now" default requested after a live look at extreme relief —
+## purely cosmetic (surface_field is the only reader; passability still
+## thresholds the unscaled elevation_field, so this cannot change which
+## ground is walkable).
+@export var height_scale: float = 15.0
 
 ## Normalised thresholds in [0,1].
 @export var sea_level: float = 0.38
