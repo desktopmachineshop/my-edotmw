@@ -738,6 +738,47 @@ func in_lobby() -> bool:
 	return int(lobby.get("phase", 0)) == 0
 
 
+## Forget the match, keep the session (D-075).
+##
+## Called when the server puts everyone back in the lobby. Everything
+## here is state ABOUT A WORLD that no longer exists — squads, curves,
+## ghosts, buildings, resource nodes, the map itself — and carrying any of
+## it into the next match would draw the last one's armies on the new
+## one's terrain. The ids are reused, too: both sims mint entities from an
+## array length, so match two's squad 0 is a different squad 0.
+##
+## Three things deliberately SURVIVE:
+##
+## - the seat list and chat, which belong to the lobby and not to a match;
+## - every diagnostic counter (desyncs, casualties, reveals), because they
+##   describe this CLIENT's whole session. `test-load` and `test-client`
+##   read them as run totals, and zeroing them mid-run would make a
+##   verdict report a quiet client rather than a client that had been
+##   busy;
+## - `player`, which the server does not reissue.
+##
+## `terrain_sampler` goes because it closes over terrain chunks the client
+## is about to free — left in place it would sample freed nodes, and the
+## symptom would be soldiers at wrong heights rather than a crash.
+func leave_match() -> void:
+	welcomed = false
+	space = null
+	map_settings = {}
+	terrain_sampler = Callable()
+
+	squads = PackedInt32Array()
+	spawn_cells = PackedInt32Array()
+	curves.clear()
+	composition.clear()
+	_ghosts.clear()
+	buildings.clear()
+	nodes.clear()
+	wallet = PackedInt32Array()
+
+	server_tick = 0
+	server_tick_at = 0.0
+
+
 ## A player's civ as the lobby last described it, or "" if unknown.
 ##
 ## Needed so the HUD can name what a building will actually produce: a
