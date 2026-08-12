@@ -128,19 +128,10 @@ func _build_scene() -> void:
 	_camera.position = _camera_target + Vector3(0.0, _camera_height, _camera_height * 0.6)
 	_camera.look_at(_camera_target, Vector3.UP)
 
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-55.0, -35.0, 0.0)
-	light.light_energy = 1.1
-	add_child(light)
+	add_child(WorldLook.make_sun())
 
 	var environment := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.09, 0.11, 0.16)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.48, 0.55)
-	env.ambient_light_energy = 0.6
-	environment.environment = env
+	environment.environment = WorldLook.make_environment()
 	add_child(environment)
 
 	_terrain_root = Node3D.new()
