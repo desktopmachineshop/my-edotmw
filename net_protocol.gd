@@ -51,6 +51,17 @@ const C2S_ORDER_GATE_MODE := 28
 ## `_handle_order_build_queue` to route it to.
 const C2S_ORDER_BUILD_QUEUE := 29
 
+## Dev-testing cheats. Refused server-side unless MatchState.sandbox is on
+## for this match — see server.gd's handlers, every one of which checks
+## that before doing anything else. Toggling `instant_build` and
+## `ai_economy_only` themselves ride the existing LOBBY_SET_OPTION channel
+## (a "key=value" pair, same as a map slider) rather than opcodes of their
+## own, since they are admin-gated MATCH settings, not one-shot player
+## actions the way these three are.
+const C2S_CHEAT_ADD_RESOURCES := 30
+const C2S_CHEAT_SPAWN_UNIT := 31
+const C2S_CHEAT_SPAWN_BUILDING := 32
+
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
 const S2C_NODES := 17
@@ -673,6 +684,75 @@ static func encode_order_build_queue(squad: int, def_id: String, cell_index: int
 	return buf.data_array
 
 
+## CHEAT_ADD_RESOURCES: grant the sending player a flat, generous amount
+## of every resource. No payload — who receives it is read from the
+## connection, same as chat's speaker, so a client cannot name a
+## different player to credit.
+static func encode_cheat_add_resources() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_ADD_RESOURCES)
+	return buf.data_array
+
+
+## CHEAT_SPAWN_UNIT: materialise `count` full-strength squads of
+## `archetype` at a cell, bypassing cost and the squad cap. `archetype`
+## rather than a unit id — resolved against the requesting player's civ
+## server-side, the same as C2S_ORDER_PRODUCE, so a client cannot name
+## another civ's unit.
+static func encode_cheat_spawn_unit(archetype: String, cell_index: int, count: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_SPAWN_UNIT)
+	var name_bytes := archetype.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	buf.put_u8(count)
+	return buf.data_array
+
+
+static func decode_cheat_spawn_unit(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"archetype": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+		"count": int(buf.get_u8()),
+	}
+
+
+## CHEAT_SPAWN_BUILDING: raise a COMPLETE building at a cell instantly,
+## bypassing cost, footprint and the no-build claim — the one placement
+## rule still enforced server-side is that the cell is physically
+## buildable at all (not water/mountain/already occupied), so a spawned
+## building never looks broken even though every game-balance rule around
+## it is skipped.
+static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing: int = 0) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_SPAWN_BUILDING)
+	var name_bytes := def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	buf.put_8(facing)
+	return buf.data_array
+
+
+static func decode_cheat_spawn_building(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"def_id": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+		"facing": buf.get_8(),
+	}
+
+
 static func decode_order_build(data: PackedByteArray) -> Dictionary:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = data
@@ -874,7 +954,13 @@ const LOBBY_SET_TEAM := 5
 ## match, for player colours and teams (D-052). Inferring it from the
 ## list being non-empty made the client draw the lobby over a running
 ## game while every counter reported a healthy match.
-static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0) -> PackedByteArray:
+## `sandbox`/`instant_build`/`ai_economy_only`: the match-wide dev-testing
+## flags (MatchState's own fields of the same names). Carried as bare
+## fields alongside `phase` rather than folded into `settings` — that
+## dictionary is specifically `MapSettings.to_dict()` (D-049), and these
+## are not map generation parameters.
+static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
+		sandbox := false, instant_build := false, ai_economy_only := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u8(phase)
@@ -888,6 +974,9 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 		_put_string(buf, String(seat["name"]))
 	var json := JSON.stringify(settings)
 	_put_string(buf, json)
+	buf.put_u8(1 if sandbox else 0)
+	buf.put_u8(1 if instant_build else 0)
+	buf.put_u8(1 if ai_economy_only else 0)
 	return buf.data_array
 
 
@@ -915,7 +1004,12 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		var parsed = JSON.parse_string(json)
 		if parsed is Dictionary:
 			settings = parsed
-	return {"admin": admin, "seats": seats, "settings": settings, "phase": phase}
+	return {
+		"admin": admin, "seats": seats, "settings": settings, "phase": phase,
+		"sandbox": buf.get_u8() == 1,
+		"instant_build": buf.get_u8() == 1,
+		"ai_economy_only": buf.get_u8() == 1,
+	}
 
 
 ## LEAVE_MATCH (D-075). "I am done with this match, but not with you."

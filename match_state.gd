@@ -532,3 +532,46 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		map_settings = MapSettings.from_dict(before)
 		return false
 	return map_settings.to_dict() != before
+
+
+# --- sandbox mode, for dev testing ---------------------------------------
+
+## Whether cheat commands (C2S_CHEAT_*) are accepted at all this match.
+## Set from the server's own --sandbox=1 launch flag, or toggled by the
+## admin from the lobby — or LIVE, mid-match, unlike map settings: this is
+## deliberately not locked to the lobby phase, since the whole point is
+## iterating on a running match without restarting the server.
+var sandbox := false
+
+## While true, every NEW construction/production order completes
+## instantly rather than over its ordinary build_time. Read by
+## server.gd's `_finish_build`/`_handle_order_produce` at the moment of
+## creation, not by the sim's tick loop — costs nothing while off, and
+## never rewrites anything already in progress when flipped on.
+var instant_build := false
+
+## While true, every AI player skips combat entirely
+## (`AiPlayer.economy_only`) — town-founding, building, training and
+## gathering continue unaffected. Applied directly to the live AiPlayer
+## instances by server.gd the moment this is toggled.
+var ai_economy_only := false
+
+
+## Admin-only toggle for one of the three sandbox flags above. `key` is
+## "sandbox", "instant_build", or "ai_economy_only" — a tiny generic
+## message in the same spirit as `set_map_option`'s key/value pairing,
+## rather than three near-identical opcodes. Not phase-gated on purpose —
+## see `sandbox`'s own doc.
+func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
+	if not is_admin(by_player):
+		return false
+	match key:
+		"sandbox":
+			sandbox = enabled
+		"instant_build":
+			instant_build = enabled
+		"ai_economy_only":
+			ai_economy_only = enabled
+		_:
+			return false
+	return true

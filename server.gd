@@ -227,6 +227,10 @@ func _ready() -> void:
 	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
 	_match.squad_cap = _config.squad_cap
 	_match.map_settings = _settings
+	# Dev-testing cheats (C2S_CHEAT_*) are refused unless this is set, either
+	# here or later by the lobby admin toggling it live — see MatchState.
+	# sandbox's own doc for why that stays legal mid-match.
+	_match.sandbox = int(args.get("sandbox", 0)) != 0
 
 	# In lobby mode the world does NOT exist yet, and cannot: its size,
 	# seed and shape are all still being chosen (D-049). This is why
@@ -879,6 +883,12 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_build(peer, data)
 			NetProtocol.C2S_ORDER_BUILD_QUEUE:
 				_handle_order_build_queue(peer, data)
+			NetProtocol.C2S_CHEAT_ADD_RESOURCES:
+				_handle_cheat_add_resources(peer, data)
+			NetProtocol.C2S_CHEAT_SPAWN_UNIT:
+				_handle_cheat_spawn_unit(peer, data)
+			NetProtocol.C2S_CHEAT_SPAWN_BUILDING:
+				_handle_cheat_spawn_building(peer, data)
 			NetProtocol.C2S_ORDER_PRODUCE:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
@@ -1418,7 +1428,11 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 		_notify(peer, "Cannot afford a %s" % def.display_name)
 		return
 
-	var built := _buildings.add_building(def, owner, cell, false, squad, facing)
+	# Sandbox's instant_build (dev testing only): raised already complete
+	# rather than at 0 progress. Cost is still charged above — instant
+	# build skips the WAIT, not the economy, so it stays useful for
+	# testing the economy itself.
+	var built := _buildings.add_building(def, owner, cell, _match.instant_build, squad, facing)
 	_send_wallet(peer, owner)
 	_refresh_passability()
 
@@ -1493,7 +1507,7 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 		_notify(peer, "Cannot afford %s" % def.display_name)
 		return
 
-	_buildings.enqueue(building, def)
+	_buildings.enqueue(building, def, _match.instant_build)
 	_send_wallet(peer, player)
 
 
@@ -1526,6 +1540,98 @@ func _notify(peer, text: String) -> void:
 func _send_wallet(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_wallet(_economy.wallet_of(player)),
 		ENetPacketPeer.FLAG_RELIABLE)
+
+
+# --- sandbox mode cheats, for dev testing -------------------------------
+
+## Flat grant per CHEAT_ADD_RESOURCES call. A round, generous number
+## rather than anything tuned — this is a dev tool, not balance data.
+const CHEAT_RESOURCE_GRANT := 1000
+
+## How many squads one CHEAT_SPAWN_UNIT call may raise at once. Bounded
+## for the same reason BUILD_REACH_CELLS exists: a cheat command is still
+## a message from a client, and an unbounded count is an unbounded
+## amount of work done on its say-so.
+const CHEAT_SPAWN_MAX_COUNT := 20
+
+
+## Shared guard for every C2S_CHEAT_* handler: the match must be RUNNING
+## and MatchState.sandbox must be on for this match. Mirrors
+## `_validated_squad`'s shape and reasoning — one owner of the check
+## rather than a copy per handler. Returns the caller's record, or an
+## empty Dictionary if the cheat must be refused.
+func _validated_cheat(peer):
+	var record = _record_for(peer)
+	if record == null or not _match.is_running():
+		return null
+	if not _match.sandbox:
+		_notify(peer, "Sandbox mode is off — ask the lobby admin to enable it")
+		return null
+	return record
+
+
+## CHEAT_ADD_RESOURCES: credit the sender a flat amount of every resource
+## (D-028's four). Repeatable — there is no cooldown, because refusing to
+## trust a client's own economy testing is not what sandbox mode is for.
+func _handle_cheat_add_resources(peer, data: PackedByteArray) -> void:
+	var record = _validated_cheat(peer)
+	if record == null:
+		return
+	var player := int(record["player"])
+	for kind in range(Economy.RESOURCE_COUNT):
+		_economy.credit(player, kind, CHEAT_RESOURCE_GRANT)
+	_send_wallet(peer, player)
+	_notify(peer, "Cheat: +%d of every resource" % CHEAT_RESOURCE_GRANT)
+
+
+## CHEAT_SPAWN_UNIT: raise full-strength squads directly, bypassing cost
+## and the squad cap entirely — a sandbox is for testing what an army
+## DOES, not for re-proving it can be paid for. `archetype` resolves
+## against the sender's own civ (D-047), exactly as C2S_ORDER_PRODUCE
+## does, so a client still cannot name another civ's unit.
+func _handle_cheat_spawn_unit(peer, data: PackedByteArray) -> void:
+	var record = _validated_cheat(peer)
+	if record == null:
+		return
+	var order := NetProtocol.decode_cheat_spawn_unit(data)
+	var player := int(record["player"])
+	var def := UnitRoster.for_civ_archetype(_civ_of(player), StringName(order["archetype"]))
+	if def == null:
+		_notify(peer, "Your people do not field %s" % order["archetype"])
+		return
+
+	var cell := _sim.space.from_index(int(order["cell"]))
+	var count := clampi(int(order["count"]), 1, CHEAT_SPAWN_MAX_COUNT)
+	for _i in range(count):
+		_sim.add_squad(def, player, cell)
+	_notify(peer, "Cheat: spawned %d x %s" % [count, order["archetype"]])
+
+
+## CHEAT_SPAWN_BUILDING: raise a COMPLETE building instantly, bypassing
+## cost, footprint and the no-build claim. The one rule still enforced is
+## `_is_buildable` — physically buildable ground — so a spawned building
+## never looks broken even though every game-balance rule around it is
+## skipped.
+func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
+	var record = _validated_cheat(peer)
+	if record == null:
+		return
+	var order := NetProtocol.decode_cheat_spawn_building(data)
+	var def := BuildingSim.def_by_id(StringName(order["def_id"]))
+	if def == null:
+		_notify(peer, "No such building '%s'" % order["def_id"])
+		return
+
+	var cell := _sim.space.from_index(int(order["cell"]))
+	if not _is_buildable(cell):
+		_notify(peer, "Cannot spawn there — water, mountain, or already occupied")
+		return
+
+	var player := int(record["player"])
+	var facing := posmod(int(order.get("facing", 0)), 6)
+	_buildings.add_building(def, player, cell, true, -1, facing)
+	_refresh_passability()
+	_notify(peer, "Cheat: spawned a %s" % def.display_name)
 
 
 ## Buildable ground: passable terrain (no lakes, no mountains) with
@@ -1931,9 +2037,20 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 			# new setting is a new key rather than a new packet type.
 			var parts := String(command["civ"]).split("=", true, 1)
 			if parts.size() == 2:
-				ok = _match.set_map_option(player, parts[0], float(parts[1]))
+				# Dev-testing flags are a distinct key namespace from
+				# MapSettings — tried first, since they parse their value
+				# as a bool rather than a float and MUST NOT fall through
+				# to set_map_option's float() cast on something like "1"
+				# meant as true.
+				if ["sandbox", "instant_build", "ai_economy_only"].has(parts[0]):
+					ok = _match.set_sandbox_option(player, parts[0], parts[1] != "0")
+					if ok and parts[0] == "ai_economy_only":
+						for brain in _ai_players:
+							brain.economy_only = _match.ai_economy_only
+				else:
+					ok = _match.set_map_option(player, parts[0], float(parts[1]))
 			if not ok:
-				_notify(peer, "Only the admin can change map settings, and not to an unplayable one")
+				_notify(peer, "Only the admin can change that setting, and not to an unplayable one")
 		NetProtocol.LOBBY_START:
 			ok = _match.request_start(player)
 			if not ok:
@@ -2069,6 +2186,10 @@ func _on_match_started() -> void:
 ## because "what a player starts with" must not have two implementations.
 func _seat_ai(player: int, civ: StringName) -> void:
 	var brain := AiPlayer.new(player, civ)
+	# Whatever the admin already had toggled before this AI was seated —
+	# a live toggle afterward updates every brain directly (see
+	# _handle_lobby_command's LOBBY_SET_OPTION case).
+	brain.economy_only = _match.ai_economy_only
 	var peer := LoopbackPeer.new(brain.state)
 	# Its orders take the identical path a human's do, validation and all.
 	brain.send = func(packet: PackedByteArray) -> void:
@@ -2135,7 +2256,8 @@ func _broadcast_lobby() -> void:
 	# server mirrors its choices before describing them.
 	_settings = _match.map_settings
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats,
-		_settings.to_dict(), int(_match.phase))
+		_settings.to_dict(), int(_match.phase),
+		_match.sandbox, _match.instant_build, _match.ai_economy_only)
 	for peer in _clients:
 		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 

@@ -370,11 +370,15 @@ func can_produce(building: int, archetype: StringName) -> bool:
 ## Queue a unit. The CALLER has already taken the payment and checked the
 ## squad cap — this only records what was bought, so there is one place
 ## that decides affordability rather than two that can disagree.
-func enqueue(building: int, def: UnitDef) -> void:
+## `instant` (sandbox's instant_build, dev testing only): queues at a
+## near-zero remaining time instead of `def.build_time`, so
+## `advance_production` finishes it on the very next call rather than
+## needing a separate same-tick completion path of its own.
+func enqueue(building: int, def: UnitDef, instant: bool = false) -> void:
 	if not _queues.has(building):
 		_queues[building] = []
 	(_queues[building] as Array).append({
-		"def_id": def.id, "remaining": maxf(def.build_time, 0.001),
+		"def_id": def.id, "remaining": 0.001 if instant else maxf(def.build_time, 0.001),
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.

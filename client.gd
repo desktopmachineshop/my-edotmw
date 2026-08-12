@@ -250,6 +250,7 @@ func _ready() -> void:
 	_build_hud()
 	_build_game_menu()
 	_build_lobby_ui()
+	_build_debug_panel()
 
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
@@ -297,6 +298,7 @@ func _process(delta: float) -> void:
 	_seat_capture_ai()
 	_refresh_chat()
 	_refresh_lobby()
+	_refresh_debug_panel()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -1903,6 +1905,14 @@ func _update_missiles() -> void:
 var _placing: StringName = &""
 var _placement_ghost: MeshInstance3D = null
 
+## Pool of ghost boxes previewing a drag-to-build-a-line's whole line
+## (D-076 amendment), one per cell it will actually build. A pool rather
+## than freeing/recreating each frame: the line's length changes every
+## frame the mouse moves, and churning nodes at that rate is exactly the
+## "rebuild every frame" cost `_refresh_lobby`'s own signature-hash guard
+## exists to avoid elsewhere.
+var _drag_ghost_pool: Array[MeshInstance3D] = []
+
 ## Facing for the armed placement (D-076 amendment) — one of
 ## `TorusSpace.DIRECTIONS`' 6 indices, cycled with the rotate key for
 ## ANY building, not just an access tower's door. Purely cosmetic mesh
@@ -3075,6 +3085,12 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				if jump.x >= 0:
 					_jump_camera_to(jump)
 					return
+				# An armed sandbox cheat fires on the click and stays armed
+				# (D-0xx) — repeated spawns should not mean re-opening the
+				# picker every time. Checked before ordinary placement so it
+				# cannot be shadowed by a building also being armed.
+				if _cheat_arm_kind != "" and _fire_armed_cheat(event.position):
+					return
 				# A click while a building is armed PLACES it, and does not
 				# also start a selection drag.
 				#
@@ -3111,6 +3127,9 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			# the army somewhere — the same escape hatch every RTS has.
 			if event.pressed and _placing != &"":
 				_cancel_placement()
+				return
+			if event.pressed and _cheat_arm_kind != "":
+				_on_cheat_cancel_pressed()
 				return
 			# The "Target" button's arming half: this click, hit or miss,
 			# is spent on picking (or cancelling) a focus-fire target and
@@ -3769,6 +3788,14 @@ func _finish_placement_drag(end_screen_position: Vector2) -> void:
 		_notify_line_needs_a_builder()
 		return
 
+	# The bug: every segment used to send whatever `_placing_facing` was
+	# left over from BEFORE the drag (a stale V-key rotation, or a snap
+	# that only ever looked at the start cell) instead of the direction
+	# the line actually runs. One facing for the whole straight line is
+	# correct — `_hex_line` only ever produces a straight one — as long
+	# as it is derived from the real start->end direction.
+	var line_facing := _direction_index_of(_state.space.delta(start, end))
+
 	var queues := {}
 	for i in range(line.size()):
 		var squad: int = builders[i % builders.size()]
@@ -3780,8 +3807,8 @@ func _finish_placement_drag(end_screen_position: Vector2) -> void:
 		var cells: Array = queues[squad]
 		var first := true
 		for cell in cells:
-			var order := _state.encode_build(squad, String(def_id), cell, _placing_facing) \
-				if first else _state.encode_build_queue(squad, String(def_id), cell, _placing_facing)
+			var order := _state.encode_build(squad, String(def_id), cell, line_facing) \
+				if first else _state.encode_build_queue(squad, String(def_id), cell, line_facing)
 			first = false
 			if not order.is_empty():
 				_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
@@ -3861,6 +3888,7 @@ func _cancel_placement() -> void:
 		_placement_ghost.visible = false
 	if _door_marker != null:
 		_door_marker.visible = false
+	_hide_drag_line_ghosts()
 
 
 ## Move the ghost to the cell under the cursor, and colour it by whether
@@ -3882,6 +3910,19 @@ func _update_placement_ghost() -> void:
 	var size := Vector3(2.4, 3.0, 2.4)
 	if def != null and def.mesh_size != Vector3.ZERO:
 		size = def.mesh_size
+
+	# Mid-drag, the WHOLE line previews (one ghost box per cell it will
+	# actually build), not just the single cell under the cursor — the
+	# gap this closes: there was previously no way to see what a drag was
+	# about to build before releasing the mouse.
+	if _placing_drag:
+		if _placement_ghost != null:
+			_placement_ghost.visible = false
+		if _door_marker != null:
+			_door_marker.visible = false
+		_update_drag_line_ghosts(size)
+		return
+	_hide_drag_line_ghosts()
 
 	if _placement_ghost == null:
 		var mesh := BoxMesh.new()
@@ -3945,11 +3986,90 @@ func _update_placement_ghost() -> void:
 ## rotated wall segment reads the same way while you're aiming it as it
 ## does once it's built.
 func _facing_rotation_y(facing: int) -> float:
+	return _angle_of_offset(Vector2(TorusSpace.DIRECTIONS[posmod(facing, 6)]))
+
+
+## Shared math behind `_facing_rotation_y`, taking an arbitrary axial
+## offset rather than one of the 6 canonical directions — what
+## `_direction_index_of` below needs to compare a multi-cell drag's real
+## direction against each of the 6.
+func _angle_of_offset(offset: Vector2) -> float:
 	if _state.space == null:
 		return 0.0
-	var offset := Vector2(TorusSpace.DIRECTIONS[posmod(facing, 6)])
 	var world_offset := _state.space.axial_offset_to_world(offset)
 	return atan2(-world_offset.z, world_offset.x)
+
+
+## Which of `TorusSpace.DIRECTIONS`' 6 canonical facings a (possibly
+## multi-cell) axial delta most closely points along — the fix for a real
+## bug: a drag-built line was sending every segment at whatever
+## `_placing_facing` happened to be left over from BEFORE the drag
+## started (a stale V-key rotation, or the snap that ran only on the
+## START cell), not the direction the line actually runs. Compared by
+## world-space angle, not by axial coordinates directly, because axial
+## axes are not orthogonal and a naive component comparison picks the
+## wrong neighbour close to the diagonals.
+func _direction_index_of(delta: Vector2i) -> int:
+	if delta == Vector2i.ZERO:
+		return _placing_facing
+	var target := _angle_of_offset(Vector2(delta))
+	var best := 0
+	var best_diff := INF
+	for i in range(TorusSpace.DIRECTIONS.size()):
+		var diff := absf(wrapf(_facing_rotation_y(i) - target, -PI, PI))
+		if diff < best_diff:
+			best_diff = diff
+			best = i
+	return best
+
+
+## Preview the whole line a drag-to-build-a-line would actually build
+## (D-076 amendment) — one ghost box per cell from `_placing_drag_start`
+## to wherever the cursor is now, oriented and coloured exactly the way
+## `_finish_placement_drag` will build it, so nothing about the release
+## is a surprise.
+func _update_drag_line_ghosts(size: Vector3) -> void:
+	var end := _snapped_placement_cell(get_viewport().get_mouse_position())
+	if end.x < 0:
+		_hide_drag_line_ghosts()
+		return
+
+	var line := _hex_line(_placing_drag_start, end)
+	var rotation_y := _facing_rotation_y(
+		_direction_index_of(_state.space.delta(_placing_drag_start, end)))
+
+	while _drag_ghost_pool.size() < line.size():
+		var mesh := BoxMesh.new()
+		var material := StandardMaterial3D.new()
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		var instance := MeshInstance3D.new()
+		instance.mesh = mesh
+		instance.material_override = material
+		add_child(instance)
+		_drag_ghost_pool.append(instance)
+
+	for i in range(_drag_ghost_pool.size()):
+		var instance := _drag_ghost_pool[i]
+		if i >= line.size():
+			instance.visible = false
+			continue
+		var cell: Vector2i = line[i]
+		(instance.mesh as BoxMesh).size = size
+		var world := _state.space.to_world(cell)
+		if _state.terrain_sampler.is_valid():
+			world.y = _state.terrain_sampler.call(world.x, world.z)
+		instance.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
+		instance.rotation.y = rotation_y
+		instance.visible = true
+		var ok := _can_place_at(cell)
+		var material := instance.material_override as StandardMaterial3D
+		material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+
+
+func _hide_drag_line_ghosts() -> void:
+	for instance in _drag_ghost_pool:
+		instance.visible = false
 
 
 ## Whether the ground under the cursor looks buildable from here.
@@ -4200,6 +4320,10 @@ var _map_preview: TextureRect
 var _map_blurb: Label
 var _start_button: Button
 var _add_ai_button: Button
+
+## Dev-testing sandbox toggles (D-0xx), same rebuild-on-change shape as
+## the map settings panel just above.
+var _sandbox_rows: VBoxContainer
 
 ## What the screen was last built from. Rebuilding is what would destroy
 ## an open dropdown, so it happens only when this changes.
@@ -4701,6 +4825,7 @@ func _build_lobby_ui() -> void:
 	preview_column.add_child(_map_blurb)
 
 	_map_rows = _lobby_panel("GAME SETTINGS", right)
+	_sandbox_rows = _lobby_panel("SANDBOX (dev testing)", right)
 
 
 ## A coloured block standing in for a civ emblem. The colour comes from
@@ -4778,6 +4903,248 @@ func _refresh_lobby() -> void:
 		_lobby_help.text = "Choose your civilisation. The host starts the match."
 
 	_refresh_map_panel()
+	_refresh_sandbox_panel()
+
+
+## Three admin-only checkboxes over `_state.lobby`'s `sandbox`/
+## `instant_build`/`ai_economy_only` fields (D-0xx) — same rebuild-on-
+## change shape `_refresh_map_panel` uses just above, and the same
+## `LOBBY_SET_OPTION` channel a map slider sends through (a "key=value"
+## pair, not one opcode per flag). Visible to everyone so a non-admin can
+## at least see the flags a host has enabled; only the admin can flip them.
+const SANDBOX_OPTIONS := [
+	{"key": "sandbox", "label": "Sandbox mode (enables cheats below)"},
+	{"key": "instant_build", "label": "Instant construction & production"},
+	{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+]
+
+
+func _refresh_sandbox_panel() -> void:
+	if _sandbox_rows == null:
+		return
+	for child in _sandbox_rows.get_children():
+		if child.get_index() > 1:
+			child.queue_free()
+
+	var admin := _state.is_admin()
+	for option in SANDBOX_OPTIONS:
+		var key := String(option["key"])
+		var box := CheckBox.new()
+		box.text = String(option["label"])
+		box.add_theme_font_size_override("font_size", 14)
+		box.button_pressed = bool(_state.lobby.get(key, false))
+		box.disabled = not admin
+		box.toggled.connect(_on_sandbox_option_toggled.bind(key))
+		_sandbox_rows.add_child(box)
+
+	if not admin:
+		var note := Label.new()
+		note.add_theme_font_size_override("font_size", 13)
+		note.modulate = Color(0.52, 0.55, 0.60)
+		note.text = "Only the host can change these."
+		_sandbox_rows.add_child(note)
+
+
+func _on_sandbox_option_toggled(pressed: bool, key: String) -> void:
+	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%d" % [key, 1 if pressed else 0])
+
+
+# --- in-match sandbox debug panel (D-0xx) --------------------------------
+#
+# A dev tool, not a player feature: only ever visible when the server says
+# sandbox mode is on for this match, and built once like every other HUD
+# layer rather than per frame.
+
+const SANDBOX_RESOURCE_GRANT_LABEL := 1000  # mirrors server.gd's CHEAT_RESOURCE_GRANT
+
+## A real separate OS window (not a CanvasLayer overlay) — it used to sit
+## on top of the game HUD and could overlap the selection panel, the
+## minimap, or anything else already anchored to a screen corner. A
+## `Window` node opens as its own native window instead, movable and
+## closable independently of the main one, so it can never collide with
+## in-game UI again.
+var _debug_window: Window
+var _debug_status_label: Label
+var _debug_visible_last := false
+
+## "" (off), "unit", or "building" — which cheat, if any, the next left
+## click on the ground fires. Stays armed after firing (does not clear
+## itself), so spawning several waves or several buildings in a row does
+## not mean re-opening a picker each time; a right-click or the Cancel
+## button disarms it, mirroring how `_placing`'s escape hatch already
+## works for ordinary building placement.
+var _cheat_arm_kind: String = ""
+var _cheat_arm_id: String = ""
+var _cheat_arm_count: int = 1
+
+
+func _build_debug_panel() -> void:
+	_debug_window = Window.new()
+	_debug_window.title = "Sandbox — Dev Tools"
+	_debug_window.size = Vector2i(300, 440)
+	# Near the main window rather than wherever the OS defaults to, so it
+	# does not open off-screen or stacked exactly on top of the game.
+	_debug_window.position = DisplayServer.window_get_position() + Vector2i(40, 60)
+	_debug_window.visible = false
+	# The window's own close button hides it rather than freeing it (there
+	# is only ever one; freeing would mean rebuilding the whole panel to
+	# get it back) — and drops whatever cheat was armed, the same as
+	# right-clicking the game world already does, so a closed panel can
+	# never leave a spawn mode silently active.
+	_debug_window.close_requested.connect(func():
+		_debug_window.hide()
+		_on_cheat_cancel_pressed())
+	add_child(_debug_window)
+
+	var col := VBoxContainer.new()
+	col.position = Vector2(12.0, 10.0)
+	col.custom_minimum_size = Vector2(272.0, 0.0)
+	col.add_theme_constant_override("separation", 6)
+	_debug_window.add_child(col)
+
+	var title := Label.new()
+	title.text = "SANDBOX"
+	title.add_theme_font_size_override("font_size", 16)
+	col.add_child(title)
+
+	var resources_button := _styled_button(
+		"+%d all resources" % SANDBOX_RESOURCE_GRANT_LABEL, Color(0.55, 0.7, 0.5))
+	resources_button.pressed.connect(_on_cheat_add_resources_pressed)
+	col.add_child(resources_button)
+
+	col.add_child(HSeparator.new())
+
+	var unit_label := Label.new()
+	unit_label.text = "Spawn units — arm, then click the ground:"
+	unit_label.add_theme_font_size_override("font_size", 13)
+	unit_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(unit_label)
+
+	var unit_row := HBoxContainer.new()
+	unit_row.add_theme_constant_override("separation", 6)
+	col.add_child(unit_row)
+	var unit_picker := OptionButton.new()
+	for archetype in TRAIN_KEYS.values():
+		unit_picker.add_item(String(archetype))
+	unit_row.add_child(unit_picker)
+	var count_box := SpinBox.new()
+	count_box.min_value = 1
+	count_box.max_value = CHEAT_SPAWN_MAX_COUNT_LABEL
+	count_box.value = 1
+	count_box.custom_minimum_size = Vector2(56.0, 0.0)
+	unit_row.add_child(count_box)
+	var unit_arm_button := _styled_button("Arm", Color(0.6, 0.6, 0.8))
+	unit_arm_button.pressed.connect(func():
+		if unit_picker.selected < 0:
+			return
+		_cheat_arm_kind = "unit"
+		_cheat_arm_id = unit_picker.get_item_text(unit_picker.selected)
+		_cheat_arm_count = int(count_box.value)
+		_debug_status_label.text = "Armed: %d x %s — click the ground (right-click cancels)" \
+			% [_cheat_arm_count, _cheat_arm_id])
+	unit_row.add_child(unit_arm_button)
+
+	col.add_child(HSeparator.new())
+
+	var building_label := Label.new()
+	building_label.text = "Spawn a COMPLETE building — arm, then click:"
+	building_label.add_theme_font_size_override("font_size", 13)
+	building_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(building_label)
+
+	var building_row := HBoxContainer.new()
+	building_row.add_theme_constant_override("separation", 6)
+	col.add_child(building_row)
+	var building_picker := OptionButton.new()
+	var defs := BuildingSim.all_defs()
+	for def in defs:
+		building_picker.add_item(def.display_name)
+	building_row.add_child(building_picker)
+	var building_arm_button := _styled_button("Arm", Color(0.7, 0.6, 0.5))
+	building_arm_button.pressed.connect(func():
+		var idx := building_picker.selected
+		if idx < 0 or idx >= defs.size():
+			return
+		_cheat_arm_kind = "building"
+		_cheat_arm_id = String((defs[idx] as BuildingDef).id)
+		_debug_status_label.text = "Armed: %s — click the ground (right-click cancels)" \
+			% _cheat_arm_id)
+	building_row.add_child(building_arm_button)
+
+	var cancel_button := _styled_button("Cancel spawn mode", Color(0.7, 0.4, 0.4))
+	cancel_button.pressed.connect(_on_cheat_cancel_pressed)
+	col.add_child(cancel_button)
+
+	_debug_status_label = Label.new()
+	_debug_status_label.add_theme_font_size_override("font_size", 12)
+	_debug_status_label.modulate = Color(0.9, 0.85, 0.4)
+	_debug_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(_debug_status_label)
+
+
+## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
+## COUNT enforces — kept as its own constant here (not shared across the
+## client/server boundary the way NetProtocol constants are) since it
+## only shapes the SpinBox's range, not correctness: the server clamps
+## again regardless.
+const CHEAT_SPAWN_MAX_COUNT_LABEL := 20
+
+
+func _on_cheat_add_resources_pressed() -> void:
+	if not _connected:
+		return
+	_peer.send(0, NetProtocol.encode_cheat_add_resources(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+func _on_cheat_cancel_pressed() -> void:
+	_cheat_arm_kind = ""
+	if _debug_status_label != null:
+		_debug_status_label.text = ""
+
+
+## Fires whichever cheat is armed at the clicked cell. Returns true if the
+## click was consumed (armed at all and over real ground) — false lets the
+## caller fall through to ordinary selection/placement handling, the same
+## contract `_place_armed_building` already has.
+func _fire_armed_cheat(screen_position: Vector2) -> bool:
+	if not _connected or _state.space == null:
+		return false
+	var cell := _cell_under(screen_position)
+	if cell.x < 0:
+		return false
+	var cell_index := _state.space.index(cell)
+
+	match _cheat_arm_kind:
+		"unit":
+			_peer.send(0, NetProtocol.encode_cheat_spawn_unit(
+				_cheat_arm_id, cell_index, _cheat_arm_count), ENetPacketPeer.FLAG_RELIABLE)
+		"building":
+			_peer.send(0, NetProtocol.encode_cheat_spawn_building(_cheat_arm_id, cell_index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		_:
+			return false
+	return true
+
+
+## Shows the panel only once the server confirms sandbox mode is actually
+## on AND a match is running — a lobby has nothing to spawn units into,
+## and a client that decided this for itself would be trusting its own
+## copy of a server-owned fact (D-002).
+func _refresh_debug_panel() -> void:
+	if _debug_window == null:
+		return
+	var showing: bool = bool(_state.lobby.get("sandbox", false)) and not _state.in_lobby()
+	if showing and not _debug_visible_last:
+		# Sandbox mode just turned on (or a match just started with it
+		# already on) — open automatically. Does NOT run every frame
+		# sandbox stays on, so a player who closes the window themselves
+		# is not fighting it reopening on the very next refresh.
+		_debug_window.show()
+	elif not showing:
+		_debug_window.hide()
+		if _debug_visible_last:
+			_on_cheat_cancel_pressed()
+	_debug_visible_last = showing
 
 
 func _seat_row(seat: Dictionary, index: int) -> Control:

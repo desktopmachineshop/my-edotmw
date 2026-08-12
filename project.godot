@@ -10,6 +10,15 @@ config/name="my-edotmw"
 config/features=PackedStringArray("4.7")
 run/main_scene=""
 
+[display]
+
+; Off, so a `Window` node (the sandbox dev-tools panel) opens as a real,
+; separate native OS window instead of an embedded sub-viewport drawn on
+; top of the main game window — Godot's own default is embedded, which is
+; exactly the "still inside the main window" behaviour this was added to
+; fix.
+window/subwindows/embed_subwindows=false
+
 [physics]
 
 common/physics_ticks_per_second=10
