@@ -609,7 +609,19 @@ func _refresh_squads() -> void:
 		# throwing away work we had just paid for.
 		# One curve sample to place the squad, against ~40 to derive its
 		# soldiers — so the cheap question is asked first.
+		#
+		# Terrain-corrected: `squad_world_position` always answers at
+		# y=0 (see `_squad_footprint`'s own comment on the same gap), and
+		# the cull test below projects THIS point to screen space to
+		# decide on/off screen. On flat ground that is invisible; on a
+		# hill the y=0 point can project to a screen position well away
+		# from where the (correctly elevated) soldiers actually render,
+		# culling a squad that is still visibly on screen or keeping one
+		# that is not — reported as units vanishing well inside the
+		# viewport rather than at its edge.
 		var centre := _state.squad_world_position(squad_id, _now)
+		if _state.terrain_sampler.is_valid():
+			centre.y = _state.terrain_sampler.call(centre.x, centre.z)
 		# Every lattice copy, not just the nearest to the look-at point.
 		# The torus is shallower in z than it is wide, so more than one
 		# copy is routinely on screen and "nearest" picks the wrong one —
