@@ -169,6 +169,11 @@ var _visible_squads := 0
 var _now := 0.0
 var _terrain_built := false
 
+## Whether a match is currently being drawn, so the edge into and out of
+## one can be noticed (D-075). Derived from the server's phase every
+## frame, never set by a button.
+var _in_match := false
+
 # Capture mode (`just test-client`). The real client renders the real
 # scene and screenshots itself, rather than a stand-in doing it — same
 # reasoning as ClientState being shared with the bots: a test that
@@ -221,19 +226,10 @@ func _ready() -> void:
 	add_child(_camera)
 	_update_camera()
 
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-55.0, -35.0, 0.0)
-	light.light_energy = 1.1
-	add_child(light)
+	add_child(WorldLook.make_sun())
 
 	var environment := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.09, 0.11, 0.16)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.48, 0.55)
-	env.ambient_light_energy = 0.6
-	environment.environment = env
+	environment.environment = WorldLook.make_environment()
 	add_child(environment)
 
 	_terrain_root = Node3D.new()
@@ -279,6 +275,10 @@ func _process(delta: float) -> void:
 	_now += delta
 	_frame_delta = delta
 	_service_network()
+	# Before anything reads the world: a return to the lobby (D-075)
+	# invalidates every id below this line, and refreshing squads against
+	# a torn-down match would draw one frame of the dead one.
+	_sync_match_lifecycle()
 	_pan_camera(delta)
 
 	if _state.welcomed and _state.has_map() and not _terrain_built:
@@ -4547,7 +4547,7 @@ func _build_game_menu() -> void:
 	column.add_child(save)
 
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
-	to_lobby.tooltip_text = "Disconnect. Your army is removed from the match."
+	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
 	to_lobby.pressed.connect(_on_leave_match_pressed)
 	column.add_child(to_lobby)
 
@@ -4659,25 +4659,94 @@ func _on_hud_auto_toggled(automatic: bool) -> void:
 	_save_settings()
 
 
-## Leave the match: disconnect, and go back to the lobby screen.
+## Leave the match and go back to the lobby screen (D-075).
 ##
-## Disconnecting is genuinely what "leave" means here — the server owns
-## the match, and D-033's ordinary rule then wipes the abandoned army,
-## which is the same path a dropped connection takes. There is no
-## half-way "spectate" state to fall into, and inventing one would be a
-## rule nobody asked for.
+## This used to disconnect, and the doc comment above it claimed it went
+## "back to the lobby screen" — it could not. A disconnect tears the seat
+## down, so there was nothing to return to and the player sat looking at
+## a dead match until they closed the window.
+##
+## So it asks instead, and stays connected. The server decides: it ends
+## the match, drops the world and re-broadcasts the seats, and the lobby
+## reappears because `_state.in_lobby()` is true again. Nothing here has
+## to draw a lobby, and nothing here decides a match is over — a client
+## that could would be a client that decides for everyone (D-002).
 func _on_leave_match_pressed() -> void:
 	_toggle_game_menu()
 	print("client: leaving match")
-	if _peer != null:
-		_peer.peer_disconnect()
-	_connected = false
+	if _peer != null and _connected:
+		_peer.send(0, NetProtocol.encode_leave_match(), ENetPacketPeer.FLAG_RELIABLE)
 
 
 func _on_quit_pressed() -> void:
-	if _peer != null:
+	# `_connected` as well as the peer: `_peer` is the wrapper object and
+	# is never nulled, so a peer that has already gone away still passes a
+	# null check and `peer_disconnect` reports `Parameter "peer" is null`.
+	# Line 262 has always had this right.
+	if _peer != null and _connected:
 		_peer.peer_disconnect()
 	get_tree().quit(0)
+
+
+## Drop everything drawn for a match that has ended (D-075).
+##
+## The client's visuals are keyed by entity id, and ids RESTART: both sims
+## mint them from an array length, so the next match's squad 0 would find
+## the last match's MultiMesh sitting under its id and inherit its unit
+## type, colour and soldier count.
+##
+## Terrain goes too, rather than being kept as an optimisation. The lobby
+## can change the map's size, seed and preset between matches (D-049), so
+## a kept mesh is only correct until somebody moves a slider — and the
+## failure would be a world that renders perfectly while squads walk
+## through hills that are not there.
+func _teardown_match() -> void:
+	print("client: match over — back to the lobby")
+	_free_nodes(_squad_nodes)
+	_free_nodes(_building_nodes)
+	_free_nodes(_health_bars)
+	_free_nodes(_node_meshes)
+	_free_nodes(_selection_discs)
+	_free_nodes(_progress_anchor)
+	_free_nodes(_queue_anchor)
+
+	if _terrain_root != null:
+		_terrain_root.queue_free()
+		_terrain_root = null
+	_terrain_built = false
+
+	_explored.clear()
+	_scout_home.clear()
+	_control_groups.clear()
+	_building_defs.clear()
+	_building_ground_lift.clear()
+	_building_top_offset.clear()
+	_missile_next_launch.clear()
+	_selected = []
+	_selected_building = -1
+
+	_state.leave_match()
+
+
+## Free any Node held in a lookup, then empty it. The stores this runs
+## over hold a mix of nodes and plain values, so it checks rather than
+## assuming — a `queue_free()` on a Vector3 is a crash, and a node left
+## unfreed is a leak that only shows up after several matches.
+func _free_nodes(store: Dictionary) -> void:
+	for key in store:
+		var held = store[key]
+		if held is Node:
+			held.queue_free()
+	store.clear()
+
+
+## Notice the match starting and ending. The server is the authority on
+## both (D-002); this only reacts to the phase it is told.
+func _sync_match_lifecycle() -> void:
+	var running: bool = _state.welcomed and not _state.in_lobby()
+	if _in_match and not running:
+		_teardown_match()
+	_in_match = running
 
 
 ## Settings persist to `user://settings.cfg` — a plain ConfigFile, because

@@ -131,19 +131,10 @@ func _build_environment() -> void:
 	add_child(camera)
 	camera.make_current()
 
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-52.0, -38.0, 0.0)
-	light.light_energy = 1.15
-	add_child(light)
+	add_child(WorldLook.make_sun(true))
 
 	var world := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.16, 0.17, 0.20)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.48, 0.55)
-	env.ambient_light_energy = 0.55
-	world.environment = env
+	world.environment = WorldLook.make_environment(true)
 	add_child(world)
 
 

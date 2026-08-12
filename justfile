@@ -273,7 +273,11 @@ lobby PLAYERS="1":
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/lobby-server.log"
     "{{just_executable()}}" _import
-    docker compose -p edotmw run --rm --service-ports -d --name edotmw-lobby \
+    # Deliberately NOT --rm. Since D-075 the server exits by itself when
+    # the last human disconnects, and --rm would delete the container the
+    # moment it did — taking the log this recipe collects below with it.
+    # The trap's `just down` still removes it, by project label.
+    docker compose -p edotmw run --service-ports -d --name edotmw-lobby \
         server --path . "{{server_scene}}" -- \
         --lobby=1 --players={{PLAYERS}} > /dev/null
 
@@ -322,7 +326,9 @@ quick-test SEED="1337":
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/quick-test-server.log"
     "{{just_executable()}}" _import
-    docker compose -p edotmw run --rm --service-ports -d --name edotmw-quick-test \
+    # Not --rm, for the same reason as `lobby`: the server now exits on the
+    # last human disconnect (D-075) and would take its own log with it.
+    docker compose -p edotmw run --service-ports -d --name edotmw-quick-test \
         server --path . "{{server_scene}}" -- \
         --ai=3 --players=1 --lobby=0 --seed={{SEED}} --random-civs=1 > /dev/null
 
