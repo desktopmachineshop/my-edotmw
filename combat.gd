@@ -174,7 +174,8 @@ func assign_idle_engagements(sim: SquadSim, tick: int) -> void:
 		if def == null or def.damage <= 0.0 or def.carry_capacity > 0:
 			continue
 		var target := _find_squad_near(sim, buckets, sim.cell_index_of(squad),
-			sim.owner_of(squad), _range_in_cells(sim.space, def.vision_range))
+			sim.owner_of(squad), _range_in_cells(sim.space, def.vision_range),
+			sim.tier_of(squad), def.armour_class)
 		if target == -1:
 			continue
 		sim.order_attack_move(squad, sim.cell_of(target))
@@ -427,8 +428,18 @@ func _build_building_buckets(buildings: BuildingSim) -> Dictionary:
 ## Nearest enemy squad to a cell, within range. Mirrors _find_target's
 ## bounds and tiebreak, but takes a cell rather than an attacking squad so
 ## a building can use it.
+##
+## `attacker_tier`/`attacker_class` (D-076) feed `_can_reach_tier` — see
+## that function. Defaulted to (0, "missile") so every caller that does
+## not pass them (buildings, both existing shooting passes) treats itself
+## as ranged and can therefore still hit a tier-1 defender, matching the
+## rule that a fortification's own fire "arcs up" the same as an archer's;
+## `assign_idle_engagements` passes the ACTUAL chasing squad's tier and
+## armour class instead, so a tier-0 melee squad does not idle-chase a
+## wall-top target it could never actually reach.
 func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
-		owner: int, range_cells: float) -> int:
+		owner: int, range_cells: float, attacker_tier: int = 0,
+		attacker_class: String = "missile") -> int:
 	var origin := sim.space.from_index(origin_index)
 	var best := -1
 	var best_distance := 0
@@ -441,6 +452,8 @@ func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
 			# Allies are not targets (D-050).
 			if sim.are_allied(sim.owner_of(other), owner):
 				continue
+			if not _can_reach_tier(attacker_tier, attacker_class, sim.tier_of(other)):
+				continue
 			var d := TorusSpace.hex_length(offset)
 			# Deterministic tiebreak (lower id wins), so target choice
 			# never depends on bucket iteration order.
@@ -448,6 +461,35 @@ func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
 				best = other
 				best_distance = d
 	return best
+
+
+## Whether an attacker (tier `attacker_tier`, armour class
+## `attacker_class`) may reach a squad standing at `target_tier` (D-076).
+## A tier-1 squad can be reached only by another tier-1 squad, or by a
+## RANGED attacker (`armour_class == "missile"`) — never a tier-0 melee
+## squad. This is what makes climbing the wall a real defensive choice
+## ("you cannot melee someone on top of a wall from the ground") rather
+## than cosmetic — recorded as its own rule in D-076, not left implicit.
+static func _can_reach_tier(attacker_tier: int, attacker_class: String, target_tier: int) -> bool:
+	if target_tier != 1:
+		return true
+	return attacker_tier == 1 or attacker_class == "missile"
+
+
+## A squad's effective attack range in cells, including the height bonus
+## from whatever `walkable_top` structure it is standing on at tier 1
+## (D-076). Tier-0 squads are unaffected; `sim.buildings` may be null (a
+## bare SquadSim has nothing to stand on), which degrades to the plain
+## conversion exactly as it did before tiers existed.
+static func _attacker_range_cells(sim: SquadSim, attacker: int, attacker_def: UnitDef) -> float:
+	var world_range := attacker_def.attack_range
+	if sim.buildings != null and sim.tier_of(attacker) == 1:
+		var standing_on := sim.buildings.building_at(sim.cell_of(attacker))
+		if standing_on >= 0:
+			var top_def := sim.buildings.def_of(standing_on)
+			if top_def != null:
+				world_range += top_def.top_range_bonus
+	return _range_in_cells(sim.space, world_range)
 
 
 ## Building fire against a squad. Flat damage — BuildingDef carries no
@@ -552,10 +594,14 @@ func _build_buckets(sim: SquadSim) -> Dictionary:
 ## so the choice (and its id tie-break) is identical to what re-deriving
 ## each candidate's wrapped distance() would have produced.
 func _find_target(sim: SquadSim, buckets: Dictionary, attacker: int, attacker_def: UnitDef) -> int:
-	var range_cells := _range_in_cells(sim.space, attacker_def.attack_range)
+	# D-076: range includes any height bonus for a tier-1 attacker, and
+	# eligibility excludes a tier-1 defender this attacker cannot reach
+	# (melee on the ground cannot touch the wall-top).
+	var range_cells := _attacker_range_cells(sim, attacker, attacker_def)
 	var radius := floori(range_cells)
 	var origin := sim.space.from_index(sim.cell_index_of(attacker))
 	var owner := sim.owner_of(attacker)
+	var attacker_tier := sim.tier_of(attacker)
 
 	var best := -1
 	var best_distance := 0
@@ -567,6 +613,8 @@ func _find_target(sim: SquadSim, buckets: Dictionary, attacker: int, attacker_de
 		var d := TorusSpace.hex_length(offset)
 		for other in buckets[idx]:
 			if other == attacker or sim.are_allied(sim.owner_of(other), owner):
+				continue
+			if not _can_reach_tier(attacker_tier, attacker_def.armour_class, sim.tier_of(other)):
 				continue
 			# Deterministic tiebreak (lower id wins) so target choice
 			# never depends on bucket iteration order.

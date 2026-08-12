@@ -95,3 +95,52 @@ class_name BuildingDef
 ## class after `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()`.
 @export var model_id: StringName = &""
 @export var footprint_radius: int = 1
+
+# Walls, gates and the walkable wall-top tier (D-076). A wall is a chain of
+# single-cell segments (no edge/footprint geometry exists in TorusSpace, so
+# this reuses the ordinary single-cell building model rather than inventing
+# one) that blocks ground passability for free, the same way any building's
+# occupied cell already does via BuildingSim.occupied_cells().
+
+## Marks this structure as a gate: it can be opened/closed (manually or
+## automatically near the owner's own squads) rather than being a permanent
+## blocker like a plain wall segment.
+@export var is_gate: bool = false
+
+## True only on garrison-grade wall/gate/tower defs. Marks this cell as part
+## of the tier-1 (wall-top) passable network — a second, much smaller
+## FlowField layer squads can be routed across once they're up there.
+## False (the default, and every plain wall/gate segment) means this cell
+## has no tier-1 presence at all.
+@export var walkable_top: bool = false
+
+## Added, in world units, to a squad's own `UnitDef.attack_range` while it
+## is standing on this structure's tier-1 cell — the height advantage.
+## Combat is still resolved with the squad's own stats (D-076); the
+## structure itself never attacks on its own when this is nonzero.
+@export var top_range_bonus: float = 0.0
+
+## Added to a squad's effective vision while standing on this structure's
+## tier-1 cell.
+@export var top_vision_bonus: float = 0.0
+
+## World-unit height of the walkway above ground level, used both to place
+## the walkway mesh and to position soldiers standing on it.
+@export var top_height: float = 0.0
+
+## True only on the access-tower def. Marks this archetype as a climb
+## point — the wall-top network is otherwise unreachable. The actual door
+## FACING is deliberately NOT stored here: `BuildingDef` is one shared
+## Resource per archetype (every `wall_tower` a player builds points at
+## the same `.tres`), so a per-placement choice like "which of the 6 hex
+## sides the door faces" has to live on the building INSTANCE instead —
+## see `BuildingSim._access_direction`, set from the build order at
+## construction time. This flag only says "this archetype has a door
+## somewhere"; where is per-instance.
+@export var is_access_tower: bool = false
+
+## Override for primitive-mesh dimensions; Vector3.ZERO means "use the
+## existing hardcoded per-primitive size". Wall segments need this to
+## render as thin, long blocks instead of the square building box every
+## other primitive building uses.
+@export var mesh_size: Vector3 = Vector3.ZERO

@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"garrison_gate"
+display_name = "Garrison Gate"
+civ = &"neutral"
+max_health = 800.0
+build_time = 24.0
+vision_range = 10.0
+no_build_radius = 0
+attack_range = 0.0
+damage = 0.0
+attack_interval = 1.0
+is_drop_off = false
+cost_food = 0
+cost_wood = 80
+cost_gold = 0
+cost_stone = 110
+mesh_primitive = "box"
+mesh_color = Color(0.4, 0.28, 0.18, 1)
+model_id = &""
+footprint_radius = 0
+built_by = Array[StringName]([&"gatherers"])
+is_gate = true
+walkable_top = true
+top_range_bonus = 2.5
+top_vision_bonus = 4.0
+top_height = 3.0
+is_access_tower = false
+mesh_size = Vector3(2.4, 3.2, 1.0)

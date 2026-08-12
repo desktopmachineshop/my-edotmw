@@ -1573,6 +1573,10 @@ func _to_hud(at: Vector2) -> Vector2:
 ## hint string listing the same letters twice.
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
+	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
+	# existing BUILD_KEYS/TRAIN_KEYS letter.
+	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
 	"T": &"gatherers", "M": &"militia", "P": &"spearmen",
@@ -1899,6 +1903,30 @@ func _update_missiles() -> void:
 var _placing: StringName = &""
 var _placement_ghost: MeshInstance3D = null
 
+## Facing for the armed placement (D-076 amendment) — one of
+## `TorusSpace.DIRECTIONS`' 6 indices, cycled with the rotate key for
+## ANY building, not just an access tower's door. Purely cosmetic mesh
+## rotation for most buildings; mechanically the door direction for
+## `wall_tower` specifically.
+var _placing_facing: int = 0
+var _door_marker: MeshInstance3D = null
+
+## Snap state for a wall-family placement (D-076 amendment): the cell the
+## ghost last snapped to, so `_placing_facing` is only auto-set the moment
+## the snap target CHANGES rather than every single frame — otherwise it
+## would fight a manual V-key rotation on the very next frame. Reset to
+## (-1,-1) whenever nothing is currently snapped, or a fresh placement is
+## armed.
+var _last_snap_cell := Vector2i(-1, -1)
+
+## Click-drag-to-build-a-line state (D-076 amendment). A wall-family
+## building (`footprint_radius == 0`) starts a drag on mouse-down instead
+## of placing immediately; release decides whether it was a click (one
+## segment, at the drag START cell) or a genuine drag (the whole line
+## from start to release, split across every eligible selected squad).
+var _placing_drag := false
+var _placing_drag_start := Vector2i(-1, -1)
+
 ## An armed building (wire id, or -1) waiting for a click to name its
 ## focus-fire target — the "Target" button's arming half, mirroring
 ## `_placing` above. Shift+right-click on an enemy with the building
@@ -2151,25 +2179,35 @@ func _refresh_resource_nodes() -> void:
 ## is the entire reason `BuildingDef.mesh_primitive` exists. It carried no
 ## meaning at all until M7 because nothing read it.
 func _building_primitive(def: BuildingDef) -> Mesh:
+	# D-076: mesh_size overrides the hardcoded per-primitive dimensions
+	# below when set, so a wall segment renders thin and long instead of
+	# every other primitive's square footprint. Zero (every pre-existing
+	# def) leaves the old hardcoded sizes exactly as they were.
+	var override := def.mesh_size != Vector3.ZERO
 	match def.mesh_primitive:
 		"cylinder":
 			var cylinder := CylinderMesh.new()
-			cylinder.top_radius = 1.0
-			cylinder.bottom_radius = 1.2
-			cylinder.height = 3.0
+			if override:
+				cylinder.top_radius = def.mesh_size.x / 2.0
+				cylinder.bottom_radius = def.mesh_size.z / 2.0
+				cylinder.height = def.mesh_size.y
+			else:
+				cylinder.top_radius = 1.0
+				cylinder.bottom_radius = 1.2
+				cylinder.height = 3.0
 			return cylinder
 		"capsule":
 			var capsule := CapsuleMesh.new()
-			capsule.radius = 1.1
-			capsule.height = 3.4
+			capsule.radius = def.mesh_size.x / 2.0 if override else 1.1
+			capsule.height = def.mesh_size.y if override else 3.4
 			return capsule
 		"hull":
 			var hull := BoxMesh.new()
-			hull.size = Vector3(3.6, 2.0, 2.4)
+			hull.size = def.mesh_size if override else Vector3(3.6, 2.0, 2.4)
 			return hull
 		_:
 			var box := BoxMesh.new()
-			box.size = Vector3(2.4, 3.0, 2.4)
+			box.size = def.mesh_size if override else Vector3(2.4, 3.0, 2.4)
 			return box
 
 
@@ -2236,6 +2274,9 @@ func _refresh_buildings() -> void:
 			_building_ground_lift[wire_id] = lift
 			_building_top_offset[wire_id] = mesh_height - lift
 			add_child(instance)
+			# D-076 amendment: the facing chosen at placement, fixed for the
+			# building's lifetime — set once here rather than every frame.
+			instance.rotation.y = _facing_rotation_y(int(info.get("facing", 0)))
 
 		if bool(info["destroyed"]):
 			instance.visible = false
@@ -2266,6 +2307,17 @@ func _refresh_buildings() -> void:
 
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
+
+		# D-076: a gate's own colour tells you whether it is currently
+		# passable, without needing it selected. Only the primitive path
+		# has a StandardMaterial3D to recolour — no authored gate model
+		# exists yet (model_id is empty on every def in this feature).
+		var gate_def: BuildingDef = _building_defs.get(wire_id, null)
+		if gate_def != null and gate_def.is_gate and instance.material_override is StandardMaterial3D:
+			var gate_material := instance.material_override as StandardMaterial3D
+			var owner_colour := _state.colour_of(int(info["owner"]))
+			var base_colour := gate_def.mesh_color.lightened(0.5) if bool(info.get("gate_open", false)) else gate_def.mesh_color
+			gate_material.albedo_color = owner_colour.lerp(base_colour, 0.75)
 
 		# Armed and complete (a half-built town centre has no garrison to
 		# fire from). Same client-inferred approach as `_activity_for`:
@@ -2636,6 +2688,23 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"label": "Target\nShift+Right-click an enemy",
 			"kind": "target_select", "id": &"",
 		})
+	# D-076: a gate's mode is always shown (so a player can see and switch
+	# it), and the direct open/close toggle only appears in manual mode —
+	# an auto-mode gate ignores that order server-side anyway (see
+	# `_handle_order_gate_state`), so offering it here would be a button
+	# that quietly does nothing.
+	if def.is_gate:
+		var gate_mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+		out.append({
+			"label": "Mode: %s" % ("Auto" if gate_mode == BuildingSim.GATE_MODE_AUTO else "Manual"),
+			"kind": "gate_mode", "id": &"",
+		})
+		if gate_mode == BuildingSim.GATE_MODE_MANUAL:
+			var gate_open := bool(info.get("gate_open", false))
+			out.append({
+				"label": "Close gate" if gate_open else "Open gate",
+				"kind": "gate_state", "id": &"",
+			})
 	return out
 
 
@@ -2723,6 +2792,34 @@ func _on_action_pressed(index: int) -> void:
 			# `_finish_target_pick`, mirroring `_placing`'s ghost-follows-
 			# cursor arm/click split for building placement.
 			_targeting_building = _selected_building
+		"gate_mode":
+			_toggle_gate_mode()
+		"gate_state":
+			_toggle_gate_state()
+
+
+## D-076: flip the selected gate between manual and automatic control.
+func _toggle_gate_mode() -> void:
+	if not _connected or _selected_building < 0:
+		return
+	var info: Dictionary = _state.buildings.get(_selected_building, {})
+	var current := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+	var next := BuildingSim.GATE_MODE_MANUAL \
+		if current == BuildingSim.GATE_MODE_AUTO else BuildingSim.GATE_MODE_AUTO
+	_peer.send(0, NetProtocol.encode_order_gate_mode(_selected_building, next),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+## D-076: open/close the selected gate directly. Only takes effect
+## server-side while the gate is in manual mode — see
+## `_handle_order_gate_state` in server.gd.
+func _toggle_gate_state() -> void:
+	if not _connected or _selected_building < 0:
+		return
+	var info: Dictionary = _state.buildings.get(_selected_building, {})
+	var open := not bool(info.get("gate_open", false))
+	_peer.send(0, NetProtocol.encode_order_gate_state(_selected_building, open),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Put every selected squad into a formation (D-058).
@@ -2980,14 +3077,29 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 					return
 				# A click while a building is armed PLACES it, and does not
 				# also start a selection drag.
-				if _place_armed_building(event.position):
-					return
+				#
+				# D-076 amendment: a WALL-FAMILY piece is the one exception —
+				# it starts a placement DRAG instead of placing immediately,
+				# so a genuine drag can lay down a whole line (see
+				# `_finish_placement_drag`). Release decides whether it was
+				# actually a drag or just a click.
+				if _placing != &"":
+					var armed_def := BuildingSim.def_by_id(_placing)
+					if armed_def != null and armed_def.footprint_radius == 0:
+						_placing_drag = true
+						_placing_drag_start = _snapped_placement_cell(event.position)
+						return
+					if _place_armed_building(event.position):
+						return
 				# A left-click while target-picking is armed abandons it
 				# rather than leaving the mode stuck armed under a
 				# selection the player has visibly moved on from.
 				_targeting_building = -1
 				_dragging = true
 				_drag_start = event.position
+			elif _placing_drag:
+				_placing_drag = false
+				_finish_placement_drag(event.position)
 			elif _dragging:
 				_finish_selection(event.position, event.shift_pressed)
 		MOUSE_BUTTON_RIGHT:
@@ -3289,6 +3401,17 @@ func _handle_key(event: InputEventKey) -> void:
 			_toggle_game_menu()
 		return
 
+	# D-076 (amendment): while ANY building is armed for placement, V
+	# cycles which of the 6 hex sides it faces — the ghost rotates to show
+	# the result before you commit, and a wall_tower's door marker moves
+	# with it. Cosmetic for most buildings, mechanical for the tower's
+	# door; this has to come before the build/train tables can steal V for
+	# something else in the future.
+	if event.keycode == KEY_V and _placing != &"":
+		_placing_facing = (_placing_facing + 1) % 6
+		_update_placement_ghost()
+		return
+
 	# Build keys. The server checks everything that matters — who may
 	# build what, the ground, the reach, the price — so these just send
 	# intent and let the authority answer (and now explain itself).
@@ -3529,7 +3652,67 @@ func _build_selected(def_id: String) -> void:
 	if not _connected or _state.space == null or _selected.is_empty():
 		return
 	_placing = StringName(def_id)
+	_placing_facing = 0
+	_last_snap_cell = Vector2i(-1, -1)
 	_update_placement_ghost()
+
+
+## Snap the cursor's cell to the nearest cell adjacent to an EXISTING
+## wall-family building, so a chain always lands truly connected instead
+## of depending on pixel-perfect cursor placement (D-076 amendment). Only
+## applies while a wall-family piece is armed (`footprint_radius == 0` —
+## the same data-driven signal that already lets those defs chain without
+## `_footprint_conflict` rejecting each other); every other building is
+## returned unsnapped.
+##
+## Side effect: sets `_placing_facing` to face back toward the neighbour
+## it snapped to, but ONLY the moment the snapped cell actually changes —
+## see `_last_snap_cell`'s doc for why it isn't reset every frame.
+func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
+	var raw := _cell_under(screen_position)
+	if raw.x < 0 or _state.space == null:
+		return raw
+
+	var def := BuildingSim.def_by_id(_placing)
+	if def == null or def.footprint_radius != 0:
+		_last_snap_cell = Vector2i(-1, -1)
+		return raw
+
+	var best_cell := raw
+	var best_distance := 999999
+	var best_facing := 0
+	var found := false
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var other_def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if other_def == null or other_def.footprint_radius != 0:
+			continue
+		var other_cell := _state.space.from_index(int(info["cell"]))
+		for i in range(TorusSpace.DIRECTIONS.size()):
+			var candidate := _state.space.normalize(other_cell + TorusSpace.DIRECTIONS[i])
+			var d := _state.space.distance(candidate, raw)
+			if d < best_distance:
+				best_distance = d
+				best_cell = candidate
+				# Opposite of "which side of the neighbour this candidate
+				# sits on" — DIRECTIONS' negation is always the entry 3
+				# slots further round the same 6-direction list.
+				best_facing = (i + 3) % 6
+				found = true
+
+	# Only snap within a couple of cells of the actual cursor position —
+	# otherwise one distant wall would keep pulling every placement
+	# toward it regardless of where the player is actually pointing.
+	if not found or best_distance > 2:
+		_last_snap_cell = Vector2i(-1, -1)
+		return raw
+
+	if best_cell != _last_snap_cell:
+		_placing_facing = best_facing
+		_last_snap_cell = best_cell
+	return best_cell
 
 
 ## Place the armed building, or do nothing if none is armed.
@@ -3537,26 +3720,147 @@ func _build_selected(def_id: String) -> void:
 func _place_armed_building(screen_position: Vector2) -> bool:
 	if _placing == &"":
 		return false
-	var cell := _cell_under(screen_position)
+	var cell := _snapped_placement_cell(screen_position)
 	# Typed explicitly: `_selected` is untyped, so a ternary over it has
 	# no inferable type and the whole script fails to parse.
 	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
 	var def_id := _placing
+	var facing := _placing_facing
 	_cancel_placement()
 	if cell.x < 0 or squad < 0:
 		return true
 
-	var order := _state.encode_build(squad, String(def_id), cell)
+	var order := _state.encode_build(squad, String(def_id), cell, facing)
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: asked squad %d to found a %s at %s" % [squad, def_id, cell])
 	return true
 
 
+## Finish a wall-family placement drag (D-076 amendment): a straight click
+## (start == release cell) behaves exactly like an ordinary single
+## placement; a genuine drag lays down the whole hex line from
+## `_placing_drag_start` to the release point, round-robinned as a QUEUE
+## across every currently-selected squad that can build this def — one
+## squad alone still builds the whole run, just one segment after
+## another, via `C2S_ORDER_BUILD_QUEUE`.
+func _finish_placement_drag(end_screen_position: Vector2) -> void:
+	var def_id := _placing
+	var def := BuildingSim.def_by_id(def_id)
+	var start := _placing_drag_start
+	var end := _snapped_placement_cell(end_screen_position)
+	_cancel_placement()
+	if def == null or start.x < 0 or end.x < 0 or _state.space == null:
+		return
+
+	if start == end:
+		var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
+		if squad < 0:
+			return
+		var order := _state.encode_build(squad, String(def_id), start, _placing_facing)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			print("client: asked squad %d to found a %s at %s" % [squad, def_id, start])
+		return
+
+	var line := _hex_line(start, end)
+	var builders := _eligible_builders(def_id)
+	if builders.is_empty():
+		_notify_line_needs_a_builder()
+		return
+
+	var queues := {}
+	for i in range(line.size()):
+		var squad: int = builders[i % builders.size()]
+		if not queues.has(squad):
+			queues[squad] = []
+		(queues[squad] as Array).append(line[i])
+
+	for squad in queues:
+		var cells: Array = queues[squad]
+		var first := true
+		for cell in cells:
+			var order := _state.encode_build(squad, String(def_id), cell, _placing_facing) \
+				if first else _state.encode_build_queue(squad, String(def_id), cell, _placing_facing)
+			first = false
+			if not order.is_empty():
+				_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+	print("client: drew a %d-cell %s line across %d squad(s)" % [line.size(), def_id, builders.size()])
+
+
+## Nothing to build a drag-line with — silent would look like the drag
+## itself did nothing (D-034's whole reason for the notice channel).
+func _notify_line_needs_a_builder() -> void:
+	print("client: select a squad that can build this before dragging a line")
+
+
+## Which currently-selected squads can build `def_id` at all, mirroring
+## `BuildingSim.can_build` client-side — the server re-checks everything
+## regardless (D-002), this only decides how a drag's cells are split.
+func _eligible_builders(def_id: StringName) -> Array:
+	var def := BuildingSim.def_by_id(def_id)
+	if def == null:
+		return []
+	var out := []
+	for squad in _selected:
+		var unit_def_id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
+		var unit := UnitRoster.by_id(unit_def_id)
+		if unit != null and BuildingSim.can_build(def, unit.archetype):
+			out.append(int(squad))
+	return out
+
+
+## The hex cells on a straight line from `a` to `b`, inclusive of both
+## ends (D-076's drag-to-build-a-line tool). Standard cube-coordinate
+## line-draw (lerp in cube space, round each step) over `space.delta`'s
+## shortest wrapped vector — drag distances are at most a few dozen
+## cells, so working in one unwrapped local frame around `a` needs no
+## further wrap-awareness of its own.
+func _hex_line(a: Vector2i, b: Vector2i) -> Array:
+	var space := _state.space
+	var delta := space.delta(a, b)
+	var n := TorusSpace.hex_length(delta)
+	var out := []
+	if n <= 0:
+		out.append(space.normalize(a))
+		return out
+	for i in range(n + 1):
+		var t := float(i) / float(n)
+		out.append(space.normalize(_round_axial(
+			float(a.x) + float(delta.x) * t,
+			float(a.y) + float(delta.y) * t)))
+	return out
+
+
+## Cube-coordinate rounding for `_hex_line`: the standard "round each of
+## the three cube coordinates, then fix up whichever one drifted furthest
+## from the constraint x+y+z=0" algorithm.
+func _round_axial(q: float, r: float) -> Vector2i:
+	var x := q
+	var z := r
+	var y := -x - z
+	var rx := roundf(x)
+	var ry := roundf(y)
+	var rz := roundf(z)
+	var dx := absf(rx - x)
+	var dy := absf(ry - y)
+	var dz := absf(rz - z)
+	if dx > dy and dx > dz:
+		rx = -ry - rz
+	elif dy > dz:
+		ry = -rx - rz
+	else:
+		rz = -rx - ry
+	return Vector2i(int(rx), int(rz))
+
+
 func _cancel_placement() -> void:
 	_placing = &""
+	_placing_drag = false
 	if _placement_ghost != null:
 		_placement_ghost.visible = false
+	if _door_marker != null:
+		_door_marker.visible = false
 
 
 ## Move the ghost to the cell under the cursor, and colour it by whether
@@ -3570,9 +3874,18 @@ func _update_placement_ghost() -> void:
 	if _placing == &"" or _state.space == null:
 		return
 
+	# D-076: a wall/gate segment previews at its own thin/long size rather
+	# than the square building box every other primitive used to force on
+	# it — mesh_size zero (every pre-existing def) falls back to the old
+	# hardcoded box exactly as before.
+	var def := BuildingSim.def_by_id(_placing)
+	var size := Vector3(2.4, 3.0, 2.4)
+	if def != null and def.mesh_size != Vector3.ZERO:
+		size = def.mesh_size
+
 	if _placement_ghost == null:
 		var mesh := BoxMesh.new()
-		mesh.size = Vector3(2.4, 3.0, 2.4)
+		mesh.size = size
 		var material := StandardMaterial3D.new()
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -3580,10 +3893,14 @@ func _update_placement_ghost() -> void:
 		_placement_ghost.mesh = mesh
 		_placement_ghost.material_override = material
 		add_child(_placement_ghost)
+	else:
+		(_placement_ghost.mesh as BoxMesh).size = size
 
-	var cell := _cell_under(get_viewport().get_mouse_position())
+	var cell := _snapped_placement_cell(get_viewport().get_mouse_position())
 	if cell.x < 0:
 		_placement_ghost.visible = false
+		if _door_marker != null:
+			_door_marker.visible = false
 		return
 
 	var world := _state.space.to_world(cell)
@@ -3591,10 +3908,48 @@ func _update_placement_ghost() -> void:
 		world.y = _state.terrain_sampler.call(world.x, world.z)
 	_placement_ghost.visible = true
 	_placement_ghost.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
+	_placement_ghost.rotation.y = _facing_rotation_y(_placing_facing)
 
 	var ok := _can_place_at(cell)
 	var material := _placement_ghost.material_override as StandardMaterial3D
 	material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+
+	# D-076: a bright marker toward the chosen door side, so placing a
+	# wall_tower shows which cell will actually let a squad climb — the
+	# whole point of confining access to one side rather than the whole
+	# structure.
+	if def != null and def.is_access_tower:
+		if _door_marker == null:
+			var marker_mesh := SphereMesh.new()
+			marker_mesh.radius = 0.4
+			marker_mesh.height = 0.8
+			var marker_material := StandardMaterial3D.new()
+			marker_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			marker_material.albedo_color = Color(1.0, 0.9, 0.2, 0.9)
+			_door_marker = MeshInstance3D.new()
+			_door_marker.mesh = marker_mesh
+			_door_marker.material_override = marker_material
+			add_child(_door_marker)
+		var direction := Vector2(TorusSpace.DIRECTIONS[_placing_facing])
+		var door_offset := _state.space.axial_offset_to_world(direction) * 0.75
+		_door_marker.visible = true
+		_door_marker.position = _placement_ghost.position + door_offset
+	elif _door_marker != null:
+		_door_marker.visible = false
+
+
+## Y-axis rotation (radians) that turns a building's long/forward axis
+## (local +X, per its BoxMesh) to point along hex `facing` (D-076
+## amendment, generalised from the access-tower-only door marker). Used
+## for both the placement ghost and every placed building's mesh, so a
+## rotated wall segment reads the same way while you're aiming it as it
+## does once it's built.
+func _facing_rotation_y(facing: int) -> float:
+	if _state.space == null:
+		return 0.0
+	var offset := Vector2(TorusSpace.DIRECTIONS[posmod(facing, 6)])
+	var world_offset := _state.space.axial_offset_to_world(offset)
+	return atan2(-world_offset.z, world_offset.x)
 
 
 ## Whether the ground under the cursor looks buildable from here.
