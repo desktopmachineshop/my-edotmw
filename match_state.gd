@@ -236,8 +236,44 @@ func start_match() -> bool:
 	if phase != Phase.LOBBY:
 		return false
 	for seat in seats:
+		# Remember the CHOICE before the draw overwrites it, so returning
+		# to the lobby can put it back (see return_to_lobby, D-075).
+		seat["choice"] = seat["civ"]
 		seat["civ"] = CivRoster.resolve(StringName(seat["civ"]), civ_rng)
 	phase = Phase.RUNNING
+	return true
+
+
+## Take a match back to the lobby (D-075). The one backwards edge in this
+## phase machine.
+##
+## It exists because "leave match" has to land somewhere. Leaving used to
+## be a disconnect, and a disconnect cannot come back — the seat was torn
+## down and there was nothing to return TO.
+##
+## Seats SURVIVE, which is what makes the next match one click away
+## instead of a relaunch. Everything a match WROTE on them does not:
+##
+## - A seat that chose Random gets its choice back. `start_match`
+##   overwrites `civ` with the draw, so without this the second match
+##   would silently re-field the first one's civs and "Random" would mean
+##   "random once, ever".
+## - Registration is cleared, because it is per-match. Carrying the
+##   dictionary over would bring an `eliminated` flag into a match its
+##   player has not played yet, and whoever lost the first match would
+##   begin the second already defeated. `server.gd` re-registers every
+##   seat from `_on_match_started`, humans and AI alike.
+##
+## Returns true only if this actually left a match, so a caller can tell
+## a real return from a no-op on a lobby that never started.
+func return_to_lobby() -> bool:
+	if phase == Phase.LOBBY:
+		return false
+	phase = Phase.LOBBY
+	winner = -1
+	_players.clear()
+	for seat in seats:
+		seat["civ"] = seat.get("choice", seat["civ"])
 	return true
 
 

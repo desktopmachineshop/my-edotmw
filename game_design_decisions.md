@@ -20,7 +20,7 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-> **Editorial note on D-075 through D-079, added 2026-08-11.** M7's art
+> **Editorial note on D-081 through D-085, added 2026-08-11.** M7's art
 > work landed under decision IDs D-063 through D-067 — but by the time it
 > shipped, those IDs had already been taken by real, unrelated entries
 > (D-063 is the HUD/camera-yaw decision below; D-065 is formation shape;
@@ -32,26 +32,39 @@ supersede instead, so the rationale trail survives.
 > `toon`, `atlas`) across the whole file before this note returned exactly
 > two hits, both in that closure.
 >
-> D-075 through D-079 below reconstruct those decisions from the shipped
+> D-081 through D-085 below reconstruct those decisions from the shipped
 > code and from `CLAUDE.md`'s own M7 narrative, at fresh unused IDs, so
 > this file has something to check before the next art decision is made.
-> They are dated to when the work is understood to have landed (D-075's
+> They are dated to when the work is understood to have landed (D-081's
 > 2026-08-09 matches the Q12 closure's own date), not to today — but they
 > were **written today**, after the fact, which is the opposite of this
 > project's own rule that exit criteria (D-022, D-026) are written down
-> *before* the code. D-079 in particular is reconstructed without ever
+> *before* the code. D-085 in particular is reconstructed without ever
 > having seen an original numbered list; where `CLAUDE.md` cites a
 > specific criterion number (4, 11, 14) that number is preserved, and
 > everything else is inferred from what the same section of `CLAUDE.md`
-> says landed. Treat D-079 as lower-confidence than the others for that
+> says landed. Treat D-085 as lower-confidence than the others for that
 > reason.
+>
+> **Renumbered again on merge, same day.** This block was first drafted
+> as D-075 through D-080. Before it merged, `main` independently gained
+> its own real D-075 — "leaving a match returns to the lobby, and no
+> humans means no server" (below) — landing the same day this block was
+> written. Rather than let a second, unrelated decision collide onto an
+> ID this block had already claimed, everything here was shifted up by
+> six (D-075→D-081 … D-080→D-086) at merge time. The lesson is the same
+> one the rest of this note describes at one remove: picking a fresh ID
+> only prevents a collision with what exists at the moment you pick it,
+> not with a decision landing on `main` from a different branch in
+> parallel. Check `main` immediately before merging, not only before
+> writing.
 
-### D-080 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
+### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
 
 **Decision:** The art style question ("low poly vs cartoon vs the current
 method") had a false premise — `art/lib/geom.py` exposes exactly two
 primitives (`box`, `prism`), every shipped model runs 72-256 triangles
-against a 300/460/400 budget (D-075), and the shading is already flat
+against a 300/460/400 budget (D-081), and the shading is already flat
 Lambert with no specular. The game is already low poly, at the extreme
 end. Nothing about it is geometry-limited.
 
@@ -111,7 +124,7 @@ cull+LOD path `client.gd` uses (`bench_render.gd` mirrors
 | 500 | 13,650 | 26.97 | 36.34 | 37.1 | 363 |
 | 1,000 | 27,300 | 53.93 | 54.55 | **18.5** | 741 |
 
-This discharges D-079 criterion 11 (partially — see Rejected
+This discharges D-085 criterion 11 (partially — see Rejected
 alternatives on the discrete-GPU point) and answers M7's open question
 about the real cost of VAT-animated authored models: **M5's 35.66 ms /
 28 fps at 1,000 squads on this same Iris Xe was measured with primitive
@@ -127,7 +140,7 @@ than unfinished — building it first, then judging the two options with a
 picture in hand, is cheaper than judging them in the abstract and
 possibly re-doing the judgement. Once built, the picture matched
 "polished low poly" well enough (see `artifacts/client-frame.png`,
-D-080) that committing further to toon was not worth its cost (below).
+D-086) that committing further to toon was not worth its cost (below).
 
 **Rejected alternatives:**
 - **Cartoon / toon shading** (`diffuse_toon` + rim light + outline).
@@ -154,7 +167,7 @@ D-080) that committing further to toon was not worth its cost (below).
   in favour of re-tuning the existing 8 terrain colours and leaving
   `SoldierParams` colours alone. A `SoldierParams` change requires
   `just build-assets` and a re-commit of the hash-gated `generated/`
-  tree (D-075); the lighting change alone got most of the visual delta,
+  tree (D-081); the lighting change alone got most of the visual delta,
   so that cost was not spent.
 
 **Consequences:** `client.gd`, `bench_render.gd` and `model_preview.gd`
@@ -163,7 +176,7 @@ benchmark rig are now structurally guaranteed to match, closing the gap
 `bench_render.gd`'s own header warns about ("a benchmark camera that is
 merely similar measures a similar game"). `terrain_gen.gd:biome_color`
 carries a comment explaining why its 8 colours no longer match their
-pre-D-080 values. D-079 criterion 14 (a human plays a match with the new
+pre-D-086 values. D-085 criterion 14 (a human plays a match with the new
 art) is **still open** — nothing in this decision involved a human
 playing, only automated headless-ish verification
 (`bench-render`, `test-unit`, `test-client`, `gen-terrain-preview`,
@@ -176,13 +189,13 @@ number and shadows fit inside it at full scale. SSAO, if it ships despite
 being invisible to the `gl_compatibility` verification path — that gap
 would need to be stated wherever SSAO is decided, the same way it is
 flagged here as a reason it was not attempted. Toon/outline, if
-playtesting after D-079 criterion 14 is finally discharged says
+playtesting after D-085 criterion 14 is finally discharged says
 readability at zoom is the binding problem polished low poly did not
 solve.
 
 ---
 
-### D-079 · 2026-08-08 (reconstructed 2026-08-11) · Accepted — M7's exit criteria, written after the fact
+### D-085 · 2026-08-08 (reconstructed 2026-08-11) · Accepted — M7's exit criteria, written after the fact
 
 **This entry is a reconstruction — see the editorial note above.** No
 original numbered criteria list survived; `CLAUDE.md`'s M7 section cites
@@ -196,22 +209,22 @@ own precedent.
 **Decision:** M7 ("real models and textures") is complete when:
 
 1. At least one authored model exists per roster archetype and per
-   building, generated by committed Python (D-075), not hand-modelled.
+   building, generated by committed Python (D-081), not hand-modelled.
 2. Every model is under its triangle budget (`TRIANGLE_BUDGET`,
-   `MOUNTED_TRIANGLE_BUDGET`, `BUILDING_TRIANGLE_BUDGET` — D-075).
+   `MOUNTED_TRIANGLE_BUDGET`, `BUILDING_TRIANGLE_BUDGET` — D-081).
 3. Two runs of `just build-assets` are byte-identical, and a test fails
-   if `generated/` is stale against `art/`'s source hash (D-075).
+   if `generated/` is stale against `art/`'s source hash (D-081).
 4. **`just gen-model-preview` renders every authored model, animated, and
    the screenshot is looked at, not just asserted about** — the actual
    text of the criterion `model_preview.gd`'s header cites by number.
 5. Soldiers render through the shipping `MultiMesh` + VAT path, not a
-   per-soldier node (D-076), and carry the owning player's colour
+   per-soldier node (D-082), and carry the owning player's colour
    (D-052) despite `MultiMesh` overriding vertex `COLOR`.
 6. `gen-model-preview` renders twice, 1.7s apart, and fails if the two
    frames are byte-identical — proof the VAT is actually advancing, not
    frozen at a plausible-looking still.
 7. Terrain is textured by a per-biome atlas that modulates vertex colour
-   (D-077), and the atlas, the minimap and the 3D mesh all agree because
+   (D-083), and the atlas, the minimap and the 3D mesh all agree because
    all three read `TerrainGen.biome_color()`.
 8. Import settings for VAT and atlas textures are generated data
    (`godot_import.py`), not hand-set in the editor — `detect_3d/compress_to`
@@ -227,7 +240,7 @@ own precedent.
     scale is measured, not extrapolated from the pre-authored-model
     number.** The actual text of the criterion `CLAUDE.md`'s M7 section
     cites by number.
-12. The hex-gap and inverted-normal terrain defects (D-078) are fixed
+12. The hex-gap and inverted-normal terrain defects (D-084) are fixed
     once textured ground made them the most visible thing on screen.
 13. `just test-unit` is green with the art-pipeline tests included
     (`test_art_assets.gd` and neighbours).
@@ -242,7 +255,7 @@ and "the art meets M7's exit criteria" stay distinguishable claims — the
 same distinction M2 and M6 both had to learn the hard way before this
 project started writing exit criteria down at all.
 
-**Consequences:** As of D-080, criterion 11 is discharged **with a
+**Consequences:** As of D-086, criterion 11 is discharged **with a
 caveat**: measured on Intel Iris Xe integrated graphics, the same
 hardware M5 used, not a discrete GPU — no discrete GPU was available in
 the environment that ran it. That satisfies M5's own precedent (M5 also
@@ -250,7 +263,7 @@ used integrated graphics throughout) and answers the real question this
 criterion exists for — the cost of VAT-animated authored models at full
 scale — but is not literally "discrete" if that word in `CLAUDE.md`'s
 phrasing was chosen deliberately rather than loosely. Criterion 14
-remains open after D-080: nothing in D-080 involved a human playing,
+remains open after D-086: nothing in D-086 involved a human playing,
 only automated verification. **M7 is landed, not complete**, which is
 consistent with what `CLAUDE.md` already said before this entry existed.
 
@@ -261,7 +274,7 @@ rather than argued from a reconstructed criteria list.
 
 ---
 
-### D-078 · 2026-08-10 (reconstructed 2026-08-11) · Accepted — a watertight hex surface, and the simulation untouched
+### D-084 · 2026-08-10 (reconstructed 2026-08-11) · Accepted — a watertight hex surface, and the simulation untouched
 
 **This entry is a reconstruction — see the editorial note above.**
 `CLAUDE.md` cites this work at `D-067`, which collides with the real
@@ -297,7 +310,7 @@ question, not decided here).
 **Consequences:** `TerrainChunk.height_at` is a hot path — called once
 per soldier per frame by the client's ground sampler, no longer a single
 array index. Its cost on real hardware was, at the time this landed,
-unmeasured; D-080's `bench-render` numbers are the first real measurement
+unmeasured; D-086's `bench-render` numbers are the first real measurement
 of the full render path including this sampler, since `bench_render.gd`
 explicitly samples through the same `TerrainChunk.height_at` the client
 uses rather than deriving at a fixed height.
@@ -310,7 +323,7 @@ the same way they were kept apart on purpose here.
 
 ---
 
-### D-077 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — terrain texturing: the atlas modulates, biome_color decides
+### D-083 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — terrain texturing: the atlas modulates, biome_color decides
 
 **This entry is a reconstruction — see the editorial note above.**
 `CLAUDE.md` cites this work at `D-066`, which collides with the real
@@ -338,11 +351,11 @@ Per-cell UV rotation is hashed from the wrapped cell coordinate, so the
 hex lattice does not read as an obviously repeating tile.
 
 UVs are derived from the **cell**, never from world position — the same
-reason terrain elevation is cell-keyed (D-078) — so all nine torus
+reason terrain elevation is cell-keyed (D-084) — so all nine torus
 copies of a hex agree on their texture by construction rather than by
 each copy computing its own answer and hoping they match.
 
-**Rationale:** A single source of truth for colour is what let D-080
+**Rationale:** A single source of truth for colour is what let D-086
 re-tune the palette for the new lighting rig by editing eight `Color`
 literals in one function, with the minimap and preview PNG updating for
 free. Had the atlas carried its own colour independent of
@@ -357,7 +370,7 @@ for colour, defeating the reason `biome_color()` exists as a single
 function everything reads).
 
 **Consequences:** Any future palette change touches only
-`terrain_gen.gd:biome_color` — confirmed directly by D-080, which did
+`terrain_gen.gd:biome_color` — confirmed directly by D-086, which did
 exactly that and needed no atlas rebuild.
 
 **Revisit trigger:** if a biome ever needs texture variation that
@@ -367,7 +380,7 @@ an explicit, deliberate exception — not a silent one.
 
 ---
 
-### D-076 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — animation: a vertex animation texture, and a phase that is derived, never accumulated
+### D-082 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — animation: a vertex animation texture, and a phase that is derived, never accumulated
 
 **This entry is a reconstruction — see the editorial note above.**
 `CLAUDE.md` cites this work at `D-065`, which collides with the real
@@ -416,12 +429,12 @@ so it survives glTF re-ordering and works under the GL Compatibility
 renderer `test-client` and `gen-model-preview` both depend on.
 
 **Revisit trigger:** none identified; VAT sampling cost at full scale is
-now measured by D-080's `bench-render` run, which folds this shader's
+now measured by D-086's `bench-render` run, which folds this shader's
 cost into the same number that includes culling and LOD.
 
 ---
 
-### D-075 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — art direction and pipeline: stylised low poly, generated, not hand-modelled
+### D-081 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — art direction and pipeline: stylised low poly, generated, not hand-modelled
 
 **This entry is a reconstruction — see the editorial note above, and
 supersedes D-011.** `CLAUDE.md` cites this work at `D-064`, an ID never
@@ -454,7 +467,7 @@ tunics, 0.0 on skin and steel.
 `SystemExit` over `TRIANGLE_BUDGET = 300` (`MOUNTED_TRIANGLE_BUDGET =
 460`, `BUILDING_TRIANGLE_BUDGET = 400`). The heaviest shipped foot unit
 (founders, 172 tris) is still well under budget — nothing shipped is
-geometry-limited, which is the fact D-080 leans on to justify spending
+geometry-limited, which is the fact D-086 leans on to justify spending
 the art budget on lighting instead of more geometric detail.
 
 **Both the generators and their output are committed.** `art/` is the
@@ -487,13 +500,102 @@ Jumping straight to tier 3 fidelity without the parametric layer
 the ~90-130 unit count D-070 already accepts for M9's roster growth).
 
 **Consequences:** Nothing shipped is geometry-limited (see triangle
-budget numbers above), which is the load-bearing fact behind D-080's
+budget numbers above), which is the load-bearing fact behind D-086's
 choice to spend on lighting rather than more detailed models. Adding an
 archetype is a data change in `art/units/__init__.py`'s `ROSTER` dict,
 not a new script.
 
 **Revisit trigger:** none identified since D-011's trigger fired and
 this decision was made in response to it.
+
+---
+
+### D-075 · 2026-08-11 · Accepted — leaving a match returns to the lobby, and no humans means no server
+**Decision:** Two rules, both about the end of a session rather than the
+end of a match.
+
+**1. "Leave match" returns to the lobby.** It sends a new
+`C2S_LEAVE_MATCH` and stays connected. The server ends the match, drops
+the world, and re-broadcasts the seats; `MatchState` gains
+`return_to_lobby()`, the one backwards edge in a phase machine that had
+run `LOBBY → RUNNING → FINISHED` only. Seats survive so the next match is
+one click away; everything a match *wrote* on them does not.
+
+**2. No humans, no server.** When the last socket client disconnects, the
+server shuts down and exits. AI seats explicitly do not count — they have
+no socket (D-051), and a match of nothing but computers would otherwise
+hold the port forever.
+
+**Rationale:** the old "leave" was a disconnect, and its doc comment
+already claimed it went "back to the lobby screen". It could not: a
+disconnect tears the seat down, so there was nothing to return TO and the
+player sat looking at a dead match until they closed the window. This is
+D-061's shape again — a rule fully written, with a caller, whose
+destination did not exist — and again only *using it* found it.
+
+Rule 2 is not hypothetical. This session opened by clearing a server that
+had been ticking an empty world **for six hours** with `clients=0`,
+launched by `just run-server AI=1` — which `just` parses positionally
+into `--ai=AI=1`, so `int()` read 0 and it never had an opponent either.
+`_on_disconnect` already printed a summary when the last client left and
+then went right on ticking.
+
+Putting the return in `MatchState` rather than the client is what makes
+the client change almost nothing: `ClientState.in_lobby()` already reads
+the phase off the wire, so the lobby screen comes back on its own. A
+client that could end a match locally would be a client deciding for
+everybody (D-002).
+
+**What a match writes on the lobby, and must be undone.** Each of these
+is silent when wrong — a second match with the first one's civs looks
+entirely normal:
+
+- **A `Random` seat is resolved IN PLACE at start** (D-048). Without
+  restoring the choice, "Random" would mean "random once, ever".
+- **Registration carries an `eliminated` flag.** Kept, whoever lost match
+  one would begin match two already defeated, and the victory rule would
+  end it before anyone moved. It is cleared, and `_on_match_started` now
+  registers every seat — humans as well as AI, which it had not done,
+  because `_on_connect` was the only human registration path.
+- **`_build_world` guards on `_sim != null`** and would otherwise return
+  without building, leaving match two running on match one's terrain,
+  spawn points, resource nodes and combat seed.
+- **Entity ids restart.** Both sims mint from an array length, so match
+  two's squad 0 would find match one's MultiMesh under its id.
+- **The replay is the match's** (D-016), so it is closed and the next one
+  opens its own file rather than truncating it.
+
+**Rejected alternatives:**
+- *Client-side only — show a disconnected lobby* (rejected: the lobby is
+  server-driven, so seats, chat and settings would be inert and nothing
+  could start a second match).
+- *Tear down and relaunch from the `just` recipe* (rejected: a visible
+  relaunch pause, and it only works for sessions started that way, not a
+  client connected to a remote server).
+- *Ending the server the moment the match is left* (rejected: it makes
+  "return to the lobby" a dead screen in exactly the solo-versus-AI
+  session this exists to serve).
+
+**Consequences:** one human leaving returns the **whole match** to the
+lobby, evicting everyone. That is right for solo-versus-AI and wrong for
+several humans, and it is the known limit of "for now" — a per-player
+leave needs a spectator-or-seated state that does not exist.
+
+`just lobby` and `quick-test` dropped `--rm`, because a server that exits
+by itself would take its own log with it; the trap's `just down` still
+removes the container by project label.
+
+Two adjacent defects fixed in passing, both on the path being changed:
+`_on_disconnect` called `_sim.replicator` unconditionally and would have
+crashed on a lobby disconnect, which was survivable only while leaving
+always meant leaving a RUNNING match; and `remove_human_seat` had no
+caller outside its own test — the **fifth** declared-and-unread member
+after `UnitDef.cost`, `BuildingDef.cost`, `BuildingSim.damage()` and the
+three `CivDef` knobs — so a human who dropped from a lobby kept their
+seat forever and the admin role never passed on.
+
+**Revisit trigger:** the first match with two humans in it. At that point
+"leave" has to become per-player and this entry is reopened, not patched.
 
 ---
 
@@ -4782,7 +4884,7 @@ just in code):
 
 ---
 
-### D-011 · 2026-07-28 · Superseded by D-075 (2026-08-09)
+### D-011 · 2026-07-28 · Superseded by D-081 (2026-08-09)
 **Decision:** Mesh generation stays at the primitive tier (capsules,
 boxes, cylinders composed from `UnitDef` data) through M3. Modular/
 parametric (tier 2) and Blender/`bpy` final-fidelity (tier 3) are
@@ -4805,10 +4907,10 @@ explicitly prioritized.
 
 **Trigger fired 2026-08-09, on both halves** — M3 completed three
 milestones ago and the owner prioritised tiers 2/3 explicitly. Superseded
-by D-075 (first recorded here as `D-064`, an ID never actually written —
-corrected 2026-08-11, see D-075's editorial note), which sets the art
-direction and makes the generator, rather than the mesh, the thing that
-is committed.
+by D-081 (first recorded here as `D-064`, then briefly as `D-075` — both
+IDs collided with unrelated real entries; corrected 2026-08-11, see
+D-081's editorial note), which sets the art direction and makes the
+generator, rather than the mesh, the thing that is committed.
 
 ---
 
@@ -5295,9 +5397,10 @@ items resolved as:
   leak surfaces are curve horizon clipping (D-003) and client-derived
   soldier positions (D-006).
 - ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
-  produces it.~~ → **D-075** (2026-08-09; corrected 2026-08-11 — first
-  recorded here as `D-064`, an ID that was never actually written; see
-  D-075's own entry and its editorial note): stylised low-poly with strong
+  produces it.~~ → **D-081** (2026-08-09; corrected 2026-08-11 — first
+  recorded here as `D-064`, then briefly as `D-075`; both IDs collided
+  with unrelated real entries; see D-081's own entry and its editorial
+  note): stylised low-poly with strong
   silhouettes, ~300 tris/soldier; produced by committed Python scripts
   driving Blender headless as a library, not by hand in the GUI. Tier 2
   is absorbed rather than skipped — parametric composition is how the
