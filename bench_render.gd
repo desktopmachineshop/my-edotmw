@@ -130,6 +130,10 @@ func _build_scene() -> void:
 
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-55.0, -35.0, 0.0)
+	# Mirrors client.gd's D-076 lighting pass. shadow_enabled was tried
+	# here first — this benchmark is what MEASURED it out (35.66ms ->
+	# 71.15ms mean at 1,000 squads) — so it stays off, matching what ships.
+	light.light_color = Color(1.0, 0.95, 0.82)
 	light.light_energy = 1.1
 	add_child(light)
 
@@ -138,8 +142,8 @@ func _build_scene() -> void:
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.09, 0.11, 0.16)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.48, 0.55)
-	env.ambient_light_energy = 0.6
+	env.ambient_light_color = Color(0.42, 0.48, 0.58)
+	env.ambient_light_energy = 0.75
 	environment.environment = env
 	add_child(environment)
 

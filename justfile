@@ -44,7 +44,12 @@ artifacts_dir := justfile_directory() + "/artifacts"
 native_godot := tools_dir + "/godot"
 blender_version := `cat .blender-version`
 blender_venv := tools_dir + "/blender-venv"
-blender_python := blender_venv + "/bin/python"
+# `python -m venv` lays out Scripts/ on Windows and bin/ everywhere else —
+# both are reached through this same bash-shelled justfile (Git Bash on
+# Windows per CLAUDE.md), so the venv's own layout must be branched on,
+# not assumed.
+blender_python := if os_family() == "windows" { blender_venv + "/Scripts/python.exe" } else { blender_venv + "/bin/python" }
+blender_pip := if os_family() == "windows" { blender_venv + "/Scripts/pip.exe" } else { blender_venv + "/bin/pip" }
 
 # Single source of truth for the M1 server entry scene, so the recipes
 # that depend on it agree about when it exists.
@@ -766,8 +771,10 @@ bootstrap-art:
     #!/usr/bin/env bash
     set -euo pipefail
     python3 -m venv "{{blender_venv}}"
-    "{{blender_venv}}/bin/pip" install --quiet --upgrade pip
-    "{{blender_venv}}/bin/pip" install "bpy=={{blender_version}}"
+    # `python -m pip` rather than the pip.exe shim: pip cannot overwrite its
+    # own running executable on Windows and exits 1 telling you to do this.
+    "{{blender_python}}" -m pip install --quiet --upgrade pip
+    "{{blender_pip}}" install "bpy=={{blender_version}}"
     # Godot scans every directory under the project. Without this it walks
     # ~1 GB of Blender's own bundled textures and imports them.
     : > "{{tools_dir}}/.gdignore"

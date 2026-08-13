@@ -415,11 +415,18 @@ inside-out, which cost nothing but lighting until a building got big
 enough to look inside. Neither would have failed a test that counted
 things.
 
-**Still open in M7:** `just bench-render` has NOT been re-run on a
-discrete GPU since authored models landed, so the cost of animated
-vertices at D-018's full scale is unmeasured — that is D-063 criterion 11
-and it also discharges Q15's re-armed trigger. Nobody has played a match
-with the new art (criterion 14). Until both happen, M7 is landed, not
+**Still open in M7 (partially closed 2026-08-13):** `just bench-render`
+had not been re-run on a discrete GPU since authored models landed —
+D-063 criterion 11 — until measuring D-078's lighting pass closed it by
+accident. The number it found is worse than anyone expected: **62.26ms
+mean / 16.1 fps at D-018's 1,000-squad target (27,300 soldiers)**, against
+M5's recorded 35.66ms/28fps — but that comparison is not valid evidence of
+a regression, because the M5 figure predates authored models, M8's
+civ/team plumbing, and `squad_cap` growing 15→40 (D-056). Nobody has
+isolated which of those actually costs the difference, which is now its
+own tracked gap (D-078's revisit trigger), separate from and larger than
+the lighting work that surfaced it. Nobody has played a match with the
+new art (criterion 14) either. Until both close, M7 is landed, not
 complete — the same distinction M2 and M6 both had to learn.
 
 **The gaps between hexes are fixed (D-067).** They were pre-existing

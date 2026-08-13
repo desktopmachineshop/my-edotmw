@@ -20,6 +20,78 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-078 · 2026-08-13 · Accepted — toon shading and rim light, not dynamic shadows, for D-064's "stylised low-poly"
+**Decision:** D-064 set the art direction as "stylised low-poly with strong
+silhouettes" but never touched lighting — every shader used
+`diffuse_lambert`, the same smooth photoreal falloff a realistic game would
+use, over low-poly geometry. Using the five new D-076 buildings as the test
+subject, all three opaque shaders (`unit_anim.gdshader`,
+`building_static.gdshader`, and terrain's `StandardMaterial3D` in
+`terrain_chunk.gd`) switch to `diffuse_toon` — a stepped light/shadow
+split that reads as flat graphic-novel colour rather than a gradient — plus
+a small fixed `RIM`/`RIM_TINT` term on each, which is what D-064's "strong
+silhouettes" clause actually asked for: a soldier or building should stay
+legible in silhouette against similarly-coloured terrain or a crowded
+melee. `client.gd`'s directional light shifted warm (`Color(1.0, 0.95,
+0.82)`) against a cooler ambient fill (`Color(0.42, 0.48, 0.58)`, energy
+0.75) — a neutral light over neutral ambient gave `diffuse_toon` nothing to
+separate and just looked like flat grey banding. `model_preview.gd` and
+`bench_render.gd` were kept in sync with `client.gd`'s rig on purpose: a
+preview or benchmark with its own separately-tuned lighting would stop
+answering "what does the game actually look like/cost."
+
+**Rejected: dynamic shadows (`DirectionalLight3D.shadow_enabled`).** Tried
+first, alongside the toon/rim pass, because a shadow is what makes a toon
+light/shadow split mean something instead of being purely angle-driven.
+The naive comparison against M5's recorded 35.66ms/28fps would have looked
+like a much bigger regression than shadows alone caused — see the
+Consequences note below for why that number turned out to be stale and not
+the right baseline. The clean, apples-to-apples comparison is this
+session's own back-to-back measurement, same scene, same hardware, same
+run: **71.15ms mean / 14.1 fps with shadows, 62.26ms mean / 16.1 fps
+without**. Roughly 9ms (~14%) for one
+directional light's shadow pass over the whole map and every soldier is
+not affordable against a tick/frame budget this project has fought for
+twice already (M4's flow-field spike, M5's render pass). `diffuse_toon`
+and `RIM` cost nothing extra by comparison — same light-model evaluation
+Godot already runs, no added draw calls — which is why they stayed and
+shadows didn't.
+
+**Consequences — a bigger finding than the lighting pass itself.** M7's own
+"still open" note said `bench-render` had not been re-run on a discrete
+GPU since authored soldier models (real ~100–256 tri VAT-animated meshes)
+replaced primitive capsules — criterion 11 of D-063, never closed.
+Measuring this decision closed it by accident: **62.26ms mean / 16.1 fps at
+1,000 squads (27,300 soldiers), no shadows, is the first real number since
+authored models landed** — and it is *not* comparable to M5's recorded
+35.66ms/28fps, which was measured against primitive capsules before M7,
+M8's civ/team overhead, and D-018's `squad_cap` growth (15→40) all
+happened. There is currently no valid "what did authored models alone
+cost" baseline, because nobody re-measured between landing them and now.
+**This is the real revisit trigger, separate from and larger than
+lighting**: D-018's 1,000-squad target is presently rendering at roughly
+half the frame rate the milestone record implies, and the cause has not
+been isolated (authored-model vertex cost, squad_cap growth, civ/team
+plumbing, or some combination). `just bench-render` should be run again
+the next time render cost work is prioritised, ideally bisected against
+M7's landing commit to actually attribute it — this decision only
+measured the marginal cost of shadows on top of whatever that baseline
+now is, not the baseline itself.
+
+**Consequences:** `just test-unit` unaffected (545 tests, shaders/lighting
+are not GUT-testable) — verified visually via `just gen-model-preview`
+(native, real GPU, matches what ships) rather than asserted. No wire or
+simulation change; D-006 is untouched (lighting is a pure render-time
+concern).
+
+**Revisit trigger:** the frame-rate gap noted above, whenever render cost
+is next worked on. Secondarily: if a cheaper shadow approach is ever worth
+trying (limited distance, a single low-res cascade, shadows only near the
+camera), re-measure with the same `bench-render` methodology rather than
+assuming a cheaper setting is cheap enough.
+
+---
+
 ### D-077 · 2026-08-12 · Accepted — a sandbox mode for dev testing, kept structurally unable to leak into a real match
 **Decision:** `MatchState` gains three independent flags — `sandbox`,
 `instant_build`, `ai_economy_only` — settable from a `--sandbox=1` server
@@ -251,6 +323,71 @@ still clean at 57.88 µs/squad — but the rotation math, the snap radius,
 and the line tool itself are only proven by looking at them, the same
 category `just test-client`'s casualty gate exists for elsewhere. Play
 it before trusting the geometry.
+
+**Amendment, 2026-08-13 — authored models for all five defs (D-064's
+pipeline), plus two things the art pass exposed.** All five had been
+rendering as primitives (`mesh_size`-overridden boxes/cylinder) since
+launch; `art/buildings/__init__.py` gained a `shape` field (`block` |
+`wall` | `tower_access`) that branches `build()` entirely rather than
+stretching the existing gable/flat/spire roof cases, since a long low
+segment and a squat access tower are different silhouettes from every
+`block`-shape building that came before. `wall`/`gate` are a row of
+tapered timber stakes (the cheap tier — no walkway, pure blocker);
+`garrison_wall` is a crenellated stone rampart; `garrison_gate` is the
+same walkway/parapet silhouette built from vertical timber slats instead
+— **material marks the gate, not a gap in the wall**, since the user's
+own spec put both garrison pieces in the "stone, crenellated" family and
+only the gate in wood; `wall_tower` is a crenellated stone tower with a
+door on local +X, the same axis `client.gd` rotates by `facing` that
+`wall`/`gate` segments already used for their length — so the modelled
+door always ends up pointing at the one ground cell D-076's climb check
+actually permits, with no per-instance mesh logic. All five comfortably
+inside the 400-tri building budget (108–192 tris; the existing four run
+72–144).
+
+1. **The gate open/closed colour cue only worked for `StandardMaterial3D`
+   — the primitive path.** An authored model gets a `ShaderMaterial`
+   (`UnitMesh.static_material_for`), which has no `albedo_color` to lerp,
+   so `gate`/`garrison_gate` getting real models would have silently gone
+   back to always reading "closed" the moment they shipped — caught
+   before it shipped rather than after, this time. Fixed with a
+   `gate_open` uniform on `building_static.gdshader` (lightens ALBEDO the
+   same amount the primitive path already did) and a branch in
+   `client.gd`'s per-frame gate-colour block that sets whichever the
+   instance actually has.
+2. **`model_preview.gd`'s camera was tuned for 4 buildings and silently
+   clipped the ends of a row of 9** rather than failing — the same
+   "numbers all pass while the picture is wrong" shape this project keeps
+   finding (M1's empty first frame, M6's missing terrain, D-067's
+   inside-out winding). Widened camera distance/FOV and a new
+   `BUILDING_SPACING` constant so the whole roster fits one frame; the
+   fix is the tool, not the models — nothing about the buildings
+   themselves required it.
+
+Also found and fixed, not a modelling issue: `just bootstrap-art` assumed
+a POSIX venv layout (`bin/python`, `bin/pip`) and a pip that can
+overwrite its own running executable — both true on Linux, neither true
+on Windows, where `python -m venv` lays out `Scripts/` and pip refuses to
+self-upgrade via its own shim. `blender_python`/`blender_pip` now branch
+on `os_family()`, and the self-upgrade goes through `python -m pip`
+instead of `pip.exe` directly — this project's tooling had simply never
+been run through this recipe on native Windows before. Separately: the
+docker-backed `_import` and native-backed `gen-model-preview` write to
+two different cache directories (`.godot-container/` vs `.godot/`) —
+`gen-model-preview`'s own `_import` dependency inherits `EDOTMW_RUNTIME`'s
+docker default, so on a machine that has only ever run docker-backed
+recipes, the native render step was reading an import cache that had
+never heard of these files. Not a bug in either recipe alone, just an
+untested combination; resolved here by running with
+`EDOTMW_RUNTIME=native`, not by changing the recipes' default.
+
+`just test-unit` green at 545 tests across 35 scripts (`test_art_assets.gd`'s
+manifest-hash check among them); `just gen-model-preview` inspected
+visually — every new building distinguishable by silhouette and material,
+`wall_tower`'s crenellations and `garrison_gate`'s slats both read clearly,
+`garrison_wall` partly buried by an unlucky hill in the small preview
+terrain but its own merlons visible through the gap. No simulation code
+changed, so `test-load` was not re-run.
 
 ---
 

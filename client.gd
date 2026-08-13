@@ -227,7 +227,18 @@ func _ready() -> void:
 
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-55.0, -35.0, 0.0)
+	# D-076's lighting pass: a warm sun against a cool ambient fill (below)
+	# is what gives `diffuse_toon`'s lit/shadow split something to actually
+	# separate — a neutral-white light over neutral ambient reads as flat
+	# grey banding rather than a stylised day. Shadows are on for the same
+	# reason: toon shading without a shadow to draw is just a colour clamp.
+	light.light_color = Color(1.0, 0.95, 0.82)
 	light.light_energy = 1.1
+	# shadow_enabled was tried and measured out: 35.66ms -> 71.15ms mean
+	# frame time at D-018's 1,000-squad target (bench-render), undoing
+	# most of M5's own optimisation pass in one line. `diffuse_toon` and
+	# the RIM terms below cost nothing extra (same light-model evaluation,
+	# no added draw calls) and are what's actually shipping here.
 	add_child(light)
 
 	var environment := WorldEnvironment.new()
@@ -235,8 +246,13 @@ func _ready() -> void:
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.09, 0.11, 0.16)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.48, 0.55)
-	env.ambient_light_energy = 0.6
+	# Cool fill, complementary to the warm sun above. `diffuse_toon`'s
+	# shadow band has a hard edge rather than Lambert's soft falloff, so it
+	# needs MORE ambient than a smooth-shaded scene did to keep a
+	# building's shadow side from crushing to near-black — first pass at
+	# 0.5 did exactly that on every face angled away from the sun.
+	env.ambient_light_color = Color(0.42, 0.48, 0.58)
+	env.ambient_light_energy = 0.75
 	environment.environment = env
 	add_child(environment)
 
@@ -2319,15 +2335,23 @@ func _refresh_buildings() -> void:
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
 
 		# D-076: a gate's own colour tells you whether it is currently
-		# passable, without needing it selected. Only the primitive path
-		# has a StandardMaterial3D to recolour — no authored gate model
-		# exists yet (model_id is empty on every def in this feature).
+		# passable, without needing it selected. Two material types need
+		# two mechanisms — the primitive path's StandardMaterial3D gets
+		# recoloured directly; an authored gate model (gate/garrison_gate,
+		# D-076's follow-up art pass) uses building_static.gdshader's own
+		# `gate_open` uniform instead, since ShaderMaterial has no
+		# `albedo_color` to lerp.
 		var gate_def: BuildingDef = _building_defs.get(wire_id, null)
-		if gate_def != null and gate_def.is_gate and instance.material_override is StandardMaterial3D:
-			var gate_material := instance.material_override as StandardMaterial3D
-			var owner_colour := _state.colour_of(int(info["owner"]))
-			var base_colour := gate_def.mesh_color.lightened(0.5) if bool(info.get("gate_open", false)) else gate_def.mesh_color
-			gate_material.albedo_color = owner_colour.lerp(base_colour, 0.75)
+		if gate_def != null and gate_def.is_gate:
+			var open := bool(info.get("gate_open", false))
+			if instance.material_override is StandardMaterial3D:
+				var gate_material := instance.material_override as StandardMaterial3D
+				var owner_colour := _state.colour_of(int(info["owner"]))
+				var base_colour := gate_def.mesh_color.lightened(0.5) if open else gate_def.mesh_color
+				gate_material.albedo_color = owner_colour.lerp(base_colour, 0.75)
+			elif instance.material_override is ShaderMaterial:
+				(instance.material_override as ShaderMaterial).set_shader_parameter(
+					"gate_open", 1.0 if open else 0.0)
 
 		# Armed and complete (a half-built town centre has no garrison to
 		# fire from). Same client-inferred approach as `_activity_for`:
