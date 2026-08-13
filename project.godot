@@ -10,6 +10,17 @@ config/name="my-edotmw"
 config/features=PackedStringArray("4.7")
 run/main_scene=""
 
+[display]
+
+; Godot's own default (1152x648) is already SMALLER than HudLayout's
+; 1280x720 reference size, so a fresh launch started at the HUD's scale
+; floor before a player ever touched the window — reported as the UI
+; being hard to read. This is a floor, not a lock: still ordinarily
+; resizable, and `Client._ready` additionally enforces
+; `HudLayout.min_window_size()` as the smallest it can be resized DOWN to.
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
 [physics]
 
 common/physics_ticks_per_second=10

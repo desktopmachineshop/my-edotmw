@@ -45,45 +45,129 @@ const REFERENCE := Vector2(1280.0, 720.0)
 ## and above the ceiling a 4K screen gets a HUD that eats the map — the
 ## point of a big monitor is seeing more of the world, not a bigger
 ## selection panel.
-const MIN_SCALE := 0.75
+##
+## Raised from 0.75: reported as genuinely hard to read at the old floor —
+## a window narrower than the reference (common; Godot's own default
+## project window is 1152x648, already below 1280x720) landed on exactly
+## that floor, not some rare edge case. `min_window_size` follows this
+## constant, so raising it also raises the smallest window this HUD will
+## let itself be squeezed into.
+const MIN_SCALE := 0.9
 const MAX_SCALE := 2.0
 
 const MARGIN := 12.0
-const BAR_HEIGHT := 34.0
-const PANEL_SIZE := Vector2(430.0, 300.0)
+const BAR_HEIGHT := 38.0
 
-## Inner geometry of the selection panel, relative to its top-left corner.
-## Here rather than in the client so that the panel's contents move with
-## the panel by construction, instead of by two lists of numbers that have
-## to be kept agreeing.
+## The command panel: a WIDE bar spanning (almost) the window, not a tall
+## corner card. Reworked from a 430x300 corner panel to match the chosen
+## reference design ("chips ... in the live view") — a selection reads as
+## one strip: who is selected, what they are made of (as chips), and what
+## you can do with them, left to right rather than stacked top to bottom.
+##
+## Tall enough for the actions column's two stacked segments (see
+## `BUILD_ACTIONS_Y`) — grown from the single-grid version once formation/
+## behaviour and building were split into their own segments, on request:
+## a squad in a hurry could otherwise not tell "Stop" from "Build
+## Barracks" without reading every label.
+const PANEL_HEIGHT := 176.0
+
+## Inner geometry, relative to the panel's top-left corner.
 const PANEL_PAD := 12.0
-const TITLE_Y := 8.0
-const DETAIL_Y := 32.0
-const HEALTH_Y := 56.0
-const PROGRESS_CAPTION_Y := 70.0
-const PROGRESS_Y := 88.0
-const QUEUE_CAPTION_Y := 104.0
-const QUEUE_SWATCH_Y := 126.0
+const TITLE_Y := 12.0
+const DETAIL_Y := 40.0
+const HEALTH_Y := 66.0
+const PROGRESS_CAPTION_Y := 82.0
+const PROGRESS_Y := 102.0
+const QUEUE_CAPTION_Y := 120.0
+const QUEUE_SWATCH_Y := 120.0
 const QUEUE_SWATCH_PITCH := 20.0
-const ACTIONS_Y := 152.0
-const ACTION_BUTTON := Vector2(128.0, 34.0)
+
+## The title column: who/what is selected, and (for a building) its health.
+const TITLE_COLUMN_WIDTH := 172.0
+
+## The chip strip sits between the title column and the actions column —
+## see `chip_strip_rect`. Chips are square-ish cards, not a fixed count:
+## how many fit is a function of the window, which is why it is computed
+## rather than assumed.
+const CHIP_SIZE := Vector2(116.0, 58.0)
+const CHIP_GAP := 6.0
+## Above this many squads, per-squad chips stop being legible as
+## individuals and the panel collapses to one chip per ARCHETYPE instead
+## (see the reference design's 20-squad state) — counted, not guessed, so
+## the threshold lives beside the geometry it is chosen to fit.
+const CHIP_COLLAPSE_THRESHOLD := 8
+
+const ACTION_BUTTON := Vector2(136.0, 38.0)
 const ACTION_GAP := Vector2(8.0, 6.0)
 const ACTION_COLUMNS := 3
+const ACTIONS_Y := 8.0
+const ACTIONS_COLUMN_WIDTH := ACTION_BUTTON.x * float(ACTION_COLUMNS) \
+	+ ACTION_GAP.x * float(ACTION_COLUMNS - 1)
+
+## The actions column is two SEGMENTS stacked vertically, not one shared
+## grid: formation/behaviour on top (`action_slot`), building on the
+## bottom (`build_slot`), with a divider and its own caption between them.
+## Building used to sit in the same grid as Stop/Gather, ordered after the
+## formation buttons by construction — which worked, but on request reads
+## worse than a real visual break: "Build Barracks" and "Stop" are not the
+## same KIND of order, and a player scanning quickly for one wants to know
+## which half of the column to even look at.
+##
+## `ACTION_CONTROL_ROWS` caps the top segment before the divider begins —
+## generous for what actually fills it (three formations + Stop + Gather
+## is five, fitting in two rows of three with room to spare), and if a
+## selection ever offered more than that, the excess would simply not
+## show — the same silent cap the single shared grid always had.
+const ACTION_CONTROL_ROWS := 2
+const BUILD_DIVIDER_Y := ACTIONS_Y \
+	+ float(ACTION_CONTROL_ROWS) * (ACTION_BUTTON.y + ACTION_GAP.y) + 4.0
+const BUILD_CAPTION_Y := BUILD_DIVIDER_Y + 8.0
+const BUILD_ACTIONS_Y := BUILD_CAPTION_Y + 18.0
 
 ## One resource readout every this many pixels, across the top bar.
-const RESOURCE_PITCH := 150.0
+const RESOURCE_PITCH := 168.0
 const RESOURCE_X := 16.0
 
 ## The Menu button, at the right end of the top bar. Its own slot rather
 ## than a floating button, so the readouts to its left can be told where
 ## they must stop.
-const MENU_BUTTON := Vector2(76.0, 24.0)
+const MENU_BUTTON := Vector2(84.0, 28.0)
 
-## The compass dial, under the top bar on the RIGHT — opposite the
-## minimap, which owns the left. Both are navigation, and putting them in
-## the same corner would mean covering one with the other on a short
-## window.
-const COMPASS_SIZE := 68.0
+## The nav ring: the compass dial and the minimap MERGED into one widget,
+## top-right under the bar — the reference design's chosen synthesis
+## ("compass on the minimap ring"), replacing what used to be two unrelated
+## widgets in two different corners.
+##
+## The minimap is visually CROPPED to the ring's circle
+## (`shaders/circular_crop.gdshader`) — a genuine crop (pixels outside the
+## circle are hidden, at the map's own unchanged scale), not a SQUASH
+## (stretching a non-square rectangle to fill a circle, which would
+## reintroduce the exact distortion this project already spent an
+## afternoon fixing once: a square world stretched into a 2:1 box read
+## distances wrong). The trade a crop makes instead is losing whatever
+## map content falls outside the circle from view — accepted deliberately,
+## on request, over the alternative of a rectangular minimap poking past
+## its own frame.
+##
+## Sized around the minimap's SHORTER dimension, not its diagonal: a ring
+## that circumscribes the whole rectangle (rim touching the far corners)
+## works out almost exactly the size of the rectangle's own bounding
+## circle, and a crop at that radius clips almost nothing — the ring
+## LOOKED like a frame but the crop inside it was a no-op. Sizing from the
+## shorter side instead gives a ring that visibly crops the longer side's
+## overflow, the standard "cover crop" a circular photo avatar uses.
+const RING_MIN_SIZE := 172.0
+## Also the width of the ring's visible coloured border band — see
+## `ring_crop_radius`.
+const RING_PADDING := 17.0
+
+
+## The radius, from the ring's own centre, the minimap is visually CROPPED
+## to (see `shaders/circular_crop.gdshader`) — the inner edge of the
+## coloured border band, so the map and its frame meet with no gap and no
+## overlap.
+static func ring_crop_radius(ring_diameter: float) -> float:
+	return ring_diameter * 0.5 - 1.0 - RING_PADDING
 
 
 ## How much to magnify the HUD for a window of this size.
@@ -96,6 +180,19 @@ static func scale_for(viewport: Vector2) -> float:
 		return 1.0
 	return clampf(minf(viewport.x / REFERENCE.x, viewport.y / REFERENCE.y),
 		MIN_SCALE, MAX_SCALE)
+
+
+## The smallest real window this HUD should ever be asked to fit.
+##
+## `scale_for` stops shrinking the HUD once it hits `MIN_SCALE` — below
+## that floor the HUD stays the same size while the WINDOW keeps getting
+## smaller, so the resource bar and the wide command panel start walking
+## off their own edges rather than merely getting small. This is that
+## floor turned back into real pixels, meant to be set as the native
+## window's `min_size` so a player cannot resize past a point the layout
+## math above already assumes cannot happen.
+static func min_window_size() -> Vector2i:
+	return Vector2i(REFERENCE * MIN_SCALE)
 
 
 ## The design-space size a scaled HUD has to fill.
@@ -130,47 +227,58 @@ static func compute(design: Vector2, minimap_size: Vector2) -> Dictionary:
 	# count and on a wide one left a lake of empty bar to its right.
 	var status_left := RESOURCE_X + RESOURCE_PITCH * 4.0
 	var status_right := menu_button.position.x - MARGIN
-	var status := Rect2(minf(status_left, status_right), 6.0,
-		maxf(status_right - status_left, 0.0), 22.0)
+	var status := Rect2(minf(status_left, status_right), (BAR_HEIGHT - 24.0) * 0.5,
+		maxf(status_right - status_left, 0.0), 24.0)
 
-	# Top-right, below the bar. Clamped so it cannot ride up under the bar
-	# or off the left edge on a very narrow window.
-	var compass := Rect2(
-		Vector2(maxf(width - MARGIN - COMPASS_SIZE, MARGIN), BAR_HEIGHT + MARGIN),
-		Vector2(COMPASS_SIZE, COMPASS_SIZE))
+	# Top-right, below the bar. Sized around the minimap's SHORTER
+	# dimension — see the const's doc comment above for why: circumscribing
+	# the diagonal instead sizes the ring almost exactly to the rectangle's
+	# own bounding circle, and the crop this ring frames then clips nearly
+	# nothing. Clamped so it cannot ride up under the bar or off the left
+	# edge on a very narrow window.
+	var ring_diameter := maxf(RING_MIN_SIZE,
+		minf(minimap_size.x, minimap_size.y) + RING_PADDING * 2.0)
+	var ring := Rect2(
+		Vector2(maxf(width - MARGIN - ring_diameter, MARGIN), BAR_HEIGHT + MARGIN),
+		Vector2(ring_diameter, ring_diameter))
+
+	# Centred inside the ring, keeping its own aspect ratio.
+	var minimap := Rect2(ring.position + (ring.size - minimap_size) * 0.5, minimap_size)
 
 	# Centred under the bar, where a refusal is actually read. Spans the
 	# full width and centres its text, rather than being placed at the x
 	# that happened to look centred on one window.
 	var notice := Rect2(0.0, BAR_HEIGHT + 10.0, width, 22.0)
 
-	# Bottom-left, clamped so it can never climb under the resource bar on
-	# a very short window.
+	# The wide command bar. Bottom-left, full width, clamped above the ring
+	# so a very short window cannot stack the two widgets on top of each
+	# other the way the bar and the old corner panel once could.
 	var panel := Rect2(
-		Vector2(MARGIN, maxf(height - PANEL_SIZE.y - MARGIN, BAR_HEIGHT + MARGIN)),
-		PANEL_SIZE)
-
-	# Directly above the panel, sharing its left edge. Clamped below the
-	# resource bar for the same reason.
-	var minimap := Rect2(
-		Vector2(MARGIN, maxf(panel.position.y - MARGIN - minimap_size.y,
-			BAR_HEIGHT + MARGIN)),
-		minimap_size)
+		Vector2(MARGIN, maxf(height - PANEL_HEIGHT - MARGIN,
+			ring.position.y + ring.size.y + MARGIN)),
+		Vector2(maxf(width - MARGIN * 2.0, 0.0), PANEL_HEIGHT))
 
 	return {
 		"resource_bar": resource_bar,
 		"status": status,
 		"menu_button": menu_button,
-		"compass": compass,
+		"ring": ring,
 		"notice": notice,
 		"panel": panel,
 		"minimap": minimap,
 	}
 
 
+## The resource swatches: vertically centred in the bar, not at a fixed Y
+## tuned for one font size — that stopped lining up with the label text
+## the moment the label's own font size changed and nothing here followed.
+const RESOURCE_SWATCH_SIZE := 13.0
+
+
 ## Where the i'th resource swatch sits in the top bar.
 static func resource_slot(index: int) -> Vector2:
-	return Vector2(RESOURCE_X + float(index) * RESOURCE_PITCH, 9.0)
+	return Vector2(RESOURCE_X + float(index) * RESOURCE_PITCH,
+		(BAR_HEIGHT - RESOURCE_SWATCH_SIZE) * 0.5)
 
 
 ## Where cardinal `index` (0=N, 1=E, 2=S, 3=W) sits on the compass dial,
@@ -228,8 +336,68 @@ static func squad_count_text(living: int, cap: int) -> String:
 	return "%d/%d squads" % [living, cap]
 
 
-## Where the i'th action button sits, relative to the panel's corner.
+## The title column, at the panel's left edge.
+static func title_column_rect(panel: Rect2) -> Rect2:
+	return Rect2(panel.position, Vector2(TITLE_COLUMN_WIDTH, panel.size.y))
+
+
+## The actions column (formation + command buttons), at the panel's right
+## edge — the one sub-region whose width is fixed regardless of window
+## size, so the button grid never has to reflow.
+static func actions_column_rect(panel: Rect2) -> Rect2:
+	var w := minf(ACTIONS_COLUMN_WIDTH + PANEL_PAD * 2.0, panel.size.x)
+	return Rect2(Vector2(panel.position.x + panel.size.x - w, panel.position.y),
+		Vector2(w, panel.size.y))
+
+
+## What is left in the middle, for chips — between the title column and the
+## actions column. Can come out zero-width on a very narrow window; callers
+## must cope with that (see `chip_columns`), not assume it is positive.
+static func chip_strip_rect(panel: Rect2) -> Rect2:
+	var title := title_column_rect(panel)
+	var actions := actions_column_rect(panel)
+	var left := title.position.x + title.size.x + PANEL_PAD
+	var right := actions.position.x - PANEL_PAD
+	return Rect2(Vector2(left, panel.position.y),
+		Vector2(maxf(right - left, 0.0), panel.size.y))
+
+
+## How many chips fit across a strip of this width. At least one, even on a
+## strip too narrow to truly fit one — better an overflowing chip than a
+## division by a column count of zero silently hiding the whole selection.
+static func chip_columns(strip_width: float) -> int:
+	return maxi(1, int((strip_width + CHIP_GAP) / (CHIP_SIZE.x + CHIP_GAP)))
+
+
+## Where the i'th chip sits, relative to the strip's own top-left corner.
+static func chip_slot(index: int, columns: int) -> Vector2:
+	var row := index / columns
+	var col := index % columns
+	return Vector2(float(col) * (CHIP_SIZE.x + CHIP_GAP),
+		float(row) * (CHIP_SIZE.y + CHIP_GAP))
+
+
+## Where the i'th FORMATION/BEHAVIOUR button sits — the top segment,
+## relative to the ACTIONS COLUMN's corner (not the panel's — see
+## `actions_column_rect`).
 static func action_slot(index: int) -> Vector2:
 	return Vector2(
 		PANEL_PAD + float(index % ACTION_COLUMNS) * (ACTION_BUTTON.x + ACTION_GAP.x),
 		ACTIONS_Y + float(index / ACTION_COLUMNS) * (ACTION_BUTTON.y + ACTION_GAP.y))
+
+
+## Where the i'th BUILD button sits — the segment below the divider (see
+## `BUILD_DIVIDER_Y`'s doc comment for why this is a separate segment
+## rather than a continuation of `action_slot`'s grid).
+static func build_slot(index: int) -> Vector2:
+	return Vector2(
+		PANEL_PAD + float(index % ACTION_COLUMNS) * (ACTION_BUTTON.x + ACTION_GAP.x),
+		BUILD_ACTIONS_Y + float(index / ACTION_COLUMNS) * (ACTION_BUTTON.y + ACTION_GAP.y))
+
+
+## The divider's own rect, relative to the actions column's corner — a
+## thin horizontal rule spanning the column's width, the same way
+## `chip_strip_rect`'s neighbours are computed relative to a shared corner
+## rather than each carrying its own absolute math.
+static func build_divider_rect() -> Rect2:
+	return Rect2(Vector2(PANEL_PAD, BUILD_DIVIDER_Y), Vector2(ACTIONS_COLUMN_WIDTH, 1.0))
