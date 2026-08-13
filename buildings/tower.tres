@@ -21,6 +21,7 @@ cost_gold = 0
 cost_stone = 120
 mesh_primitive = "cylinder"
 mesh_color = Color(0.48, 0.47, 0.5, 1)
+category = "defensive"
 model_id = &"tower"
 footprint_radius = 1
 built_by = Array[StringName]([&"gatherers"])

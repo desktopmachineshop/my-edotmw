@@ -203,6 +203,20 @@ var _validated := false
 # terrain generation is explicitly out of M1's scope (D-022).
 var _passable := PackedByteArray()
 
+## Playtest fix: squad id -> destination cell INDEX, for an order
+## `_rebuild_curve` gave up on as unreachable. D-040's give-up logic
+## ("unreachable now is unreachable later") is only true for STATIC
+## terrain; a gate (D-076) is passability that changes at runtime, so a
+## squad ordered to the far side of a currently-CLOSED gate hit the same
+## give-up path and had its order silently cancelled forever, even once
+## the gate opened — the door "not working" was really an order that had
+## already been thrown away. `set_passable` retries every entry here
+## (see `_retry_deferred_orders`) instead of the squad waiting on nothing.
+## Cleared for a squad the moment it receives any FRESH order
+## (`_apply_move_order`), so a stale give-up can never override a player's
+## newer one.
+var _deferred_destination := {}
+
 
 func _init(p_space: TorusSpace = null, p_replicator: CurveReplicator = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -222,6 +236,27 @@ func set_passable(p: PackedByteArray) -> void:
 	# just went stale (D-040).
 	_fields.clear()
 	_pending_fields.clear()
+	_retry_deferred_orders()
+
+
+## Re-issue every order `_rebuild_curve` gave up on (see
+## `_deferred_destination`'s doc) now that passability has actually
+## changed — a gate opening is exactly the kind of change that can turn a
+## "permanently unreachable" verdict from ten ticks ago into a perfectly
+## normal walk. Duplicated and cleared up front, not iterated in place:
+## `order_move` below calls back into `_apply_move_order`, which erases a
+## squad's entry the moment it gets ANY fresh destination — including this
+## one — so mutating the live dict while walking it would skip entries.
+func _retry_deferred_orders() -> void:
+	if _deferred_destination.is_empty():
+		return
+	var retry := _deferred_destination.duplicate()
+	_deferred_destination.clear()
+	for squad in retry:
+		var id: int = squad
+		if id < 0 or id >= _cell.size() or alive_of(id) <= 0:
+			continue
+		order_move(id, space.from_index(int(retry[squad])))
 
 
 ## Tier-1 counterpart of `set_passable` (D-076) — same reasoning, scoped
@@ -865,6 +900,11 @@ func _apply_move_order(squad: int, destination: Vector2i, quantise := false) -> 
 	if _destination[squad] == dest_index:
 		return
 	_destination[squad] = dest_index
+	# A fresh order always supersedes whatever _rebuild_curve may have
+	# given up on earlier — see _deferred_destination's doc. Without this,
+	# a later gate opening could resurrect and re-issue an order the
+	# player had already replaced with a different one.
+	_deferred_destination.erase(squad)
 	_rebuild_curve(squad)
 
 
@@ -1146,19 +1186,27 @@ func _rebuild_curve(squad: int) -> void:
 			current = next
 
 	# If the field could not take the squad a single step, the destination
-	# is unreachable — walled off by water or mountains, which became
-	# possible the moment the server started feeding terrain passability
-	# into the sim. Give up on it by treating the current cell as the
-	# destination.
+	# is unreachable RIGHT NOW — walled off by water or mountains, or
+	# (D-076) by a closed gate. Give up on it by treating the current cell
+	# as the destination, exactly as before.
 	#
 	# Without this the squad re-paths EVERY TICK forever: its curve holds
 	# one keyframe, so `time >= curve.end_time()` is true immediately, and
 	# tick() rebuilds again. That is an invalidation storm of one (D-003),
 	# and it is not subtle — turning terrain on made curves_rebuilt jump
 	# from 265 to 2,011 over a 40-second load test and doubled per-squad
-	# cost, while every functional check stayed green. Terrain is static,
-	# so unreachable now is unreachable later; there is nothing to retry.
+	# cost, while every functional check stayed green. For pure terrain,
+	# unreachable now is unreachable later and there is nothing to retry —
+	# but a gate is passability that changes at runtime, and treating its
+	# "unreachable now" as forever was a real bug: an order given while a
+	# gate happened to be closed was cancelled and never revisited even
+	# once the gate opened. So the ORIGINAL destination is stashed before
+	# being overwritten — see _deferred_destination's doc — and
+	# `set_passable` retries it the moment passability actually changes.
+	# That retry is what keeps this cheap: nothing re-attempts on its own
+	# every tick, only when something could plausibly have unblocked it.
 	if curve.key_count() <= 1 and current != _destination[squad]:
+		_deferred_destination[squad] = _destination[squad]
 		_destination[squad] = current
 
 	_curves[squad] = curve

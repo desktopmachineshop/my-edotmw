@@ -1191,6 +1191,16 @@ var _building_ground_lift := {}
 ## primitive fallback (position is already its centre). Used to float the
 ## health bar just above the roof regardless of which kind of mesh this is.
 var _building_top_offset := {}
+## Playtest fix (D-076 follow-up): "wire_id_a|wire_id_b" (sorted) -> a small
+## vertical post MeshInstance3D bridging the visible gap where two adjacent
+## wall-family segments meet at anything other than a straight 180-degree
+## run. A single segment is a rigid straight prism (D-076) and cannot itself
+## point at two neighbours that aren't opposite each other, so the joint is
+## a separate piece rather than something either segment's own rotation can
+## fix. Entries are only ever added, matching `_building_nodes`'s own
+## never-freed-per-entry lifetime (see `_free_nodes` for the one place
+## everything is torn down together).
+var _wall_joint_nodes := {}
 ## wire id -> { "back": MeshInstance3D, "fill": MeshInstance3D,
 ## "fraction": float } — the health bar drawn OVER a damaged building.
 var _health_bars := {}
@@ -1199,6 +1209,17 @@ var _health_bars := {}
 const HEALTH_BAR_SIZE := Vector2(2.8, 0.34)
 var _founded := false
 var _selected_building := -1
+
+## Playtest fix: the build menu's roster outgrew a flat list of buttons
+## once D-076 added five wall-family defs to the three that existed
+## before, so it now shows BuildingDef.category's tiers one at a time.
+## "" means the category picker; otherwise one of BUILD_CATEGORIES' ids —
+## see `_squad_build_actions`. Reset whenever the SELECTION changes (not
+## every panel refresh, which runs every frame — see where
+## `_build_menu_selection_key` is compared) so browsing "Defensive" for
+## one squad doesn't silently carry over to an unrelated later selection.
+var _build_menu_category: String = ""
+var _build_menu_selection_key: String = ""
 
 ## Minimap (D-027 criterion 5). Wrap-awareness is free here in a way it
 ## is nowhere else in this project: the minimap IS the whole torus, so a
@@ -1325,7 +1346,13 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 	_build_actions_caption.visible = false
 	layer.add_child(_build_actions_caption)
 
-	for i in range(6):
+	# Playtest fix: sized to HudLayout.BUILD_ACTION_ROWS x ACTION_COLUMNS
+	# (was a hardcoded 6 — one row short of what even the OLD flat build
+	# list needed once D-076 added five wall-family defs, and PANEL_HEIGHT
+	# didn't have room for a second row anyway). Now tiered by category
+	# (see _squad_build_actions), so this is headroom over the actual
+	# per-screen worst case, not a tight fit.
+	for i in range(HudLayout.BUILD_ACTION_ROWS * HudLayout.ACTION_COLUMNS):
 		var button := _build_action_button(i, _on_build_action_pressed)
 		_build_action_buttons.append(button)
 		layer.add_child(button)
@@ -2612,6 +2639,18 @@ func _refresh_buildings() -> void:
 		# terrain tiles nine times and the things standing on it did not.
 		instance.position = world + _lattice_offset_for(world)
 
+		# Playtest fix, REVISED: an earlier pass here tilted a wall segment
+		# to follow the terrain between its own two ends. Rejected on
+		# review — a leaning wall reads as broken/toppling, not as
+		# following the ground, and a real wall's COURSES stay vertical
+		# even where the ground under them doesn't (they're built in
+		# level-ish steps, or the footing is simply cut into the slope).
+		# The actual fix is in the mesh itself: art/buildings/__init__.py
+		# extends every wall-family body well below y=0 (a buried skirt),
+		# so broken ground is hidden by depth instead of by leaning the
+		# whole segment. Nothing to do here any more — rotation stays
+		# whatever `instance.rotation.y`'s facing set at creation.
+
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
 
@@ -2660,6 +2699,221 @@ func _refresh_buildings() -> void:
 					MISSILE_IMPACT_HEIGHT)
 				_maybe_launch_missile(
 					"building:%d" % int(wire_id), launch, landing, def.attack_interval)
+
+	_refresh_wall_joints()
+
+
+## Playtest fix (D-076 follow-up): a vertical post at every wall-family-to-
+## wall-family adjacency, bridging the gap a single rigid segment's own
+## rotation can't close on its own whenever a run bends. A straight run's
+## two segments already meet with zero gap at the midpoint between their
+## cells (see the wall-length note on buildings/wall.tres etc.) because
+## each reaches exactly half the hex spacing from its own centre — but a
+## SINGLE `facing` can only ever point one segment at ONE neighbour, so a
+## corner, T, or 4-way junction leaves whichever other neighbour(s) it
+## connects to unaddressed by that segment's geometry. A post at the shared
+## midpoint fixes every angle at once instead of needing per-junction mesh
+## variants.
+##
+## O(buildings * 6) via a cell -> wire_id lookup, not a pairwise building x
+## building scan — the same shape as the standing "disk_offsets/bucket map
+## before distance()" rule elsewhere in this project (vision, combat,
+## production), just for the wall network instead of a radius scan.
+func _refresh_wall_joints() -> void:
+	if _state.space == null:
+		return
+	var by_cell := {}
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var def: BuildingDef = _building_defs.get(wire_id, null)
+		if def == null or def.footprint_radius != 0 or def.is_access_tower:
+			continue
+		by_cell[_state.space.from_index(int(info["cell"]))] = int(wire_id)
+
+	for cell in by_cell:
+		var wire_id: int = by_cell[cell]
+		for i in range(TorusSpace.DIRECTIONS.size()):
+			var neighbour_cell: Vector2i = _state.space.normalize(cell + TorusSpace.DIRECTIONS[i])
+			if not by_cell.has(neighbour_cell):
+				continue
+			var other_id: int = by_cell[neighbour_cell]
+			if other_id <= wire_id:
+				continue  # each unordered pair handled once
+			_update_wall_joint(wire_id, other_id, cell, neighbour_cell, i)
+
+
+## How many tread blocks a stair connector between two differently-tall
+## walkway segments gets. Fixed rather than scaled to the height
+## difference — the rig's children are allocated once and only resized/
+## hidden after, matching every other pooled-node pattern in this file
+## (health bars, action buttons).
+const WALL_STAIR_STEPS := 4
+## Below this height difference between two walkway tops, a stair would be
+## a cosmetic ripple, not a readable feature — the plain angle post (or
+## nothing, if the run is flush) is enough.
+const WALL_STAIR_THRESHOLD := 0.2
+
+
+## One joint RIG for the (a_id, b_id) pair — a corner post (angle gaps,
+## D-076 follow-up) plus a fixed pool of stair treads (walkway height
+## mismatches, playtest follow-up) — created once and thereafter only
+## moved/resized/hidden, the same never-freed-per-entry lifetime as
+## `_building_nodes` (see `_free_nodes` for the one place everything is
+## torn down together, on disconnect).
+##
+## `a_to_b_dir` is the exact hex-direction index (0-5) from `a_cell` to
+## `b_cell` — the caller already has it from the neighbour scan, so this
+## compares against each segment's stored `facing` directly instead of
+## re-deriving a direction from world-space positions.
+func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i,
+		a_to_b_dir: int) -> void:
+	var key := "%d|%d" % [a_id, b_id]
+	var rig: Node3D = _wall_joint_nodes.get(key, null)
+	if rig == null:
+		rig = Node3D.new()
+		add_child(rig)
+
+		var post_mesh := CylinderMesh.new()
+		# Radius bug (first pass): 0.42-0.5 only covers a junction where the
+		# two segments are nearly colinear. A segment's own box only has
+		# geometry along ITS ONE stored facing and that facing's opposite
+		# (D-076) — for a genuine bend, the neighbour sits along neither, so
+		# the segment's silhouette toward it is just the box's THIN side
+		# face, reaching barely past its half-thickness (0.5) from centre.
+		# A post has to reach past the midpoint all the way back to each
+		# segment's own CELL CENTRE to be guaranteed to overlap that box
+		# regardless of its facing — that distance is half the hex spacing
+		# (~0.866 at this map's hex_size). Sized with margin over that
+		# bound rather than tuned to look right on one screenshot.
+		post_mesh.top_radius = 0.85
+		post_mesh.bottom_radius = 0.95
+		post_mesh.height = 1.0
+		var post_material := StandardMaterial3D.new()
+		post_material.roughness = 0.9
+		var post := MeshInstance3D.new()
+		post.mesh = post_mesh
+		post.material_override = post_material
+		rig.add_child(post)
+
+		var steps: Array = []
+		for _i in range(WALL_STAIR_STEPS):
+			var step_mesh := BoxMesh.new()
+			var step_material := StandardMaterial3D.new()
+			step_material.roughness = 0.9
+			var step := MeshInstance3D.new()
+			step.mesh = step_mesh
+			step.material_override = step_material
+			step.visible = false
+			rig.add_child(step)
+			steps.append(step)
+
+		rig.set_meta("post", post)
+		rig.set_meta("steps", steps)
+		_wall_joint_nodes[key] = rig
+
+	var post: MeshInstance3D = rig.get_meta("post")
+	var steps: Array = rig.get_meta("steps")
+
+	var a_info: Dictionary = _state.buildings.get(a_id, {})
+	var b_info: Dictionary = _state.buildings.get(b_id, {})
+	var a_def: BuildingDef = _building_defs.get(a_id, null)
+	var b_def: BuildingDef = _building_defs.get(b_id, null)
+	if a_info.is_empty() or b_info.is_empty() or a_def == null or b_def == null \
+			or bool(a_info.get("destroyed", false)) or bool(b_info.get("destroyed", false)):
+		rig.visible = false
+		return
+	rig.visible = true
+
+	var a_progress := clampf(_derived_progress(a_id, a_info), 0.15, 1.0)
+	var b_progress := clampf(_derived_progress(b_id, b_info), 0.15, 1.0)
+	var progress := minf(a_progress, b_progress)
+
+	# The two segments join at the midpoint between their cells — exactly
+	# where a straight run's own two ends already meet (see the WALL_LENGTH
+	# note in art/buildings/__init__.py). world_delta rather than a raw
+	# position difference, so a junction across the torus seam still lands
+	# at the true midpoint instead of jumping a whole map.
+	var a_world := _state.space.to_world(a_cell)
+	var to_b := _state.space.world_delta(a_cell, b_cell)
+	var mid := a_world + to_b / 2.0
+	var a_ground := a_world.y
+	var b_ground := (a_world + to_b).y
+	if _state.terrain_sampler.is_valid():
+		a_ground = _state.terrain_sampler.call(a_world.x, a_world.z)
+		b_ground = _state.terrain_sampler.call(a_world.x + to_b.x, a_world.z + to_b.z)
+		mid.y = _state.terrain_sampler.call(mid.x, mid.z)
+
+	# --- the angle post: covers a horizontal gap, not a vertical one -----
+	#
+	# A segment's box already reaches flush to this neighbour with no gap
+	# if its own `facing` points straight along this connection, in either
+	# direction. Skip the post when BOTH sides are flush that way — a
+	# straight run already closes on its own, and a bump at every one of
+	# its junctions read as unwanted studding rather than a fix.
+	var opposite_dir := (a_to_b_dir + 3) % 6
+	var a_facing := int(a_info.get("facing", 0))
+	var b_facing := int(b_info.get("facing", 0))
+	var a_flush := a_facing == a_to_b_dir or a_facing == opposite_dir
+	var b_flush := b_facing == a_to_b_dir or b_facing == opposite_dir
+	var post_height := minf(a_def.mesh_size.y, b_def.mesh_size.y) * progress
+	if (a_flush and b_flush) or post_height <= 0.01:
+		post.visible = false
+	else:
+		post.visible = true
+		(post.mesh as CylinderMesh).height = post_height
+		post.position = mid + Vector3(0.0, post_height / 2.0, 0.0) + _lattice_offset_for(mid)
+		# Colour bug (first pass): 0.35 toward mesh_color is 65% OWNER
+		# colour, which reads as a glowing team-coloured spike jammed into
+		# an otherwise stone/timber wall. Every genuinely structural part
+		# of the authored models (corner posts, stakes, merlons, rails —
+		# see art/buildings) carries mask 0.0-0.12, i.e. little to no
+		# owner tint; this post is exactly that kind of part, not a
+		# banner, so it matches their convention instead of the gate's
+		# colour-as-a-status-cue one.
+		var owner_colour := _state.colour_of(int(a_info["owner"]))
+		(post.material_override as StandardMaterial3D).albedo_color = \
+			owner_colour.lerp(a_def.mesh_color, 0.9)
+
+	# --- the stair: covers a vertical gap between two walkway tops -------
+	#
+	# Blocks stay vertical (the tilt this replaced read as toppling, not
+	# as following the ground — see the note where it used to be built),
+	# so two garrison-tier segments on sloped ground can now sit at
+	# genuinely different absolute heights even on a straight, flush run.
+	# A run of small vertical blocks climbing between the two walkway tops
+	# reads as a real stair rather than either a floating ledge or a cliff
+	# face — each buried well below its own tread the same way the wall
+	# bodies themselves are (see SKIRT_DEPTH), so the run below it is
+	# never visibly hollow either.
+	var wants_stairs := a_def.walkable_top and b_def.walkable_top and progress >= 0.999
+	var a_top := a_ground + a_def.top_height
+	var b_top := b_ground + b_def.top_height
+	if wants_stairs and absf(a_top - b_top) > WALL_STAIR_THRESHOLD:
+		var run_len := to_b.length()
+		var dir := to_b / run_len if run_len > 0.0 else Vector3.FORWARD
+		var yaw := atan2(dir.x, dir.z)
+		var tread_depth := run_len / float(WALL_STAIR_STEPS)
+		var base_y := minf(a_ground, b_ground) - 1.0
+		for i in range(WALL_STAIR_STEPS):
+			var t_hi := float(i + 1) / float(WALL_STAIR_STEPS)
+			var t_mid := (float(i) + 0.5) / float(WALL_STAIR_STEPS)
+			var tread_y := lerpf(a_top, b_top, t_hi)
+			var step_height := maxf(0.2, tread_y - base_y)
+			var step: MeshInstance3D = steps[i]
+			step.visible = true
+			(step.mesh as BoxMesh).size = Vector3(1.0, step_height, tread_depth * 1.05)
+			var pos := a_world + dir * (run_len * t_mid)
+			pos.y = base_y + step_height / 2.0
+			step.position = pos + _lattice_offset_for(pos)
+			step.rotation.y = yaw
+			var owner_colour := _state.colour_of(int(a_info["owner"]))
+			(step.material_override as StandardMaterial3D).albedo_color = \
+				owner_colour.lerp(a_def.mesh_color, 0.9)
+	else:
+		for step in steps:
+			(step as MeshInstance3D).visible = false
 
 
 ## Health, over the building itself.
@@ -2845,7 +3099,15 @@ func _update_selection_panel() -> void:
 			_set_bar(_progress_bar_back, _progress_bar_fill, progress, HudTheme.ACCENT_BRIGHT)
 		else:
 			actions = _building_actions(info, def)
-			_show_production(info)
+			# Playtest fix: this used to call _show_production
+			# unconditionally, so a wall, gate or tower — nothing in
+			# `produces`, nothing it could EVER train — showed "Idle" and
+			# an empty queue caption anyway, like it was a barracks
+			# between orders. A building that cannot produce has no
+			# production state to report at all, so it gets none, rather
+			# than a permanently-empty one.
+			if not def.produces.is_empty():
+				_show_production(info)
 			# What the strip shows for a squad selection (each entry's own
 			# name and a fraction bar) does not fit what a building offers
 			# (a name and a COST) — same pool of Controls, different fields
@@ -2884,6 +3146,21 @@ func _update_selection_panel() -> void:
 	_selection_detail.text = "%d soldiers" % strength
 
 	_show_chips(counts)
+
+	# The build menu's category drill-down (playtest fix, see
+	# _build_menu_category's doc) is client state that outlives one panel
+	# refresh, so a NEW selection has to reset it explicitly — otherwise
+	# selecting a fresh squad after browsing "Defensive" would silently
+	# keep showing "Defensive" for it too. Keyed off a SORTED copy of
+	# `_selected`: the array's own order can change release to release
+	# (a squad dying and the array compacting) without the selection
+	# meaning anything different.
+	var sorted_selection := _selected.duplicate()
+	sorted_selection.sort()
+	var selection_key := str(sorted_selection)
+	if selection_key != _build_menu_selection_key:
+		_build_menu_selection_key = selection_key
+		_build_menu_category = ""
 
 	# Actions offered are the ones EVERY selected squad can do. Offering a
 	# build button because one founder is in the box would produce an
@@ -3190,21 +3467,58 @@ func _squad_control_actions(def_id: StringName) -> Array:
 	return out
 
 
+## Category display order and labels for the build menu (playtest fix) —
+## fixed rather than derived from whichever defs happen to exist, so the
+## menu's shape does not reshuffle depending on what a civ ships.
+const BUILD_CATEGORIES := [
+	{"id": "civic", "label": "Civic"},
+	{"id": "military", "label": "Military"},
+	{"id": "defensive", "label": "Defensive"},
+]
+
+
 ## Building SQUADS offer, from `BuildingDef.built_by` — founders may raise
 ## a town hall and nothing else (D-031), gatherers and line infantry
 ## build nothing at all, so this comes back empty for them and the build
 ## segment simply does not show (see `_update_selection_panel`). The
 ## actions column's BOTTOM segment.
+##
+## Playtest fix, tiered: a flat list of every buildable def stopped fitting
+## the button pool once D-076 added five wall-family defs to the three
+## that existed before (six silently meant "the rest are unreachable").
+## `_build_menu_category` empty returns one button per CATEGORY that has
+## at least one def this squad can build; set, it returns that category's
+## defs plus a Back button. `BuildingSim.can_build` still gates both
+## levels, so a category with nothing this squad can build never appears,
+## and drilling into one never offers a def this squad cannot build.
 func _squad_build_actions(def_id: StringName) -> Array:
-	var out := []
+	var by_category := {}
 	for building in BuildingSim.all_defs():
-		if BuildingSim.can_build(building, def_id):
-			out.append({
-				"label": "Build %s\n%s" % [building.display_name, _cost_text(
-					building.cost_food, building.cost_wood,
-					building.cost_gold, building.cost_stone)],
-				"kind": "build", "id": building.id,
-			})
+		if not BuildingSim.can_build(building, def_id):
+			continue
+		var category := building.category
+		if not by_category.has(category):
+			by_category[category] = []
+		(by_category[category] as Array).append(building)
+
+	if _build_menu_category == "" or not by_category.has(_build_menu_category):
+		var out := []
+		for entry in BUILD_CATEGORIES:
+			if by_category.has(entry["id"]):
+				out.append({
+					"label": String(entry["label"]),
+					"kind": "build_category", "id": entry["id"],
+				})
+		return out
+
+	var out := [{"label": "< Back", "kind": "build_category", "id": ""}]
+	for building in by_category[_build_menu_category]:
+		out.append({
+			"label": "Build %s\n%s" % [building.display_name, _cost_text(
+				building.cost_food, building.cost_wood,
+				building.cost_gold, building.cost_stone)],
+			"kind": "build", "id": building.id,
+		})
 	return out
 
 
@@ -3295,7 +3609,15 @@ func _set_build_actions(actions: Array) -> void:
 func _on_build_action_pressed(index: int) -> void:
 	if index < 0 or index >= _build_actions.size():
 		return
-	_build_selected(String(_build_actions[index]["id"]))
+	var action: Dictionary = _build_actions[index]
+	if String(action["kind"]) == "build_category":
+		# Drill into a category, or Back out of one (empty id) — see
+		# _build_menu_category's doc. Refreshed immediately rather than
+		# waiting for next frame's automatic pass so a click feels instant.
+		_build_menu_category = String(action["id"])
+		_update_selection_panel()
+		return
+	_build_selected(String(action["id"]))
 
 
 ## Put every selected squad into a formation (D-058).
@@ -5191,6 +5513,7 @@ func _teardown_match() -> void:
 	print("client: match over — back to the lobby")
 	_free_nodes(_squad_nodes)
 	_free_nodes(_building_nodes)
+	_free_nodes(_wall_joint_nodes)
 	_free_nodes(_health_bars)
 	_free_nodes(_node_meshes)
 	_free_nodes(_selection_discs)

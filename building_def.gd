@@ -85,6 +85,14 @@ class_name BuildingDef
 @export_enum("box", "cylinder", "capsule", "hull") var mesh_primitive: String = "box"
 @export var mesh_color: Color = Color(0.7, 0.68, 0.6)
 
+## Which tier of the build menu this belongs to (playtest fix): the roster
+## outgrew a single flat list of buttons once D-076 added five wall-family
+## defs, so the menu groups by this instead of showing every buildable def
+## at once. Data-driven per D-010, same reason `mesh_primitive` is a string
+## and not a per-building branch — client.gd names no building here, only
+## this field.
+@export_enum("civic", "military", "defensive") var category: String = "civic"
+
 ## Which authored model this building wears (D-064). Schema addition
 ## 2026-08-09 (M7), mirroring `UnitDef.model_id`.
 ##
