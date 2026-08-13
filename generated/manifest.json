@@ -7,8 +7,8 @@
     },
     "garrison_gate": {
       "model": "generated/models/garrison_gate.glb",
-      "triangles": 192,
-      "vertices": 576
+      "triangles": 168,
+      "vertices": 504
     },
     "garrison_wall": {
       "model": "generated/models/garrison_wall.glb",
@@ -46,7 +46,7 @@
       "vertices": 504
     }
   },
-  "source_hash": "96d150edebd72121277559b1051e0f97da5cb36ae8cd853ab72dce2b80f5f39e",
+  "source_hash": "9b565fef6296188ed9e0e2f141b0401faca0d0e7b0895df56ca4fc4274bfd3e6",
   "terrain": {
     "biomes": [
       "deep_water",

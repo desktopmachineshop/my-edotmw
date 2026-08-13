@@ -19,6 +19,7 @@ cost_gold = 0
 cost_stone = 0
 mesh_primitive = "box"
 mesh_color = Color(0.55, 0.42, 0.3, 1)
+category = "military"
 model_id = &"barracks"
 footprint_radius = 1
 built_by = Array[StringName]([&"gatherers"])

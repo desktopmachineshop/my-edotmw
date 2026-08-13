@@ -58,18 +58,12 @@ const MAX_SCALE := 2.0
 const MARGIN := 12.0
 const BAR_HEIGHT := 38.0
 
-## The command panel: a WIDE bar spanning (almost) the window, not a tall
-## corner card. Reworked from a 430x300 corner panel to match the chosen
-## reference design ("chips ... in the live view") — a selection reads as
-## one strip: who is selected, what they are made of (as chips), and what
-## you can do with them, left to right rather than stacked top to bottom.
-##
-## Tall enough for the actions column's two stacked segments (see
-## `BUILD_ACTIONS_Y`) — grown from the single-grid version once formation/
-## behaviour and building were split into their own segments, on request:
-## a squad in a hurry could otherwise not tell "Stop" from "Build
-## Barracks" without reading every label.
-const PANEL_HEIGHT := 176.0
+## PANEL_HEIGHT is declared further down, after BUILD_ACTION_ROWS — see
+## there. It genuinely depends on that (and on ACTION_BUTTON/ACTION_GAP/
+## PANEL_PAD below), and GDScript resolves top-level consts in declaration
+## order, so it cannot live up here next to the rest of the panel's
+## "top of file" geometry without forward-referencing something that
+## doesn't exist yet.
 
 ## Inner geometry, relative to the panel's top-left corner.
 const PANEL_PAD := 12.0
@@ -123,6 +117,34 @@ const BUILD_DIVIDER_Y := ACTIONS_Y \
 	+ float(ACTION_CONTROL_ROWS) * (ACTION_BUTTON.y + ACTION_GAP.y) + 4.0
 const BUILD_CAPTION_Y := BUILD_DIVIDER_Y + 8.0
 const BUILD_ACTIONS_Y := BUILD_CAPTION_Y + 18.0
+
+## How many rows the build segment's own pooled buttons (client.gd's
+## `_build_action_buttons`) are sized for — `PANEL_HEIGHT` is derived from
+## this, not the other way around, so the two cannot drift apart the way
+## PANEL_HEIGHT drifted from the true 2-row height before this fix. The
+## build menu is tiered by category now (BuildingDef.category), so the
+## worst case in one screen is one category's defs plus a Back button —
+## currently 6 (5 defensive + Back) — with a full row of slack on top.
+const BUILD_ACTION_ROWS := 3
+
+## The command panel: a WIDE bar spanning (almost) the window, not a tall
+## corner card. Reworked from a 430x300 corner panel to match the chosen
+## reference design ("chips ... in the live view") — a selection reads as
+## one strip: who is selected, what they are made of (as chips), and what
+## you can do with them, left to right rather than stacked top to bottom.
+##
+## Tall enough for the actions column's two stacked segments: formation/
+## behaviour (`ACTION_CONTROL_ROWS`) and, below the divider, build
+## (`BUILD_ACTION_ROWS`).
+##
+## Playtest fix: this used to be a hand-picked 176 that only ever properly
+## fit ONE row of build buttons — the divider math already put a second
+## row's bottom edge past it. Invisible while the roster fit one row of
+## three, and it did until D-076 added five wall-family defs; computed
+## from `BUILD_ACTION_ROWS` now so the two cannot drift apart the same way
+## again.
+const PANEL_HEIGHT := BUILD_ACTIONS_Y + float(BUILD_ACTION_ROWS) * ACTION_BUTTON.y \
+	+ float(BUILD_ACTION_ROWS - 1) * ACTION_GAP.y + PANEL_PAD
 
 ## One resource readout every this many pixels, across the top bar.
 const RESOURCE_PITCH := 168.0

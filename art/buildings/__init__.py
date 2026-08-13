@@ -22,6 +22,30 @@ from dataclasses import dataclass
 
 from ..lib.geom import Model, box, prism, rotate_geometry
 
+# D-076 amendment: the world's neighbour-to-neighbour hex spacing at the
+# game's one shipped hex_size (both maps/*.tres pin hex_size = 1.0, and
+# every other authored dimension in this file already assumes it rather
+# than reading it from anywhere). A wall/gate segment's `length` used to be
+# 2.4 — longer than the ~1.73 gap between adjacent cell centres — so two
+# segments placed on neighbouring cells overlapped by close to 0.7 units.
+# Matching it here means each segment reaches exactly half the distance to
+# its neighbour, so a straight run's segments meet with (deliberately) a
+# hair of overlap rather than a gap or a real one.
+_HEX_SPACING = 1.7320508075688772  # sqrt(3) * hex_size, hex_size == 1.0
+WALL_LENGTH = _HEX_SPACING * 1.02
+
+# Playtest fix: a wall segment used to TILT to follow sloped terrain — reverted
+# (client.gd no longer touches rotation.z at all) because a leaning wall reads
+# as toppling, not as following the ground; a real wall's courses stay
+# vertical even where its footing doesn't. The actual fix is depth, here: every
+# ground-touching part of a wall/gate/tower reaches this far below y=0, so
+# broken terrain buries the extra length instead of exposing a gap under it.
+# height_scale (terrain_gen.gd) is 15.0; this is not trying to survive the
+# single worst possible cell-to-cell jump in that range, only whatever the
+# game's actual (smooth, low-frequency) noise plausibly produces under one
+# wall segment's own small footprint.
+SKIRT_DEPTH = 3.0
+
 
 @dataclass
 class BuildingParams:
@@ -128,6 +152,26 @@ def build(name: str, p: BuildingParams) -> Model:
     return m
 
 
+def _buried(size: tuple[float, float, float], centre: tuple[float, float, float],
+            taper: float = 1.0, taper_z: float | None = None):
+    """`box()`, extended SKIRT_DEPTH below y=0 (playtest fix).
+
+    For a part whose bottom face IS the ground contact — a stake, a slat, a
+    post, a solid rampart body. Its silhouette from y=0 up is unchanged
+    (the extra depth is added by lowering the centre exactly as much as the
+    height grows), so a flat-ground render looks identical to before; on
+    broken ground the buried extra length is what a gap would have shown
+    through otherwise. Never use this for an ELEVATED part (a walkway,
+    rail, merlon — nothing under those is meant to touch the ground) or for
+    the animated gate leaf (burying it would carry a chunk of "underground"
+    geometry up into view the moment it swings open).
+    """
+    sx, sy, sz = size
+    cx, cy, cz = centre
+    return box((sx, sy + SKIRT_DEPTH, sz), centre=(cx, cy - SKIRT_DEPTH / 2.0, cz),
+               taper=taper, taper_z=taper_z)
+
+
 def _add_merlons(m: Model, p: BuildingParams, top_y: float, half_t: float,
                   half: float, count: int, colour=None) -> None:
     """Battlements along both long edges of a walkway top (D-076).
@@ -147,20 +191,38 @@ def _add_merlons(m: Model, p: BuildingParams, top_y: float, half_t: float,
                   rgb=rgb, mask=0.0)
 
 
+def _add_gate_leaf(m: Model, width: float, height: float, thickness: float,
+                    centre_y: float, rgb, mask: float) -> None:
+    """A hinged door leaf (playtest fix, D-076 amendment).
+
+    Named exactly "gate_leaf" and given a PIVOT at its hinge edge — that
+    pivot is what `bake.py`'s `door_hinge_uv` looks for to tag this part's
+    vertices in the mesh's otherwise-unused UV1 channel (buildings carry no
+    VAT, D-064, so it costs nothing else). `building_static.gdshader` reads
+    the tag to swing the leaf open about that same edge, driven by the
+    `gate_open` uniform instead of TIME the way a soldier's clip is. Every
+    OTHER part in this file is genuinely rigid for its building's whole
+    life, so this is the one place a building needs a pivot at all.
+    """
+    hinge_x = -width / 2.0
+    m.add("gate_leaf",
+          box((width, height, thickness), centre=(0.0, centre_y, 0.0)),
+          rgb=rgb, mask=mask, pivot=(hinge_x, centre_y, 0.0))
+
+
 def _add_stake_door(m: Model, p: BuildingParams) -> None:
-    """A gate's door assembly: two frame posts, a lintel and a plank leaf,
-    filling the gap the cheap-tier stake row leaves at its centre."""
+    """A gate's door assembly: two frame posts, a lintel and a hinged plank
+    leaf, filling the gap the cheap-tier stake row leaves at its centre."""
     frame_h = p.height + 0.1
     for sx in (-1.0, 1.0):
         m.add(f"gate_post_{'w' if sx < 0 else 'e'}",
-              box((0.2, frame_h, 0.2), centre=(sx * 0.4, frame_h / 2.0, 0.0)),
+              _buried((0.2, frame_h, 0.2), (sx * 0.4, frame_h / 2.0, 0.0)),
               rgb=p.timber, mask=0.0)
     m.add("gate_lintel",
           box((1.0, 0.16, 0.22), centre=(0.0, frame_h - 0.08, 0.0)),
           rgb=p.timber, mask=0.0)
-    m.add("gate_leaf",
-          box((0.62, p.height * 0.82, 0.1), centre=(0.0, p.height * 0.41, 0.0)),
-          rgb=p.timber, mask=0.05)
+    _add_gate_leaf(m, width=0.62, height=p.height * 0.82, thickness=0.1,
+                   centre_y=p.height * 0.41, rgb=p.timber, mask=0.05)
 
 
 def _build_wall(name: str, p: BuildingParams) -> Model:
@@ -185,8 +247,7 @@ def _build_wall(name: str, p: BuildingParams) -> Model:
                 continue  # left open for the door assembly below
             x = (i - centre_gap) / centre_gap * half * 0.92
             m.add(f"stake_{i}",
-                  box((0.16, p.height, 0.16), centre=(x, p.height / 2.0, 0.0),
-                      taper=0.25),
+                  _buried((0.16, p.height, 0.16), (x, p.height / 2.0, 0.0), taper=0.25),
                   rgb=p.timber, mask=0.0)
         for j, ry in enumerate((p.height * 0.55, p.height * 0.88)):
             m.add(f"rail_{j}",
@@ -200,8 +261,8 @@ def _build_wall(name: str, p: BuildingParams) -> Model:
         # axis (mesh_size.z) wide enough for two soldiers abreast — that's
         # a BuildingDef/gameplay fact, this only has to render it.
         body_h = p.height
-        m.add("body", box((p.length, body_h, p.thickness),
-                           centre=(0.0, body_h / 2.0, 0.0), taper=0.97),
+        m.add("body", _buried((p.length, body_h, p.thickness),
+                               (0.0, body_h / 2.0, 0.0), taper=0.97),
               rgb=p.stone, mask=0.12)
         m.add("walkway", box((p.length * 0.98, 0.14, p.thickness * 0.98),
                               centre=(0.0, body_h + 0.07, 0.0)),
@@ -210,27 +271,38 @@ def _build_wall(name: str, p: BuildingParams) -> Model:
 
     elif p.style == "timber_slats":
         # Garrison gate: the same walkway/parapet silhouette as the stone
-        # rampart, built from vertical planks instead — material is what
-        # marks this as the gate, not a door-shaped hole in the wall.
+        # rampart, built from vertical planks instead. Playtest fix: this
+        # used to draw every slat regardless of `is_gate`, so a garrison
+        # gate had no door-shaped opening at all — material was the ONLY
+        # cue, and nothing ever visibly passed through it. A gate now
+        # leaves the same kind of gap the cheap "stake" tier always did,
+        # filled by a real hinged leaf (`_add_gate_leaf`).
         body_h = p.height
         slats = 7
         span = p.length * 0.94
         slat_w = span / slats
+        centre_gap = (slats - 1) / 2.0
         for i in range(slats):
-            x = (i - (slats - 1) / 2.0) * slat_w
+            if p.is_gate and abs(i - centre_gap) < 1.6:
+                continue  # left open for the hinged leaf below
+            x = (i - centre_gap) * slat_w
             m.add(f"slat_{i}",
-                  box((slat_w * 0.82, body_h, p.thickness * 0.9),
-                      centre=(x, body_h / 2.0, 0.0)),
+                  _buried((slat_w * 0.82, body_h, p.thickness * 0.9),
+                          (x, body_h / 2.0, 0.0)),
                   rgb=p.timber, mask=0.12)
         for sx in (-1.0, 1.0):
             m.add(f"post_{'w' if sx < 0 else 'e'}",
-                  box((0.18, body_h + 0.08, 0.18),
-                      centre=(sx * (half - 0.09), (body_h + 0.08) / 2.0, 0.0)),
+                  _buried((0.18, body_h + 0.08, 0.18),
+                          (sx * (half - 0.09), (body_h + 0.08) / 2.0, 0.0)),
                   rgb=p.timber, mask=0.0)
         m.add("walkway", box((p.length * 0.98, 0.14, p.thickness * 0.98),
                               centre=(0.0, body_h + 0.07, 0.0)),
               rgb=p.timber, mask=0.0)
         _add_merlons(m, p, body_h + 0.14, half_t, half, count=3, colour=p.timber)
+        if p.is_gate:
+            _add_gate_leaf(m, width=slat_w * 3.0, height=body_h * 0.92,
+                           thickness=p.thickness * 0.82, centre_y=body_h * 0.46,
+                           rgb=p.timber, mask=0.08)
 
     return m
 
@@ -248,8 +320,8 @@ def _build_tower_access(name: str, p: BuildingParams) -> Model:
     half = p.footprint / 2.0
     body_h = p.height
 
-    m.add("body", box((p.footprint, body_h, p.footprint),
-                       centre=(0.0, body_h / 2.0, 0.0), taper=0.95),
+    m.add("body", _buried((p.footprint, body_h, p.footprint),
+                           (0.0, body_h / 2.0, 0.0), taper=0.95),
           rgb=p.stone, mask=0.12)
     m.add("walkway", box((p.footprint * 0.98, 0.14, p.footprint * 0.98),
                           centre=(0.0, body_h + 0.07, 0.0)),
@@ -311,12 +383,12 @@ ROSTER: dict[str, BuildingParams] = {
     #
     # Cheap tier: a wooden stake fence — a pure blocker, no walkway.
     "wall": BuildingParams(
-        shape="wall", style="stake", length=2.4, thickness=1.0, height=1.95,
+        shape="wall", style="stake", length=WALL_LENGTH, thickness=1.0, height=1.95,
         timber=(0.38, 0.27, 0.16),
     ),
     "gate": BuildingParams(
         shape="wall", style="stake", is_gate=True,
-        length=2.4, thickness=1.0, height=1.95,
+        length=WALL_LENGTH, thickness=1.0, height=1.95,
         timber=(0.38, 0.27, 0.16),
     ),
 
@@ -326,14 +398,15 @@ ROSTER: dict[str, BuildingParams] = {
     # not float above or sink into it.
     "garrison_wall": BuildingParams(
         shape="wall", style="stone", walkway=True,
-        length=2.4, thickness=1.0, height=2.86,
+        length=WALL_LENGTH, thickness=1.0, height=2.86,
         stone=(0.58, 0.58, 0.56),
     ),
     # Same silhouette family as garrison_wall, wood instead of stone — the
-    # gate is marked by material, not by a gap in the rampart.
+    # gate is marked by material AND, since the playtest fix below, a real
+    # hinged leaf rather than a gap in the rampart alone.
     "garrison_gate": BuildingParams(
         shape="wall", style="timber_slats", is_gate=True, walkway=True,
-        length=2.4, thickness=1.0, height=2.86,
+        length=WALL_LENGTH, thickness=1.0, height=2.86,
         timber=(0.42, 0.30, 0.19),
     ),
 
