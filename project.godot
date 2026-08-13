@@ -12,6 +12,13 @@ run/main_scene=""
 
 [display]
 
+; Off, so a `Window` node (the sandbox dev-tools panel) opens as a real,
+; separate native OS window instead of an embedded sub-viewport drawn on
+; top of the main game window — Godot's own default is embedded, which is
+; exactly the "still inside the main window" behaviour this was added to
+; fix.
+window/subwindows/embed_subwindows=false
+
 ; Godot's own default (1152x648) is already SMALLER than HudLayout's
 ; 1280x720 reference size, so a fresh launch started at the HUD's scale
 ; floor before a player ever touched the window — reported as the UI

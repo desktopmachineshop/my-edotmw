@@ -58,6 +58,32 @@ var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 ## versus automatic, only who it currently is.
 var _forced_target := PackedInt32Array()
 
+# --- gates and the wall-top access tower (D-076) ----------------------
+
+const GATE_MODE_MANUAL := 0
+const GATE_MODE_AUTO := 1
+
+## Whether a gate is currently passable. Meaningful only when
+## `def.is_gate`; every non-gate building carries a harmless 0 here and is
+## never read through this array (blocking_cells() below only consults it
+## for gates).
+var _gate_open := PackedByteArray()
+
+## GATE_MODE_MANUAL or GATE_MODE_AUTO. New gates start in auto mode — the
+## ergonomic default, switchable per-building from the selection HUD.
+var _gate_mode := PackedByteArray()
+
+## Which hex side (an index into `TorusSpace.DIRECTIONS`, 0-5) THIS
+## building faces, chosen at placement and rotatable in the placement
+## ghost before confirming. Stored per INSTANCE, not on the shared
+## `BuildingDef` — a def is one Resource per archetype, so a per-placement
+## choice like this can't live there (see `BuildingDef.is_access_tower`'s
+## doc, which explains it for the one def that also gives facing
+## mechanical meaning). Every building has one, defaulting to 0 (east) —
+## for most buildings this is purely cosmetic mesh rotation; for an
+## access tower it is also the door (`door_cell_of`).
+var _facing := PackedInt32Array()
+
 # Ids whose replicated state changed and have not been sent yet.
 var _dirty := {}
 
@@ -141,8 +167,11 @@ func building_count() -> int:
 ## `builder` is the squad that founded this, or -1. Recorded because
 ## founders are CONSUMED by the town they found (D-031): the founding
 ## party becomes the settlement rather than wandering off from it.
+## `facing` is which of `TorusSpace.DIRECTIONS`' 6 sides this instance
+## faces (0 if unspecified) — cosmetic mesh rotation for most buildings,
+## and also the door for an access tower (D-076).
 func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
-		builder: int = -1) -> int:
+		builder: int = -1, facing: int = 0) -> int:
 	var id := _cell.size()
 	_builder.append(builder)
 	_rally.append(-1)
@@ -154,6 +183,9 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 	_destroyed.append(0)
 	_last_attack_tick.append(-1)
 	_forced_target.append(-1)
+	_gate_open.append(0)
+	_gate_mode.append(GATE_MODE_AUTO)
+	_facing.append(posmod(facing, 6))
 	return id
 
 
@@ -176,6 +208,131 @@ func forced_target_of(building: int) -> int:
 
 func set_forced_target(building: int, target: int) -> void:
 	_forced_target[building] = target
+
+
+func is_gate_open(building: int) -> bool:
+	return _gate_open[building] == 1
+
+
+## Flips a gate's passable state and marks it dirty for replication. Does
+## NOT itself refresh SquadSim's passability — the caller (server.gd) does
+## that once, after deciding the new state, the same way it already does
+## after any other building-set change.
+func set_gate_open(building: int, open: bool) -> void:
+	var value := 1 if open else 0
+	if _gate_open[building] == value:
+		return
+	_gate_open[building] = value
+	_dirty[building] = true
+
+
+func gate_mode(building: int) -> int:
+	return _gate_mode[building]
+
+
+func set_gate_mode(building: int, mode: int) -> void:
+	if _gate_mode[building] == mode:
+		return
+	_gate_mode[building] = mode
+	_dirty[building] = true
+
+
+## Which way this building's mesh should face when rendered (0-5, an index
+## into `TorusSpace.DIRECTIONS`) — cosmetic for most buildings, and also
+## the door direction for an access tower. Always a real value, never -1;
+## see `access_direction_of` for the tower-only "does this door exist"
+## question.
+func facing_of(building: int) -> int:
+	return _facing[building]
+
+
+## The chosen door facing for an access tower, or -1 if `building` is not
+## one — `is_access_tower` is what gives `facing_of`'s value door meaning
+## at all, so this stays a separate, narrower question from that one.
+func access_direction_of(building: int) -> int:
+	return _facing[building] if _defs[building].is_access_tower else -1
+
+
+## The chosen door facing for a living access-tower standing on `cell`
+## (a cell INDEX, not a Vector2i), or -1 if there is none — no tower
+## there, or the building there isn't an access tower (D-076). Linear
+## scan, same shape and same justification as `building_at`: orders of
+## magnitude fewer buildings than cells.
+func access_direction_at(cell: int) -> int:
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0 and _cell[i] == cell and _defs[i].is_access_tower:
+			return _facing[i]
+	return -1
+
+
+## Cells a LIVING building currently blocks GROUND movement through
+## (D-076). Differs from occupied_cells() only for an open gate: the gate
+## still stands there (still occupies its cell for placement/combat/
+## occupied_cells() purposes), but a squad can walk through it while it is
+## open, so its cell is excluded here even though occupied_cells() still
+## reports it. server._refresh_passability() reads this, not
+## occupied_cells(), to build the ground-passable array.
+func blocking_cells() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for i in range(_cell.size()):
+		if _destroyed[i] == 1:
+			continue
+		if _defs[i].is_gate and _gate_open[i] == 1:
+			continue
+		out.append(_cell[i])
+	return out
+
+
+## Cells belonging to a complete, living, `walkable_top` building — the
+## tier-1 (wall-top) passable network (D-076). A destroyed or still-under-
+## construction structure contributes nothing: you cannot stand on rubble
+## or scaffolding.
+func walkable_top_cells() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for i in range(_cell.size()):
+		if _destroyed[i] == 0 and _progress[i] >= 1.0 and _defs[i].walkable_top:
+			out.append(_cell[i])
+	return out
+
+
+## Whether `cell` (a cell INDEX) is currently part of the tier-1 walkable
+## network (D-076) — a single-cell check for order-time inference, where
+## allocating the whole `walkable_top_cells()` array would be wasted work.
+func is_walkable_top_cell(cell: int) -> bool:
+	for i in range(_cell.size()):
+		if _cell[i] == cell and _destroyed[i] == 0 and _progress[i] >= 1.0 and _defs[i].walkable_top:
+			return true
+	return false
+
+
+## The GROUND cell (a cell index) that must be occupied to climb onto or
+## descend from this access tower's tier-1 cell, or -1 if `building` is
+## not a living, complete access tower with a door direction set (D-076).
+## The tower's OWN cell is always part of `walkable_top_cells()` too
+## (`is_access_tower` implies `walkable_top`), so the door cell is the
+## single ground-side entry point into the network — never any other cell
+## adjacent to any wall segment.
+func door_cell_of(building: int) -> int:
+	if building < 0 or building >= _cell.size():
+		return -1
+	if _destroyed[building] == 1 or _progress[building] < 1.0:
+		return -1
+	var def := _defs[building]
+	if not def.is_access_tower:
+		return -1
+	return space.neighbor_index(_cell[building], _facing[building])
+
+
+## The access tower whose door cell is `cell` (a cell index), or -1 if
+## none does (D-076) — the single question climbing needs answered: "is
+## the squad standing on some tower's one door cell right now, and if so
+## which tower." Linear scan, same shape and justification as
+## `building_at`: orders of magnitude fewer buildings than cells.
+func access_tower_at_door(cell: int) -> int:
+	for i in range(_cell.size()):
+		if door_cell_of(i) == cell:
+			return i
+	return -1
 
 
 ## Local id -> the id this building is known by anywhere a squad id could
@@ -213,11 +370,15 @@ func can_produce(building: int, archetype: StringName) -> bool:
 ## Queue a unit. The CALLER has already taken the payment and checked the
 ## squad cap — this only records what was bought, so there is one place
 ## that decides affordability rather than two that can disagree.
-func enqueue(building: int, def: UnitDef) -> void:
+## `instant` (sandbox's instant_build, dev testing only): queues at a
+## near-zero remaining time instead of `def.build_time`, so
+## `advance_production` finishes it on the very next call rather than
+## needing a separate same-tick completion path of its own.
+func enqueue(building: int, def: UnitDef, instant: bool = false) -> void:
 	if not _queues.has(building):
 		_queues[building] = []
 	(_queues[building] as Array).append({
-		"def_id": def.id, "remaining": maxf(def.build_time, 0.001),
+		"def_id": def.id, "remaining": 0.001 if instant else maxf(def.build_time, 0.001),
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.
@@ -299,6 +460,15 @@ func info_entries(ids: Array) -> Array:
 			"queue": queued_ids,
 			# So the client can draw where troops will muster.
 			"rally": space.index(rally_of(id)),
+			# D-076. Harmless defaults (false/MANUAL) on every non-gate
+			# building — sent uniformly rather than conditionally, matching
+			# how other building-specific fields already ride along.
+			"gate_open": _gate_open[id] == 1,
+			"gate_mode": _gate_mode[id],
+			# D-076 amendment: every building carries a facing now, not
+			# just the access tower's door — the client needs it to render
+			# the same rotation the player chose at placement.
+			"facing": _facing[id],
 		})
 	return out
 

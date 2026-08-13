@@ -75,8 +75,20 @@ func rebuild(sim: SquadSim, buildings: BuildingSim = null) -> void:
 		if sim.alive_of(squad) <= 0:
 			continue
 		var def := sim.def_of(squad)
-		if def != null:
-			_stamp(sim.space, _group_of(sim.owner_of(squad)), sim.cell_index_of(squad), def.vision_range)
+		if def == null:
+			continue
+		# D-076: a squad standing at tier 1 sees farther, from whatever
+		# structure it is standing on — purely additive, since Vision's
+		# per-cell coverage has no concept of tier or elevation otherwise
+		# (radius-only, per this file's own header).
+		var vision_range := def.vision_range
+		if buildings != null and sim.tier_of(squad) == 1:
+			var standing_on := buildings.building_at(sim.cell_of(squad))
+			if standing_on >= 0:
+				var top_def := buildings.def_of(standing_on)
+				if top_def != null:
+					vision_range += top_def.top_vision_bonus
+		_stamp(sim.space, _group_of(sim.owner_of(squad)), sim.cell_index_of(squad), vision_range)
 
 	# Buildings see too (D-029). Coverage is about CELLS and does not care
 	# what put a cell in it, so they stamp into the same per-player field

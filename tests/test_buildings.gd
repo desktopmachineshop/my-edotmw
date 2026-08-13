@@ -949,3 +949,309 @@ func test_the_claim_is_data_not_a_constant() -> void:
 	assert_gt(hall.no_build_radius, tower.no_build_radius,
 		"a town centre should claim more ground than a tower — if these are equal, "
 		+ "the radius is behaving like one global constant")
+
+
+# --- walls, gates and the wall-top access point (D-076) -----------------
+#
+# Phase A only: ground-level blocking, gates, and the tower's per-instance
+# door direction. The walkable tier itself (SquadSim._tier, the second
+# FlowField layer, climb/descend, tier-aware combat) is a separate slice
+# with its own tests once that lands.
+
+func test_the_shipped_wall_and_gate_defs_load_and_block_for_free() -> void:
+	for id in [&"wall", &"gate", &"garrison_wall", &"garrison_gate", &"wall_tower"]:
+		var def := BuildingSim.def_by_id(id)
+		assert_not_null(def, "buildings/%s.tres should load as a BuildingDef" % id)
+		assert_eq(def.damage, 0.0,
+			"%s must not attack on its own — offense comes from whoever stands on it" % id)
+		assert_eq(def.footprint_radius, 0,
+			"%s needs footprint_radius 0 so adjacent segments do not reject each other" % id)
+
+	assert_false(BuildingSim.def_by_id(&"wall").is_gate)
+	assert_true(BuildingSim.def_by_id(&"gate").is_gate)
+	assert_false(BuildingSim.def_by_id(&"wall").walkable_top)
+	assert_true(BuildingSim.def_by_id(&"garrison_wall").walkable_top)
+	assert_true(BuildingSim.def_by_id(&"garrison_gate").walkable_top)
+	assert_true(BuildingSim.def_by_id(&"wall_tower").walkable_top)
+	assert_true(BuildingSim.def_by_id(&"wall_tower").is_access_tower)
+	for id in [&"wall", &"gate", &"garrison_wall", &"garrison_gate"]:
+		assert_false(BuildingSim.def_by_id(id).is_access_tower,
+			"only the tower piece is a climb point (D-076) — a plain segment must not be one")
+
+
+func test_a_wall_blocks_ground_movement_for_free() -> void:
+	# No new blocking code exists for this — BuildingSim.blocking_cells()
+	# reports any living wall's cell, and server._refresh_passability()
+	# feeds that straight into SquadSim.set_passable() exactly the way it
+	# already does for every other building.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var wall_cell := Vector2i(10, 6)
+	buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell, true)
+
+	assert_true(buildings.blocking_cells().has(space.index(wall_cell)),
+		"a living wall must block its own cell")
+
+
+func test_an_open_gate_stops_blocking_but_a_closed_one_still_does() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var gate_cell := Vector2i(10, 6)
+	var gate := buildings.add_building(BuildingSim.def_by_id(&"gate"), 1, gate_cell, true)
+
+	assert_true(buildings.blocking_cells().has(space.index(gate_cell)),
+		"a new gate starts closed and must block")
+
+	buildings.set_gate_open(gate, true)
+	assert_false(buildings.blocking_cells().has(space.index(gate_cell)),
+		"an OPEN gate must not block — occupied_cells() still reports it, blocking_cells() must not")
+	assert_true(buildings.occupied_cells().has(space.index(gate_cell)),
+		"the gate still stands there for placement/combat purposes even while open")
+
+	buildings.set_gate_open(gate, false)
+	assert_true(buildings.blocking_cells().has(space.index(gate_cell)),
+		"closing it again must block again")
+
+
+func test_a_flow_field_routes_around_a_closed_wall() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var passable := PackedByteArray()
+	passable.resize(space.cell_count())
+	passable.fill(1)
+
+	var wall_cell := Vector2i(10, 6)
+	buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell, true)
+	for index in buildings.blocking_cells():
+		if index < passable.size():
+			passable[index] = 0
+	sim.set_passable(passable)
+
+	var squad := sim.add_squad(_unit_def(), 2, Vector2i(4, 6))
+	sim.order_move(squad, Vector2i(16, 6))
+	for _i in range(400):
+		sim.tick()
+
+	assert_ne(sim.cell_of(squad), wall_cell, "a squad must not walk onto the wall's cell")
+	assert_lt(space.distance(sim.cell_of(squad), Vector2i(16, 6)), 3,
+		"the squad should still have reached near its destination by going around")
+
+
+func test_gate_defaults_to_auto_mode_and_closed() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var gate := buildings.add_building(BuildingSim.def_by_id(&"gate"), 1, Vector2i(4, 4), true)
+	assert_false(buildings.is_gate_open(gate), "a new gate starts closed")
+	assert_eq(buildings.gate_mode(gate), BuildingSim.GATE_MODE_AUTO,
+		"a new gate starts in auto mode — the ergonomic default")
+
+
+func test_setting_gate_state_and_mode_marks_the_building_dirty_and_a_no_op_does_not() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var gate := buildings.add_building(BuildingSim.def_by_id(&"gate"), 1, Vector2i(4, 4), true)
+	buildings.take_dirty()
+
+	buildings.set_gate_open(gate, true)
+	assert_eq(buildings.take_dirty(), [gate], "opening a gate must replicate")
+
+	buildings.set_gate_open(gate, true)
+	assert_eq(buildings.take_dirty(), [],
+		"setting the SAME state again must not resend — D-003's zero-cost-when-idle claim")
+
+	buildings.set_gate_mode(gate, BuildingSim.GATE_MODE_MANUAL)
+	assert_eq(buildings.take_dirty(), [gate], "switching mode must replicate")
+
+
+func test_only_the_tower_piece_stores_a_door_direction() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+
+	var tower := buildings.add_building(
+		BuildingSim.def_by_id(&"wall_tower"), 1, Vector2i(6, 6), true, -1, 2)
+	assert_eq(buildings.access_direction_of(tower), 2)
+	assert_eq(buildings.access_direction_at(space.index(Vector2i(6, 6))), 2)
+
+	# A door direction handed to a building that isn't an access tower must
+	# be ignored — BuildingDef.is_access_tower's own doc explains why the
+	# field is per-instance at all: only a tower ever reads it.
+	var wall := buildings.add_building(
+		BuildingSim.def_by_id(&"wall"), 1, Vector2i(8, 8), true, -1, 3)
+	assert_eq(buildings.access_direction_of(wall), -1,
+		"a plain wall segment must not become a climb point just because a direction was passed")
+
+
+func test_every_building_carries_a_facing_not_just_the_tower(
+		) -> void:
+	# D-076 amendment: facing was generalised from the access-tower-only
+	# door direction to a per-instance rotation every building carries,
+	# for the rotate-while-placing control. access_direction_of stays
+	# tower-only (the test above); facing_of answers the general question.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+
+	var town_hall := buildings.add_building(
+		BuildingSim.def_by_id(&"town_centre"), 1, Vector2i(4, 4), true, -1, 4)
+	assert_eq(buildings.facing_of(town_hall), 4,
+		"an ordinary building's chosen facing must be stored and readable")
+
+	var default_facing := buildings.add_building(
+		BuildingSim.def_by_id(&"wall"), 1, Vector2i(6, 4), true)
+	assert_eq(buildings.facing_of(default_facing), 0,
+		"a building placed with no facing argument defaults to 0 (east)")
+
+	var wrapped := buildings.add_building(
+		BuildingSim.def_by_id(&"wall"), 1, Vector2i(8, 4), true, -1, 9)
+	assert_eq(buildings.facing_of(wrapped), 3,
+		"an out-of-range facing must wrap into 0..5 (9 mod 6), never be stored raw")
+
+
+func test_building_info_entries_carry_facing() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var id := buildings.add_building(
+		BuildingSim.def_by_id(&"wall"), 1, Vector2i(4, 4), true, -1, 5)
+
+	var entries := buildings.info_entries([id])
+	assert_eq(int(entries[0]["facing"]), 5,
+		"the wire payload must carry the facing a client needs to render the same rotation")
+
+
+func test_walkable_top_cells_only_include_complete_living_walkway_buildings() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+
+	var wall := buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, Vector2i(4, 4), true)
+	var rampart := buildings.add_building(
+		BuildingSim.def_by_id(&"garrison_wall"), 1, Vector2i(6, 4), true)
+	buildings.add_building(BuildingSim.def_by_id(&"garrison_wall"), 1, Vector2i(8, 4), false)
+
+	var top := buildings.walkable_top_cells()
+	assert_false(top.has(space.index(Vector2i(4, 4))), "a plain wall has no walkway")
+	assert_true(top.has(space.index(Vector2i(6, 4))), "a complete garrison wall is part of the walkway")
+	assert_false(top.has(space.index(Vector2i(8, 4))), "a still-under-construction one is not walkable yet")
+	assert_eq(wall, 0, "sanity: the plain wall really is the first building added")
+
+	buildings.damage(rampart, 100000.0)
+	assert_false(buildings.walkable_top_cells().has(space.index(Vector2i(6, 4))),
+		"a destroyed rampart drops out of the walkway")
+
+
+func test_a_wall_can_be_destroyed_with_shipped_data() -> void:
+	# Walls have no attack of their own (damage 0) — unlike the town centre
+	# and tower, nothing here is meant to survive a lone squad. This is a
+	# smoke test that the shipped .tres actually behaves that way, not a
+	# new mechanism: Combat.resolve_squads_vs_buildings already handles any
+	# BuildingDef generically.
+	var space := TorusSpace.new(42, 48, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var wall_cell := Vector2i(20, 20)
+	var wall := buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell, true)
+
+	var militia := UnitRoster.by_id(&"legion_militia")
+	assert_not_null(militia)
+	var squad := sim.add_squad(militia, 2, Vector2i(20, 22))
+	sim.order_attack_move(squad, wall_cell)
+
+	var destroyed := false
+	for _i in range(600):
+		sim.tick()
+		if buildings.is_destroyed(wall):
+			destroyed = true
+			break
+
+	assert_true(destroyed,
+		"a single squad should break an undefended wall segment — it has no return fire to deter one")
+
+
+# --- gate/build wire orders (D-076) ---------------------------------------
+
+func test_build_orders_round_trip_a_facing() -> void:
+	var bytes := NetProtocol.encode_order_build(4, "wall_tower", 129, 3)
+	var decoded := NetProtocol.decode_order_build(bytes)
+	assert_eq(int(decoded["facing"]), 3)
+
+	# Every building carries a facing now (D-076 amendment) — not just the
+	# access tower's door — defaulting to 0 (east) for a caller that does
+	# not choose one.
+	var plain := NetProtocol.decode_order_build(NetProtocol.encode_order_build(4, "wall", 129))
+	assert_eq(int(plain["facing"]), 0)
+
+
+func test_build_queue_orders_round_trip_and_use_their_own_opcode() -> void:
+	# D-076 amendment: the drag-to-build-a-line tool needs its own opcode
+	# so the server can tell "replace the queue" (C2S_ORDER_BUILD) apart
+	# from "append to it" (C2S_ORDER_BUILD_QUEUE) — same payload shape,
+	# decoded by the same decode_order_build, distinguished only by which
+	# opcode byte led it in.
+	var bytes := NetProtocol.encode_order_build_queue(7, "garrison_wall", 55, 2)
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.C2S_ORDER_BUILD_QUEUE)
+	assert_ne(NetProtocol.opcode_of(bytes), NetProtocol.C2S_ORDER_BUILD)
+
+	var decoded := NetProtocol.decode_order_build(bytes)
+	assert_eq(int(decoded["squad"]), 7)
+	assert_eq(String(decoded["def_id"]), "garrison_wall")
+	assert_eq(int(decoded["cell"]), 55)
+	assert_eq(int(decoded["facing"]), 2)
+
+
+func test_gate_state_and_mode_orders_round_trip() -> void:
+	var open_bytes := NetProtocol.encode_order_gate_state(BuildingSim.wire_id(2), true)
+	assert_eq(NetProtocol.opcode_of(open_bytes), NetProtocol.C2S_ORDER_GATE_STATE)
+	var open_decoded := NetProtocol.decode_order_gate_state(open_bytes)
+	assert_eq(int(open_decoded["building"]), BuildingSim.wire_id(2))
+	assert_true(bool(open_decoded["open"]))
+
+	var mode_bytes := NetProtocol.encode_order_gate_mode(
+		BuildingSim.wire_id(2), BuildingSim.GATE_MODE_MANUAL)
+	assert_eq(NetProtocol.opcode_of(mode_bytes), NetProtocol.C2S_ORDER_GATE_MODE)
+	var mode_decoded := NetProtocol.decode_order_gate_mode(mode_bytes)
+	assert_eq(int(mode_decoded["mode"]), BuildingSim.GATE_MODE_MANUAL)
+
+
+func test_building_info_round_trips_gate_state() -> void:
+	var entries := [{
+		"id": BuildingSim.wire_id(1), "def_id": "gate", "owner": 1,
+		"cell": 5, "progress": 1.0, "destroyed": false,
+		"gate_open": true, "gate_mode": BuildingSim.GATE_MODE_MANUAL,
+	}]
+	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
+	assert_true(bool(decoded[0]["gate_open"]))
+	assert_eq(int(decoded[0]["gate_mode"]), BuildingSim.GATE_MODE_MANUAL)
+
+
+func test_building_info_round_trips_facing() -> void:
+	var entries := [{
+		"id": BuildingSim.wire_id(1), "def_id": "wall_tower", "owner": 1,
+		"cell": 5, "progress": 1.0, "destroyed": false, "facing": 4,
+	}]
+	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
+	assert_eq(int(decoded[0]["facing"]), 4)
+
+
+func test_building_info_defaults_facing_to_east_when_unspecified() -> void:
+	var entries := [{
+		"id": BuildingSim.wire_id(1), "def_id": "wall", "owner": 1,
+		"cell": 5, "progress": 1.0, "destroyed": false,
+	}]
+	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
+	assert_eq(int(decoded[0]["facing"]), 0)
+
+
+func test_building_info_defaults_gate_fields_for_a_non_gate_entry() -> void:
+	# Sent uniformly rather than conditionally, like every other
+	# per-building field — an entry that never mentions gate state must
+	# still decode to sane, harmless defaults.
+	var entries := [{
+		"id": BuildingSim.wire_id(1), "def_id": "wall", "owner": 1,
+		"cell": 5, "progress": 1.0, "destroyed": false,
+	}]
+	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
+	assert_false(bool(decoded[0]["gate_open"]))
+	assert_eq(int(decoded[0]["gate_mode"]), BuildingSim.GATE_MODE_MANUAL)

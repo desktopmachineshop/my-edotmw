@@ -119,6 +119,45 @@ func test_only_the_admin_can_start() -> void:
 	assert_eq(m.phase, MatchState.Phase.RUNNING)
 
 
+# --- sandbox mode, for dev testing --------------------------------------
+
+func test_only_the_admin_may_toggle_a_sandbox_flag() -> void:
+	var m := _two_humans()
+	assert_false(m.set_sandbox_option(2, "sandbox", true), "A non-admin toggled sandbox mode")
+	assert_false(m.sandbox)
+	assert_true(m.set_sandbox_option(1, "sandbox", true))
+	assert_true(m.sandbox)
+
+
+func test_each_sandbox_flag_is_independent() -> void:
+	var m := _two_humans()
+	assert_true(m.set_sandbox_option(1, "instant_build", true))
+	assert_true(m.instant_build)
+	assert_false(m.sandbox, "instant_build must not imply sandbox — they are separate flags")
+	assert_false(m.ai_economy_only)
+
+	assert_true(m.set_sandbox_option(1, "ai_economy_only", true))
+	assert_true(m.ai_economy_only)
+	assert_true(m.instant_build, "setting one flag must not clear another")
+
+
+func test_an_unknown_sandbox_key_is_refused() -> void:
+	var m := _two_humans()
+	assert_false(m.set_sandbox_option(1, "godmode", true))
+
+
+func test_sandbox_can_be_toggled_after_the_match_has_started() -> void:
+	# Unlike map settings, this is deliberately NOT locked to the lobby
+	# phase (see MatchState.sandbox's own doc) — the whole point is
+	# iterating on a running match without restarting the server.
+	var m := _two_humans()
+	assert_true(m.request_start(1))
+	assert_eq(m.phase, MatchState.Phase.RUNNING)
+	assert_true(m.set_sandbox_option(1, "sandbox", true),
+		"sandbox mode must still be toggleable once the match is running")
+	assert_true(m.sandbox)
+
+
 func test_a_lobby_of_one_is_not_a_match() -> void:
 	var m := _lobby()
 	m.add_player(1)

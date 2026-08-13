@@ -249,6 +249,7 @@ func _ready() -> void:
 	_build_hud()
 	_build_game_menu()
 	_build_lobby_ui()
+	_build_debug_panel()
 	_build_defeat_screen()
 
 	_host = ENetConnection.new()
@@ -306,6 +307,7 @@ func _process(delta: float) -> void:
 	_seat_capture_ai()
 	_refresh_chat()
 	_refresh_lobby()
+	_refresh_debug_panel()
 	_refresh_defeat()
 
 	if _run_seconds > 0.0:
@@ -1870,6 +1872,10 @@ func _to_hud(at: Vector2) -> Vector2:
 ## hint string listing the same letters twice.
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
+	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
+	# existing BUILD_KEYS/TRAIN_KEYS letter.
+	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
 	"T": &"gatherers", "M": &"militia", "P": &"spearmen",
@@ -2196,6 +2202,38 @@ func _update_missiles() -> void:
 var _placing: StringName = &""
 var _placement_ghost: MeshInstance3D = null
 
+## Pool of ghost boxes previewing a drag-to-build-a-line's whole line
+## (D-076 amendment), one per cell it will actually build. A pool rather
+## than freeing/recreating each frame: the line's length changes every
+## frame the mouse moves, and churning nodes at that rate is exactly the
+## "rebuild every frame" cost `_refresh_lobby`'s own signature-hash guard
+## exists to avoid elsewhere.
+var _drag_ghost_pool: Array[MeshInstance3D] = []
+
+## Facing for the armed placement (D-076 amendment) — one of
+## `TorusSpace.DIRECTIONS`' 6 indices, cycled with the rotate key for
+## ANY building, not just an access tower's door. Purely cosmetic mesh
+## rotation for most buildings; mechanically the door direction for
+## `wall_tower` specifically.
+var _placing_facing: int = 0
+var _door_marker: MeshInstance3D = null
+
+## Snap state for a wall-family placement (D-076 amendment): the cell the
+## ghost last snapped to, so `_placing_facing` is only auto-set the moment
+## the snap target CHANGES rather than every single frame — otherwise it
+## would fight a manual V-key rotation on the very next frame. Reset to
+## (-1,-1) whenever nothing is currently snapped, or a fresh placement is
+## armed.
+var _last_snap_cell := Vector2i(-1, -1)
+
+## Click-drag-to-build-a-line state (D-076 amendment). A wall-family
+## building (`footprint_radius == 0`) starts a drag on mouse-down instead
+## of placing immediately; release decides whether it was a click (one
+## segment, at the drag START cell) or a genuine drag (the whole line
+## from start to release, split across every eligible selected squad).
+var _placing_drag := false
+var _placing_drag_start := Vector2i(-1, -1)
+
 ## An armed building (wire id, or -1) waiting for a click to name its
 ## focus-fire target — the "Target" button's arming half, mirroring
 ## `_placing` above. Shift+right-click on an enemy with the building
@@ -2448,25 +2486,35 @@ func _refresh_resource_nodes() -> void:
 ## is the entire reason `BuildingDef.mesh_primitive` exists. It carried no
 ## meaning at all until M7 because nothing read it.
 func _building_primitive(def: BuildingDef) -> Mesh:
+	# D-076: mesh_size overrides the hardcoded per-primitive dimensions
+	# below when set, so a wall segment renders thin and long instead of
+	# every other primitive's square footprint. Zero (every pre-existing
+	# def) leaves the old hardcoded sizes exactly as they were.
+	var override := def.mesh_size != Vector3.ZERO
 	match def.mesh_primitive:
 		"cylinder":
 			var cylinder := CylinderMesh.new()
-			cylinder.top_radius = 1.0
-			cylinder.bottom_radius = 1.2
-			cylinder.height = 3.0
+			if override:
+				cylinder.top_radius = def.mesh_size.x / 2.0
+				cylinder.bottom_radius = def.mesh_size.z / 2.0
+				cylinder.height = def.mesh_size.y
+			else:
+				cylinder.top_radius = 1.0
+				cylinder.bottom_radius = 1.2
+				cylinder.height = 3.0
 			return cylinder
 		"capsule":
 			var capsule := CapsuleMesh.new()
-			capsule.radius = 1.1
-			capsule.height = 3.4
+			capsule.radius = def.mesh_size.x / 2.0 if override else 1.1
+			capsule.height = def.mesh_size.y if override else 3.4
 			return capsule
 		"hull":
 			var hull := BoxMesh.new()
-			hull.size = Vector3(3.6, 2.0, 2.4)
+			hull.size = def.mesh_size if override else Vector3(3.6, 2.0, 2.4)
 			return hull
 		_:
 			var box := BoxMesh.new()
-			box.size = Vector3(2.4, 3.0, 2.4)
+			box.size = def.mesh_size if override else Vector3(2.4, 3.0, 2.4)
 			return box
 
 
@@ -2533,6 +2581,9 @@ func _refresh_buildings() -> void:
 			_building_ground_lift[wire_id] = lift
 			_building_top_offset[wire_id] = mesh_height - lift
 			add_child(instance)
+			# D-076 amendment: the facing chosen at placement, fixed for the
+			# building's lifetime — set once here rather than every frame.
+			instance.rotation.y = _facing_rotation_y(int(info.get("facing", 0)))
 
 		if bool(info["destroyed"]):
 			instance.visible = false
@@ -2563,6 +2614,25 @@ func _refresh_buildings() -> void:
 
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
+
+		# D-076: a gate's own colour tells you whether it is currently
+		# passable, without needing it selected. Two material types need
+		# two mechanisms — the primitive path's StandardMaterial3D gets
+		# recoloured directly; an authored gate model (gate/garrison_gate,
+		# D-076's follow-up art pass) uses building_static.gdshader's own
+		# `gate_open` uniform instead, since ShaderMaterial has no
+		# `albedo_color` to lerp.
+		var gate_def: BuildingDef = _building_defs.get(wire_id, null)
+		if gate_def != null and gate_def.is_gate:
+			var open := bool(info.get("gate_open", false))
+			if instance.material_override is StandardMaterial3D:
+				var gate_material := instance.material_override as StandardMaterial3D
+				var owner_colour := _state.colour_of(int(info["owner"]))
+				var base_colour := gate_def.mesh_color.lightened(0.5) if open else gate_def.mesh_color
+				gate_material.albedo_color = owner_colour.lerp(base_colour, 0.75)
+			elif instance.material_override is ShaderMaterial:
+				(instance.material_override as ShaderMaterial).set_shader_parameter(
+					"gate_open", 1.0 if open else 0.0)
 
 		# Armed and complete (a half-built town centre has no garrison to
 		# fire from). Same client-inferred approach as `_activity_for`:
@@ -3059,6 +3129,23 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"label": "Target\nShift+Right-click an enemy",
 			"kind": "target_select", "id": &"",
 		})
+	# D-076: a gate's mode is always shown (so a player can see and switch
+	# it), and the direct open/close toggle only appears in manual mode —
+	# an auto-mode gate ignores that order server-side anyway (see
+	# `_handle_order_gate_state`), so offering it here would be a button
+	# that quietly does nothing.
+	if def.is_gate:
+		var gate_mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+		out.append({
+			"label": "Mode: %s" % ("Auto" if gate_mode == BuildingSim.GATE_MODE_AUTO else "Manual"),
+			"kind": "gate_mode", "id": &"",
+		})
+		if gate_mode == BuildingSim.GATE_MODE_MANUAL:
+			var gate_open := bool(info.get("gate_open", false))
+			out.append({
+				"label": "Close gate" if gate_open else "Open gate",
+				"kind": "gate_state", "id": &"",
+			})
 	return out
 
 
@@ -3156,6 +3243,34 @@ func _on_action_pressed(index: int) -> void:
 			# `_finish_target_pick`, mirroring `_placing`'s ghost-follows-
 			# cursor arm/click split for building placement.
 			_targeting_building = _selected_building
+		"gate_mode":
+			_toggle_gate_mode()
+		"gate_state":
+			_toggle_gate_state()
+
+
+## D-076: flip the selected gate between manual and automatic control.
+func _toggle_gate_mode() -> void:
+	if not _connected or _selected_building < 0:
+		return
+	var info: Dictionary = _state.buildings.get(_selected_building, {})
+	var current := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+	var next := BuildingSim.GATE_MODE_MANUAL \
+		if current == BuildingSim.GATE_MODE_AUTO else BuildingSim.GATE_MODE_AUTO
+	_peer.send(0, NetProtocol.encode_order_gate_mode(_selected_building, next),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+## D-076: open/close the selected gate directly. Only takes effect
+## server-side while the gate is in manual mode — see
+## `_handle_order_gate_state` in server.gd.
+func _toggle_gate_state() -> void:
+	if not _connected or _selected_building < 0:
+		return
+	var info: Dictionary = _state.buildings.get(_selected_building, {})
+	var open := not bool(info.get("gate_open", false))
+	_peer.send(0, NetProtocol.encode_order_gate_state(_selected_building, open),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## The build segment's own version of `_set_actions` — see
@@ -3408,16 +3523,37 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				if jump.x >= 0:
 					_jump_camera_to(jump)
 					return
+				# An armed sandbox cheat fires on the click and stays armed
+				# (D-0xx) — repeated spawns should not mean re-opening the
+				# picker every time. Checked before ordinary placement so it
+				# cannot be shadowed by a building also being armed.
+				if _cheat_arm_kind != "" and _fire_armed_cheat(event.position):
+					return
 				# A click while a building is armed PLACES it, and does not
 				# also start a selection drag.
-				if _place_armed_building(event.position):
-					return
+				#
+				# D-076 amendment: a WALL-FAMILY piece is the one exception —
+				# it starts a placement DRAG instead of placing immediately,
+				# so a genuine drag can lay down a whole line (see
+				# `_finish_placement_drag`). Release decides whether it was
+				# actually a drag or just a click.
+				if _placing != &"":
+					var armed_def := BuildingSim.def_by_id(_placing)
+					if armed_def != null and armed_def.footprint_radius == 0:
+						_placing_drag = true
+						_placing_drag_start = _snapped_placement_cell(event.position)
+						return
+					if _place_armed_building(event.position):
+						return
 				# A left-click while target-picking is armed abandons it
 				# rather than leaving the mode stuck armed under a
 				# selection the player has visibly moved on from.
 				_targeting_building = -1
 				_dragging = true
 				_drag_start = event.position
+			elif _placing_drag:
+				_placing_drag = false
+				_finish_placement_drag(event.position)
 			elif _dragging:
 				_finish_selection(event.position, event.shift_pressed)
 		MOUSE_BUTTON_RIGHT:
@@ -3429,6 +3565,9 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			# the army somewhere — the same escape hatch every RTS has.
 			if event.pressed and _placing != &"":
 				_cancel_placement()
+				return
+			if event.pressed and _cheat_arm_kind != "":
+				_on_cheat_cancel_pressed()
 				return
 			# The "Target" button's arming half: this click, hit or miss,
 			# is spent on picking (or cancelling) a focus-fire target and
@@ -3732,6 +3871,17 @@ func _handle_key(event: InputEventKey) -> void:
 			_toggle_game_menu()
 		return
 
+	# D-076 (amendment): while ANY building is armed for placement, V
+	# cycles which of the 6 hex sides it faces — the ghost rotates to show
+	# the result before you commit, and a wall_tower's door marker moves
+	# with it. Cosmetic for most buildings, mechanical for the tower's
+	# door; this has to come before the build/train tables can steal V for
+	# something else in the future.
+	if event.keycode == KEY_V and _placing != &"":
+		_placing_facing = (_placing_facing + 1) % 6
+		_update_placement_ghost()
+		return
+
 	# Build keys. The server checks everything that matters — who may
 	# build what, the ground, the reach, the price — so these just send
 	# intent and let the authority answer (and now explain itself).
@@ -4001,7 +4151,67 @@ func _build_selected(def_id: String) -> void:
 	if not _connected or _state.space == null or _selected.is_empty():
 		return
 	_placing = StringName(def_id)
+	_placing_facing = 0
+	_last_snap_cell = Vector2i(-1, -1)
 	_update_placement_ghost()
+
+
+## Snap the cursor's cell to the nearest cell adjacent to an EXISTING
+## wall-family building, so a chain always lands truly connected instead
+## of depending on pixel-perfect cursor placement (D-076 amendment). Only
+## applies while a wall-family piece is armed (`footprint_radius == 0` —
+## the same data-driven signal that already lets those defs chain without
+## `_footprint_conflict` rejecting each other); every other building is
+## returned unsnapped.
+##
+## Side effect: sets `_placing_facing` to face back toward the neighbour
+## it snapped to, but ONLY the moment the snapped cell actually changes —
+## see `_last_snap_cell`'s doc for why it isn't reset every frame.
+func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
+	var raw := _cell_under(screen_position)
+	if raw.x < 0 or _state.space == null:
+		return raw
+
+	var def := BuildingSim.def_by_id(_placing)
+	if def == null or def.footprint_radius != 0:
+		_last_snap_cell = Vector2i(-1, -1)
+		return raw
+
+	var best_cell := raw
+	var best_distance := 999999
+	var best_facing := 0
+	var found := false
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var other_def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if other_def == null or other_def.footprint_radius != 0:
+			continue
+		var other_cell := _state.space.from_index(int(info["cell"]))
+		for i in range(TorusSpace.DIRECTIONS.size()):
+			var candidate := _state.space.normalize(other_cell + TorusSpace.DIRECTIONS[i])
+			var d := _state.space.distance(candidate, raw)
+			if d < best_distance:
+				best_distance = d
+				best_cell = candidate
+				# Opposite of "which side of the neighbour this candidate
+				# sits on" — DIRECTIONS' negation is always the entry 3
+				# slots further round the same 6-direction list.
+				best_facing = (i + 3) % 6
+				found = true
+
+	# Only snap within a couple of cells of the actual cursor position —
+	# otherwise one distant wall would keep pulling every placement
+	# toward it regardless of where the player is actually pointing.
+	if not found or best_distance > 2:
+		_last_snap_cell = Vector2i(-1, -1)
+		return raw
+
+	if best_cell != _last_snap_cell:
+		_placing_facing = best_facing
+		_last_snap_cell = best_cell
+	return best_cell
 
 
 ## Place the armed building, or do nothing if none is armed.
@@ -4009,26 +4219,156 @@ func _build_selected(def_id: String) -> void:
 func _place_armed_building(screen_position: Vector2) -> bool:
 	if _placing == &"":
 		return false
-	var cell := _cell_under(screen_position)
+	var cell := _snapped_placement_cell(screen_position)
 	# Typed explicitly: `_selected` is untyped, so a ternary over it has
 	# no inferable type and the whole script fails to parse.
 	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
 	var def_id := _placing
+	var facing := _placing_facing
 	_cancel_placement()
 	if cell.x < 0 or squad < 0:
 		return true
 
-	var order := _state.encode_build(squad, String(def_id), cell)
+	var order := _state.encode_build(squad, String(def_id), cell, facing)
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: asked squad %d to found a %s at %s" % [squad, def_id, cell])
 	return true
 
 
+## Finish a wall-family placement drag (D-076 amendment): a straight click
+## (start == release cell) behaves exactly like an ordinary single
+## placement; a genuine drag lays down the whole hex line from
+## `_placing_drag_start` to the release point, round-robinned as a QUEUE
+## across every currently-selected squad that can build this def — one
+## squad alone still builds the whole run, just one segment after
+## another, via `C2S_ORDER_BUILD_QUEUE`.
+func _finish_placement_drag(end_screen_position: Vector2) -> void:
+	var def_id := _placing
+	var def := BuildingSim.def_by_id(def_id)
+	var start := _placing_drag_start
+	var end := _snapped_placement_cell(end_screen_position)
+	_cancel_placement()
+	if def == null or start.x < 0 or end.x < 0 or _state.space == null:
+		return
+
+	if start == end:
+		var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
+		if squad < 0:
+			return
+		var order := _state.encode_build(squad, String(def_id), start, _placing_facing)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			print("client: asked squad %d to found a %s at %s" % [squad, def_id, start])
+		return
+
+	var line := _hex_line(start, end)
+	var builders := _eligible_builders(def_id)
+	if builders.is_empty():
+		_notify_line_needs_a_builder()
+		return
+
+	# The bug: every segment used to send whatever `_placing_facing` was
+	# left over from BEFORE the drag (a stale V-key rotation, or a snap
+	# that only ever looked at the start cell) instead of the direction
+	# the line actually runs. One facing for the whole straight line is
+	# correct — `_hex_line` only ever produces a straight one — as long
+	# as it is derived from the real start->end direction.
+	var line_facing := _direction_index_of(_state.space.delta(start, end))
+
+	var queues := {}
+	for i in range(line.size()):
+		var squad: int = builders[i % builders.size()]
+		if not queues.has(squad):
+			queues[squad] = []
+		(queues[squad] as Array).append(line[i])
+
+	for squad in queues:
+		var cells: Array = queues[squad]
+		var first := true
+		for cell in cells:
+			var order := _state.encode_build(squad, String(def_id), cell, line_facing) \
+				if first else _state.encode_build_queue(squad, String(def_id), cell, line_facing)
+			first = false
+			if not order.is_empty():
+				_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+	print("client: drew a %d-cell %s line across %d squad(s)" % [line.size(), def_id, builders.size()])
+
+
+## Nothing to build a drag-line with — silent would look like the drag
+## itself did nothing (D-034's whole reason for the notice channel).
+func _notify_line_needs_a_builder() -> void:
+	print("client: select a squad that can build this before dragging a line")
+
+
+## Which currently-selected squads can build `def_id` at all, mirroring
+## `BuildingSim.can_build` client-side — the server re-checks everything
+## regardless (D-002), this only decides how a drag's cells are split.
+func _eligible_builders(def_id: StringName) -> Array:
+	var def := BuildingSim.def_by_id(def_id)
+	if def == null:
+		return []
+	var out := []
+	for squad in _selected:
+		var unit_def_id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
+		var unit := UnitRoster.by_id(unit_def_id)
+		if unit != null and BuildingSim.can_build(def, unit.archetype):
+			out.append(int(squad))
+	return out
+
+
+## The hex cells on a straight line from `a` to `b`, inclusive of both
+## ends (D-076's drag-to-build-a-line tool). Standard cube-coordinate
+## line-draw (lerp in cube space, round each step) over `space.delta`'s
+## shortest wrapped vector — drag distances are at most a few dozen
+## cells, so working in one unwrapped local frame around `a` needs no
+## further wrap-awareness of its own.
+func _hex_line(a: Vector2i, b: Vector2i) -> Array:
+	var space := _state.space
+	var delta := space.delta(a, b)
+	var n := TorusSpace.hex_length(delta)
+	var out := []
+	if n <= 0:
+		out.append(space.normalize(a))
+		return out
+	for i in range(n + 1):
+		var t := float(i) / float(n)
+		out.append(space.normalize(_round_axial(
+			float(a.x) + float(delta.x) * t,
+			float(a.y) + float(delta.y) * t)))
+	return out
+
+
+## Cube-coordinate rounding for `_hex_line`: the standard "round each of
+## the three cube coordinates, then fix up whichever one drifted furthest
+## from the constraint x+y+z=0" algorithm.
+func _round_axial(q: float, r: float) -> Vector2i:
+	var x := q
+	var z := r
+	var y := -x - z
+	var rx := roundf(x)
+	var ry := roundf(y)
+	var rz := roundf(z)
+	var dx := absf(rx - x)
+	var dy := absf(ry - y)
+	var dz := absf(rz - z)
+	if dx > dy and dx > dz:
+		rx = -ry - rz
+	elif dy > dz:
+		ry = -rx - rz
+	else:
+		rz = -rx - ry
+	return Vector2i(int(rx), int(rz))
+
+
 func _cancel_placement() -> void:
 	_placing = &""
+	_placing_drag = false
 	if _placement_ghost != null:
 		_placement_ghost.visible = false
+	if _door_marker != null:
+		_door_marker.visible = false
+	_hide_drag_line_ghosts()
 
 
 ## Move the ghost to the cell under the cursor, and colour it by whether
@@ -4042,9 +4382,31 @@ func _update_placement_ghost() -> void:
 	if _placing == &"" or _state.space == null:
 		return
 
+	# D-076: a wall/gate segment previews at its own thin/long size rather
+	# than the square building box every other primitive used to force on
+	# it — mesh_size zero (every pre-existing def) falls back to the old
+	# hardcoded box exactly as before.
+	var def := BuildingSim.def_by_id(_placing)
+	var size := Vector3(2.4, 3.0, 2.4)
+	if def != null and def.mesh_size != Vector3.ZERO:
+		size = def.mesh_size
+
+	# Mid-drag, the WHOLE line previews (one ghost box per cell it will
+	# actually build), not just the single cell under the cursor — the
+	# gap this closes: there was previously no way to see what a drag was
+	# about to build before releasing the mouse.
+	if _placing_drag:
+		if _placement_ghost != null:
+			_placement_ghost.visible = false
+		if _door_marker != null:
+			_door_marker.visible = false
+		_update_drag_line_ghosts(size)
+		return
+	_hide_drag_line_ghosts()
+
 	if _placement_ghost == null:
 		var mesh := BoxMesh.new()
-		mesh.size = Vector3(2.4, 3.0, 2.4)
+		mesh.size = size
 		var material := StandardMaterial3D.new()
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -4052,10 +4414,14 @@ func _update_placement_ghost() -> void:
 		_placement_ghost.mesh = mesh
 		_placement_ghost.material_override = material
 		add_child(_placement_ghost)
+	else:
+		(_placement_ghost.mesh as BoxMesh).size = size
 
-	var cell := _cell_under(get_viewport().get_mouse_position())
+	var cell := _snapped_placement_cell(get_viewport().get_mouse_position())
 	if cell.x < 0:
 		_placement_ghost.visible = false
+		if _door_marker != null:
+			_door_marker.visible = false
 		return
 
 	var world := _state.space.to_world(cell)
@@ -4063,10 +4429,127 @@ func _update_placement_ghost() -> void:
 		world.y = _state.terrain_sampler.call(world.x, world.z)
 	_placement_ghost.visible = true
 	_placement_ghost.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
+	_placement_ghost.rotation.y = _facing_rotation_y(_placing_facing)
 
 	var ok := _can_place_at(cell)
 	var material := _placement_ghost.material_override as StandardMaterial3D
 	material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+
+	# D-076: a bright marker toward the chosen door side, so placing a
+	# wall_tower shows which cell will actually let a squad climb — the
+	# whole point of confining access to one side rather than the whole
+	# structure.
+	if def != null and def.is_access_tower:
+		if _door_marker == null:
+			var marker_mesh := SphereMesh.new()
+			marker_mesh.radius = 0.4
+			marker_mesh.height = 0.8
+			var marker_material := StandardMaterial3D.new()
+			marker_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			marker_material.albedo_color = Color(1.0, 0.9, 0.2, 0.9)
+			_door_marker = MeshInstance3D.new()
+			_door_marker.mesh = marker_mesh
+			_door_marker.material_override = marker_material
+			add_child(_door_marker)
+		var direction := Vector2(TorusSpace.DIRECTIONS[_placing_facing])
+		var door_offset := _state.space.axial_offset_to_world(direction) * 0.75
+		_door_marker.visible = true
+		_door_marker.position = _placement_ghost.position + door_offset
+	elif _door_marker != null:
+		_door_marker.visible = false
+
+
+## Y-axis rotation (radians) that turns a building's long/forward axis
+## (local +X, per its BoxMesh) to point along hex `facing` (D-076
+## amendment, generalised from the access-tower-only door marker). Used
+## for both the placement ghost and every placed building's mesh, so a
+## rotated wall segment reads the same way while you're aiming it as it
+## does once it's built.
+func _facing_rotation_y(facing: int) -> float:
+	return _angle_of_offset(Vector2(TorusSpace.DIRECTIONS[posmod(facing, 6)]))
+
+
+## Shared math behind `_facing_rotation_y`, taking an arbitrary axial
+## offset rather than one of the 6 canonical directions — what
+## `_direction_index_of` below needs to compare a multi-cell drag's real
+## direction against each of the 6.
+func _angle_of_offset(offset: Vector2) -> float:
+	if _state.space == null:
+		return 0.0
+	var world_offset := _state.space.axial_offset_to_world(offset)
+	return atan2(-world_offset.z, world_offset.x)
+
+
+## Which of `TorusSpace.DIRECTIONS`' 6 canonical facings a (possibly
+## multi-cell) axial delta most closely points along — the fix for a real
+## bug: a drag-built line was sending every segment at whatever
+## `_placing_facing` happened to be left over from BEFORE the drag
+## started (a stale V-key rotation, or the snap that ran only on the
+## START cell), not the direction the line actually runs. Compared by
+## world-space angle, not by axial coordinates directly, because axial
+## axes are not orthogonal and a naive component comparison picks the
+## wrong neighbour close to the diagonals.
+func _direction_index_of(delta: Vector2i) -> int:
+	if delta == Vector2i.ZERO:
+		return _placing_facing
+	var target := _angle_of_offset(Vector2(delta))
+	var best := 0
+	var best_diff := INF
+	for i in range(TorusSpace.DIRECTIONS.size()):
+		var diff := absf(wrapf(_facing_rotation_y(i) - target, -PI, PI))
+		if diff < best_diff:
+			best_diff = diff
+			best = i
+	return best
+
+
+## Preview the whole line a drag-to-build-a-line would actually build
+## (D-076 amendment) — one ghost box per cell from `_placing_drag_start`
+## to wherever the cursor is now, oriented and coloured exactly the way
+## `_finish_placement_drag` will build it, so nothing about the release
+## is a surprise.
+func _update_drag_line_ghosts(size: Vector3) -> void:
+	var end := _snapped_placement_cell(get_viewport().get_mouse_position())
+	if end.x < 0:
+		_hide_drag_line_ghosts()
+		return
+
+	var line := _hex_line(_placing_drag_start, end)
+	var rotation_y := _facing_rotation_y(
+		_direction_index_of(_state.space.delta(_placing_drag_start, end)))
+
+	while _drag_ghost_pool.size() < line.size():
+		var mesh := BoxMesh.new()
+		var material := StandardMaterial3D.new()
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		var instance := MeshInstance3D.new()
+		instance.mesh = mesh
+		instance.material_override = material
+		add_child(instance)
+		_drag_ghost_pool.append(instance)
+
+	for i in range(_drag_ghost_pool.size()):
+		var instance := _drag_ghost_pool[i]
+		if i >= line.size():
+			instance.visible = false
+			continue
+		var cell: Vector2i = line[i]
+		(instance.mesh as BoxMesh).size = size
+		var world := _state.space.to_world(cell)
+		if _state.terrain_sampler.is_valid():
+			world.y = _state.terrain_sampler.call(world.x, world.z)
+		instance.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
+		instance.rotation.y = rotation_y
+		instance.visible = true
+		var ok := _can_place_at(cell)
+		var material := instance.material_override as StandardMaterial3D
+		material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+
+
+func _hide_drag_line_ghosts() -> void:
+	for instance in _drag_ghost_pool:
+		instance.visible = false
 
 
 ## Whether the ground under the cursor looks buildable from here.
@@ -4338,6 +4821,10 @@ var _map_preview: TextureRect
 var _map_blurb: Label
 var _start_button: Button
 var _add_ai_button: Button
+
+## Dev-testing sandbox toggles (D-0xx), same rebuild-on-change shape as
+## the map settings panel just above.
+var _sandbox_rows: VBoxContainer
 
 ## What the screen was last built from. Rebuilding is what would destroy
 ## an open dropdown, so it happens only when this changes.
@@ -5078,6 +5565,7 @@ func _build_lobby_ui() -> void:
 	# The one panel on the right that should EXPAND — see the doc comment
 	# on `chat_column` above for the same reasoning mirrored.
 	_map_rows = _lobby_panel("GAME SETTINGS", right, true)
+	_sandbox_rows = _lobby_panel("SANDBOX (dev testing)", right)
 
 	# Laid out once against the CURRENT window immediately, rather than
 	# waiting for the first resize signal — without this the lobby sits at
@@ -5160,6 +5648,248 @@ func _refresh_lobby() -> void:
 		_lobby_help.text = "Choose your civilisation. The host starts the match."
 
 	_refresh_map_panel()
+	_refresh_sandbox_panel()
+
+
+## Three admin-only checkboxes over `_state.lobby`'s `sandbox`/
+## `instant_build`/`ai_economy_only` fields (D-0xx) — same rebuild-on-
+## change shape `_refresh_map_panel` uses just above, and the same
+## `LOBBY_SET_OPTION` channel a map slider sends through (a "key=value"
+## pair, not one opcode per flag). Visible to everyone so a non-admin can
+## at least see the flags a host has enabled; only the admin can flip them.
+const SANDBOX_OPTIONS := [
+	{"key": "sandbox", "label": "Sandbox mode (enables cheats below)"},
+	{"key": "instant_build", "label": "Instant construction & production"},
+	{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+]
+
+
+func _refresh_sandbox_panel() -> void:
+	if _sandbox_rows == null:
+		return
+	for child in _sandbox_rows.get_children():
+		if child.get_index() > 1:
+			child.queue_free()
+
+	var admin := _state.is_admin()
+	for option in SANDBOX_OPTIONS:
+		var key := String(option["key"])
+		var box := CheckBox.new()
+		box.text = String(option["label"])
+		box.add_theme_font_size_override("font_size", 14)
+		box.button_pressed = bool(_state.lobby.get(key, false))
+		box.disabled = not admin
+		box.toggled.connect(_on_sandbox_option_toggled.bind(key))
+		_sandbox_rows.add_child(box)
+
+	if not admin:
+		var note := Label.new()
+		note.add_theme_font_size_override("font_size", 13)
+		note.modulate = Color(0.52, 0.55, 0.60)
+		note.text = "Only the host can change these."
+		_sandbox_rows.add_child(note)
+
+
+func _on_sandbox_option_toggled(pressed: bool, key: String) -> void:
+	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%d" % [key, 1 if pressed else 0])
+
+
+# --- in-match sandbox debug panel (D-0xx) --------------------------------
+#
+# A dev tool, not a player feature: only ever visible when the server says
+# sandbox mode is on for this match, and built once like every other HUD
+# layer rather than per frame.
+
+const SANDBOX_RESOURCE_GRANT_LABEL := 1000  # mirrors server.gd's CHEAT_RESOURCE_GRANT
+
+## A real separate OS window (not a CanvasLayer overlay) — it used to sit
+## on top of the game HUD and could overlap the selection panel, the
+## minimap, or anything else already anchored to a screen corner. A
+## `Window` node opens as its own native window instead, movable and
+## closable independently of the main one, so it can never collide with
+## in-game UI again.
+var _debug_window: Window
+var _debug_status_label: Label
+var _debug_visible_last := false
+
+## "" (off), "unit", or "building" — which cheat, if any, the next left
+## click on the ground fires. Stays armed after firing (does not clear
+## itself), so spawning several waves or several buildings in a row does
+## not mean re-opening a picker each time; a right-click or the Cancel
+## button disarms it, mirroring how `_placing`'s escape hatch already
+## works for ordinary building placement.
+var _cheat_arm_kind: String = ""
+var _cheat_arm_id: String = ""
+var _cheat_arm_count: int = 1
+
+
+func _build_debug_panel() -> void:
+	_debug_window = Window.new()
+	_debug_window.title = "Sandbox — Dev Tools"
+	_debug_window.size = Vector2i(300, 440)
+	# Near the main window rather than wherever the OS defaults to, so it
+	# does not open off-screen or stacked exactly on top of the game.
+	_debug_window.position = DisplayServer.window_get_position() + Vector2i(40, 60)
+	_debug_window.visible = false
+	# The window's own close button hides it rather than freeing it (there
+	# is only ever one; freeing would mean rebuilding the whole panel to
+	# get it back) — and drops whatever cheat was armed, the same as
+	# right-clicking the game world already does, so a closed panel can
+	# never leave a spawn mode silently active.
+	_debug_window.close_requested.connect(func():
+		_debug_window.hide()
+		_on_cheat_cancel_pressed())
+	add_child(_debug_window)
+
+	var col := VBoxContainer.new()
+	col.position = Vector2(12.0, 10.0)
+	col.custom_minimum_size = Vector2(272.0, 0.0)
+	col.add_theme_constant_override("separation", 6)
+	_debug_window.add_child(col)
+
+	var title := Label.new()
+	title.text = "SANDBOX"
+	title.add_theme_font_size_override("font_size", 16)
+	col.add_child(title)
+
+	var resources_button := _styled_button(
+		"+%d all resources" % SANDBOX_RESOURCE_GRANT_LABEL, Color(0.55, 0.7, 0.5))
+	resources_button.pressed.connect(_on_cheat_add_resources_pressed)
+	col.add_child(resources_button)
+
+	col.add_child(HSeparator.new())
+
+	var unit_label := Label.new()
+	unit_label.text = "Spawn units — arm, then click the ground:"
+	unit_label.add_theme_font_size_override("font_size", 13)
+	unit_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(unit_label)
+
+	var unit_row := HBoxContainer.new()
+	unit_row.add_theme_constant_override("separation", 6)
+	col.add_child(unit_row)
+	var unit_picker := OptionButton.new()
+	for archetype in TRAIN_KEYS.values():
+		unit_picker.add_item(String(archetype))
+	unit_row.add_child(unit_picker)
+	var count_box := SpinBox.new()
+	count_box.min_value = 1
+	count_box.max_value = CHEAT_SPAWN_MAX_COUNT_LABEL
+	count_box.value = 1
+	count_box.custom_minimum_size = Vector2(56.0, 0.0)
+	unit_row.add_child(count_box)
+	var unit_arm_button := _styled_button("Arm", Color(0.6, 0.6, 0.8))
+	unit_arm_button.pressed.connect(func():
+		if unit_picker.selected < 0:
+			return
+		_cheat_arm_kind = "unit"
+		_cheat_arm_id = unit_picker.get_item_text(unit_picker.selected)
+		_cheat_arm_count = int(count_box.value)
+		_debug_status_label.text = "Armed: %d x %s — click the ground (right-click cancels)" \
+			% [_cheat_arm_count, _cheat_arm_id])
+	unit_row.add_child(unit_arm_button)
+
+	col.add_child(HSeparator.new())
+
+	var building_label := Label.new()
+	building_label.text = "Spawn a COMPLETE building — arm, then click:"
+	building_label.add_theme_font_size_override("font_size", 13)
+	building_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(building_label)
+
+	var building_row := HBoxContainer.new()
+	building_row.add_theme_constant_override("separation", 6)
+	col.add_child(building_row)
+	var building_picker := OptionButton.new()
+	var defs := BuildingSim.all_defs()
+	for def in defs:
+		building_picker.add_item(def.display_name)
+	building_row.add_child(building_picker)
+	var building_arm_button := _styled_button("Arm", Color(0.7, 0.6, 0.5))
+	building_arm_button.pressed.connect(func():
+		var idx := building_picker.selected
+		if idx < 0 or idx >= defs.size():
+			return
+		_cheat_arm_kind = "building"
+		_cheat_arm_id = String((defs[idx] as BuildingDef).id)
+		_debug_status_label.text = "Armed: %s — click the ground (right-click cancels)" \
+			% _cheat_arm_id)
+	building_row.add_child(building_arm_button)
+
+	var cancel_button := _styled_button("Cancel spawn mode", Color(0.7, 0.4, 0.4))
+	cancel_button.pressed.connect(_on_cheat_cancel_pressed)
+	col.add_child(cancel_button)
+
+	_debug_status_label = Label.new()
+	_debug_status_label.add_theme_font_size_override("font_size", 12)
+	_debug_status_label.modulate = Color(0.9, 0.85, 0.4)
+	_debug_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(_debug_status_label)
+
+
+## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
+## COUNT enforces — kept as its own constant here (not shared across the
+## client/server boundary the way NetProtocol constants are) since it
+## only shapes the SpinBox's range, not correctness: the server clamps
+## again regardless.
+const CHEAT_SPAWN_MAX_COUNT_LABEL := 20
+
+
+func _on_cheat_add_resources_pressed() -> void:
+	if not _connected:
+		return
+	_peer.send(0, NetProtocol.encode_cheat_add_resources(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+func _on_cheat_cancel_pressed() -> void:
+	_cheat_arm_kind = ""
+	if _debug_status_label != null:
+		_debug_status_label.text = ""
+
+
+## Fires whichever cheat is armed at the clicked cell. Returns true if the
+## click was consumed (armed at all and over real ground) — false lets the
+## caller fall through to ordinary selection/placement handling, the same
+## contract `_place_armed_building` already has.
+func _fire_armed_cheat(screen_position: Vector2) -> bool:
+	if not _connected or _state.space == null:
+		return false
+	var cell := _cell_under(screen_position)
+	if cell.x < 0:
+		return false
+	var cell_index := _state.space.index(cell)
+
+	match _cheat_arm_kind:
+		"unit":
+			_peer.send(0, NetProtocol.encode_cheat_spawn_unit(
+				_cheat_arm_id, cell_index, _cheat_arm_count), ENetPacketPeer.FLAG_RELIABLE)
+		"building":
+			_peer.send(0, NetProtocol.encode_cheat_spawn_building(_cheat_arm_id, cell_index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		_:
+			return false
+	return true
+
+
+## Shows the panel only once the server confirms sandbox mode is actually
+## on AND a match is running — a lobby has nothing to spawn units into,
+## and a client that decided this for itself would be trusting its own
+## copy of a server-owned fact (D-002).
+func _refresh_debug_panel() -> void:
+	if _debug_window == null:
+		return
+	var showing: bool = bool(_state.lobby.get("sandbox", false)) and not _state.in_lobby()
+	if showing and not _debug_visible_last:
+		# Sandbox mode just turned on (or a match just started with it
+		# already on) — open automatically. Does NOT run every frame
+		# sandbox stays on, so a player who closes the window themselves
+		# is not fighting it reopening on the very next refresh.
+		_debug_window.show()
+	elif not showing:
+		_debug_window.hide()
+		if _debug_visible_last:
+			_on_cheat_cancel_pressed()
+	_debug_visible_last = showing
 
 
 func _seat_row(seat: Dictionary, index: int) -> Control:

@@ -18,6 +18,13 @@ extends Node3D
 const ROW_SPACING := 7.0
 const COLUMN_SPACING := 5.5
 const SOLDIERS_PER_SQUAD := 12
+# D-076: the building roster grew from 4 to 9 with the wall/gate/garrison
+# family. The camera framing below was tuned for 4 and silently clipped the
+# ends of a wider row rather than failing — exactly the class of defect
+# this file's own docstring warns about ("the picture is meant to be looked
+# at"), so both the spacing and the camera were widened together to fit the
+# whole roster, not just the buildings that used to exist.
+const BUILDING_SPACING := 4.2
 
 @export var seconds: float = 1.5
 @export var out_path: String = "res://artifacts/models-godot.png"
@@ -57,7 +64,7 @@ func _build_buildings() -> void:
 		instance.mesh = mesh
 		instance.material_override = UnitMesh.static_material_for(
 			colours[i % colours.size()])
-		var at := Vector3((float(i) - float(defs.size() - 1) / 2.0) * 6.4, 0.0, 6.5)
+		var at := Vector3((float(i) - float(defs.size() - 1) / 2.0) * BUILDING_SPACING, 0.0, 6.5)
 		if _terrain_sampler.is_valid():
 			at.y = _terrain_sampler.call(at.x, at.z)
 		instance.position = at
@@ -125,9 +132,9 @@ func _parse_arguments() -> void:
 
 func _build_environment() -> void:
 	var camera := Camera3D.new()
-	camera.position = Vector3(0.0, 12.5, 24.0)
+	camera.position = Vector3(0.0, 14.0, 30.0)
 	camera.rotation_degrees = Vector3(-27.0, 0.0, 0.0)
-	camera.fov = 50.0
+	camera.fov = 62.0
 	add_child(camera)
 	camera.make_current()
 
