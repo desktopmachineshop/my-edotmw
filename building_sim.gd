@@ -266,18 +266,28 @@ func access_direction_at(cell: int) -> int:
 
 
 ## Cells a LIVING building currently blocks GROUND movement through
-## (D-076). Differs from occupied_cells() only for an open gate: the gate
-## still stands there (still occupies its cell for placement/combat/
-## occupied_cells() purposes), but a squad can walk through it while it is
-## open, so its cell is excluded here even though occupied_cells() still
-## reports it. server._refresh_passability() reads this, not
-## occupied_cells(), to build the ground-passable array.
+## (D-076). Differs from occupied_cells() in two ways — an open gate still
+## stands there (still occupies its cell for placement/combat/
+## occupied_cells() purposes) but a squad can walk through it while it is
+## open, and (playtest fix) a wall-family segment under construction
+## doesn't block AT ALL yet. Walls are built in long drag-built chains,
+## and blocking on founding could seal the builder itself into a pocket
+## with no path to the next segment in its own queue — reported as
+## gatherers trapped against the wall they were still building.
+## footprint_radius == 0 is the established wall-family signal (see
+## client.gd's _snapped_placement_cell); once complete
+## (`_progress >= 1.0`) a segment blocks exactly as before, including
+## against its own builder — that's what a gate is for.
+## server._refresh_passability() reads this, not occupied_cells(), to
+## build the ground-passable array.
 func blocking_cells() -> PackedInt32Array:
 	var out := PackedInt32Array()
 	for i in range(_cell.size()):
 		if _destroyed[i] == 1:
 			continue
 		if _defs[i].is_gate and _gate_open[i] == 1:
+			continue
+		if _defs[i].footprint_radius == 0 and _progress[i] < 1.0:
 			continue
 		out.append(_cell[i])
 	return out

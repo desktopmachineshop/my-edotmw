@@ -993,6 +993,31 @@ func test_a_wall_blocks_ground_movement_for_free() -> void:
 		"a living wall must block its own cell")
 
 
+func test_a_wall_under_construction_does_not_block() -> void:
+	# Playtest fix: walls are built in long drag-built chains, and blocking
+	# from the moment of founding could seal the builder itself into a
+	# pocket with no path to the next segment in its own queue — reported
+	# as gatherers trapped against the wall they were still building.
+	# footprint_radius == 0 buildings (the wall family) skip blocking until
+	# `_progress` reaches 1.0; every other building is unaffected.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+	var wall_cell := Vector2i(10, 6)
+	var hall_cell := Vector2i(12, 6)
+	var wall := buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell)
+	buildings.add_building(BuildingSim.def_by_id(&"town_centre"), 1, hall_cell)
+
+	assert_false(buildings.blocking_cells().has(space.index(wall_cell)),
+		"an unfinished wall must not block — its builder could be sealed in by its own chain")
+	assert_true(buildings.blocking_cells().has(space.index(hall_cell)),
+		"this fix is wall-family only — an ordinary building still blocks while under construction")
+
+	buildings.advance_construction(BuildingSim.def_by_id(&"wall").build_time)
+	assert_true(buildings.is_complete(wall), "setup: the wall should have finished")
+	assert_true(buildings.blocking_cells().has(space.index(wall_cell)),
+		"a COMPLETE wall blocks exactly as before, including against its own builder")
+
+
 func test_an_open_gate_stops_blocking_but_a_closed_one_still_does() -> void:
 	var space := TorusSpace.new(32, 16, 1.0)
 	var buildings := BuildingSim.new(space)

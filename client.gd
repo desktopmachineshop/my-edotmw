@@ -116,6 +116,13 @@ var _hud_scale_override := 0.0
 ## map keeps the illusion intact.
 var _camera_max_height := CAMERA_MAX_HEIGHT
 
+## Playtest fix: WorldLook's depth fog is tuned against a camera height
+## range, and `_camera_max_height` is only known once terrain is built —
+## kept so `_build_terrain()` can re-derive the fog density for THIS map's
+## actual camera ceiling (see `fog_density_for`'s doc) instead of the
+## Standard-map default baked into the Environment built at startup.
+var _world_environment: WorldEnvironment = null
+
 ## Cells this player has ever seen. Fog of war on the client side: the map
 ## starts black and is revealed by line of sight, and once revealed stays
 ## revealed (terrain does not move). Derived locally from our own squads'
@@ -228,9 +235,9 @@ func _ready() -> void:
 
 	add_child(WorldLook.make_sun())
 
-	var environment := WorldEnvironment.new()
-	environment.environment = WorldLook.make_environment()
-	add_child(environment)
+	_world_environment = WorldEnvironment.new()
+	_world_environment.environment = WorldLook.make_environment()
+	add_child(_world_environment)
 
 	_terrain_root = Node3D.new()
 	add_child(_terrain_root)
@@ -567,6 +574,16 @@ func _build_terrain() -> void:
 		space, CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT)
 	_camera_height = minf(_camera_height, _camera_max_height)
 
+	# Playtest fix: WorldLook's depth fog was tuned once, against the
+	# Standard map's ~31-unit max_camera_height, and never revisited once
+	# _camera_max_height became per-map. A Huge map reaches D-045's 90-unit
+	# ceiling, and the SAME density at that height fogs out most of the
+	# view — reported as "just a grey landscape". Re-derived here, now that
+	# THIS map's actual ceiling is known, rather than the startup default.
+	if _world_environment != null and _world_environment.environment != null:
+		_world_environment.environment.fog_density = \
+			WorldLook.fog_density_for(_camera_max_height)
+
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
 	print("client: built %d terrain chunks" % _terrain_root.get_child_count())
@@ -624,12 +641,36 @@ func _refresh_squads() -> void:
 		var centre := _state.squad_world_position(squad_id, _now)
 		if _state.terrain_sampler.is_valid():
 			centre.y = _state.terrain_sampler.call(centre.x, centre.z)
+
+		# Playtest fix: the margin was a flat CULL_MARGIN_PIXELS tested
+		# against the squad's single anchor point — the same defect
+		# `_select_nearest`'s own fix describes ("a forty-man line... many
+		# metres across... clicking a soldier you could plainly see
+		# selected nothing"), but here it hides soldiers who are still
+		# genuinely on screen the instant the anchor crosses the margin, a
+		# formation's own true size never entering into it. Reported as
+		# units vanishing before they finish leaving the viewport. Grown
+		# by the formation's own on-screen radius, exactly the fix
+		# selection already got (see `_screen_radius_of`) — a wide "Sparse"
+		# or "Ring" formation is a wide target for culling too, not just
+		# for a click.
+		var cull_margin := CULL_MARGIN_PIXELS
+		if not _camera.is_position_behind(centre):
+			var comp_info: Dictionary = _state.composition.get(squad_id, {})
+			var world_radius: float = Formation.footprint(
+				String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
+				float(comp_info.get("spacing", 1.0)))["radius"]
+			var edge := centre + Vector3(world_radius, 0.0, 0.0)
+			if world_radius > 0.0 and not _camera.is_position_behind(edge):
+				cull_margin += _camera.unproject_position(centre).distance_to(
+					_camera.unproject_position(edge))
+
 		# Every lattice copy, not just the nearest to the look-at point.
 		# The torus is shallower in z than it is wide, so more than one
 		# copy is routinely on screen and "nearest" picks the wrong one —
 		# which showed up in play as half the screen rendering no units.
 		var offset = RenderCull.visible_offset(
-			_camera, offsets, centre, CULL_MARGIN_PIXELS, viewport_size)
+			_camera, offsets, centre, cull_margin, viewport_size)
 		if offset == null:
 			unit.visible = false
 			continue
@@ -3406,22 +3447,24 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"label": "Target\nShift+Right-click an enemy",
 			"kind": "target_select", "id": &"",
 		})
-	# D-076: a gate's mode is always shown (so a player can see and switch
-	# it), and the direct open/close toggle only appears in manual mode —
-	# an auto-mode gate ignores that order server-side anyway (see
-	# `_handle_order_gate_state`), so offering it here would be a button
-	# that quietly does nothing.
+	# Playtest fix: explicit Auto/Locked/Open modes, one button each,
+	# rather than a "Mode: Auto"<->"Manual" toggle plus a SEPARATE
+	# Open/Close button that only appeared once already in Manual —
+	# reaching "always open" from Auto took two clicks, and nothing on
+	# screen named the Manual+closed state "Locked" at all. The active
+	# mode is marked "* ", the same convention `_squad_control_actions`
+	# already uses for the current formation.
 	if def.is_gate:
 		var gate_mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
-		out.append({
-			"label": "Mode: %s" % ("Auto" if gate_mode == BuildingSim.GATE_MODE_AUTO else "Manual"),
-			"kind": "gate_mode", "id": &"",
-		})
+		var gate_open := bool(info.get("gate_open", false))
+		var current_key := "auto"
 		if gate_mode == BuildingSim.GATE_MODE_MANUAL:
-			var gate_open := bool(info.get("gate_open", false))
+			current_key = "open" if gate_open else "locked"
+		for mode_entry in GATE_MODE_BUTTONS:
 			out.append({
-				"label": "Close gate" if gate_open else "Open gate",
-				"kind": "gate_state", "id": &"",
+				"label": ("* " if String(mode_entry["key"]) == current_key else "") \
+					+ String(mode_entry["label"]),
+				"kind": "gate_set", "id": mode_entry["key"],
 			})
 	return out
 
@@ -3465,6 +3508,18 @@ func _squad_control_actions(def_id: StringName) -> Array:
 	if def != null and def.carry_capacity > 0:
 		out.append({"label": "Gather\nor right-click a node", "kind": "gather", "id": &""})
 	return out
+
+
+## The three explicit gate modes offered in the selection panel (playtest
+## fix) — see the `def.is_gate` branch of `_building_actions` below for
+## why this replaced a Mode toggle plus a separate Open/Close button.
+## "locked"/"open" both mean GATE_MODE_MANUAL server-side; the key here is
+## client-only vocabulary that also tells the two apart.
+const GATE_MODE_BUTTONS := [
+	{"key": "auto", "label": "Auto"},
+	{"key": "locked", "label": "Locked"},
+	{"key": "open", "label": "Open"},
+]
 
 
 ## Category display order and labels for the build menu (playtest fix) —
@@ -3557,34 +3612,35 @@ func _on_action_pressed(index: int) -> void:
 			# `_finish_target_pick`, mirroring `_placing`'s ghost-follows-
 			# cursor arm/click split for building placement.
 			_targeting_building = _selected_building
-		"gate_mode":
-			_toggle_gate_mode()
-		"gate_state":
-			_toggle_gate_state()
+		"gate_set":
+			_set_gate(String(action["id"]))
 
 
-## D-076: flip the selected gate between manual and automatic control.
-func _toggle_gate_mode() -> void:
+## Playtest fix: switch the selected gate directly to one of
+## GATE_MODE_BUTTONS' three modes, replacing a separate mode-toggle and
+## open/close-toggle that took two clicks to reach "always open" and never
+## named "manual and closed" as its own state ("Locked").
+##
+## "locked"/"open" both mean GATE_MODE_MANUAL server-side, so switching to
+## either sends BOTH the mode order (skipped if already manual) and the
+## state order — reliable and on one channel, so the server sees mode
+## before state whenever both are sent. `_handle_order_gate_state` only
+## takes effect in manual mode (see server.gd), which is exactly why mode
+## has to land first rather than being a fire-and-forget pair.
+func _set_gate(mode_key: String) -> void:
 	if not _connected or _selected_building < 0:
 		return
 	var info: Dictionary = _state.buildings.get(_selected_building, {})
-	var current := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
-	var next := BuildingSim.GATE_MODE_MANUAL \
-		if current == BuildingSim.GATE_MODE_AUTO else BuildingSim.GATE_MODE_AUTO
-	_peer.send(0, NetProtocol.encode_order_gate_mode(_selected_building, next),
-		ENetPacketPeer.FLAG_RELIABLE)
-
-
-## D-076: open/close the selected gate directly. Only takes effect
-## server-side while the gate is in manual mode — see
-## `_handle_order_gate_state` in server.gd.
-func _toggle_gate_state() -> void:
-	if not _connected or _selected_building < 0:
-		return
-	var info: Dictionary = _state.buildings.get(_selected_building, {})
-	var open := not bool(info.get("gate_open", false))
-	_peer.send(0, NetProtocol.encode_order_gate_state(_selected_building, open),
-		ENetPacketPeer.FLAG_RELIABLE)
+	var wanted_mode := BuildingSim.GATE_MODE_AUTO if mode_key == "auto" \
+		else BuildingSim.GATE_MODE_MANUAL
+	var current_mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+	if current_mode != wanted_mode:
+		_peer.send(0, NetProtocol.encode_order_gate_mode(_selected_building, wanted_mode),
+			ENetPacketPeer.FLAG_RELIABLE)
+	if wanted_mode == BuildingSim.GATE_MODE_MANUAL:
+		_peer.send(0, NetProtocol.encode_order_gate_state(
+				_selected_building, mode_key == "open"),
+			ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## The build segment's own version of `_set_actions` — see

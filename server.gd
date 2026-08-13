@@ -457,6 +457,16 @@ func _process(delta: float) -> void:
 		# where a razed town hall used to be.
 		if not _sim.destroyed_buildings.is_empty():
 			_refresh_passability()
+		# Playtest fix: a wall-family building only blocks ground movement
+		# once complete (BuildingSim.blocking_cells) — an unfinished
+		# segment doesn't yet, so a builder walking a drag-built chain
+		# can't be sealed into a pocket by its own still-under-
+		# construction wall. That makes completion, not just placement or
+		# destruction, a passability-changing event; without this refresh
+		# the flow field would keep treating a just-finished wall as open
+		# until some unrelated building change happened to touch it.
+		if not _sim.completed_buildings.is_empty():
+			_refresh_passability()
 		_update_auto_gates()
 		_advance_pending_builds()
 		_advance_match()
