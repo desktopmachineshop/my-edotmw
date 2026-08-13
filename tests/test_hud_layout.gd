@@ -82,10 +82,11 @@ func test_a_16_9_window_reproduces_the_hand_tuned_layout() -> void:
 
 
 func test_the_panel_keeps_its_hand_tuned_position_at_the_reference_size() -> void:
-	# The literals this file replaced, asserted rather than described:
-	# panel at (12, 408), 430x300.
+	# The panel is now a WIDE bar (the chip design needs the room), full
+	# width minus margins, rather than a narrow corner card.
 	var panel: Rect2 = _laid_out(HudLayout.REFERENCE)["panel"]
-	assert_eq(panel, Rect2(12.0, 408.0, 430.0, 300.0))
+	assert_eq(panel, Rect2(12.0, 720.0 - HudLayout.PANEL_HEIGHT - 12.0,
+		1280.0 - 24.0, HudLayout.PANEL_HEIGHT))
 
 
 # --- scale ------------------------------------------------------------
@@ -97,6 +98,13 @@ func test_scale_grows_with_the_window_but_is_bounded() -> void:
 	# tiny one stops being legible.
 	assert_eq(HudLayout.scale_for(Vector2(7680.0, 4320.0)), HudLayout.MAX_SCALE)
 	assert_eq(HudLayout.scale_for(Vector2(320.0, 200.0)), HudLayout.MIN_SCALE)
+
+
+func test_min_window_size_is_the_reference_at_the_scale_floor() -> void:
+	# 1280x720 * MIN_SCALE — the smallest window `scale_for` still treats as
+	# "shrink the HUD to match" rather than "the HUD no longer fits".
+	assert_eq(HudLayout.min_window_size(),
+		Vector2i(HudLayout.REFERENCE * HudLayout.MIN_SCALE))
 
 
 func test_scale_follows_the_smaller_dimension() -> void:
@@ -122,15 +130,67 @@ func test_an_ultrawide_still_reaches_both_edges() -> void:
 
 # --- pieces that must not collide -------------------------------------
 
-func test_the_minimap_sits_between_the_bar_and_the_panel() -> void:
+func test_the_minimap_sits_inside_the_ring() -> void:
+	# The compass and the minimap were merged into one widget (the chosen
+	# reference synthesis: "compass on the minimap ring"). The minimap no
+	# longer lives in its own bottom-left box — it is centred inside the
+	# ring that replaced the old top-right compass dial.
+	#
+	# True only for a square-ish minimap (the default here) — the ring is
+	# sized around the SHORTER side (see RING_MIN_SIZE's doc comment), so an
+	# oblong minimap's longer side is expected to run past the ring's own
+	# bounding box; that overflow is what the crop shader hides. See
+	# `test_the_ring_follows_the_minimap_s_shorter_dimension` for that case.
 	for viewport in SIZES:
 		var at := _laid_out(viewport)
 		var minimap: Rect2 = at["minimap"]
-		var panel: Rect2 = at["panel"]
-		assert_true(minimap.position.y >= HudLayout.BAR_HEIGHT,
-			"minimap clears the resource bar at %s" % viewport)
-		assert_true(minimap.position.y + minimap.size.y <= panel.position.y + 0.01,
-			"minimap clears the selection panel at %s" % viewport)
+		var ring: Rect2 = at["ring"]
+		assert_true(ring.encloses(minimap) or ring.grow(0.01).encloses(minimap),
+			"the minimap sits inside the ring that bounds it at %s" % viewport)
+
+
+func test_the_ring_clears_the_resource_bar() -> void:
+	for viewport in SIZES:
+		var at := _laid_out(viewport)
+		var ring: Rect2 = at["ring"]
+		assert_true(ring.position.y >= HudLayout.BAR_HEIGHT,
+			"ring clears the resource bar at %s" % viewport)
+
+
+func test_the_ring_crop_radius_stays_inside_the_border() -> void:
+	# The crop circle (the minimap) must sit strictly inside the ring's own
+	# outer edge, with room left for the border band drawn over it —
+	# otherwise the map would be visible bleeding past its own frame.
+	var ring_diameter := HudLayout.RING_MIN_SIZE
+	var crop_r := HudLayout.ring_crop_radius(ring_diameter)
+	assert_true(crop_r > 0.0, "the crop radius is positive at the minimum ring size")
+	assert_true(crop_r + HudLayout.RING_PADDING <= ring_diameter * 0.5,
+		"the crop radius plus the border band fits inside the ring")
+
+
+func test_the_ring_follows_the_minimap_s_shorter_dimension() -> void:
+	# Sizing the ring from the DIAGONAL (circumscribing the whole rectangle)
+	# was the actual bug behind a minimap that reportedly "still looks
+	# square inside a circle": a ring sized to just contain a rectangle's
+	# diagonal comes out almost exactly the size of that rectangle's own
+	# bounding circle, so a crop at that radius clips next to nothing — the
+	# ring LOOKED like a frame but the crop inside it was a no-op. Sizing
+	# from the shorter side instead means an oblong minimap gets a
+	# meaningfully SMALLER ring than a square one of the same width, which
+	# is what makes the crop actually visible.
+	var square: Rect2 = _laid_out(Vector2(1920.0, 1080.0), Vector2(216.0, 216.0))["ring"]
+	var wide: Rect2 = _laid_out(Vector2(1920.0, 1080.0), Vector2(216.0, 80.0))["ring"]
+	assert_true(wide.size.x < square.size.x,
+		"a wide minimap gets a smaller ring than a square one of the same width")
+
+
+func test_the_ring_diameter_tracks_the_minimap_s_shorter_side_directly() -> void:
+	# Chosen so the shorter side alone (plus the border) already exceeds
+	# RING_MIN_SIZE — otherwise the floor clamp, not the formula being
+	# tested, would decide the answer.
+	var minimap := Vector2(300.0, 200.0)
+	var ring: Rect2 = _laid_out(Vector2(1920.0, 1080.0), minimap)["ring"]
+	assert_almost_eq(ring.size.x, minf(minimap.x, minimap.y) + HudLayout.RING_PADDING * 2.0, 0.01)
 
 
 func test_a_very_short_window_keeps_the_panel_clear_of_the_bar() -> void:
@@ -203,23 +263,12 @@ func test_the_status_readout_never_runs_under_the_menu_button() -> void:
 			"status ends before the menu button at %s" % viewport)
 
 
-func test_the_compass_clears_the_bar_and_the_minimap() -> void:
-	for viewport in SIZES:
-		var at := _laid_out(viewport)
-		var compass: Rect2 = at["compass"]
-		var minimap: Rect2 = at["minimap"]
-		assert_true(compass.position.y >= HudLayout.BAR_HEIGHT,
-			"compass clears the resource bar at %s" % viewport)
-		assert_false(compass.intersects(minimap),
-			"compass does not overlap the minimap at %s" % viewport)
-
-
-func test_the_compass_stays_on_screen_on_a_narrow_window() -> void:
+func test_the_ring_stays_on_screen_on_a_narrow_window() -> void:
 	# It is placed from the RIGHT edge, so a window narrower than the
-	# compass plus its margin is where it would walk off to the left.
+	# ring plus its margin is where it would walk off to the left.
 	var at := HudLayout.compute(Vector2(60.0, 400.0), Vector2(216.0, 216.0))
-	var compass: Rect2 = at["compass"]
-	assert_true(compass.position.x >= 0.0, "compass never starts off-screen")
+	var ring: Rect2 = at["ring"]
+	assert_true(ring.position.x >= 0.0, "ring never starts off-screen")
 
 
 # --- the compass dial -------------------------------------------------
@@ -305,15 +354,99 @@ func test_the_squad_count_omits_an_unknown_cap_rather_than_printing_zero() -> vo
 	assert_eq(HudLayout.squad_count_text(12, 0), "12 squads")
 
 
-func test_action_buttons_fill_rows_of_three_inside_the_panel() -> void:
-	for i in range(9):
+func test_action_buttons_fill_rows_of_three_inside_the_actions_column() -> void:
+	# Relative to the ACTIONS COLUMN's own corner now, not the whole panel's
+	# — the panel grew into a wide bar with a title column and a chip strip
+	# to its left, and the button grid only ever owned a fixed-width slice
+	# of the right-hand end of it (see `actions_column_rect`).
+	#
+	# Only the control segment's own capacity (ACTION_CONTROL_ROWS * 3 = 6)
+	# is checked here — see `test_build_buttons_sit_in_their_own_segment_
+	# below_the_divider` for the segment underneath it.
+	var control_slots := HudLayout.ACTION_CONTROL_ROWS * HudLayout.ACTION_COLUMNS
+	for i in range(control_slots):
 		var slot := HudLayout.action_slot(i)
 		assert_true(slot.x + HudLayout.ACTION_BUTTON.x
-			<= HudLayout.PANEL_SIZE.x - HudLayout.PANEL_PAD + 0.01,
-			"button %d fits the panel's width" % i)
-		assert_true(slot.y + HudLayout.ACTION_BUTTON.y <= HudLayout.PANEL_SIZE.y,
-			"button %d fits the panel's height" % i)
+			<= HudLayout.ACTIONS_COLUMN_WIDTH + HudLayout.PANEL_PAD + 0.01,
+			"button %d fits the actions column's width" % i)
+		assert_true(slot.y + HudLayout.ACTION_BUTTON.y <= HudLayout.BUILD_DIVIDER_Y,
+			"button %d stays above the divider" % i)
 	assert_almost_eq(HudLayout.action_slot(0).y, HudLayout.action_slot(2).y, 0.01,
 		"the first three buttons share a row")
 	assert_true(HudLayout.action_slot(3).y > HudLayout.action_slot(0).y,
 		"the fourth button starts a new row")
+
+
+func test_build_buttons_sit_in_their_own_segment_below_the_divider() -> void:
+	# Formation/behaviour and building were split into two visually
+	# distinct segments on request — a shared grid where "Build Barracks"
+	# happened to be ordered after "Stop" read as one undifferentiated
+	# list rather than two different KINDS of order.
+	var divider := HudLayout.build_divider_rect()
+	assert_almost_eq(divider.position.y, HudLayout.BUILD_DIVIDER_Y, 0.01)
+	assert_almost_eq(divider.size.x, HudLayout.ACTIONS_COLUMN_WIDTH, 0.01,
+		"the divider spans the actions column's width")
+
+	for i in range(6):
+		var slot := HudLayout.build_slot(i)
+		assert_true(slot.y >= HudLayout.BUILD_ACTIONS_Y - 0.01,
+			"build button %d sits at or below where the build segment starts" % i)
+		assert_true(slot.y > divider.position.y,
+			"build button %d sits below the divider" % i)
+		assert_true(slot.x + HudLayout.ACTION_BUTTON.x
+			<= HudLayout.ACTIONS_COLUMN_WIDTH + HudLayout.PANEL_PAD + 0.01,
+			"build button %d fits the actions column's width" % i)
+
+	var last_control := HudLayout.action_slot(
+		HudLayout.ACTION_CONTROL_ROWS * HudLayout.ACTION_COLUMNS - 1)
+	assert_true(HudLayout.build_slot(0).y > last_control.y + HudLayout.ACTION_BUTTON.y,
+		"the build segment starts below the last control row, not overlapping it")
+
+
+func test_the_build_segment_fits_inside_the_panel() -> void:
+	var last_row := HudLayout.build_slot(HudLayout.ACTION_COLUMNS - 1)
+	assert_true(last_row.y + HudLayout.ACTION_BUTTON.y <= HudLayout.PANEL_HEIGHT,
+		"a single row of build buttons fits inside PANEL_HEIGHT")
+
+
+# --- the wide panel's columns (chips) ----------------------------------
+
+func test_the_title_and_actions_columns_do_not_overlap() -> void:
+	for viewport in SIZES:
+		var panel: Rect2 = _laid_out(viewport)["panel"]
+		var title := HudLayout.title_column_rect(panel)
+		var actions := HudLayout.actions_column_rect(panel)
+		assert_true(title.position.x + title.size.x <= actions.position.x + 0.01,
+			"title column ends before the actions column starts at %s" % viewport)
+
+
+func test_the_chip_strip_fills_the_gap_between_the_other_two_columns() -> void:
+	var panel: Rect2 = _laid_out(HudLayout.REFERENCE)["panel"]
+	var title := HudLayout.title_column_rect(panel)
+	var strip := HudLayout.chip_strip_rect(panel)
+	var actions := HudLayout.actions_column_rect(panel)
+	assert_almost_eq(strip.position.x, title.position.x + title.size.x + HudLayout.PANEL_PAD,
+		0.01)
+	assert_almost_eq(strip.position.x + strip.size.x, actions.position.x - HudLayout.PANEL_PAD,
+		0.01)
+
+
+func test_chip_columns_is_never_zero() -> void:
+	# A strip too narrow to fit even one chip must still report one column,
+	# not zero — a caller dividing an index by a zero column count is a
+	# crash, and a chip drawn slightly off the edge of a tiny window is a
+	# far smaller failure than the whole selection panel going blank.
+	assert_eq(HudLayout.chip_columns(0.0), 1)
+	assert_eq(HudLayout.chip_columns(-50.0), 1)
+
+
+func test_chips_fill_rows_left_to_right() -> void:
+	var columns := 3
+	assert_eq(HudLayout.chip_slot(0, columns), Vector2.ZERO)
+	assert_almost_eq(HudLayout.chip_slot(1, columns).x,
+		HudLayout.CHIP_SIZE.x + HudLayout.CHIP_GAP, 0.01)
+	assert_almost_eq(HudLayout.chip_slot(1, columns).y, 0.0, 0.01,
+		"the second chip stays on the first row")
+	assert_almost_eq(HudLayout.chip_slot(3, columns).x, 0.0, 0.01,
+		"the fourth chip wraps to a new row")
+	assert_true(HudLayout.chip_slot(3, columns).y > 0.0, "the wrapped row is lower")

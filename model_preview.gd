@@ -138,25 +138,10 @@ func _build_environment() -> void:
 	add_child(camera)
 	camera.make_current()
 
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-52.0, -38.0, 0.0)
-	# Mirrors client.gd's D-076 lighting pass — warm sun, shadows on — so
-	# this preview actually previews what a match looks like rather than
-	# its own separately-tuned rig.
-	light.light_color = Color(1.0, 0.95, 0.82)
-	light.light_energy = 1.1
-	# No shadow_enabled: measured out in client.gd (see its comment) — this
-	# preview mirrors what actually ships.
-	add_child(light)
+	add_child(WorldLook.make_sun(true))
 
 	var world := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.16, 0.17, 0.20)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.42, 0.48, 0.58)
-	env.ambient_light_energy = 0.75
-	world.environment = env
+	world.environment = WorldLook.make_environment(true)
 	add_child(world)
 
 

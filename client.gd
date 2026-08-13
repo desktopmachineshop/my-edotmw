@@ -22,11 +22,12 @@ const CAMERA_ZOOM_STEP := 4.0
 const CAMERA_MIN_HEIGHT := 8.0
 const CAMERA_MAX_HEIGHT := 90.0
 
-## How far Q/E turn the view per press. 15 degrees: small enough to aim a
-## formation along a ridge, large enough that getting back to north is a
-## few taps rather than a chore — and the compass is one click for that
-## anyway.
-const CAMERA_YAW_STEP := deg_to_rad(15.0)
+## How fast Q/E turn the view while held, in radians/second — continuous,
+## the same as WASD panning, rather than a fixed step per keypress. A full
+## turn in four seconds: fast enough that turning around does not feel
+## like a chore, slow enough to aim a formation along a ridge without
+## overshooting it.
+const CAMERA_YAW_RATE := deg_to_rad(90.0)
 ## Ctrl+wheel turns by this much per notch. Finer than Q/E, because a
 ## wheel invites small adjustments.
 const CAMERA_YAW_WHEEL_STEP := deg_to_rad(7.5)
@@ -225,39 +226,21 @@ func _ready() -> void:
 	add_child(_camera)
 	_update_camera()
 
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-55.0, -35.0, 0.0)
-	# D-076's lighting pass: a warm sun against a cool ambient fill (below)
-	# is what gives `diffuse_toon`'s lit/shadow split something to actually
-	# separate — a neutral-white light over neutral ambient reads as flat
-	# grey banding rather than a stylised day. Shadows are on for the same
-	# reason: toon shading without a shadow to draw is just a colour clamp.
-	light.light_color = Color(1.0, 0.95, 0.82)
-	light.light_energy = 1.1
-	# shadow_enabled was tried and measured out: 35.66ms -> 71.15ms mean
-	# frame time at D-018's 1,000-squad target (bench-render), undoing
-	# most of M5's own optimisation pass in one line. `diffuse_toon` and
-	# the RIM terms below cost nothing extra (same light-model evaluation,
-	# no added draw calls) and are what's actually shipping here.
-	add_child(light)
+	add_child(WorldLook.make_sun())
 
 	var environment := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.09, 0.11, 0.16)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	# Cool fill, complementary to the warm sun above. `diffuse_toon`'s
-	# shadow band has a hard edge rather than Lambert's soft falloff, so it
-	# needs MORE ambient than a smooth-shaded scene did to keep a
-	# building's shadow side from crushing to near-black — first pass at
-	# 0.5 did exactly that on every face angled away from the sun.
-	env.ambient_light_color = Color(0.42, 0.48, 0.58)
-	env.ambient_light_energy = 0.75
-	environment.environment = env
+	environment.environment = WorldLook.make_environment()
 	add_child(environment)
 
 	_terrain_root = Node3D.new()
 	add_child(_terrain_root)
+
+	# Not in capture mode: a headless render is given its resolution on the
+	# command line (see `_run_seconds`'s own doc comment above), and a
+	# minimum that fought a smaller requested size would make screenshots
+	# depend on this constant rather than on what was asked for.
+	if _run_seconds <= 0.0:
+		get_window().min_size = HudLayout.min_window_size()
 
 	# Settings first: the HUD reads `_hud_scale_override` while laying
 	# itself out, so loading them afterwards would build the HUD once at
@@ -267,6 +250,7 @@ func _ready() -> void:
 	_build_game_menu()
 	_build_lobby_ui()
 	_build_debug_panel()
+	_build_defeat_screen()
 
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
@@ -311,10 +295,20 @@ func _process(delta: float) -> void:
 	_update_placement_ghost()
 	_update_hud()
 	_update_minimap()
+	# Every frame, NOT throttled with the rest of the minimap (see
+	# `_update_minimap`'s own MINIMAP_INTERVAL comment — fog and squad dots
+	# genuinely do not need more than 4 Hz). The camera-follow point does:
+	# it tracks continuous WASD/Q-E motion, and updating it at the same
+	# throttled rate made the whole ring visibly jump every 250ms instead
+	# of panning smoothly — reported as the minimap being "jerky". Cheap
+	# on its own (one shader uniform, no image work), so it does not need
+	# the throttle the expensive per-pixel redraw exists for.
+	_centre_minimap_crop_on_camera()
 	_seat_capture_ai()
 	_refresh_chat()
 	_refresh_lobby()
 	_refresh_debug_panel()
+	_refresh_defeat()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -617,7 +611,19 @@ func _refresh_squads() -> void:
 		# throwing away work we had just paid for.
 		# One curve sample to place the squad, against ~40 to derive its
 		# soldiers — so the cheap question is asked first.
+		#
+		# Terrain-corrected: `squad_world_position` always answers at
+		# y=0 (see `_squad_footprint`'s own comment on the same gap), and
+		# the cull test below projects THIS point to screen space to
+		# decide on/off screen. On flat ground that is invisible; on a
+		# hill the y=0 point can project to a screen position well away
+		# from where the (correctly elevated) soldiers actually render,
+		# culling a squad that is still visibly on screen or keeping one
+		# that is not — reported as units vanishing well inside the
+		# viewport rather than at its edge.
 		var centre := _state.squad_world_position(squad_id, _now)
+		if _state.terrain_sampler.is_valid():
+			centre.y = _state.terrain_sampler.call(centre.x, centre.z)
 		# Every lattice copy, not just the nearest to the look-at point.
 		# The torus is shallower in z than it is wide, so more than one
 		# copy is routinely on screen and "nearest" picks the wrong one —
@@ -678,42 +684,25 @@ func _refresh_squads() -> void:
 		# approximate a line, a wedge and a loose scatter with one circle.
 		_stamp_selection_discs(squad_id, decorated)
 
+	# Squad ghosts are hidden rather than drawn — a deliberate visual choice
+	# (units ghost only as a rendering concept; buildings' persistent-
+	# explored fog already never un-knows a building without any fade at
+	# all, and that stays exactly as it is). This is a display decision
+	# only: `_state.ghost_squad_ids()`/`ghost_info()` are untouched, so the
+	# protocol, the composition hash and D-025's conceal/reveal wire events
+	# still work precisely as documented — nothing here is skipped, only
+	# what happens on screen with a squad once it has one.
+	#
+	# Explicitly hidden rather than merely left unwritten: doing nothing
+	# would leave the node showing whatever transforms the LIVE pass above
+	# last gave it, frozen but still fully opaque — exactly the "drawn as
+	# though it were live" state D-026 criterion 11 was written to rule
+	# out, just reached by a different route (never touching it again,
+	# rather than rendering it wrong).
 	for squad_id in _state.ghost_squad_ids():
-		var ghost := _state.ghost_info(squad_id)
-		if ghost.is_empty() or not _state.curves.has(squad_id):
-			continue
-
-		var unit := _squad_node(squad_id, String(ghost["def_id"]))
-		_set_ghost_look(unit, true)
-
-		# Ghosts need placing and showing exactly as live squads do, and
-		# this pass did neither: it reused the shared node from
-		# `_squad_node` and left `position` and `visible` at whatever the
-		# LIVE pass had last set. A squad culled while visible therefore
-		# stayed invisible after it became a ghost, permanently, and a
-		# ghost across the seam drew at its canonical position — a whole
-		# map away from where the player last saw it.
-		var ghost_centre := _state.squad_world_position(squad_id, _now)
-		var ghost_offset = RenderCull.visible_offset(
-			_camera, offsets, ghost_centre, CULL_MARGIN_PIXELS, viewport_size)
-		if ghost_offset == null:
+		var unit: PrimitiveUnit = _squad_nodes.get(squad_id, null)
+		if unit != null:
 			unit.visible = false
-			continue
-		unit.visible = true
-		unit.position = ghost_offset
-
-		# Derived straight from Formation, like ClientState.soldier_transforms
-		# does for a live squad — but reading the GHOST's last-known alive/
-		# shape/spacing (D-025 part 3), not `composition`, which no longer
-		# has an entry for this id at all. The curve itself was left
-		# untouched on conceal (ClientState._handle_squad_conceal's own
-		# comment) and StateCurve holds at its last keyframe past its end
-		# time, so this samples exactly the frozen last-known position —
-		# not a guess, not an extrapolation.
-		var transforms := Formation.soldier_transforms(
-			_state.curves[squad_id], _now, int(ghost["alive"]), String(ghost["shape"]),
-			float(ghost["spacing"]), _state.space, _state.terrain_sampler)
-		unit.set_slot_transforms(transforms)
 
 
 ## Find-or-build the PrimitiveUnit for a squad id, shared by the live and
@@ -1074,7 +1063,45 @@ var _progress_bar_fill: ColorRect = null
 var _progress_caption: Label = null
 var _queue_swatches: Array[ColorRect] = []
 var _queue_caption: Label = null
+## Formation/behaviour — the actions column's top segment.
 var _action_buttons: Array[Button] = []
+## Building — the actions column's bottom segment, visually split from
+## `_action_buttons` by `_build_actions_divider`/`_build_actions_caption`
+## (see `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why). Buildings
+## themselves never populate this — a building's own "what can I build"
+## question is answered by the chip strip's Train tiles instead (see
+## `_show_train_chips`), not by this segment.
+var _build_action_buttons: Array[Button] = []
+var _build_actions: Array = []
+var _build_actions_divider: ColorRect = null
+var _build_actions_caption: Label = null
+
+## Chips: one per squad, or — past `HudLayout.CHIP_COLLAPSE_THRESHOLD` — one
+## per ARCHETYPE, in the middle of the wide selection panel (the reference
+## design's synthesis, "chips ... in the live view"). Also doubles as the
+## building-selected panel's "Train" tile row, which is the same shape of
+## information (a name, a count/cost, a fraction) wearing a different
+## label — see `_show_chips`.
+const CHIP_POOL_SIZE := 16
+var _chip_panels: Array[Panel] = []
+var _chip_names: Array[Label] = []
+var _chip_counts: Array[Label] = []
+var _chip_bar_backs: Array[ColorRect] = []
+var _chip_bar_fills: Array[ColorRect] = []
+## Chip index -> archetype id, set only in "Train" mode (`_show_train_chips`)
+## and empty otherwise, so `_on_chip_input` knows both WHETHER a click
+## should do anything and WHAT it trains. Kept separate from the composition
+## chips' own data because those are informational only — see `_show_chips`.
+var _chip_train_ids: Array = []
+## Shared between every chip — see `_build_chip_pool`'s doc comment on why
+## a Panel needs this done by hand.
+var _chip_style_normal: StyleBoxFlat = null
+var _chip_style_hover: StyleBoxFlat = null
+## Re-derived every resize by `_layout_chips`; read every frame by
+## `_show_chips` to decide how many of the pool to show and where.
+var _panel_rect := Rect2()
+var _chip_strip_rect := Rect2()
+var _chip_columns := 1
 
 var _selection_rect: ColorRect = null
 ## The drag box's four border bars: top, bottom, left, right.
@@ -1122,12 +1149,32 @@ var _hud_scale := 1.0
 var _hud_status: Label = null
 var _hud_notice: Label = null
 ## The compass dial and the top bar's Menu button (D-063).
-var _compass: Control = null
+## The nav ring (compass + minimap merged — see `_build_nav_ring`): a
+## backdrop disc, the minimap texture, and a frame drawn over both.
+var _nav_ring_back: Control = null
+var _nav_ring_frame: Control = null
+## Absolute HUD-space bounds of the ring, the same convention
+## `_minimap_bounds` uses — owned here rather than read off a Control's
+## reported size, for the reason `_minimap_bounds` itself is (see its own
+## doc comment).
+var _nav_ring_bounds := Rect2()
+## Crops `_minimap_rect`'s texture to a circle (see `_build_nav_ring`);
+## its uniforms are kept in sync with the ring's geometry in `_layout_hud`.
+var _minimap_crop_material: ShaderMaterial = null
 var _menu_button: Button = null
 ## The in-game menu, and the settings pane inside it. Its own CanvasLayer
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
 var _settings_panel: Control = null
+## The defeat screen (see `_build_defeat_screen`/`_refresh_defeat`).
+var _defeat_layer: CanvasLayer = null
+var _defeat_time_label: Label = null
+## Whether this player has ever had a living squad or building since the
+## match left the lobby — guards against the one-frame race at match
+## start, before the founding party's squad has arrived over the wire.
+var _ever_had_army := false
+var _defeated := false
+var _defeat_time_held := 0.0
 var _notice_seen := 0
 var _notice_until := 0.0
 var _building_nodes := {}
@@ -1175,13 +1222,9 @@ var _minimap_updated_at := -1.0
 ## project has already lost an afternoon to sliders that rendered full
 ## because their sized children were being re-laid-out underneath them.
 ## Explicit positions inside a plain Panel do exactly what they say.
-func _panel(rect: Rect2, colour: Color) -> Panel:
+func _panel(rect: Rect2, colour: Color = HudTheme.BG_PANEL) -> Panel:
 	var panel := Panel.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = colour
-	style.border_color = Color(0.45, 0.62, 0.8, 0.85)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(4)
+	var style := HudTheme.stylebox(colour, HudTheme.accent_border(0.45), 1, HudTheme.RADIUS_LG)
 	panel.add_theme_stylebox_override("panel", style)
 	panel.position = rect.position
 	panel.size = rect.size
@@ -1191,12 +1234,12 @@ func _panel(rect: Rect2, colour: Color) -> Panel:
 
 ## An outlined label. The map underneath is pale sand and dark forest in
 ## equal measure, so plain white is unreadable over half of it.
-func _hud_label(at: Vector2, size := 15) -> Label:
+func _hud_label(at: Vector2, size := HudTheme.BODY_SIZE, colour := HudTheme.TEXT) -> Label:
 	var label := Label.new()
 	label.position = at
-	label.add_theme_color_override("font_color", Color(0.93, 0.95, 1.0))
-	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
-	label.add_theme_constant_override("outline_size", 4)
+	label.add_theme_color_override("font_color", colour)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
+	label.add_theme_constant_override("outline_size", 3)
 	label.add_theme_font_size_override("font_size", size)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return label
@@ -1204,15 +1247,15 @@ func _hud_label(at: Vector2, size := 15) -> Label:
 
 ## A labelled bar. Two sized ColorRects — a back and a fill — for the same
 ## reason `_panel` is not a PanelContainer.
-func _bar(at: Vector2, width: float, colour: Color) -> Array:
+func _bar(at: Vector2, width: float, colour: Color, height := 5.0) -> Array:
 	var back := ColorRect.new()
 	back.position = at
-	back.size = Vector2(width, 12.0)
-	back.color = Color(0.08, 0.1, 0.14, 0.9)
+	back.size = Vector2(width, height)
+	back.color = HudTheme.BORDER
 	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var fill := ColorRect.new()
 	fill.position = at + Vector2(1.0, 1.0)
-	fill.size = Vector2(width - 2.0, 10.0)
+	fill.size = Vector2(width - 2.0, height - 2.0)
 	fill.color = colour
 	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return [back, fill]
@@ -1222,70 +1265,157 @@ func _bar(at: Vector2, width: float, colour: Color) -> Array:
 ## sets them all against the real window, and does so again on every
 ## resize.
 func _build_selection_panel(layer: CanvasLayer) -> void:
-	_selection_panel = _panel(Rect2(Vector2.ZERO, HudLayout.PANEL_SIZE),
-		Color(0.05, 0.07, 0.12, 0.86))
+	_selection_panel = _panel(Rect2(Vector2.ZERO, Vector2(HudLayout.REFERENCE.x, HudLayout.PANEL_HEIGHT)))
 	layer.add_child(_selection_panel)
 
-	_selection_title = _hud_label(Vector2.ZERO, 18)
+	_selection_title = _hud_label(Vector2.ZERO, HudTheme.TITLE_SIZE, HudTheme.TEXT_BRIGHT)
 	layer.add_child(_selection_title)
-	_selection_detail = _hud_label(Vector2.ZERO, 13)
+	_selection_detail = _hud_label(Vector2.ZERO, HudTheme.MONO_SIZE, HudTheme.TEXT_FAINT)
 	layer.add_child(_selection_detail)
 
-	var bar_width := HudLayout.PANEL_SIZE.x - HudLayout.PANEL_PAD * 2.0
-	var health := _bar(Vector2.ZERO, bar_width, Color(0.35, 0.85, 0.4))
+	var bar_width := HudLayout.TITLE_COLUMN_WIDTH - HudLayout.PANEL_PAD * 2.0
+	var health := _bar(Vector2.ZERO, bar_width, HudTheme.GOOD)
 	_health_bar_back = health[0]
 	_health_bar_fill = health[1]
 	layer.add_child(_health_bar_back)
 	layer.add_child(_health_bar_fill)
 
-	var progress := _bar(Vector2.ZERO, bar_width, Color(0.4, 0.7, 1.0))
+	var progress := _bar(Vector2.ZERO, bar_width, HudTheme.ACCENT_BRIGHT)
 	_progress_bar_back = progress[0]
 	_progress_bar_fill = progress[1]
 	layer.add_child(_progress_bar_back)
 	layer.add_child(_progress_bar_fill)
-	_progress_caption = _hud_label(Vector2.ZERO, 12)
+	_progress_caption = _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE, HudTheme.TEXT_DIM)
 	layer.add_child(_progress_caption)
 
 	# The production queue, as one swatch per waiting unit. A count would
 	# not show that four spearmen are stacked behind a militia.
-	_queue_caption = _hud_label(Vector2.ZERO, 12)
+	_queue_caption = _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE, HudTheme.TEXT_GHOST)
 	layer.add_child(_queue_caption)
 	for i in range(8):
 		var swatch := ColorRect.new()
-		swatch.size = Vector2(16.0, 16.0)
-		swatch.color = Color(0.55, 0.75, 1.0, 0.9)
+		swatch.size = Vector2(14.0, 14.0)
+		swatch.color = HudTheme.accent_wash(0.9)
 		swatch.visible = false
 		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_queue_swatches.append(swatch)
 		layer.add_child(swatch)
 
-	# Action buttons, in a grid. Pooled and relabelled rather than rebuilt,
-	# because the selection changes constantly and churning Controls in
-	# _process is how a frame budget goes.
-	for i in range(9):
-		var button := Button.new()
-		button.size = HudLayout.ACTION_BUTTON
-		button.visible = false
-		# Styled rather than left at Godot's default grey, which reads as
-		# an unfinished editor widget sitting on top of the game.
-		for state in ["normal", "hover", "pressed", "disabled"]:
-			var style := StyleBoxFlat.new()
-			style.bg_color = {
-				"normal": Color(0.13, 0.19, 0.29, 0.95),
-				"hover": Color(0.22, 0.34, 0.5, 0.98),
-				"pressed": Color(0.3, 0.48, 0.68, 1.0),
-				"disabled": Color(0.1, 0.12, 0.16, 0.7),
-			}[state]
-			style.border_color = Color(0.45, 0.62, 0.8, 0.9)
-			style.set_border_width_all(1)
-			style.set_corner_radius_all(3)
-			style.content_margin_left = 8.0
-			button.add_theme_stylebox_override(state, style)
-		button.add_theme_color_override("font_color", Color(0.93, 0.96, 1.0))
-		button.add_theme_font_size_override("font_size", 12)
-		button.pressed.connect(_on_action_pressed.bind(i))
+	_build_chip_pool(layer)
+
+	# Two pools, not one: formation/behaviour (control) and building are
+	# visually separate segments of the actions column (see
+	# `HudLayout.BUILD_DIVIDER_Y`'s doc comment), each with its own
+	# pooled, relabelled-not-rebuilt buttons for the reason every pool in
+	# this HUD is — the selection changes constantly and churning Controls
+	# in _process is how a frame budget goes.
+	for i in range(6):
+		var button := _build_action_button(i, _on_action_pressed)
 		_action_buttons.append(button)
 		layer.add_child(button)
+
+	_build_actions_divider = ColorRect.new()
+	_build_actions_divider.color = HudTheme.RULE
+	_build_actions_divider.visible = false
+	_build_actions_divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(_build_actions_divider)
+
+	_build_actions_caption = _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE - 1, HudTheme.TEXT_GHOST)
+	_build_actions_caption.text = "BUILD"
+	_build_actions_caption.visible = false
+	layer.add_child(_build_actions_caption)
+
+	for i in range(6):
+		var button := _build_action_button(i, _on_build_action_pressed)
+		_build_action_buttons.append(button)
+		layer.add_child(button)
+
+
+## One action button — a formation/behaviour button and a build button are
+## the same widget with a different click target, so this is the one place
+## either pool's styling is written.
+func _build_action_button(index: int, on_pressed: Callable) -> Button:
+	var button := Button.new()
+	button.size = HudLayout.ACTION_BUTTON
+	button.visible = false
+	# Styled rather than left at Godot's default grey, which reads as
+	# an unfinished editor widget sitting on top of the game.
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var style := StyleBoxFlat.new()
+		style.bg_color = {
+			"normal": Color(0.0, 0.0, 0.0, 0.0),
+			"hover": HudTheme.accent_wash(0.16),
+			"pressed": HudTheme.accent_wash(0.28),
+			"disabled": Color(0.0, 0.0, 0.0, 0.0),
+		}[state]
+		style.border_color = HudTheme.accent_border(0.5) if state != "disabled" \
+			else HudTheme.BORDER
+		style.set_border_width_all(1)
+		style.set_corner_radius_all(HudTheme.RADIUS_SM)
+		style.content_margin_left = 9.0
+		style.content_margin_right = 4.0
+		button.add_theme_stylebox_override(state, style)
+	button.add_theme_color_override("font_color", HudTheme.TEXT_MUTED)
+	button.add_theme_color_override("font_disabled_color", HudTheme.TEXT_DISABLED)
+	button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE - 1)
+	button.pressed.connect(on_pressed.bind(index))
+	return button
+
+
+## The chip pool — pooled and relabelled for the same reason the action
+## buttons are (see above): a selection can change every tick, and a chip
+## is common enough on screen (up to `CHIP_POOL_SIZE` of them, redrawn
+## every frame the selection is non-empty) that churning Controls for it
+## would be a real cost, not a theoretical one.
+func _build_chip_pool(layer: CanvasLayer) -> void:
+	# A Panel has no built-in hover state the way Button does — its
+	# StyleBoxFlat is one fixed look regardless of the mouse. Making chips
+	# clickable (see `_on_chip_input`) without also giving them a hover
+	# response reads as a broken button: a control that takes clicks but
+	# never visibly reacts to the cursor sitting over it. Swapped by hand
+	# on `mouse_entered`/`mouse_exited` instead, and only while the chip is
+	# actually clickable — a composition chip hovering into the accent
+	# colour would promise an action that does not exist.
+	_chip_style_normal = HudTheme.stylebox(
+		HudTheme.BG_VOID.lightened(0.02), HudTheme.BORDER, 1, HudTheme.RADIUS_SM)
+	_chip_style_hover = HudTheme.stylebox(
+		HudTheme.accent_wash(0.14), HudTheme.accent_border(0.7), 1, HudTheme.RADIUS_SM)
+
+	for i in range(CHIP_POOL_SIZE):
+		var chip := Panel.new()
+		chip.size = HudLayout.CHIP_SIZE
+		chip.visible = false
+		# STOP rather than IGNORE, and always connected: a chip only ever
+		# receives a click while it is actually visible (a hidden Control
+		# does not participate in hit-testing), and whether that click DOES
+		# anything is gated by `_chip_train_ids` inside the handler, not by
+		# swapping the filter per selection state.
+		chip.mouse_filter = Control.MOUSE_FILTER_STOP
+		chip.gui_input.connect(_on_chip_input.bind(i))
+		chip.mouse_entered.connect(_on_chip_hover.bind(i, true))
+		chip.mouse_exited.connect(_on_chip_hover.bind(i, false))
+		chip.add_theme_stylebox_override("panel", _chip_style_normal)
+		_chip_panels.append(chip)
+		layer.add_child(chip)
+
+		var name_label := _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE - 1, HudTheme.TEXT)
+		name_label.clip_text = true
+		# A long name ("Founding Party") hard-clipped mid-word read as a
+		# broken/misaligned label rather than as a name that just didn't
+		# fit — an ellipsis is the honest version of the same truncation.
+		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_chip_names.append(name_label)
+		layer.add_child(name_label)
+
+		var count_label := _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE, HudTheme.TEXT_DIM)
+		_chip_counts.append(count_label)
+		layer.add_child(count_label)
+
+		var chip_bar := _bar(Vector2.ZERO, HudLayout.CHIP_SIZE.x - 18.0, HudTheme.GOOD, 4.0)
+		_chip_bar_backs.append(chip_bar[0])
+		_chip_bar_fills.append(chip_bar[1])
+		layer.add_child(chip_bar[0])
+		layer.add_child(chip_bar[1])
 
 
 func _build_hud() -> void:
@@ -1302,7 +1432,7 @@ func _build_hud() -> void:
 	# minimap and the world markers use, so a pink pile on the ground and
 	# a pink counter in the bar are the same resource by construction.
 	_resource_bar = _panel(Rect2(0.0, 0.0, HudLayout.REFERENCE.x, HudLayout.BAR_HEIGHT),
-		Color(0.05, 0.07, 0.12, 0.82))
+		HudTheme.BG_PANEL_SOFT)
 	layer.add_child(_resource_bar)
 	var kinds := [Economy.ResourceKind.FOOD, Economy.ResourceKind.WOOD,
 		Economy.ResourceKind.GOLD, Economy.ResourceKind.STONE]
@@ -1310,12 +1440,12 @@ func _build_hud() -> void:
 	for i in range(kinds.size()):
 		var swatch := ColorRect.new()
 		swatch.color = _node_colour(kinds[i])
-		swatch.size = Vector2(16.0, 16.0)
+		swatch.size = Vector2(HudLayout.RESOURCE_SWATCH_SIZE, HudLayout.RESOURCE_SWATCH_SIZE)
 		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_resource_swatches.append(swatch)
 		layer.add_child(swatch)
 
-		var value := _hud_label(Vector2.ZERO)
+		var value := _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE, HudTheme.TEXT)
 		value.text = "%s —" % names[i]
 		_resource_labels.append(value)
 		layer.add_child(value)
@@ -1323,7 +1453,7 @@ func _build_hud() -> void:
 	# Right-aligned against the window's edge rather than left at a fixed
 	# x, so it neither collides with the stone count on a narrow window nor
 	# strands itself mid-bar on a wide one.
-	_hud_status = _hud_label(Vector2.ZERO)
+	_hud_status = _hud_label(Vector2.ZERO, HudTheme.MONO_SIZE, HudTheme.TEXT_MUTED)
 	_hud_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(_hud_status)
 
@@ -1331,15 +1461,14 @@ func _build_hud() -> void:
 	# actually noticed. In the corner they were routinely missed. Centred
 	# by spanning the window and centring the text — the previous fixed x
 	# was only centred on the one window size it was written for.
-	_hud_notice = _hud_label(Vector2.ZERO)
+	_hud_notice = _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE, HudTheme.WARNING)
 	_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.82, 0.45))
 	layer.add_child(_hud_notice)
 
 	_build_selection_panel(layer)
 
 	_selection_rect = ColorRect.new()
-	_selection_rect.color = Color(0.4, 0.8, 1.0, 0.18)
+	_selection_rect.color = HudTheme.accent_wash(0.18)
 	_selection_rect.visible = false
 	_selection_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_selection_rect)
@@ -1356,7 +1485,7 @@ func _build_hud() -> void:
 	# children's anchors and the result silently ignores the size you set.
 	for _i in range(4):
 		var bar := ColorRect.new()
-		bar.color = Color(0.55, 0.9, 1.0, 0.95)
+		bar.color = HudTheme.ACCENT_BRIGHT
 		bar.visible = false
 		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_selection_edges.append(bar)
@@ -1391,9 +1520,8 @@ func _build_hud() -> void:
 	# blur the squad dots into the terrain they sit on.
 	_minimap_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	_minimap_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(_minimap_rect)
 
-	_build_compass(layer)
+	_build_nav_ring(layer)
 	_build_menu_button(layer)
 
 	# Place everything against the real window, and keep doing so. Without
@@ -1402,72 +1530,130 @@ func _build_hud() -> void:
 	_layout_hud()
 
 
-## The compass dial: which way is north, and one click to face that way.
+## The nav ring: the compass dial and the minimap MERGED into one widget
+## (the reference design's chosen synthesis — "compass on the minimap
+## ring"), which used to be two unrelated Controls in two different
+## corners.
 ##
-## A Control drawn through its own `draw` SIGNAL rather than a subclass
-## with a `_draw` override. The whole HUD is built in code (client.tscn is
-## a bare Node3D), and a one-file widget does not justify a new script on
-## disk — but it does need real drawing, because a needle that rotates is
-## not expressible as positioned rectangles the way every other piece of
-## this HUD is.
-func _build_compass(layer: CanvasLayer) -> void:
-	_compass = Control.new()
-	_compass.custom_minimum_size = Vector2(HudLayout.COMPASS_SIZE, HudLayout.COMPASS_SIZE)
-	_compass.size = _compass.custom_minimum_size
-	_compass.tooltip_text = "Click to face north  ·  Q/E or Ctrl+wheel to turn"
-	# MOUSE_FILTER_STOP, unlike everything else in this HUD: the compass is
-	# the one piece that is meant to be clicked rather than looked past.
-	_compass.mouse_filter = Control.MOUSE_FILTER_STOP
-	_compass.draw.connect(_draw_compass)
-	_compass.gui_input.connect(_on_compass_input)
-	layer.add_child(_compass)
+## Drawn in three layers, added as siblings in this exact order so Godot's
+## draw order (parent, then children/later-siblings, on top) does what a
+## painter would: a dark disc backdrop, the minimap's own texture over
+## that (visually CROPPED to a circle by `_minimap_crop_material`, so it
+## reads as sitting inside the ring rather than a rectangle floating
+## behind it), and the rim + cardinal letters + needle over both.
+##
+## The crop is a MASK, not a squash: `shaders/circular_crop.gdshader`
+## hides pixels outside a circle at the map's own unchanged scale, rather
+## than stretching a non-square map to fill one — the distortion this
+## project already spent an afternoon fixing once elsewhere stays fixed.
+## What is lost is peripheral map content the circle doesn't reach, which
+## is the trade a player explicitly asked for over the alternative (a
+## rectangular minimap poking past its own frame).
+##
+## Input is handled the same way the minimap's always has been — a raw
+## screen-position check against a stored bounds Rect2 in
+## `_handle_mouse_button`, not Godot's gui_input routing — because the two
+## widgets' hit regions now overlap (the rim surrounds the minimap) and a
+## `MOUSE_FILTER_STOP` control covering both would swallow minimap clicks
+## meant to jump the camera. See `_clicked_ring_rim`. The click hit-test
+## still uses `_minimap_bounds` (the map's own rect) unchanged — the crop
+## is cosmetic and does not shrink the clickable/jump-to area.
+func _build_nav_ring(layer: CanvasLayer) -> void:
+	_nav_ring_back = Control.new()
+	_nav_ring_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_nav_ring_back.draw.connect(_draw_nav_ring_back)
+	layer.add_child(_nav_ring_back)
+
+	_minimap_crop_material = ShaderMaterial.new()
+	_minimap_crop_material.shader = preload("res://shaders/circular_crop.gdshader")
+	_minimap_rect.material = _minimap_crop_material
+	layer.add_child(_minimap_rect)
+
+	_nav_ring_frame = Control.new()
+	_nav_ring_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_nav_ring_frame.draw.connect(_draw_nav_ring_frame)
+	layer.add_child(_nav_ring_frame)
 
 
-func _on_compass_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_LEFT:
-		_set_camera_yaw(0.0)
+## The dark disc the minimap and its rim sit on. Its own draw call (rather
+## than just letting the 3D view show through) because a map that does not
+## fill a full circle — true of most maps, which are wider than they are
+## tall — would otherwise leave the ring looking like a rendering bug
+## rather than a frame.
+func _draw_nav_ring_back() -> void:
+	var r := _nav_ring_back.size.x * 0.5
+	_nav_ring_back.draw_circle(Vector2(r, r), r, HudTheme.BG_PANEL)
 
 
-## Draw the dial. The ring and the cardinal letters turn with the view;
-## the needle stays pointing up the screen.
+## The border band and the cardinal letters. The ring TURNS and the
+## cardinal letters with it — "up the screen" is always the direction the
+## camera is currently facing, and the letters swing around that fixed
+## point rather than the other way round.
 ##
 ## That is the correct way round and worth stating, because the other way
 ## is an easy mistake to make and looks almost right: a compass answers
 ## "which way am I facing", so the WORLD's north moves around the dial
 ## while the direction you are looking stays fixed at the top. A dial with
-## a spinning needle over fixed letters is a magnetic compass, which is a
-## different instrument answering a different question.
-func _draw_compass() -> void:
-	var r := HudLayout.COMPASS_SIZE * 0.5
+## fixed letters and a spinning needle instead is a magnetic compass,
+## which is a different instrument answering a different question — this
+## one used to also draw that needle (a fixed vertical line, since "up the
+## screen" never moves) alongside the turning letters, and dropped it on
+## request; the letters alone already carry the same information.
+##
+## The band is a thick coloured arc, not a hairline — its INNER edge is
+## exactly `HudLayout.ring_crop_radius`, the same radius the minimap is
+## cropped to (see `_build_nav_ring`), so the map and its frame meet with
+## no gap and no overlap. The cardinal letters sit at the band's own
+## midline, inside that coloured ring rather than floating over whatever
+## happens to be behind them.
+func _draw_nav_ring_frame() -> void:
+	var r := _nav_ring_frame.size.x * 0.5
 	var centre := Vector2(r, r)
-	var rim := Color(0.45, 0.62, 0.8, 0.85)
+	var crop_r := HudLayout.ring_crop_radius(_nav_ring_frame.size.x)
+	var band_width := (r - 1.0) - crop_r
+	var band_radius := crop_r + band_width * 0.5
 
-	_compass.draw_circle(centre, r - 1.0, Color(0.05, 0.07, 0.12, 0.86))
-	_compass.draw_arc(centre, r - 1.0, 0.0, TAU, 48, rim, 1.5, true)
+	_nav_ring_frame.draw_arc(centre, band_radius, 0.0, TAU, 96,
+		HudTheme.accent_wash(0.92), band_width, true)
+	_nav_ring_frame.draw_arc(centre, r - 1.0, 0.0, TAU, 96,
+		HudTheme.ACCENT_BRIGHT, 1.5, true)
 
 	# North on the dial. Screen y grows downward while world +z does too,
 	# and the camera sits at +z looking back toward its target — so the
 	# world direction the player is facing appears UP the screen, and north
 	# lands at -yaw from vertical.
 	var font := ThemeDB.fallback_font
-	var size := 13
+	var size := HudTheme.TITLE_SIZE - 3
 	for i in range(4):
 		var label: String = ["N", "E", "S", "W"][i]
-		var at := centre + HudLayout.compass_offset(_camera_yaw, i, r - 12.0)
+		var at := centre + HudLayout.compass_offset(_camera_yaw, i, band_radius)
 		var measured := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
-		var tint := Color(1.0, 0.45, 0.4) if label == "N" else Color(0.75, 0.82, 0.92)
-		_compass.draw_string(font, at - Vector2(measured.x * 0.5, -measured.y * 0.35),
+		# Dark on the band's own warm colour, not light — the band reads as
+		# a solid amber ring, and the light tint every other label on this
+		# HUD uses would wash out against it. North stays picked out bright
+		# so it is still the one letter that reads at a glance.
+		var tint := HudTheme.TEXT_BRIGHT if label == "N" else HudTheme.BG_VOID
+		_nav_ring_frame.draw_string(font, at - Vector2(measured.x * 0.5, -measured.y * 0.35),
 			label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, tint)
 
-	# The fixed needle: where you are looking, always up.
-	_compass.draw_line(centre, centre - Vector2(0.0, r - 18.0),
-		Color(0.93, 0.96, 1.0), 2.0, true)
+
+## Whether a screen position landed on the ring's decorative rim — inside
+## its circle, but outside the minimap rect it frames. Kept separate from
+## `_minimap_cell_at` so the two hit regions, which now overlap, cannot be
+## confused for one another (see `_build_nav_ring`'s doc comment).
+func _clicked_ring_rim(screen_position: Vector2) -> bool:
+	if _nav_ring_bounds.size.x <= 0.0:
+		return false
+	var at := _to_hud(screen_position)
+	var centre := _nav_ring_bounds.position + _nav_ring_bounds.size * 0.5
+	if at.distance_to(centre) > _nav_ring_bounds.size.x * 0.5:
+		return false
+	return not _minimap_bounds.has_point(at)
 
 
 ## The Menu button, at the right end of the top bar.
 func _build_menu_button(layer: CanvasLayer) -> void:
-	_menu_button = _styled_button("Menu", Color(0.55, 0.62, 0.78))
+	_menu_button = _styled_button("Menu", HudTheme.NEUTRAL)
 	_menu_button.add_theme_font_size_override("font_size", 13)
 	_menu_button.pressed.connect(_toggle_game_menu)
 	layer.add_child(_menu_button)
@@ -1501,15 +1687,23 @@ func _layout_hud() -> void:
 	# differ, and using the automatic figure would lay the HUD out for a
 	# window shape that is not on screen.
 	var design := Vector2(maxf(viewport.x, 1.0), maxf(viewport.y, 1.0)) / _hud_scale
+	_layout_lobby(design)
 	var at := HudLayout.compute(design, _minimap_size)
 
 	var bar: Rect2 = at["resource_bar"]
 	_resource_bar.position = bar.position
 	_resource_bar.size = bar.size
+	# Centred on the font's own measured height, not a hand-tuned pixel
+	# offset — a magic number here is exactly what went stale and read as
+	# "header items not aligned" the last time BODY_SIZE changed and
+	# nothing here followed it.
+	var label_height := ThemeDB.fallback_font.get_height(HudTheme.BODY_SIZE)
 	for i in range(_resource_swatches.size()):
 		var slot := HudLayout.resource_slot(i)
 		_resource_swatches[i].position = slot
-		_resource_labels[i].position = slot + Vector2(24.0, -3.0)
+		_resource_labels[i].position = Vector2(
+			slot.x + HudLayout.RESOURCE_SWATCH_SIZE + 8.0,
+			slot.y + HudLayout.RESOURCE_SWATCH_SIZE * 0.5 - label_height * 0.5)
 
 	var status: Rect2 = at["status"]
 	_hud_status.position = status.position
@@ -1519,42 +1713,129 @@ func _layout_hud() -> void:
 	_menu_button.position = menu.position
 	_menu_button.size = menu.size
 
-	var compass: Rect2 = at["compass"]
-	_compass.position = compass.position
-	_compass.size = compass.size
-	_compass.queue_redraw()
+	# `_nav_ring_bounds` stays the ONE definition of where the ring is, the
+	# same reason `_minimap_bounds` is (see its doc comment) — it is also
+	# the hit-test rect `_clicked_ring_rim` reads.
+	_nav_ring_bounds = at["ring"]
+	_nav_ring_back.position = _nav_ring_bounds.position
+	_nav_ring_back.size = _nav_ring_bounds.size
+	_nav_ring_back.queue_redraw()
+	_nav_ring_frame.position = _nav_ring_bounds.position
+	_nav_ring_frame.size = _nav_ring_bounds.size
+	_nav_ring_frame.queue_redraw()
 
 	var notice: Rect2 = at["notice"]
 	_hud_notice.position = notice.position
 	_hud_notice.size = notice.size
 
-	var panel: Rect2 = at["panel"]
-	_selection_panel.position = panel.position
-	_selection_panel.size = panel.size
-	var pad := Vector2(HudLayout.PANEL_PAD, 0.0)
-	_selection_title.position = panel.position + pad + Vector2(0.0, HudLayout.TITLE_Y)
-	_selection_detail.position = panel.position + pad + Vector2(0.0, HudLayout.DETAIL_Y)
-	_place_bar(_health_bar_back, _health_bar_fill,
-		panel.position + pad + Vector2(0.0, HudLayout.HEALTH_Y))
-	_place_bar(_progress_bar_back, _progress_bar_fill,
-		panel.position + pad + Vector2(0.0, HudLayout.PROGRESS_Y))
-	_progress_caption.position = panel.position + pad \
-		+ Vector2(0.0, HudLayout.PROGRESS_CAPTION_Y)
-	_queue_caption.position = panel.position + pad \
-		+ Vector2(0.0, HudLayout.QUEUE_CAPTION_Y)
+	_panel_rect = at["panel"]
+	_selection_panel.position = _panel_rect.position
+	_selection_panel.size = _panel_rect.size
+
+	var title_col := HudLayout.title_column_rect(_panel_rect)
+	var pad := title_col.position + Vector2(HudLayout.PANEL_PAD, 0.0)
+	_selection_title.position = pad + Vector2(0.0, HudLayout.TITLE_Y)
+	_selection_title.size = Vector2(title_col.size.x - HudLayout.PANEL_PAD * 2.0, 20.0)
+	_selection_detail.position = pad + Vector2(0.0, HudLayout.DETAIL_Y)
+	_selection_detail.size = _selection_title.size
+	_place_bar(_health_bar_back, _health_bar_fill, pad + Vector2(0.0, HudLayout.HEALTH_Y))
+	_place_bar(_progress_bar_back, _progress_bar_fill, pad + Vector2(0.0, HudLayout.PROGRESS_Y))
+	_progress_caption.position = pad + Vector2(0.0, HudLayout.PROGRESS_CAPTION_Y)
+	_queue_caption.position = pad + Vector2(0.0, HudLayout.QUEUE_CAPTION_Y)
 	for i in range(_queue_swatches.size()):
-		_queue_swatches[i].position = panel.position + pad + Vector2(
-			float(i) * HudLayout.QUEUE_SWATCH_PITCH, HudLayout.QUEUE_SWATCH_Y)
+		# To the right of the queue caption's own text, not below it — the
+		# title column has no spare row left underneath (see the const's
+		# neighbouring comment in hud_layout.gd for the budget this fits).
+		_queue_swatches[i].position = pad + Vector2(
+			70.0 + float(i) * HudLayout.QUEUE_SWATCH_PITCH, HudLayout.QUEUE_SWATCH_Y - 1.0)
+
+	var actions_col := HudLayout.actions_column_rect(_panel_rect)
 	for i in range(_action_buttons.size()):
-		_action_buttons[i].position = panel.position + HudLayout.action_slot(i)
+		_action_buttons[i].position = actions_col.position + HudLayout.action_slot(i)
+
+	var divider := HudLayout.build_divider_rect()
+	_build_actions_divider.position = actions_col.position + divider.position
+	_build_actions_divider.size = divider.size
+	_build_actions_caption.position = actions_col.position \
+		+ Vector2(HudLayout.PANEL_PAD, HudLayout.BUILD_CAPTION_Y)
+	for i in range(_build_action_buttons.size()):
+		_build_action_buttons[i].position = actions_col.position + HudLayout.build_slot(i)
+
+	_layout_chips()
 
 	# `_minimap_bounds` stays the ONE definition of where the minimap is,
 	# because it is also the hit-test rect — reading the size back off the
-	# TextureRect once made the whole screen behave as minimap.
+	# TextureRect once made the whole screen behave as minimap. The crop
+	# shader is purely cosmetic and does not touch this rect, so clicking
+	# still works out to the map's full (uncropped) extent.
 	_minimap_bounds = at["minimap"]
 	_minimap_rect.position = _minimap_bounds.position
 	_minimap_rect.size = _minimap_bounds.size
 	_minimap_rect.custom_minimum_size = _minimap_bounds.size
+
+	if _minimap_crop_material != null:
+		var crop_r := HudLayout.ring_crop_radius(_nav_ring_bounds.size.x)
+		var ring_centre := _nav_ring_bounds.position + _nav_ring_bounds.size * 0.5
+		_minimap_crop_material.set_shader_parameter("rect_size", _minimap_bounds.size)
+		_minimap_crop_material.set_shader_parameter("centre_px",
+			ring_centre - _minimap_bounds.position)
+		_minimap_crop_material.set_shader_parameter("radius_px", crop_r)
+
+
+## Size the lobby to fill the design-space rect, explicitly — NOT with
+## anchors.
+##
+## Anchors on a Control with no Control ancestor resolve against the real,
+## UNSCALED viewport rect. `_lobby_layer` then scales everything inside it
+## again on top of that (the same transform `_hud_layer` gets, synced
+## above). Anchoring `_lobby_root` to "fill the parent" therefore sizes it
+## to the real window, and the CanvasLayer's transform shrinks that
+## AGAIN — so it only happens to reach the window's true edges when the
+## scale is exactly 1.0 (a 1280x720 window), and falls short at every
+## other size. Explicit position/size against `design` — the same
+## viewport-divided-by-scale space `HudLayout.compute` already lays the
+## HUD out against — is what makes the two scalings cancel out instead of
+## compounding.
+func _layout_lobby(design: Vector2) -> void:
+	if _lobby_backdrop == null:
+		return
+	_lobby_backdrop.size = design
+	_lobby_root.position = LOBBY_MARGIN
+	_lobby_root.size = Vector2(
+		maxf(design.x - LOBBY_MARGIN.x * 2.0, 0.0),
+		maxf(design.y - LOBBY_MARGIN.y * 2.0, 0.0))
+
+
+## Where the chip strip (see `_build_chip_pool`) sits, and how many columns
+## it has — both re-derived on every resize, since the strip's width (and
+## therefore its column count) depends on the window.
+func _layout_chips() -> void:
+	_chip_strip_rect = HudLayout.chip_strip_rect(_panel_rect)
+	_chip_columns = HudLayout.chip_columns(_chip_strip_rect.size.x)
+	var label_width := HudLayout.CHIP_SIZE.x - 16.0
+	# Measured from the font's own metrics, not hand-tuned pixel offsets —
+	# CHIP_SIZE grew when the fonts did (task 12) and this did not follow,
+	# which is what read as "alignment on the button is bad": the name
+	# label's box was shorter than its own 15px font's line height, so
+	# `clip_text` was cutting it. The resource bar had the identical bug
+	# for the identical reason; this is the same fix.
+	var name_height := ThemeDB.fallback_font.get_height(HudTheme.BODY_SIZE - 1)
+	var count_height := ThemeDB.fallback_font.get_height(HudTheme.CAPTION_SIZE)
+	var name_y := 8.0
+	var count_y := name_y + name_height + 2.0
+	var bar_y := count_y + count_height + 5.0
+	for i in range(_chip_panels.size()):
+		var chip_at := _chip_strip_rect.position + HudLayout.chip_slot(i, _chip_columns)
+		_chip_panels[i].position = chip_at
+		_chip_panels[i].size = HudLayout.CHIP_SIZE
+		_chip_names[i].position = chip_at + Vector2(8.0, name_y)
+		# `clip_text` needs an explicit size to clip TO — without one a
+		# Label defaults to zero-size and clips its text to nothing, which
+		# read as a chip with a cost or count on it but no name at all.
+		_chip_names[i].size = Vector2(label_width, name_height)
+		_chip_counts[i].position = chip_at + Vector2(8.0, count_y)
+		_chip_counts[i].size = Vector2(label_width, count_height)
+		_place_bar(_chip_bar_backs[i], _chip_bar_fills[i], chip_at + Vector2(8.0, bar_y))
 
 
 ## Move a two-piece bar, keeping the fill's 1px inset. Its WIDTH is set by
@@ -2551,94 +2832,220 @@ func _update_selection_panel() -> void:
 			int(health * 100.0),
 			"" if int(info["owner"]) == _state.player else "   (not yours)"]
 		_set_bar(_health_bar_back, _health_bar_fill, health,
-			Color(0.35, 0.85, 0.4) if health > 0.35 else Color(0.9, 0.4, 0.35))
+			HudTheme.GOOD if health > 0.35 else HudTheme.BAD)
 
+		# A building never offers anything for the BUILD segment — it is
+		# not itself buildable-from — so that segment stays hidden and the
+		# whole "Target" action (the one thing a building does offer)
+		# lives in the control segment instead.
+		_set_build_actions([])
 		if progress < 1.0:
+			_hide_chips()
 			_progress_caption.text = "Under construction"
-			_set_bar(_progress_bar_back, _progress_bar_fill, progress,
-				Color(0.95, 0.75, 0.3))
+			_set_bar(_progress_bar_back, _progress_bar_fill, progress, HudTheme.ACCENT_BRIGHT)
 		else:
 			actions = _building_actions(info, def)
 			_show_production(info)
+			# What the strip shows for a squad selection (each entry's own
+			# name and a fraction bar) does not fit what a building offers
+			# (a name and a COST) — same pool of Controls, different fields
+			# populated, rather than leaving the strip a dead gap in the
+			# middle of the panel.
+			_show_train_chips(def)
+			# "train" actions are dropped here, not merely duplicated —
+			# `_show_train_chips` just made the chips themselves clickable
+			# for exactly this order (see `_on_chip_input`), so keeping the
+			# equivalent action buttons around was two controls doing the
+			# same job side by side (reported as "two buttons for
+			# Gatherers"). Anything else the building offers (Target) stays.
+			actions = actions.filter(func(a): return String(a.get("kind", "")) != "train")
 		_set_actions(actions)
 		return
 
 	if _selected.is_empty():
+		_hide_chips()
 		_selection_title.text = "Nothing selected"
 		_selection_detail.text = "Click a squad or a building. Drag to box-select."
 		_set_actions([])
+		_set_build_actions([])
 		return
 
 	# A MIXED selection is named for what it contains, not for whichever
-	# squad happened to be clicked first.
-	#
-	# This read `_selected[0]`'s unit and printed that name against the
-	# whole count, so box-selecting an army of militia, archers and
-	# cavalry reported "Militia x9" — a readout that is confidently wrong
-	# rather than merely unhelpful, and one a player would act on. The
-	# strength bar had the same fault twice over: `squad_size` came from
-	# that one unit, so full strength for nine mixed squads was nine times
-	# a militia's size and the bar sat wherever that arithmetic landed.
+	# squad happened to be clicked first — see `_show_chips`, which is what
+	# actually names each archetype now. This just counts.
 	var counts := {}
 	var strength := 0
-	var full := 0
 	for squad in _selected:
 		strength += _state.alive_of(squad)
 		var id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
 		counts[id] = int(counts.get(id, 0)) + 1
-		var squad_def := UnitRoster.by_id(id)
-		if squad_def != null:
-			full += squad_def.squad_size
 
-	if counts.size() == 1:
-		var only := StringName(String(counts.keys()[0]))
-		var unit := UnitRoster.by_id(only)
-		_selection_title.text = "%s  x%d" % [
-			unit.display_name if unit != null else String(only), _selected.size()]
-	else:
-		_selection_title.text = "Mixed force  x%d" % _selected.size()
+	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
+	_selection_detail.text = "%d soldiers" % strength
 
-	_selection_detail.text = "%d soldiers  ·  %s" % [strength, _composition_summary(counts)]
-
-	# Strength as a bar too: "84 soldiers" means nothing without knowing
-	# what full strength was. Full strength is now summed per squad from
-	# each squad's OWN unit, so it is right for a mixed force.
-	if full > 0:
-		var fraction := clampf(float(strength) / float(full), 0.0, 1.0)
-		_set_bar(_health_bar_back, _health_bar_fill, fraction,
-			Color(0.35, 0.85, 0.4) if fraction > 0.35 else Color(0.9, 0.4, 0.35))
+	_show_chips(counts)
 
 	# Actions offered are the ones EVERY selected squad can do. Offering a
 	# build button because one founder is in the box would produce an
-	# order most of the selection must refuse.
-	_set_actions(_shared_squad_actions(counts.keys()))
+	# order most of the selection must refuse. Control and build are two
+	# separate intersections (and two separate segments — see
+	# `HudLayout.BUILD_DIVIDER_Y`'s doc comment), not one list split
+	# afterward, so a founder mixed with line infantry correctly loses
+	# Build entirely rather than showing a button only part of the
+	# selection can act on.
+	_set_actions(_shared_squad_actions(counts.keys(), _squad_control_actions))
+	_set_build_actions(_shared_squad_actions(counts.keys(), _squad_build_actions))
 
 
-## "3 Militia, 2 Archers" — what a mixed selection is made of, commonest
-## first so the shape of the force reads at a glance.
-func _composition_summary(counts: Dictionary) -> String:
-	var kinds := counts.keys()
-	kinds.sort_custom(func(a, b): return int(counts[a]) > int(counts[b]))
-	var parts := []
-	for id in kinds:
-		var unit := UnitRoster.by_id(StringName(String(id)))
-		parts.append("%d %s" % [int(counts[id]),
-			unit.display_name if unit != null else String(id)])
-	return ", ".join(parts)
+## Populate the chip strip: one chip per SQUAD up to the collapse
+## threshold, one per ARCHETYPE past it (the reference design's own
+## behaviour going from 4 to 20 selected squads — see
+## `HudLayout.CHIP_COLLAPSE_THRESHOLD`'s doc comment for why a chip per
+## individual squad stops being legible at that point).
+func _show_chips(counts: Dictionary) -> void:
+	# Informational only in this mode — see `_on_chip_input`.
+	_chip_train_ids.clear()
+	var per_squad := _selected.size() <= HudLayout.CHIP_COLLAPSE_THRESHOLD
+	var entries := []
+	if per_squad:
+		for squad in _selected:
+			var id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
+			var unit := UnitRoster.by_id(id)
+			entries.append({
+				"name": unit.display_name if unit != null else String(id),
+				"alive": _state.alive_of(squad),
+				"total": unit.squad_size if unit != null else 0,
+			})
+	else:
+		for id in counts.keys():
+			var unit := UnitRoster.by_id(StringName(String(id)))
+			var alive := 0
+			var total := 0
+			for squad in _selected:
+				var this_id := StringName(String(_state.composition.get(squad, {}).get("def_id", "")))
+				if this_id == StringName(String(id)):
+					alive += _state.alive_of(squad)
+					total += unit.squad_size if unit != null else 0
+			entries.append({
+				"name": "%s  ×%d" % [unit.display_name if unit != null else String(id), int(counts[id])],
+				"alive": alive, "total": total,
+			})
+		# Strongest archetype first — the same "commonest reads first"
+		# ordering the old text-only detail line used to give.
+		entries.sort_custom(func(a, b): return int(a["alive"]) > int(b["alive"]))
+
+	for i in range(_chip_panels.size()):
+		var showing := i < entries.size()
+		_chip_panels[i].visible = showing
+		_chip_panels[i].tooltip_text = ""
+		_chip_names[i].visible = showing
+		_chip_counts[i].visible = showing
+		_chip_bar_backs[i].visible = showing
+		_chip_bar_fills[i].visible = showing
+		if not showing:
+			continue
+		var entry: Dictionary = entries[i]
+		_chip_names[i].text = String(entry["name"])
+		var total := int(entry["total"])
+		var alive := int(entry["alive"])
+		_chip_counts[i].text = "%d/%d" % [alive, total] if total > 0 else "—"
+		var fraction := float(alive) / float(total) if total > 0 else 0.0
+		_set_bar(_chip_bar_backs[i], _chip_bar_fills[i], fraction,
+			HudTheme.GOOD if fraction > 0.35 else HudTheme.BAD)
 
 
-## The actions common to every unit type in the selection.
+## The chip strip for a built, owned building: one chip per unit it can
+## train, in the CIV's own version of that archetype (D-047) — the same
+## roster `_building_actions` resolves against for the archetype id, so a
+## chip and the order it sends can never name two different units.
+##
+## These chips ARE the train controls, not a picture of them next to the
+## real ones — `_update_selection_panel` drops "train" out of the actions
+## column for exactly this reason (see its own comment). Two clickable
+## things doing the same job side by side is what got reported as "why
+## are there two buttons for Gatherers".
+func _show_train_chips(def: BuildingDef) -> void:
+	var entries := []
+	_chip_train_ids.clear()
+	if def != null:
+		var civ := _state.civ_of(_state.player)
+		for archetype in def.produces:
+			var unit := UnitRoster.for_civ_archetype(civ, archetype)
+			if unit != null:
+				entries.append({
+					"name": unit.display_name,
+					"cost": _cost_text(unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone),
+				})
+				_chip_train_ids.append(archetype)
+
+	for i in range(_chip_panels.size()):
+		var showing := i < entries.size()
+		_chip_panels[i].visible = showing
+		_chip_panels[i].tooltip_text = "Click to train" if showing else ""
+		_chip_names[i].visible = showing
+		_chip_counts[i].visible = showing
+		# No bar: a cost is not a fraction of anything, and a bar drawn at
+		# a fixed length would read as a fraction regardless.
+		_chip_bar_backs[i].visible = false
+		_chip_bar_fills[i].visible = false
+		if not showing:
+			continue
+		_chip_names[i].text = String(entries[i]["name"])
+		_chip_counts[i].text = String(entries[i]["cost"])
+
+
+func _hide_chips() -> void:
+	_chip_train_ids.clear()
+	for i in range(_chip_panels.size()):
+		_chip_panels[i].visible = false
+		_chip_panels[i].tooltip_text = ""
+		_chip_names[i].visible = false
+		_chip_counts[i].visible = false
+		_chip_bar_backs[i].visible = false
+		_chip_bar_fills[i].visible = false
+
+
+## A chip's own click, when it is standing in for a train button (see
+## `_show_train_chips`). Composition chips leave `_chip_train_ids` empty,
+## so a click on one of those falls through and does nothing — they are
+## informational, not (yet) a control.
+func _on_chip_input(event: InputEvent, index: int) -> void:
+	if index >= _chip_train_ids.size():
+		return
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		_train_selected(StringName(String(_chip_train_ids[index])))
+
+
+## Swaps a chip's own stylebox on hover — see `_build_chip_pool`'s doc
+## comment on why this is done by hand rather than via Button's built-in
+## states. Gated on `_chip_train_ids`, the same guard `_on_chip_input`
+## uses, so a composition chip (informational only) never lights up as if
+## it were about to do something on click.
+func _on_chip_hover(index: int, entered: bool) -> void:
+	if index >= _chip_panels.size():
+		return
+	var clickable := index < _chip_train_ids.size()
+	_chip_panels[index].add_theme_stylebox_override("panel",
+		_chip_style_hover if (entered and clickable) else _chip_style_normal)
+
+
+## The actions common to every unit type in the selection, from whichever
+## per-def-id generator is passed in — `_squad_control_actions` for the
+## top segment, `_squad_build_actions` for the bottom one (see
+## `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why those are two
+## generators and two segments rather than one list).
 ##
 ## Intersection rather than union: a button that most of the selection
 ## would refuse is worse than an absent one, because the refusal arrives
 ## as a notice per squad and reads as the game being broken.
-func _shared_squad_actions(def_ids: Array) -> Array:
+func _shared_squad_actions(def_ids: Array, actions_for: Callable) -> Array:
 	if def_ids.is_empty():
 		return []
-	var shared := _squad_actions(StringName(String(def_ids[0])))
+	var shared: Array = actions_for.call(StringName(String(def_ids[0])))
 	for i in range(1, def_ids.size()):
 		var theirs := {}
-		for action in _squad_actions(StringName(String(def_ids[i]))):
+		for action in actions_for.call(StringName(String(def_ids[i]))):
 			theirs[_action_key(action)] = true
 		var kept := []
 		for action in shared:
@@ -2690,7 +3097,7 @@ func _show_production(info: Dictionary) -> void:
 
 	_progress_caption.text = "Training %s — %.0fs" % [
 		unit.display_name if unit != null else String(head), left]
-	_set_bar(_progress_bar_back, _progress_bar_fill, fraction, Color(0.4, 0.7, 1.0))
+	_set_bar(_progress_bar_back, _progress_bar_fill, fraction, HudTheme.ACCENT_BRIGHT)
 
 	_queue_caption.text = "Queue (%d)" % queue.size()
 	for i in range(_queue_swatches.size()):
@@ -2758,10 +3165,10 @@ func _cost_text(food: int, wood: int, gold: int, stone: int) -> String:
 	return "free" if parts.is_empty() else " · ".join(parts)
 
 
-## Actions SQUADS offer, from their UnitDef and BuildingDef.built_by —
-## founders may raise a town hall and nothing else (D-031), gatherers
-## gather, line infantry do neither.
-func _squad_actions(def_id: StringName) -> Array:
+## Formation and behaviour SQUADS offer, from their UnitDef — the actions
+## column's TOP segment (see `HudLayout.BUILD_DIVIDER_Y`'s doc comment for
+## why building is a separate segment below it, not appended to this list).
+func _squad_control_actions(def_id: StringName) -> Array:
 	var out := []
 	var def := UnitRoster.by_id(def_id)
 
@@ -2780,6 +3187,16 @@ func _squad_actions(def_id: StringName) -> Array:
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
 	if def != null and def.carry_capacity > 0:
 		out.append({"label": "Gather\nor right-click a node", "kind": "gather", "id": &""})
+	return out
+
+
+## Building SQUADS offer, from `BuildingDef.built_by` — founders may raise
+## a town hall and nothing else (D-031), gatherers and line infantry
+## build nothing at all, so this comes back empty for them and the build
+## segment simply does not show (see `_update_selection_panel`). The
+## actions column's BOTTOM segment.
+func _squad_build_actions(def_id: StringName) -> Array:
+	var out := []
 	for building in BuildingSim.all_defs():
 		if BuildingSim.can_build(building, def_id):
 			out.append({
@@ -2856,6 +3273,31 @@ func _toggle_gate_state() -> void:
 		ENetPacketPeer.FLAG_RELIABLE)
 
 
+## The build segment's own version of `_set_actions` — see
+## `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why this is a second pool
+## rather than the first one's actions continuing past a fixed index. The
+## divider and its caption follow the same visibility: empty (a building
+## selected, or a squad that cannot build anything) hides the whole
+## segment rather than showing a divider over nothing.
+func _set_build_actions(actions: Array) -> void:
+	_build_actions = actions
+	_build_actions_divider.visible = not actions.is_empty()
+	_build_actions_caption.visible = not actions.is_empty()
+	for i in range(_build_action_buttons.size()):
+		var button := _build_action_buttons[i]
+		if i >= actions.size():
+			button.visible = false
+			continue
+		button.visible = true
+		button.text = String(actions[i]["label"])
+
+
+func _on_build_action_pressed(index: int) -> void:
+	if index < 0 or index >= _build_actions.size():
+		return
+	_build_selected(String(_build_actions[index]["id"]))
+
+
 ## Put every selected squad into a formation (D-058).
 ##
 ## Sent per squad rather than as one order for the selection, because the
@@ -2892,13 +3334,16 @@ func _update_minimap() -> void:
 	for y in range(image.get_height()):
 		for x in range(image.get_width()):
 			if not _explored.has(_state.space.index(Vector2i(x, y))):
-				image.set_pixel(x, y, Color(0.02, 0.02, 0.04))
+				image.set_pixel(x, y, HudTheme.BG_VOID.darkened(0.5))
 	for squad in _state.curves:
-		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
-		# Ghosts are last-known information, so they are drawn dimmer —
-		# the same distinction the 3D view makes by fading them (D-025).
+		# Ghosted squads are not drawn at all here either — the same
+		# decision `_refresh_squads` makes for the 3D view (see its own
+		# comment): units ghost as a display concept only for buildings
+		# now, not squads. The underlying ghost data/hash mechanism (D-025)
+		# is untouched; this just stops painting a dot for it.
 		if _state.is_ghost(squad):
-			colour = colour.darkened(0.45)
+			continue
+		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
 		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
 
 	# Resource nodes, but only where this player has actually been. Fog
@@ -2909,13 +3354,44 @@ func _update_minimap() -> void:
 		var coord := _state.space.from_index(int(cell))
 		image.set_pixel(coord.x, coord.y, _node_colour(int(_state.nodes[cell])))
 
-	_plot_view_bounds(image)
-
 	if _minimap_texture == null:
 		_minimap_texture = ImageTexture.create_from_image(image)
 		_minimap_rect.texture = _minimap_texture
 	else:
 		_minimap_texture.update(image)
+
+
+## Pans the circular crop (see `_build_nav_ring`) across the whole-map
+## minimap image to keep it centred on wherever the camera currently is,
+## rather than on the image's own fixed geometric centre — the ring answers
+## "where am I", and a crop that always showed the same arbitrary patch of
+## the torus regardless of where the player had gone could easily show
+## neither the player's base nor the camera at all.
+##
+## Sets `focus_uv`, not `centre_px`: the crop CIRCLE stays put on screen
+## (`centre_px`, set once per resize in `_layout_hud`, geometry only) —
+## what moves is which part of the TEXTURE is sampled there. Wrap-aware
+## (`fract()` in the shader), because the camera can be anywhere on the
+## TORUS this minimap represents, including right at the flat image's own
+## seam — see the shader's own comment for what going through `centre_px`
+## instead looked like there.
+##
+## Reuses `_camera_target`, the same world point every other camera-follow
+## calculation in this file already treats as "where the player is looking"
+## (see `_jump_camera_to`). `_state.space.world_to_cell` is the one
+## definition of world-to-cell, the same conversion `_cell_under` uses for
+## clicks, so this cannot quietly drift from what a click on this same spot
+## would resolve to.
+func _centre_minimap_crop_on_camera() -> void:
+	if _minimap_crop_material == null or _state.space == null:
+		return
+	if _state.space.width <= 0 or _state.space.height <= 0:
+		return
+	var cell := _state.space.world_to_cell(_camera_target)
+	var focus := Vector2(
+		(float(cell.x) + 0.5) / float(_state.space.width),
+		(float(cell.y) + 0.5) / float(_state.space.height))
+	_minimap_crop_material.set_shader_parameter("focus_uv", focus)
 
 
 ## Extend the explored set from what this player can currently see.
@@ -2966,87 +3442,19 @@ func _reveal_around(centre: Vector2i, radius: int) -> void:
 		_explored[_state.space.index(centre + offset)] = true
 
 
-## Outline what the camera is currently looking at.
-##
-## The corners are found by casting the four screen corners onto the
-## ground with the same `_cell_under` the right-click order uses, so the
-## box is what the player can actually see rather than an estimate from
-## camera height. A corner that misses the ground (sky above the horizon)
-## simply drops that edge, leaving a partial box rather than a wrong one.
-##
-## This matters more on a torus than it would on a flat map: with terrain
-## tiled in every direction and no edges to orient by, the minimap is the
-## only thing that answers "where am I?".
-func _plot_view_bounds(image: Image) -> void:
-	if _camera == null or _state.space == null:
-		return
-
-	# Corners taken from a BOUNDED band of the screen, not its true top.
-	#
-	# The old version raycast the four literal screen corners to the
-	# ground. The top two point at the horizon on a tilted camera, so they
-	# either land absurdly far away — wrapping the torus and scrambling the
-	# box across the minimap — or miss the ground plane entirely and return
-	# (-1,-1), at which point the edge was silently dropped and the box was
-	# left open. Reported from a real game as the view box being a weird
-	# shape and clipping; both halves of that were this.
-	#
-	# Sampling at 35% down the screen instead of 0% keeps every ray hitting
-	# ground at a sane distance. The box then slightly understates what you
-	# can see, which is the honest direction to be wrong in: it never
-	# claims you can see somewhere you cannot.
-	var view := get_viewport().get_visible_rect().size
-	var top := view.y * 0.35
-	var corners := [
-		_cell_under(Vector2(0.0, top)),
-		_cell_under(Vector2(view.x, top)),
-		_cell_under(Vector2(view.x, view.y)),
-		_cell_under(Vector2(0.0, view.y)),
-	]
-
-	# All four or none. A partial box is what "clipping" looked like, and
-	# an outline missing one side reads as a rendering fault rather than as
-	# the camera pointing somewhere unusual.
-	for corner in corners:
-		if corner.x < 0:
-			return
-
-	var colour := Color(1.0, 1.0, 1.0, 1.0)
-	for i in range(4):
-		_plot_minimap_segment(image, corners[i], corners[(i + 1) % 4], colour)
-
-
-## A line between two cells, taken the SHORT way around the torus — the
-## view box straddles the seam as readily as anything else here, and
-## drawing it the long way would smear a line across the whole minimap.
-func _plot_minimap_segment(image: Image, from: Vector2i, to: Vector2i, colour: Color) -> void:
-	var span := _state.space.delta(from, to)
-	var steps := maxi(absi(span.x), absi(span.y))
-	if steps <= 0:
-		return
-	steps = mini(steps, 512)
-
-	for i in range(steps + 1):
-		var t := float(i) / float(steps)
-		image.set_pixel(
-			posmod(from.x + roundi(float(span.x) * t), image.get_width()),
-			posmod(from.y + roundi(float(span.y) * t), image.get_height()),
-			colour)
-
-
 ## Minimap colour per resource, picked to read against the terrain
 ## underneath rather than to match it: food and wood especially would
 ## vanish into grassland and forest if they used the obvious colours.
 func _node_colour(kind: int) -> Color:
 	match kind:
 		Economy.ResourceKind.FOOD:
-			return Color(1.0, 0.45, 0.55)
+			return HudTheme.RESOURCE_FOOD
 		Economy.ResourceKind.WOOD:
-			return Color(0.85, 0.5, 0.15)
+			return HudTheme.RESOURCE_WOOD
 		Economy.ResourceKind.GOLD:
-			return Color(1.0, 0.9, 0.2)
+			return HudTheme.RESOURCE_GOLD
 		_:
-			return Color(0.8, 0.85, 0.95)  # stone
+			return HudTheme.RESOURCE_STONE
 
 
 ## A 2x2 blob rather than a single pixel, so a squad is visible at one
@@ -3100,6 +3508,12 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 					_update_camera()
 		MOUSE_BUTTON_LEFT:
 			if event.pressed:
+				# The ring's rim, checked before the minimap it surrounds
+				# (see `_clicked_ring_rim`) — clicking it faces north rather
+				# than jumping the camera or starting a drag.
+				if _clicked_ring_rim(event.position):
+					_set_camera_yaw(0.0)
+					return
 				# A click on the minimap jumps the view there instead of
 				# selecting. Deliberately does NOT start a drag, so the
 				# release below leaves the current selection alone — a
@@ -3263,12 +3677,23 @@ func _finish_selection(at: Vector2, additive: bool) -> void:
 ## the squad it marked.
 ##
 ## Returns world centre and world radius, both including the lattice
-## offset the squad is actually drawn at (D-035).
+## offset the squad is actually drawn at (D-035), and the squad's actual
+## TERRAIN HEIGHT — `ClientState.squad_world_position` always answers at
+## y=0 (`StateCurve.sample_world`'s height parameter defaults to 0 and
+## nothing here supplied one), while the soldiers themselves are drawn at
+## their true elevation via `Formation.soldier_transforms`'s own terrain
+## sampling. On flat ground that gap is invisible; on a hill the point this
+## function hands back for screen-projection is not where the troops
+## visibly are, which is what was reported as unit selection itself being
+## off — the same flat-plane-vs-real-terrain mismatch `_cell_under` had,
+## in the function selection is actually built on.
 func _squad_footprint(squad: int) -> Dictionary:
 	var centre := _state.squad_world_position(squad, _now)
 	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
 	if node != null:
 		centre += node.position
+	if _state.terrain_sampler.is_valid():
+		centre.y = _state.terrain_sampler.call(centre.x, centre.z)
 
 	var info: Dictionary = _state.composition.get(squad, {})
 	var alive := _state.alive_of(squad)
@@ -3327,6 +3752,12 @@ func _squad_screen_position(squad: int) -> Vector2:
 	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
 	if node != null:
 		world += node.position
+	# Terrain-corrected for the same reason `_squad_footprint` is — this
+	# feeds `_enemy_squad_at`/`_enemy_cell_at` (target-picking and
+	# attack-click hit-testing), which had the identical flat-plane-vs-
+	# real-terrain gap.
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
 	if _camera.is_position_behind(world):
 		return Vector2(-1e6, -1e6)
 	return _camera.unproject_position(world)
@@ -3420,19 +3851,15 @@ func _handle_key(event: InputEventKey) -> void:
 		_stop_selected()
 		return
 
-	# Q/E turn the view; ESC opens and closes the game menu.
+	# Q/E turn the view continuously while held — see `_pan_camera`, which
+	# polls them the same way it polls WASD. ESC opens and closes the game
+	# menu.
 	#
 	# Deliberately BEFORE the build/train tables below, and worth knowing
 	# why: those are driven by `OS.get_keycode_string`, so a letter added
 	# to BUILD_KEYS or TRAIN_KEYS silently steals it from here. Q and E are
 	# not in either table today — this ordering is what keeps that a
 	# deliberate choice rather than a race between two lookups.
-	if event.keycode == KEY_Q:
-		_set_camera_yaw(_camera_yaw + CAMERA_YAW_STEP)
-		return
-	if event.keycode == KEY_E:
-		_set_camera_yaw(_camera_yaw - CAMERA_YAW_STEP)
-		return
 	if event.keycode == KEY_ESCAPE:
 		# A pending building placement is what ESC cancels FIRST. Opening a
 		# menu while the player is mid-gesture, and leaving the ghost armed
@@ -3490,17 +3917,46 @@ func _handle_key(event: InputEventKey) -> void:
 
 
 ## Screen point to torus cell. Returns (-1, -1) when the ray never meets
-## the ground plane. The click becomes a CELL and is sent as an order for
-## the server to interpret — the client never moves anything itself
-## (D-002).
+## the ground. The click becomes a CELL and is sent as an order for the
+## server to interpret — the client never moves anything itself (D-002).
+##
+## Solved against the ACTUAL terrain surface, not a flat plane at y=0.
+## Terrain has had real elevation since M7 (`TerrainGen.surface_field`,
+## sampled here through the same `terrain_sampler` the placement ghost and
+## rally markers already use) — a flat-plane ray is only correct on dead
+## flat ground, and on a hill it intersects y=0 at a world position that
+## is nowhere near where the terrain the player is looking at actually
+## is. At a shallow camera angle that error is large: a few units of
+## height miscalculation moves the ray's ground intersection by many
+## cells, which is what was reported as clicks landing "8 grid spaces"
+## from the cursor and selection "feeling broken" — the ray was correct
+## for a world that stopped existing once hills were textured in.
+##
+## Fixed-point iteration rather than a closed-form solve: the intersection
+## height depends on where along the ray you are, which depends on the
+## height, so there is no single algebraic answer. A few passes converge
+## quickly because terrain relief is small relative to how far the camera
+## sits back — each pass re-solves the flat-plane formula against the
+## PREVIOUS pass's height estimate instead of 0, and the estimate settles
+## once resampling stops moving it. Falls back to the original flat-plane
+## behaviour if no sampler is available yet (terrain not built).
 func _cell_under(screen_position: Vector2) -> Vector2i:
 	var from := _camera.project_ray_origin(screen_position)
 	var direction := _camera.project_ray_normal(screen_position)
 	if absf(direction.y) < 0.0001:
 		return Vector2i(-1, -1)
-	var distance := -from.y / direction.y
-	if distance <= 0.0:
-		return Vector2i(-1, -1)
+
+	var height := 0.0
+	var distance := 0.0
+	var iterations := 4 if _state.terrain_sampler.is_valid() else 1
+	for i in range(iterations):
+		distance = (height - from.y) / direction.y
+		if distance <= 0.0:
+			return Vector2i(-1, -1)
+		if i < iterations - 1:
+			var probe := from + direction * distance
+			height = _state.terrain_sampler.call(probe.x, probe.z)
+
 	return _state.space.world_to_cell(from + direction * distance)
 
 
@@ -4234,6 +4690,18 @@ func _stop_selected() -> void:
 ## shuffled, which is the standard complaint about RTS cameras that get
 ## this wrong.
 func _pan_camera(delta: float) -> void:
+	# Q/E turn continuously while held, polled the same way WASD is —
+	# checked first and independently of movement, so turning and panning
+	# at once (aiming while sliding along a ridge) both apply in the same
+	# frame rather than one blocking the other via an early return.
+	var turn := 0.0
+	if Input.is_key_pressed(KEY_Q):
+		turn += 1.0
+	if Input.is_key_pressed(KEY_E):
+		turn -= 1.0
+	if turn != 0.0:
+		_set_camera_yaw(_camera_yaw + turn * CAMERA_YAW_RATE * delta)
+
 	var move := Vector3.ZERO
 	if Input.is_key_pressed(KEY_W):
 		move.z -= 1.0
@@ -4299,8 +4767,8 @@ func _update_camera() -> void:
 		.rotated(Vector3.UP, _camera_yaw)
 	_camera.position = _camera_target + offset
 	_camera.look_at(_camera_target, Vector3.UP)
-	if _compass != null:
-		_compass.queue_redraw()
+	if _nav_ring_frame != null:
+		_nav_ring_frame.queue_redraw()
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:
@@ -4336,7 +4804,16 @@ func _parse_args(raw_args: PackedStringArray) -> Dictionary:
 
 var _hud_layer: CanvasLayer
 var _lobby_layer: CanvasLayer
+## Sized explicitly by `_layout_lobby` (see its doc comment for why this
+## cannot be done with anchors), the same reason `_hud_layer`'s own
+## children are.
+var _lobby_backdrop: ColorRect
+var _lobby_root: VBoxContainer
 var _lobby_seat_rows: VBoxContainer
+## The seat rows scroll independently of the header/rule above them (see
+## `_build_lobby_ui`) — a lobby of 20 seats must not push the actions row
+## and the chat panel below it off the bottom of the screen.
+var _lobby_seat_list: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
 var _map_rows: VBoxContainer
@@ -4370,62 +4847,83 @@ const MAP_OPTIONS := [
 
 
 ## A framed panel with a header — the repeated unit of this screen.
-func _lobby_panel(title: String, parent: Control) -> VBoxContainer:
+## `expand`: whether this panel should absorb whatever vertical space its
+## siblings in a VBoxContainer leave over (the chat log, the map-generation
+## settings), versus sizing to its own content (the seat list, the map
+## preview). Without this every panel sized to content, and the lobby's
+## own outer VBoxContainer had nothing left inside it to stretch — which is
+## the actual cause of a lobby that filled a fraction of a wide window and
+## left the rest bare: nothing in the tree ever claimed the leftover space,
+## Containers only ever shrink to fit unless told otherwise.
+func _lobby_panel(title: String, parent: Control, expand := false) -> VBoxContainer:
 	var frame := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.10, 0.12, 0.17, 1.0)
-	style.border_color = Color(0.28, 0.34, 0.45, 1.0)
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(4)
+	var style := HudTheme.stylebox(HudTheme.BG_SOLID, HudTheme.BORDER, 1, HudTheme.RADIUS_LG)
 	style.content_margin_left = 14
 	style.content_margin_right = 14
 	style.content_margin_top = 10
 	style.content_margin_bottom = 12
 	frame.add_theme_stylebox_override("panel", style)
+	if expand:
+		frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	parent.add_child(frame)
 
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 8)
+	if expand:
+		column.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	frame.add_child(column)
 
 	var header := Label.new()
 	header.text = title
-	header.add_theme_font_size_override("font_size", 16)
-	header.modulate = Color(0.55, 0.66, 0.85)
+	header.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	header.modulate = HudTheme.ACCENT_BRIGHT
 	column.add_child(header)
 
 	var rule := ColorRect.new()
-	rule.color = Color(0.24, 0.30, 0.40, 1.0)
-	rule.custom_minimum_size = Vector2(0.0, 2.0)
+	rule.color = HudTheme.RULE
+	rule.custom_minimum_size = Vector2(0.0, 1.0)
 	column.add_child(rule)
 	return column
 
 
 ## Buttons get their own styling because the default Godot theme looks
-## nothing like the rest of this screen.
+## nothing like the rest of this screen. Pill-shaped, per the reference
+## design's buttons throughout (the lobby's "Start match", the defeat
+## screen's "Back to lobby") — one shared shape rather than the game-menu's
+## flatter list rows, which is a deliberate simplification: this project
+## has one button widget, and giving the menu a second, un-pooled row
+## style would be a second thing to keep in sync with this one for no
+## visible-elsewhere benefit.
 func _styled_button(text: String, accent: Color) -> Button:
 	var button := Button.new()
 	button.text = text
-	button.add_theme_font_size_override("font_size", 15)
+	button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE + 1)
 	button.focus_mode = Control.FOCUS_NONE
 
+	var font_colour_keys := {
+		"normal": "font_color", "hover": "font_hover_color",
+		"pressed": "font_pressed_color", "disabled": "font_disabled_color",
+	}
 	for state in ["normal", "hover", "pressed", "disabled"]:
 		var style := StyleBoxFlat.new()
-		style.bg_color = accent.darkened(0.55)
+		style.bg_color = accent.darkened(0.72)
+		var text_colour := HudTheme.TEXT_BRIGHT
 		if state == "hover":
-			style.bg_color = accent.darkened(0.35)
+			style.bg_color = accent.darkened(0.55)
 		elif state == "pressed":
-			style.bg_color = accent.darkened(0.2)
+			style.bg_color = accent.darkened(0.35)
 		elif state == "disabled":
-			style.bg_color = Color(0.14, 0.15, 0.19, 1.0)
-		style.border_color = accent if state != "disabled" else Color(0.24, 0.26, 0.30)
-		style.set_border_width_all(2)
-		style.set_corner_radius_all(3)
-		style.content_margin_left = 14
-		style.content_margin_right = 14
-		style.content_margin_top = 7
-		style.content_margin_bottom = 7
+			style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+			text_colour = HudTheme.TEXT_DISABLED
+		style.border_color = accent if state != "disabled" else HudTheme.BORDER
+		style.set_border_width_all(1)
+		style.set_corner_radius_all(HudTheme.RADIUS_PILL)
+		style.content_margin_left = 16
+		style.content_margin_right = 16
+		style.content_margin_top = 8
+		style.content_margin_bottom = 8
 		button.add_theme_stylebox_override(state, style)
+		button.add_theme_color_override(font_colour_keys[state], text_colour)
 	return button
 
 
@@ -4458,6 +4956,23 @@ func _styled_button(text: String, accent: Color) -> Button:
 ## rewrite (the keys are read straight from the event in `_handle_key`).
 const SETTINGS_PATH := "user://settings.cfg"
 
+## The margin between the lobby's edge panels and the window's own edge,
+## in design-space units (so it scales with everything else — see
+## `_build_lobby_ui`).
+const LOBBY_MARGIN := Vector2(40.0, 24.0)
+## The right-hand column's width (map preview + generation settings).
+## Fixed, not proportional — the reference design's own
+## `grid-template-columns:1fr 400px`, so growing the window gives the
+## seat list and chat more room rather than stretching a terrain preview
+## into something blurrier.
+const LOBBY_RIGHT_COLUMN_WIDTH := 400.0
+
+## One seat row plus its separation — how tall the seat list's scroll
+## window is sized against (see `_build_lobby_ui`), so "how many rows show
+## before it scrolls" is one number rather than a viewport height nobody
+## chose on purpose.
+const SEAT_ROW_HEIGHT := 44.0
+
 
 func _build_game_menu() -> void:
 	_game_menu_layer = CanvasLayer.new()
@@ -4471,7 +4986,8 @@ func _build_game_menu() -> void:
 	# take mouse input — see the note above about not blindfolding a
 	# player whose base is being attacked while they read a menu.
 	var backdrop := ColorRect.new()
-	backdrop.color = Color(0.02, 0.03, 0.05, 0.55)
+	backdrop.color = HudTheme.BG_VOID.darkened(0.3)
+	backdrop.color.a = 0.5
 	backdrop.anchor_right = 1.0
 	backdrop.anchor_bottom = 1.0
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -4492,17 +5008,17 @@ func _build_game_menu() -> void:
 
 	var running := Label.new()
 	running.text = "The match keeps running while this is open."
-	running.add_theme_font_size_override("font_size", 12)
-	running.modulate = Color(0.62, 0.68, 0.78)
+	running.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	running.modulate = HudTheme.TEXT_FAINT
 	running.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	running.custom_minimum_size = Vector2(280.0, 0.0)
 	column.add_child(running)
 
-	var resume := _styled_button("Resume", Color(0.42, 0.78, 0.48))
+	var resume := _styled_button("Resume", HudTheme.ACCENT)
 	resume.pressed.connect(_toggle_game_menu)
 	column.add_child(resume)
 
-	var settings := _styled_button("Settings", Color(0.55, 0.62, 0.78))
+	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
 
@@ -4512,17 +5028,17 @@ func _build_game_menu() -> void:
 	# and tick), and none of that is serialised anywhere yet. A button that
 	# silently did nothing would be the declared-and-unread shape this
 	# project keeps meeting (D-061), built on purpose.
-	var save := _styled_button("Save game", Color(0.55, 0.62, 0.78))
+	var save := _styled_button("Save game", HudTheme.NEUTRAL)
 	save.disabled = true
 	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
 	column.add_child(save)
 
-	var to_lobby := _styled_button("Leave match", Color(0.85, 0.62, 0.35))
+	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
 	to_lobby.pressed.connect(_on_leave_match_pressed)
 	column.add_child(to_lobby)
 
-	var quit := _styled_button("Exit game", Color(0.9, 0.45, 0.4))
+	var quit := _styled_button("Exit game", HudTheme.DANGER)
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
 
@@ -4560,7 +5076,7 @@ func _build_settings_panel(parent: Control) -> Control:
 	auto_hud.toggled.connect(_on_hud_auto_toggled)
 	column.add_child(auto_hud)
 
-	var close := _styled_button("Back", Color(0.55, 0.62, 0.78))
+	var close := _styled_button("Back", HudTheme.NEUTRAL)
 	close.pressed.connect(_toggle_settings)
 	column.add_child(close)
 	return frame
@@ -4574,7 +5090,8 @@ func _settings_slider(label_text: String, low: float, high: float, value: float,
 	var box := VBoxContainer.new()
 	var label := Label.new()
 	label.text = "%s: %.1f" % [label_text, value]
-	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 2)
+	label.modulate = HudTheme.TEXT
 	box.add_child(label)
 
 	var slider := HSlider.new()
@@ -4750,6 +5267,156 @@ func _load_settings() -> void:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 
+# --- defeat screen ------------------------------------------------------
+#
+# ## Why this only shows ONE stat, and no roster
+#
+# The reference design's defeat screen names an epoch reached, men lost,
+# buildings razed, and every other player's fighting/eliminated status.
+# None of that is honest to build yet: epochs are M9 design, not shipped
+# code (see CLAUDE.md); nothing counts a player's own losses or razed
+# buildings anywhere in this project; and fog of war means this client
+# only ever receives OTHER players' squads and buildings it can currently
+# see, so it structurally cannot know whether hjalmar is still fighting or
+# already out — showing a guess dressed as a fact is exactly the kind of
+# "numbers all correct while the picture is wrong" defect CLAUDE.md's own
+# history is full of. So this screen shows only what is actually true: how
+# long THIS player's own army lasted, derived from the same match clock
+# the top bar already reads.
+#
+# ## What "defeated" means here
+#
+# Mirrors `MatchState.update`'s own rule exactly (defeated = zero living
+# squads AND zero living buildings) rather than inventing a client-side
+# approximation, because a client that disagreed with the server about
+# who is defeated would eventually show this screen to a player who was
+# not, or never show it to one who was. `_ever_had_army` exists so the
+# check cannot fire in the one frame after a match starts and before the
+# founding party's squad has arrived over the wire — a real race, since
+# RUNNING begins the instant the lobby starts, not once the first curve
+# lands.
+func _build_defeat_screen() -> void:
+	_defeat_layer = CanvasLayer.new()
+	# Above the HUD and the in-game menu, below the lobby (which replaces
+	# the world entirely and always wins).
+	_defeat_layer.layer = 7
+	_defeat_layer.visible = false
+	add_child(_defeat_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.color.a = 0.66
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	# The match keeps running for everyone else — the same reason the
+	# in-game menu's backdrop does not block input, though a defeated
+	# player has no army left to give orders to either way.
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_defeat_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_defeat_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(360.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "ELIMINATED"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	var headline := Label.new()
+	headline.text = "Defeated"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE + 24)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	var sub := Label.new()
+	sub.text = "Your last squad and building are gone. The match continues without you."
+	sub.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	sub.modulate = HudTheme.TEXT_DIM
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.custom_minimum_size = Vector2(360.0, 0.0)
+	column.add_child(sub)
+
+	_defeat_time_label = Label.new()
+	_defeat_time_label.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	_defeat_time_label.modulate = HudTheme.TEXT_BRIGHT
+	_defeat_time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_defeat_time_label)
+
+	var time_caption := Label.new()
+	time_caption.text = "TIME HELD"
+	time_caption.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	time_caption.modulate = HudTheme.TEXT_GHOST
+	time_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(time_caption)
+
+	var button_row := CenterContainer.new()
+	button_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	var leave := _styled_button("Leave match", HudTheme.NEUTRAL)
+	leave.pressed.connect(_on_leave_match_pressed)
+	button_row.add_child(leave)
+	column.add_child(button_row)
+
+
+## Whether THIS player owns a building that is not destroyed — the other
+## half of `MatchState`'s own elimination test (squads alone is not the
+## rule: a founder spent on a town hall has zero squads for a moment and
+## must not read as defeated while that hall stands — see D-055's history
+## in CLAUDE.md).
+##
+## Judged on `"destroyed"`, not `health_fraction`. The latter is explicitly
+## EXCLUDED from `building_hash()` (see that function's own comment) for
+## the same reason it is the wrong field here: it varies continuously and
+## a client legitimately lags a tick, so a just-destroyed building could
+## still be carrying its last nonzero health here — which silently kept
+## `_ever_had_army` true forever, and was the actual cause of a player
+## whose last building fell never seeing the defeat screen.
+func _owned_living_building_count() -> int:
+	var n := 0
+	for id in _state.buildings:
+		var info: Dictionary = _state.buildings[id]
+		if int(info.get("owner", -1)) == _state.player \
+				and not bool(info.get("destroyed", false)):
+			n += 1
+	return n
+
+
+func _refresh_defeat() -> void:
+	if _defeat_layer == null:
+		return
+	if not _connected or _state.in_lobby():
+		_defeat_layer.visible = false
+		_ever_had_army = false
+		_defeated = false
+		return
+
+	var has_army := _state.living_squad_count() > 0 or _owned_living_building_count() > 0
+	if has_army:
+		_ever_had_army = true
+		_defeated = false
+		_defeat_layer.visible = false
+		return
+
+	if _ever_had_army and not _defeated:
+		_defeated = true
+		_defeat_time_held = _state.match_elapsed()
+	_defeat_layer.visible = _defeated
+	if _defeated:
+		_defeat_time_label.text = HudLayout.clock_text(_defeat_time_held)
+
+
 func _build_lobby_ui() -> void:
 	_lobby_layer = CanvasLayer.new()
 	# Above the HUD, not merely after it: CanvasLayers draw in layer
@@ -4762,94 +5429,149 @@ func _build_lobby_ui() -> void:
 	# rather than waiting for the first resize to be laid out correctly.
 	_lobby_layer.transform = Transform2D().scaled(Vector2(_hud_scale, _hud_scale))
 
-	var backdrop := ColorRect.new()
+	_lobby_backdrop = ColorRect.new()
 	# Fully opaque: there is no world behind the lobby yet, because the
-	# map is not generated until the match starts (D-049).
-	backdrop.color = Color(0.045, 0.055, 0.08, 1.0)
-	backdrop.anchor_right = 1.0
-	backdrop.anchor_bottom = 1.0
-	_lobby_layer.add_child(backdrop)
+	# map is not generated until the match starts (D-049). Sized by
+	# `_layout_lobby`, not anchors — see that function's doc comment.
+	_lobby_backdrop.color = HudTheme.BG_VOID
+	_lobby_layer.add_child(_lobby_backdrop)
 
-	var root := VBoxContainer.new()
-	root.position = Vector2(40.0, 24.0)
-	root.add_theme_constant_override("separation", 12)
-	_lobby_layer.add_child(root)
+	# `_layout_lobby` positions and sizes this against the design-space
+	# rect with a fixed margin, the same reason the HUD proper is laid out
+	# in code rather than with anchors (see `hud_layout.gd`'s header
+	# comment on scale vs. anchoring) — anchors on a Control with no
+	# Control ancestor resolve against the real, UNSCALED viewport, and
+	# `_lobby_layer`'s own transform then scales the result again on top of
+	# that, so an anchored fill only happens to reach the window's edges
+	# when the HUD's scale is exactly 1.0. Below or above that the anchored
+	# rect and the real window disagree by exactly the scale factor — which
+	# is invisible at the one size (1280x720) this was first tried at, and
+	# a visible gap or overflow at every other one.
+	_lobby_root = VBoxContainer.new()
+	_lobby_root.add_theme_constant_override("separation", 12)
+	_lobby_layer.add_child(_lobby_root)
 
 	_lobby_title = Label.new()
-	_lobby_title.text = "MULTIPLAYER LOBBY"
-	_lobby_title.add_theme_font_size_override("font_size", 28)
-	root.add_child(_lobby_title)
+	_lobby_title.text = "Multiplayer lobby"
+	_lobby_title.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE + 10)
+	_lobby_title.modulate = HudTheme.TEXT_BRIGHT
+	_lobby_root.add_child(_lobby_title)
 
+	# Fills whatever height the title leaves — the reference design's
+	# `grid-template-columns:1fr 400px` row, made of two VBoxContainers
+	# instead of a CSS grid: `left` expands to take the leftover WIDTH,
+	# `right` stays at its own minimum (see below), and both expand to
+	# fill the leftover HEIGHT so their own inner panels have something to
+	# stretch into in turn.
 	var columns := HBoxContainer.new()
 	columns.add_theme_constant_override("separation", 18)
-	root.add_child(columns)
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_lobby_root.add_child(columns)
 
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(620.0, 0.0)
+	left.custom_minimum_size = Vector2(560.0, 0.0)
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left.add_theme_constant_override("separation", 10)
 	columns.add_child(left)
-	_lobby_seat_rows = _lobby_panel("PLAYERS", left)
+	# Expands the same way the chat panel below it does, so the two split
+	# `left`'s leftover height evenly (VBoxContainer gives equal-ratio
+	# expand children equal shares by default) rather than PLAYERS sitting
+	# at a minimum height with chat absorbing everything else.
+	_lobby_seat_rows = _lobby_panel("PLAYERS", left, true)
+
+	# Seats scroll on their own past a handful of rows, rather than the
+	# panel growing to fit up to twenty of them (D-018) and pushing the
+	# actions row and chat off the bottom of the screen. `custom_minimum_size`
+	# is the floor for a short window; SIZE_EXPAND_FILL is what lets it
+	# actually grow to match chat's height on a tall one, the same pairing
+	# every other expanding panel here uses.
+	var seat_scroll := ScrollContainer.new()
+	seat_scroll.custom_minimum_size = Vector2(0.0, SEAT_ROW_HEIGHT * 4.5)
+	seat_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	seat_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_lobby_seat_rows.add_child(seat_scroll)
+	_lobby_seat_list = VBoxContainer.new()
+	_lobby_seat_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lobby_seat_list.add_theme_constant_override("separation", 6)
+	seat_scroll.add_child(_lobby_seat_list)
 
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 12)
 	left.add_child(actions)
 
-	_add_ai_button = _styled_button("+  Add AI player", Color(0.55, 0.62, 0.78))
+	_add_ai_button = _styled_button("+  Add AI player", HudTheme.NEUTRAL)
 	_add_ai_button.pressed.connect(_on_add_ai_pressed)
 	actions.add_child(_add_ai_button)
 
-	_start_button = _styled_button("START MATCH", Color(0.42, 0.78, 0.48))
+	_start_button = _styled_button("Start match", HudTheme.ACCENT)
 	_start_button.add_theme_font_size_override("font_size", 18)
 	_start_button.pressed.connect(_on_start_pressed)
 	actions.add_child(_start_button)
 
 	_lobby_help = Label.new()
-	_lobby_help.add_theme_font_size_override("font_size", 13)
-	_lobby_help.modulate = Color(0.55, 0.60, 0.70)
+	_lobby_help.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	_lobby_help.modulate = HudTheme.TEXT_GHOST
 	_lobby_help.custom_minimum_size = Vector2(600.0, 0.0)
 	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left.add_child(_lobby_help)
 
-	# Chat sits under the player list, where the genre puts it.
-	var chat_column := _lobby_panel("CHAT", left)
+	# Chat sits under the player list, where the genre puts it — and is the
+	# one panel on the left that should EXPAND, so the seat list stays
+	# sized to its own rows instead of stretching gaps between them.
+	var chat_column := _lobby_panel("Chat", left, true)
 	_chat_log_label = Label.new()
-	_chat_log_label.add_theme_font_size_override("font_size", 14)
-	_chat_log_label.custom_minimum_size = Vector2(590.0, 96.0)
+	_chat_log_label.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE + 1)
+	_chat_log_label.custom_minimum_size = Vector2(0.0, 96.0)
+	_chat_log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_chat_log_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_chat_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_chat_log_label.modulate = Color(0.78, 0.82, 0.88)
+	_chat_log_label.modulate = HudTheme.TEXT_MUTED
 	chat_column.add_child(_chat_log_label)
 
 	_chat_entry = LineEdit.new()
 	_chat_entry.placeholder_text = "Say something…"
 	_chat_entry.add_theme_font_size_override("font_size", 14)
 	_chat_entry.max_length = NetProtocol.CHAT_MAX_CHARS
-	_chat_entry.custom_minimum_size = Vector2(590.0, 0.0)
-	# Submitting is the only way to send: there is no send button, because
-	# Enter is what everyone already presses.
+	# No minimum width of its own: it fills whatever width `left` has,
+	# which is the whole point of `left` expanding in the first place.
 	_chat_entry.text_submitted.connect(_on_chat_submitted)
 	chat_column.add_child(_chat_entry)
 
+	# Fixed width (see `LOBBY_RIGHT_COLUMN_WIDTH`'s doc comment) — no
+	# horizontal expand flag, so `left` absorbs every pixel a wider window
+	# adds instead of the two splitting it.
 	var right := VBoxContainer.new()
+	right.custom_minimum_size = Vector2(LOBBY_RIGHT_COLUMN_WIDTH, 0.0)
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 12)
 	columns.add_child(right)
 
 	var preview_column := _lobby_panel("MAP", right)
 	_map_preview = TextureRect.new()
-	_map_preview.custom_minimum_size = Vector2(380.0, 168.0)
+	_map_preview.custom_minimum_size = Vector2(0.0, 168.0)
+	_map_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_map_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_map_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	preview_column.add_child(_map_preview)
 
 	_map_blurb = Label.new()
-	_map_blurb.add_theme_font_size_override("font_size", 13)
-	_map_blurb.modulate = Color(0.60, 0.68, 0.62)
-	_map_blurb.custom_minimum_size = Vector2(380.0, 32.0)
+	_map_blurb.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	_map_blurb.modulate = HudTheme.TEXT_FAINT
+	_map_blurb.custom_minimum_size = Vector2(0.0, 32.0)
 	_map_blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	preview_column.add_child(_map_blurb)
 
-	_map_rows = _lobby_panel("GAME SETTINGS", right)
+	# The one panel on the right that should EXPAND — see the doc comment
+	# on `chat_column` above for the same reasoning mirrored.
+	_map_rows = _lobby_panel("GAME SETTINGS", right, true)
 	_sandbox_rows = _lobby_panel("SANDBOX (dev testing)", right)
+
+	# Laid out once against the CURRENT window immediately, rather than
+	# waiting for the first resize signal — without this the lobby sits at
+	# whatever size a freshly-built, never-laid-out Control defaults to
+	# (effectively unsized) until a player happens to resize the window.
+	_layout_hud()
 
 
 ## A coloured block standing in for a civ emblem. The colour comes from
@@ -4869,9 +5591,9 @@ func _swatch(colour: Color, size: Vector2) -> Control:
 
 func _civ_colour(civ: String) -> Color:
 	if StringName(civ) == CivRoster.RANDOM:
-		return Color(0.42, 0.44, 0.52)
+		return HudTheme.NEUTRAL
 	var def := CivRoster.by_id(StringName(civ))
-	return def.colour if def != null else Color(0.5, 0.5, 0.5)
+	return def.colour if def != null else HudTheme.TEXT_DIM
 
 
 func _civ_label(civ: String) -> String:
@@ -4910,16 +5632,15 @@ func _refresh_lobby() -> void:
 	_lobby_signature = signature
 
 	var seats: Array = _state.lobby.get("seats", [])
-	for child in _lobby_seat_rows.get_children():
-		if child.get_index() > 1:
-			child.queue_free()
+	for child in _lobby_seat_list.get_children():
+		child.queue_free()
 	for i in range(seats.size()):
-		_lobby_seat_rows.add_child(_seat_row(seats[i], i))
+		_lobby_seat_list.add_child(_seat_row(seats[i], i))
 
 	var admin := _state.is_admin()
 	_add_ai_button.disabled = not admin
 	_start_button.disabled = not admin or seats.size() < 2
-	_start_button.text = "START MATCH" if admin else "WAITING FOR HOST"
+	_start_button.text = "Start match" if admin else "Waiting for host"
 
 	if admin:
 		_lobby_help.text = "Click a civilisation to change it. Only you can seat AI players and start the match."
@@ -5182,15 +5903,16 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 
 	var frame := PanelContainer.new()
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.135, 0.155, 0.21, 1.0) if mine else Color(0.115, 0.135, 0.185, 1.0)
-	style.set_corner_radius_all(3)
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 6
-	style.content_margin_bottom = 6
+	style.bg_color = HudTheme.BG_ROW if mine else HudTheme.BG_ROW_DIM
+	style.set_corner_radius_all(HudTheme.RADIUS_LG)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 8
+	style.content_margin_bottom = 8
+	style.border_color = HudTheme.accent_border(1.0) if mine else HudTheme.BORDER
+	style.set_border_width_all(1)
 	if mine:
-		style.border_color = Color(0.40, 0.70, 0.48, 1.0)
-		style.set_border_width_all(2)
+		style.border_width_left = 3
 	frame.add_theme_stylebox_override("panel", style)
 
 	var row := HBoxContainer.new()
@@ -5200,20 +5922,20 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	# The PLAYER's colour, not the civ's (D-052): twenty players share
 	# two civs, so a civ swatch cannot tell them apart — and this is the
 	# same colour their army will be on the field.
-	row.add_child(_swatch(PlayerColours.of_index(index), Vector2(24.0, 24.0)))
+	row.add_child(_swatch(PlayerColours.of_index(index), Vector2(20.0, 20.0)))
 
 	var kind := Label.new()
-	kind.text = "AI" if is_ai else "HUMAN"
-	kind.add_theme_font_size_override("font_size", 13)
-	kind.modulate = Color(0.74, 0.66, 0.48) if is_ai else Color(0.56, 0.72, 0.92)
+	kind.text = "ai" if is_ai else "human"
+	kind.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	kind.modulate = HudTheme.TEXT_FAINT
 	kind.custom_minimum_size = Vector2(56.0, 0.0)
 	row.add_child(kind)
 
 	var name_label := Label.new()
 	name_label.text = String(seat["name"])
-	name_label.add_theme_font_size_override("font_size", 16)
+	name_label.add_theme_font_size_override("font_size", HudTheme.TITLE_SIZE)
 	name_label.custom_minimum_size = Vector2(120.0, 0.0)
-	name_label.modulate = Color(0.70, 0.95, 0.75) if mine else Color(0.85, 0.87, 0.92)
+	name_label.modulate = HudTheme.TEXT_BRIGHT
 	row.add_child(name_label)
 
 	# The civ picker itself — a real dropdown rather than a label you have
@@ -5246,17 +5968,17 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	row.add_child(team_picker)
 
 	var tags := Label.new()
-	tags.text = ("HOST" if int(seat["player"]) == int(_state.lobby.get("admin", 0)) else "")
-	tags.add_theme_font_size_override("font_size", 13)
-	tags.modulate = Color(0.86, 0.76, 0.46)
+	tags.text = ("Admin" if int(seat["player"]) == int(_state.lobby.get("admin", 0)) else "")
+	tags.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	tags.modulate = HudTheme.ACCENT_BRIGHT
 	tags.custom_minimum_size = Vector2(44.0, 0.0)
 	row.add_child(tags)
 
 	# Only AI seats can be removed, and only by the host. A player leaves
 	# by disconnecting — eviction is a moderation feature nobody asked for.
 	if is_ai and _state.is_admin():
-		var remove := _styled_button("Remove", Color(0.78, 0.44, 0.42))
-		remove.add_theme_font_size_override("font_size", 13)
+		var remove := _styled_button("Remove", HudTheme.DANGER)
+		remove.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 		remove.pressed.connect(_on_remove_ai_pressed.bind(index))
 		row.add_child(remove)
 
@@ -5378,8 +6100,8 @@ func _refresh_map_panel() -> void:
 
 	if not admin:
 		var note := Label.new()
-		note.add_theme_font_size_override("font_size", 13)
-		note.modulate = Color(0.52, 0.55, 0.60)
+		note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+		note.modulate = HudTheme.TEXT_GHOST
 		note.text = "Only the host can change these."
 		_map_rows.add_child(note)
 
@@ -5391,9 +6113,9 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 
 	var label := Label.new()
 	label.text = String(option["label"])
-	label.add_theme_font_size_override("font_size", 14)
+	label.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
 	label.custom_minimum_size = Vector2(140.0, 0.0)
-	label.modulate = Color(0.70, 0.74, 0.82)
+	label.modulate = HudTheme.TEXT_DIM
 	row.add_child(label)
 
 	match String(option["kind"]):
@@ -5449,9 +6171,9 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 
 			var value := Label.new()
 			value.text = "%.2f" % float(settings.get(key, 0.0))
-			value.add_theme_font_size_override("font_size", 14)
+			value.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
 			value.custom_minimum_size = Vector2(52.0, 0.0)
-			value.modulate = Color(0.85, 0.88, 0.94)
+			value.modulate = HudTheme.TEXT_MUTED
 			row.add_child(value)
 
 	return row

@@ -396,9 +396,12 @@ run with strictly *less* work reported 146 ms where a fuller run reported
 ticks in both.
 
 **M7 (real models and textures) — in progress.** The ladder gained a
-rung: art is M7 and Steam becomes M8. Exit criteria are **D-063**;
-the work is **D-064** (art direction and pipeline, superseding D-011 and
-closing Q12), **D-065** (animation) and **D-066** (terrain texturing).
+rung: art is M7 and Steam becomes M8. Exit criteria are **D-085**;
+the work is **D-081** (art direction and pipeline, superseding D-011 and
+closing Q12), **D-082** (animation) and **D-083** (terrain texturing).
+(These were first recorded here as D-063/D-064/D-065/D-066 — IDs that
+collided with unrelated, already-real entries. Corrected 2026-08-11; see
+D-081's editorial note in `game_design_decisions.md` for why.)
 `just test-unit` is green at **424 tests** across 29 scripts.
 
 Landed: eight authored unit archetypes and four buildings, animated,
@@ -415,21 +418,44 @@ inside-out, which cost nothing but lighting until a building got big
 enough to look inside. Neither would have failed a test that counted
 things.
 
-**Still open in M7 (partially closed 2026-08-13):** `just bench-render`
-had not been re-run on a discrete GPU since authored models landed —
-D-063 criterion 11 — until measuring D-078's lighting pass closed it by
-accident. The number it found is worse than anyone expected: **62.26ms
-mean / 16.1 fps at D-018's 1,000-squad target (27,300 soldiers)**, against
-M5's recorded 35.66ms/28fps — but that comparison is not valid evidence of
-a regression, because the M5 figure predates authored models, M8's
-civ/team plumbing, and `squad_cap` growing 15→40 (D-056). Nobody has
-isolated which of those actually costs the difference, which is now its
-own tracked gap (D-078's revisit trigger), separate from and larger than
-the lighting work that surfaced it. Nobody has played a match with the
-new art (criterion 14) either. Until both close, M7 is landed, not
-complete — the same distinction M2 and M6 both had to learn.
+**D-085 criterion 11 is now discharged, with a caveat (D-086,
+2026-08-11).** `just bench-render` was re-run on Intel Iris Xe integrated
+graphics — the same hardware M5 used, no discrete GPU was available — and
+the cost of animated vertices at D-018's full scale is measured, not
+extrapolated: **53.93 ms mean / 18.5 fps at 1,000 squads (27,300
+soldiers)**, against M5's pre-authored-model 35.66 ms / 28 fps on the
+same hardware. Authored VAT models cost **51% more** at full scale than
+the primitive capsules M5 measured. This also discharges Q15's re-armed
+trigger. **Criterion 14 (a human plays a match with the new art) is
+still open** — D-086's own verification was automated (`bench-render`,
+`test-unit`, `test-client`, `gen-terrain-preview`, `test-load`), never a
+played match, consistent with the standing rule against launching the
+game unprompted. Until criterion 14 closes, **M7 is landed, not
+complete** — the same distinction M2 and M6 both had to learn.
 
-**The gaps between hexes are fixed (D-067).** They were pre-existing
+**D-086 (2026-08-11): the lighting layer M7's art never had.** The
+"low poly vs cartoon vs current" style question turned out to have a
+false premise — the game was already low poly at the extreme end (two
+primitives, 72-256 tris/soldier against a 300 budget); what actually
+separated the three options was lighting, and the project had almost
+none (one `DirectionalLight3D`, a flat navy `BG_COLOR`, no shadows, no
+sky, no tonemap, no fog, duplicated by hand across three files). Chose
+**polished low poly**: `world_look.gd` is now the one definition of the
+rig (guarded by a test that scans every other script for a stray
+`DirectionalLight3D`/`Environment` construction); sky, sky-sourced
+ambient, ACES tonemap and depth fog replaced the flat void at a measured
+cost of essentially zero (54.26 ms vs 53.93 ms mean at 1,000 squads); the
+8-colour terrain palette was re-tuned for the new tonemap. **Shadows were
+evaluated against the bench-render number above and explicitly deferred**
+— at 1,000 squads the frame was already 3.2x a 60 fps budget before
+spending anything on a shadow pass; 250 squads (76.6 fps) has headroom
+for a future squad-count-gated version. Cartoon/toon shading was rejected
+for the same reason: its outline pass would double the per-soldier vertex
+shader (including the VAT's three `texelFetch`es) and cannot be verified
+by `test-client`'s software rasteriser at all (Forward+-only
+`CompositorEffect`).
+
+**The gaps between hexes are fixed (D-084).** They were pre-existing
 rather than M7's, but textured ground made them the most obvious thing on
 screen. Each hex corner now takes the mean of the three cells meeting
 there, so neighbours agree and the surface is watertight; the centre
@@ -613,7 +639,7 @@ curve_replicator.gd      Per-client gating, horizon clipping and the
 formation.gd             Derived soldier positions (D-006). All-static
                         and pure — no instance state, by construction.
 animation_state.gd       Which clip a soldier plays and at what phase
-                        (D-065). All-static, so there is nowhere for the
+                        (D-082). All-static, so there is nowhere for the
                         phase accumulator D-006 forbids to live.
 cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
                         must never read it back (D-006 clause 2).
@@ -634,6 +660,14 @@ render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
                         of a squad to draw — is testable without a GPU.
+world_look.gd            The one definition of the lighting rig — sun,
+                        sky, ambient, tonemap, fog (D-086). All-static,
+                        guarded by a test that fails if any other script
+                        constructs a DirectionalLight3D or Environment
+                        directly. client.gd, bench_render.gd and
+                        model_preview.gd all build off this now, so the
+                        shipping rig and the benchmark rig cannot drift
+                        apart the way three hand-copies did before.
 hud_layout.gd            Where the HUD's pieces go, for a window of any
                         size (D-061). Scale AND anchoring — either alone
                         looks sufficient and is not. All-static, pure.
@@ -687,10 +721,10 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         materials. CACHED — a .glb is a scene, and
                         loading one per squad is the M4 `by_id` defect
                         with a bigger constant.
-/shaders/*.gdshader     The project's first shaders (D-065). Unit opaque,
+/shaders/*.gdshader     The project's first shaders (D-082). Unit opaque,
                         unit ghost, building static; VAT sampling shared
                         via a .gdshaderinc.
-/art/**.py              Committed asset GENERATORS (D-064) — the source
+/art/**.py              Committed asset GENERATORS (D-081) — the source
                         of truth for every model and texture. Plain
                         Python; `bpy` is imported only by art/lib/bake.py.
 /generated/             Committed build output: .glb, VAT .exr, the
@@ -730,7 +764,7 @@ docker-compose.yml       server / bots / test services. Teardown-scoped:
 
 ## Mesh pipeline — the tiers, as they now stand
 
-D-011's three tiers are **superseded by D-064**. Tier 1 (primitives) is
+D-011's three tiers are **superseded by D-081**. Tier 1 (primitives) is
 still there as the fallback, tier 2 (parametric composition) turned out to
 be *how* tier 3 is written rather than a stop on the way, and tier 3 is
 built:
@@ -744,14 +778,14 @@ built:
   and a clone that has never run `build-assets` all still work — a failed
   art build costs fidelity, not the game.
 
-**Both the generators and their output are committed** (D-064). The
+**Both the generators and their output are committed** (D-081). The
 generators are the source of truth; `generated/` is committed anyway so a
 fresh clone plays without installing anything. Two runs of
 `build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
 no timestamps — and a test fails if `generated/` is stale with respect to
 `art/`.
 
-**Soldiers are animated by a vertex animation texture (D-065), and the
+**Soldiers are animated by a vertex animation texture (D-082), and the
 phase is DERIVED, never accumulated.** `phase = fract(t*rate + hash(slot))`,
 computed in the shader from `TIME`. That is the whole reason animation is
 legal under D-006 clause 1: there is nowhere for per-soldier state to
@@ -761,7 +795,7 @@ delta time, or a blend weight carried between frames, breaks it** — those
 are integration state in a cosmetic disguise.
 
 Terrain is textured by a **per-biome atlas that MODULATES the vertex
-colour** (D-066) — `TerrainGen.biome_color()` is still the single source
+colour** (D-083) — `TerrainGen.biome_color()` is still the single source
 of truth, which is what keeps the minimap and the preview PNG from
 drifting from the 3D view without either of them being touched. Terrain
 UVs come from the **cell**, never from world position, so all nine torus
@@ -819,8 +853,8 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 489 tests across
-  32 scripts, measured 2026-08-10)*
+- `just test-unit` — GUT unit tests, headless *(green: 492 tests across
+  33 scripts, measured 2026-08-11)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

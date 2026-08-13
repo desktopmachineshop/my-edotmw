@@ -333,14 +333,6 @@ static func make_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
 	material.roughness = 0.95
-	# D-076's lighting pass: buildings and units both shade with
-	# `diffuse_toon` now (shaders/building_static.gdshader,
-	# shaders/unit_anim.gdshader) — matching it here keeps the ground those
-	# things stand on from being the one smoothly-Lambert surface in frame.
-	material.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
-	material.rim_enabled = true
-	material.rim = 0.15
-	material.rim_tint = 0.25
 	if ResourceLoader.exists(ATLAS_PATH):
 		material.albedo_texture = load(ATLAS_PATH) as Texture2D
 	return material

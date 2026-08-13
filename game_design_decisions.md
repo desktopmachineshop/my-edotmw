@@ -20,75 +20,493 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-078 · 2026-08-13 · Accepted — toon shading and rim light, not dynamic shadows, for D-064's "stylised low-poly"
-**Decision:** D-064 set the art direction as "stylised low-poly with strong
-silhouettes" but never touched lighting — every shader used
-`diffuse_lambert`, the same smooth photoreal falloff a realistic game would
-use, over low-poly geometry. Using the five new D-076 buildings as the test
-subject, all three opaque shaders (`unit_anim.gdshader`,
-`building_static.gdshader`, and terrain's `StandardMaterial3D` in
-`terrain_chunk.gd`) switch to `diffuse_toon` — a stepped light/shadow
-split that reads as flat graphic-novel colour rather than a gradient — plus
-a small fixed `RIM`/`RIM_TINT` term on each, which is what D-064's "strong
-silhouettes" clause actually asked for: a soldier or building should stay
-legible in silhouette against similarly-coloured terrain or a crowded
-melee. `client.gd`'s directional light shifted warm (`Color(1.0, 0.95,
-0.82)`) against a cooler ambient fill (`Color(0.42, 0.48, 0.58)`, energy
-0.75) — a neutral light over neutral ambient gave `diffuse_toon` nothing to
-separate and just looked like flat grey banding. `model_preview.gd` and
-`bench_render.gd` were kept in sync with `client.gd`'s rig on purpose: a
-preview or benchmark with its own separately-tuned lighting would stop
-answering "what does the game actually look like/cost."
+> **Editorial note on D-081 through D-085, added 2026-08-11.** M7's art
+> work landed under decision IDs D-063 through D-067 — but by the time it
+> shipped, those IDs had already been taken by real, unrelated entries
+> (D-063 is the HUD/camera-yaw decision below; D-065 is formation shape;
+> D-066 is building damage scale; D-067 is squad shoving). `CLAUDE.md`
+> cites the art work at the collided IDs anyway, and the only trace of
+> the actual art decisions in this file was a two-line Q12 closure
+> pointing at a `D-064` that was never written. A grep for style keywords
+> (`vertex animation texture`, `VAT`, `gdshader`, `silhouette`, `low-poly`,
+> `toon`, `atlas`) across the whole file before this note returned exactly
+> two hits, both in that closure.
+>
+> D-081 through D-085 below reconstruct those decisions from the shipped
+> code and from `CLAUDE.md`'s own M7 narrative, at fresh unused IDs, so
+> this file has something to check before the next art decision is made.
+> They are dated to when the work is understood to have landed (D-081's
+> 2026-08-09 matches the Q12 closure's own date), not to today — but they
+> were **written today**, after the fact, which is the opposite of this
+> project's own rule that exit criteria (D-022, D-026) are written down
+> *before* the code. D-085 in particular is reconstructed without ever
+> having seen an original numbered list; where `CLAUDE.md` cites a
+> specific criterion number (4, 11, 14) that number is preserved, and
+> everything else is inferred from what the same section of `CLAUDE.md`
+> says landed. Treat D-085 as lower-confidence than the others for that
+> reason.
+>
+> **Renumbered again on merge, same day.** This block was first drafted
+> as D-075 through D-080. Before it merged, `main` independently gained
+> its own real D-075 — "leaving a match returns to the lobby, and no
+> humans means no server" (below) — landing the same day this block was
+> written. Rather than let a second, unrelated decision collide onto an
+> ID this block had already claimed, everything here was shifted up by
+> six (D-075→D-081 … D-080→D-086) at merge time. The lesson is the same
+> one the rest of this note describes at one remove: picking a fresh ID
+> only prevents a collision with what exists at the moment you pick it,
+> not with a decision landing on `main` from a different branch in
+> parallel. Check `main` immediately before merging, not only before
+> writing.
 
-**Rejected: dynamic shadows (`DirectionalLight3D.shadow_enabled`).** Tried
-first, alongside the toon/rim pass, because a shadow is what makes a toon
-light/shadow split mean something instead of being purely angle-driven.
-The naive comparison against M5's recorded 35.66ms/28fps would have looked
-like a much bigger regression than shadows alone caused — see the
-Consequences note below for why that number turned out to be stale and not
-the right baseline. The clean, apples-to-apples comparison is this
-session's own back-to-back measurement, same scene, same hardware, same
-run: **71.15ms mean / 14.1 fps with shadows, 62.26ms mean / 16.1 fps
-without**. Roughly 9ms (~14%) for one
-directional light's shadow pass over the whole map and every soldier is
-not affordable against a tick/frame budget this project has fought for
-twice already (M4's flow-field spike, M5's render pass). `diffuse_toon`
-and `RIM` cost nothing extra by comparison — same light-model evaluation
-Godot already runs, no added draw calls — which is why they stayed and
-shadows didn't.
+### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
 
-**Consequences — a bigger finding than the lighting pass itself.** M7's own
-"still open" note said `bench-render` had not been re-run on a discrete
-GPU since authored soldier models (real ~100–256 tri VAT-animated meshes)
-replaced primitive capsules — criterion 11 of D-063, never closed.
-Measuring this decision closed it by accident: **62.26ms mean / 16.1 fps at
-1,000 squads (27,300 soldiers), no shadows, is the first real number since
-authored models landed** — and it is *not* comparable to M5's recorded
-35.66ms/28fps, which was measured against primitive capsules before M7,
-M8's civ/team overhead, and D-018's `squad_cap` growth (15→40) all
-happened. There is currently no valid "what did authored models alone
-cost" baseline, because nobody re-measured between landing them and now.
-**This is the real revisit trigger, separate from and larger than
-lighting**: D-018's 1,000-squad target is presently rendering at roughly
-half the frame rate the milestone record implies, and the cause has not
-been isolated (authored-model vertex cost, squad_cap growth, civ/team
-plumbing, or some combination). `just bench-render` should be run again
-the next time render cost work is prioritised, ideally bisected against
-M7's landing commit to actually attribute it — this decision only
-measured the marginal cost of shadows on top of whatever that baseline
-now is, not the baseline itself.
+**Decision:** The art style question ("low poly vs cartoon vs the current
+method") had a false premise — `art/lib/geom.py` exposes exactly two
+primitives (`box`, `prism`), every shipped model runs 72-256 triangles
+against a 300/460/400 budget (D-081), and the shading is already flat
+Lambert with no specular. The game is already low poly, at the extreme
+end. Nothing about it is geometry-limited.
 
-**Consequences:** `just test-unit` unaffected (545 tests, shaders/lighting
-are not GUT-testable) — verified visually via `just gen-model-preview`
-(native, real GPU, matches what ships) rather than asserted. No wire or
-simulation change; D-006 is untouched (lighting is a pure render-time
-concern).
+What separated "low poly", "cartoon" and "the current method" turned out
+to be the lighting layer, and the project had almost none: one
+`DirectionalLight3D`, a flat `BG_COLOR` navy void, a constant blue-grey
+ambient, no shadows, no sky, no tonemap, no fog, no post-processing —
+duplicated by hand across `client.gd`, `bench_render.gd` and
+`model_preview.gd`. The chosen direction is **polished low poly**
+(Northgard / Bad North) over cartoon/toon, because the entire cost is in
+that lighting layer plus a palette re-tune — it needs no change to the
+asset pipeline, unlike toon's outline pass (see Rejected alternatives).
 
-**Revisit trigger:** the frame-rate gap noted above, whenever render cost
-is next worked on. Secondarily: if a cheaper shadow approach is ever worth
-trying (limited distance, a single low-res cascade, shadows only near the
-camera), re-measure with the same `bench-render` methodology rather than
-assuming a cheaper setting is cheap enough.
+**What shipped:**
+
+1. **`world_look.gd`** (`class_name WorldLook`, all-static, the same
+   convention as `render_cull.gd`/`formation.gd`/`hud_layout.gd`) — the
+   one definition of the rig, replacing three hand-copies. Guarded by
+   `tests/test_world_look_is_the_only_light.gd`, which scans every script
+   outside `world_look.gd` for a direct `DirectionalLight3D.new()` or
+   `Environment.new()`. Observed failing before trusting it, per this
+   project's standing rule: a stray construction was added to
+   `hud_layout.gd`, the test caught it, then it was removed and the test
+   passed again.
+2. **Sky, sky-sourced ambient, ACES tonemap, depth fog** — `BG_SKY` with
+   a `ProceduralSkyMaterial` replaces the navy void; ambient now samples
+   the sky (`AMBIENT_SOURCE_SKY`) instead of a constant colour, which is
+   the change that does most of the work, because flat-shaded geometry
+   lit by a single hard light plus a flat ambient term reads as
+   cardboard; `TONE_MAPPER_ACES` replaces no tonemap at all; depth fog
+   ties its colour to the sky horizon for aerial perspective at RTS zoom
+   (camera height 8-31 on the shipped map). Measured cost: negligible —
+   54.26 ms mean at 1,000 squads against 53.93 ms before, on the same
+   hardware, same run shape.
+3. **Terrain palette re-tuned** (`terrain_gen.gd:biome_color`) — ACES
+   compresses highlights and desaturates midtones, and sky ambient pushes
+   everything cooler, so the pre-existing 8 biome colours read muddier
+   than authored. The two darkest biomes (deep water, forest) were lifted
+   the most since they were closest to crushing toward black; land biomes
+   were warmed slightly to offset the sky tint. Relative ordering
+   (deep water darker than water, forest darker than grassland) was kept
+   on purpose — that hierarchy is what a player reads at a glance.
+   `biome_at()`, which actually gates passability, is untouched.
+4. **Shadows were evaluated and explicitly deferred**, not shipped — see
+   Rejected alternatives.
+
+**Measurement, taken before spending anything (Step 0 of this work):**
+`just bench-render` on Intel Iris Xe, native, Forward+, through the same
+cull+LOD path `client.gd` uses (`bench_render.gd` mirrors
+`RenderCull`/`_detail_for`):
+
+| squads | soldiers | ms mean | ms worst | fps mean | squads drawn |
+|---|---|---|---|---|---|
+| 0 | 0 | 2.09 | 3.22 | 477.8 | 0 |
+| 100 | 2,730 | 5.48 | 7.85 | 182.5 | 64 |
+| 250 | 6,825 | 13.06 | 14.29 | 76.6 | 183 |
+| 500 | 13,650 | 26.97 | 36.34 | 37.1 | 363 |
+| 1,000 | 27,300 | 53.93 | 54.55 | **18.5** | 741 |
+
+This discharges D-085 criterion 11 (partially — see Rejected
+alternatives on the discrete-GPU point) and answers M7's open question
+about the real cost of VAT-animated authored models: **M5's 35.66 ms /
+28 fps at 1,000 squads on this same Iris Xe was measured with primitive
+capsules, before authored models landed.** The authored-model number is
+53.93-54.26 ms / 18.4-18.5 fps — **51% slower at full scale**, not the
+several-fold-*under*-stated figure CLAUDE.md's M4 section warns about for
+the unrelated 0.72 µs/soldier derivation figure. The animated-vertex cost
+is real, and it was unmeasured until this decision.
+
+**Rationale:** A presentation pass is style-neutral and is a prerequisite
+for either "polished low poly" or "cartoon" to look intentional rather
+than unfinished — building it first, then judging the two options with a
+picture in hand, is cheaper than judging them in the abstract and
+possibly re-doing the judgement. Once built, the picture matched
+"polished low poly" well enough (see `artifacts/client-frame.png`,
+D-086) that committing further to toon was not worth its cost (below).
+
+**Rejected alternatives:**
+- **Cartoon / toon shading** (`diffuse_toon` + rim light + outline).
+  Rejected for now, not permanently. The diffuse/rim half is nearly free
+  — a token change in three shaders and some parameters in
+  `SoldierParams`. The outline half is not: an inverted-hull outline
+  doubles the vertex shader over every soldier, **including the VAT's
+  three `texelFetch`es per vertex**, and a screen-space edge pass needs a
+  Forward+ `CompositorEffect` that `test-client`'s Mesa software
+  rasteriser (`gl_compatibility`) cannot run at all — the automated
+  visual check would go blind to it. Given Step 0's number, spending
+  that on top of an already over-budget frame at full scale was not
+  justified without a stronger reason to prefer it over polished low
+  poly.
+- **Shadows.** Evaluated against Step 0's own stated gate ("if the
+  current frame is already at or over budget on this hardware, shadows
+  come out of scope... decide this from the number, not in advance"). At
+  1,000 squads the frame was already 53.93-54.26 ms — 3.2x a 60 fps
+  budget and under 20 fps outright — before spending anything on a
+  second render pass per shadow cascade. Deferred, not rejected outright:
+  250 squads (76.6 fps) has real headroom, so a squad-count-gated shadow
+  pass is a reasonable future revisit, not ruled out here.
+- **Full re-author of the unit/terrain palette from scratch.** Rejected
+  in favour of re-tuning the existing 8 terrain colours and leaving
+  `SoldierParams` colours alone. A `SoldierParams` change requires
+  `just build-assets` and a re-commit of the hash-gated `generated/`
+  tree (D-081); the lighting change alone got most of the visual delta,
+  so that cost was not spent.
+
+**Consequences:** `client.gd`, `bench_render.gd` and `model_preview.gd`
+no longer construct their own lighting; both the shipping rig and the
+benchmark rig are now structurally guaranteed to match, closing the gap
+`bench_render.gd`'s own header warns about ("a benchmark camera that is
+merely similar measures a similar game"). `terrain_gen.gd:biome_color`
+carries a comment explaining why its 8 colours no longer match their
+pre-D-086 values. D-085 criterion 14 (a human plays a match with the new
+art) is **still open** — nothing in this decision involved a human
+playing, only automated headless-ish verification
+(`bench-render`, `test-unit`, `test-client`, `gen-terrain-preview`,
+`test-load`), consistent with the standing rule against launching the
+game unprompted.
+
+**Revisit trigger:** shadows, if a squad-count-gated version is ever
+built, or if a discrete GPU becomes available to re-measure Step 0's
+number and shadows fit inside it at full scale. SSAO, if it ships despite
+being invisible to the `gl_compatibility` verification path — that gap
+would need to be stated wherever SSAO is decided, the same way it is
+flagged here as a reason it was not attempted. Toon/outline, if
+playtesting after D-085 criterion 14 is finally discharged says
+readability at zoom is the binding problem polished low poly did not
+solve.
+
+---
+
+### D-085 · 2026-08-08 (reconstructed 2026-08-11) · Accepted — M7's exit criteria, written after the fact
+
+**This entry is a reconstruction — see the editorial note above.** No
+original numbered criteria list survived; `CLAUDE.md`'s M7 section cites
+criteria 4, 11 and 14 by number without ever printing the full list. The
+positions of those three are preserved below; the rest are inferred from
+what `CLAUDE.md`'s M7 section states landed or remained open in that same
+paragraph, and should be read as lower-confidence than a criteria list
+this project would normally write before the code, per D-022 and D-026's
+own precedent.
+
+**Decision:** M7 ("real models and textures") is complete when:
+
+1. At least one authored model exists per roster archetype and per
+   building, generated by committed Python (D-081), not hand-modelled.
+2. Every model is under its triangle budget (`TRIANGLE_BUDGET`,
+   `MOUNTED_TRIANGLE_BUDGET`, `BUILDING_TRIANGLE_BUDGET` — D-081).
+3. Two runs of `just build-assets` are byte-identical, and a test fails
+   if `generated/` is stale against `art/`'s source hash (D-081).
+4. **`just gen-model-preview` renders every authored model, animated, and
+   the screenshot is looked at, not just asserted about** — the actual
+   text of the criterion `model_preview.gd`'s header cites by number.
+5. Soldiers render through the shipping `MultiMesh` + VAT path, not a
+   per-soldier node (D-082), and carry the owning player's colour
+   (D-052) despite `MultiMesh` overriding vertex `COLOR`.
+6. `gen-model-preview` renders twice, 1.7s apart, and fails if the two
+   frames are byte-identical — proof the VAT is actually advancing, not
+   frozen at a plausible-looking still.
+7. Terrain is textured by a per-biome atlas that modulates vertex colour
+   (D-083), and the atlas, the minimap and the 3D mesh all agree because
+   all three read `TerrainGen.biome_color()`.
+8. Import settings for VAT and atlas textures are generated data
+   (`godot_import.py`), not hand-set in the editor — `detect_3d/compress_to`
+   in particular, since Godot's default silently corrupts a VAT with VRAM
+   block compression.
+9. The MultiMesh-overrides-`COLOR` defect (every soldier rendering
+   black) is fixed and does not regress.
+10. Every `box()` in `art/lib/geom.py` winds outward, not inside-out —
+    the defect that cost nothing visually until a building was large
+    enough to see through its far wall.
+11. **`just bench-render` is re-run on real hardware since authored
+    models landed, and the cost of animated vertices at D-018's full
+    scale is measured, not extrapolated from the pre-authored-model
+    number.** The actual text of the criterion `CLAUDE.md`'s M7 section
+    cites by number.
+12. The hex-gap and inverted-normal terrain defects (D-084) are fixed
+    once textured ground made them the most visible thing on screen.
+13. `just test-unit` is green with the art-pipeline tests included
+    (`test_art_assets.gd` and neighbours).
+14. **A human plays a match with the new art.** The actual text of the
+    criterion `CLAUDE.md`'s M7 section cites by number, and the one this
+    project's own M2/M6 history says not to skip: numbers passing is not
+    evidence the picture is right, and playing is the check nothing else
+    substitutes for.
+
+**Rationale:** Written the way D-022 and D-026 were, so "the art landed"
+and "the art meets M7's exit criteria" stay distinguishable claims — the
+same distinction M2 and M6 both had to learn the hard way before this
+project started writing exit criteria down at all.
+
+**Consequences:** As of D-086, criterion 11 is discharged **with a
+caveat**: measured on Intel Iris Xe integrated graphics, the same
+hardware M5 used, not a discrete GPU — no discrete GPU was available in
+the environment that ran it. That satisfies M5's own precedent (M5 also
+used integrated graphics throughout) and answers the real question this
+criterion exists for — the cost of VAT-animated authored models at full
+scale — but is not literally "discrete" if that word in `CLAUDE.md`'s
+phrasing was chosen deliberately rather than loosely. Criterion 14
+remains open after D-086: nothing in D-086 involved a human playing,
+only automated verification. **M7 is landed, not complete**, which is
+consistent with what `CLAUDE.md` already said before this entry existed.
+
+**Revisit trigger:** re-run criterion 11 if a discrete GPU becomes
+available, to settle the caveat above. Close criterion 14 the next time
+a human plays a match — at that point M7's completeness can be asserted
+rather than argued from a reconstructed criteria list.
+
+---
+
+### D-084 · 2026-08-10 (reconstructed 2026-08-11) · Accepted — a watertight hex surface, and the simulation untouched
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-067`, which collides with the real
+D-067 below (squad shoving / one-squad-cannot-raze-a-base). This entry
+gives the terrain-surface work its own ID.
+
+**Decision:** Gaps between hexes — pre-existing, but invisible until
+textured ground made them the most obvious thing on screen — are closed
+by making each hex corner take the mean elevation of the three cells
+meeting there, so neighbouring hexes agree on their shared corner and the
+surface is watertight. The centre vertex keeps its own cell's elevation,
+which leaves each hex a shallow pillow rather than a flat tile. Normals
+are derived from the resulting surface instead of hardcoded
+`Vector3.UP`, so slopes finally shade instead of lighting flat regardless
+of grade.
+
+`TerrainGen.surface_field` is one array of 7 heights per cell (6 corners
++ centre), read by BOTH the mesher (`terrain_chunk.gd`) and the client's
+ground sampler (`TerrainChunk.height_at`) — deliberately the same file,
+because a sampler that only matched the mesh by being written correctly
+twice would eventually drift, and the symptom of that drift is an army
+floating with every other number green.
+
+**Rationale — the simulation must not change, and does not.**
+`TerrainGen.elevation_at` stays discrete per cell and `passability` still
+thresholds it; only the picture interpolates between corners. That split
+is what makes this a rendering-only change with no desync surface: the
+server's notion of a cell's elevation and passability is byte-identical
+before and after. It stops being free the moment elevation acquires
+tactical meaning (terrain-occluded line of sight is still an open
+question, not decided here).
+
+**Consequences:** `TerrainChunk.height_at` is a hot path — called once
+per soldier per frame by the client's ground sampler, no longer a single
+array index. Its cost on real hardware was, at the time this landed,
+unmeasured; D-086's `bench-render` numbers are the first real measurement
+of the full render path including this sampler, since `bench_render.gd`
+explicitly samples through the same `TerrainChunk.height_at` the client
+uses rather than deriving at a fixed height.
+
+**Revisit trigger:** if terrain elevation is ever given tactical meaning
+(occlusion, high ground combat bonuses), the discrete-vs-interpolated
+split this entry relies on needs to be revisited explicitly — the
+simulation's answer and the picture's answer would need to agree again,
+the same way they were kept apart on purpose here.
+
+---
+
+### D-083 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — terrain texturing: the atlas modulates, biome_color decides
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-066`, which collides with the real
+D-066 below (building damage scale). This entry gives terrain texturing
+its own ID.
+
+**Decision:** Terrain is textured by a per-biome atlas
+(`art/terrain/atlas.py`) that **modulates** vertex colour rather than
+replacing it. `TerrainGen.biome_color()` stays the single source of
+truth for what a biome looks like, read by the 3D mesh, the minimap and
+the offline preview PNG alike — the property that keeps all three from
+drifting apart without any of them being touched, and the reason
+`biome_color()` and the mesher live where they do.
+
+The atlas is `2048x1024` (4 columns x 2 rows of 512px tiles), generated
+by periodic (seam-continuous) value noise so every tile wraps exactly —
+required because the world tiles nine times (D-035) and a non-periodic
+texture would show a seam at every join. Each biome's noise recipe is
+its own RNG stream (`SEED + biome_index * 977`), so adding a ninth biome
+cannot perturb the existing eight. Every tile is normalised to average
+**`NEUTRAL_MEAN = 0.92`** — deliberately short of full white — so that
+multiplying it against `biome_color()`'s value darkens the surface only
+slightly instead of tinting it; the atlas may add texture, never colour.
+Per-cell UV rotation is hashed from the wrapped cell coordinate, so the
+hex lattice does not read as an obviously repeating tile.
+
+UVs are derived from the **cell**, never from world position — the same
+reason terrain elevation is cell-keyed (D-084) — so all nine torus
+copies of a hex agree on their texture by construction rather than by
+each copy computing its own answer and hoping they match.
+
+**Rationale:** A single source of truth for colour is what let D-086
+re-tune the palette for the new lighting rig by editing eight `Color`
+literals in one function, with the minimap and preview PNG updating for
+free. Had the atlas carried its own colour independent of
+`biome_color()`, that re-tune would have needed a `just build-assets`
+rebuild and a `generated/` re-commit on top of the code change, and the
+three views (3D, minimap, preview) could have drifted from each other in
+the process.
+
+**Rejected alternatives:** Letting the atlas tint the terrain directly
+(rejected — see above: it would make the atlas a second source of truth
+for colour, defeating the reason `biome_color()` exists as a single
+function everything reads).
+
+**Consequences:** Any future palette change touches only
+`terrain_gen.gd:biome_color` — confirmed directly by D-086, which did
+exactly that and needed no atlas rebuild.
+
+**Revisit trigger:** if a biome ever needs texture variation that
+`biome_color()`'s flat per-biome colour cannot express (e.g. patchy dead
+grass within GRASSLAND), the "atlas never carries colour" rule would need
+an explicit, deliberate exception — not a silent one.
+
+---
+
+### D-082 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — animation: a vertex animation texture, and a phase that is derived, never accumulated
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-065`, which collides with the real
+D-065 below (formation shape, replicated state). This entry gives VAT
+animation its own ID.
+
+**Decision:** Soldiers animate via a vertex animation texture (VAT),
+sampled per-vertex in `shaders/unit_anim.gdshader` /
+`unit_anim_ghost.gdshader` through the shared `unit_vat.gdshaderinc`.
+The VAT layout is `width = vertex count`, `height = total_frames*2 + 1`:
+rows `[0, 64)` are per-frame position OFFSETS from the rest pose, rows
+`[64, 128)` are animated normals, row 128 carries the part's `rgb` colour
+and an owner-tint `alpha` mask. Baked as half-float RGBA EXR with the
+view transform forced to `Raw` so no colour management touches the
+numeric payload.
+
+**The phase is derived from `TIME` in the shader every frame —
+`phase = fract(t*rate + hash(slot))` — never accumulated.** This is the
+clause that makes animation legal under D-006's ban on per-soldier
+integration state: there is nowhere for a phase counter to live, because
+`animation_state.gd` is all-static for the same structural reason
+`formation.gd` and `cosmetic_offset.gd` are. A phase counter advanced by
+delta time, or a blend weight carried between frames, would be
+integration state in a cosmetic disguise and would violate D-006 clause 1
+exactly as an emergent per-soldier movement system would.
+
+**Rationale — why a MultiMesh needs this instead of a normal
+`AnimationPlayer`.** Soldiers render one `MultiMeshInstance3D` per squad
+(D-009), not one node per soldier — an `AnimationPlayer` has no notion of
+"this instance is at a different phase than that one" within a single
+mesh. A VAT sampled with a per-soldier phase hash is what lets thousands
+of soldiers in one draw call each look like they are not marching in
+lockstep, at the cost of three `texelFetch`es per vertex instead of a
+skeletal skin.
+
+**Consequences — the defect this shape doesn't prevent, and did
+happen.** A `MultiMeshInstance3D` overrides the shader's `COLOR` with its
+own per-instance colour, so a mesh's vertex `COLOR_0` never reaches the
+fragment stage on this render path — the reason every soldier rendered
+black before this was diagnosed, and the reason unit colour lives in the
+VAT's own colour row (fetched with the same column index as position and
+normal) rather than in vertex colour the way building colour does
+(buildings render as individual `MeshInstance3D`s, so `COLOR` reaches
+them fine). Column index is carried in `UV2.x` rather than `VERTEX_ID`,
+so it survives glTF re-ordering and works under the GL Compatibility
+renderer `test-client` and `gen-model-preview` both depend on.
+
+**Revisit trigger:** none identified; VAT sampling cost at full scale is
+now measured by D-086's `bench-render` run, which folds this shader's
+cost into the same number that includes culling and LOD.
+
+---
+
+### D-081 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — art direction and pipeline: stylised low poly, generated, not hand-modelled
+
+**This entry is a reconstruction — see the editorial note above, and
+supersedes D-011.** `CLAUDE.md` cites this work at `D-064`, an ID never
+actually written in this file — the only trace of it was a two-line Q12
+closure. This entry gives the art pipeline its real ID and content, and
+corrects that closure below.
+
+**Decision:** Closes Q12 ("art direction for mesh tiers 2 and 3, and who
+produces it"). Style: stylised low poly with strong silhouettes, ~300
+triangles per soldier. Produced by **committed Python scripts driving
+Blender headless as a library** (`bpy`, a PyPI wheel — no GUI, no system
+Blender, no GPU needed for generation), not by hand in the Godot editor
+or a DCC tool. D-011's tier 2 (parametric composition) is absorbed rather
+than skipped: parametric composition is *how* the generators are
+written, not a separate stop on the way to tier 3.
+
+**Geometry is exactly two primitives** (`art/lib/geom.py`): `box()`
+(axis-aligned, `taper`/`taper_z` for wedges and gable ridges) and
+`prism()` (N-sided about Y, for helmets/shields/spearheads/spires). No
+spheres, no bevels, no UV unwrap. Every soldier and building is composed
+from these via an ordered list of named, coloured `Part`s
+(`art/lib/soldier.py`, `art/buildings/__init__.py`).
+
+**Vertex colour carries two channels**, not one: a part's own `rgb`, and
+a `mask` (carried in alpha) for how much of that part takes the owning
+player's colour (D-052) — 1.0 on cloaks/banners, 0.9 on shields, 0.85 on
+tunics, 0.0 on skin and steel.
+
+**Triangle budgets are enforced, not advisory** — `art/build.py` raises
+`SystemExit` over `TRIANGLE_BUDGET = 300` (`MOUNTED_TRIANGLE_BUDGET =
+460`, `BUILDING_TRIANGLE_BUDGET = 400`). The heaviest shipped foot unit
+(founders, 172 tris) is still well under budget — nothing shipped is
+geometry-limited, which is the fact D-086 leans on to justify spending
+the art budget on lighting instead of more geometric detail.
+
+**Both the generators and their output are committed.** `art/` is the
+source of truth; `generated/` (`.glb`, VAT `.exr`, the terrain atlas) is
+a committed build product anyway, so a fresh clone plays without
+installing Blender. Two runs of `just build-assets` must be
+byte-identical — fixed seeds, sorted iteration, no timestamps — and a
+test fails if `generated/`'s manifest hash is stale against `art/`'s
+source. Import settings (`detect_3d/compress_to=0` above all — Godot's
+default silently VRAM-compresses a VAT, which is corruption, not
+compression, on a texture where neighbouring texels are unrelated
+vertices) are generated data via `art/lib/godot_import.py`, not
+hand-set in the editor.
+
+**Rationale:** Matches D-011's original tiering philosophy (zero art
+dependency validates the architecture before art investment) while
+finally spending the art budget D-011 deferred — the trigger D-011
+itself named ("M3 complete, and playtesting suggests visual fidelity is
+limiting engagement, or tiers 2/3 explicitly prioritized") had fired by
+the time this was written: M3 had completed three milestones earlier and
+the owner had explicitly prioritised tiers 2/3.
+
+**Rejected alternatives:** Hand-authored final meshes in a DCC tool
+(rejected — the project's whole premise, stated in `CLAUDE.md`'s "What
+this project is", is that plain-text/scriptable assets keep the project
+editable by Claude Code; a hand-sculpted `.blend` is the one thing this
+project's own rules flag as an exception rather than the default path).
+Jumping straight to tier 3 fidelity without the parametric layer
+(rejected — every archetype needing its own bespoke script would multiply
+the ~90-130 unit count D-070 already accepts for M9's roster growth).
+
+**Consequences:** Nothing shipped is geometry-limited (see triangle
+budget numbers above), which is the load-bearing fact behind D-086's
+choice to spend on lighting rather than more detailed models. Adding an
+archetype is a data change in `art/units/__init__.py`'s `ROSTER` dict,
+not a new script.
+
+**Revisit trigger:** none identified since D-011's trigger fired and
+this decision was made in response to it.
 
 ---
 
@@ -4765,7 +5183,7 @@ just in code):
 
 ---
 
-### D-011 · 2026-07-28 · Superseded by D-064 (2026-08-09)
+### D-011 · 2026-07-28 · Superseded by D-081 (2026-08-09)
 **Decision:** Mesh generation stays at the primitive tier (capsules,
 boxes, cylinders composed from `UnitDef` data) through M3. Modular/
 parametric (tier 2) and Blender/`bpy` final-fidelity (tier 3) are
@@ -4788,8 +5206,10 @@ explicitly prioritized.
 
 **Trigger fired 2026-08-09, on both halves** — M3 completed three
 milestones ago and the owner prioritised tiers 2/3 explicitly. Superseded
-by D-064, which sets the art direction and makes the generator, rather
-than the mesh, the thing that is committed.
+by D-081 (first recorded here as `D-064`, then briefly as `D-075` — both
+IDs collided with unrelated real entries; corrected 2026-08-11, see
+D-081's editorial note), which sets the art direction and makes the
+generator, rather than the mesh, the thing that is committed.
 
 ---
 
@@ -5276,7 +5696,10 @@ items resolved as:
   leak surfaces are curve horizon clipping (D-003) and client-derived
   soldier positions (D-006).
 - ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
-  produces it.~~ → **D-064** (2026-08-09): stylised low-poly with strong
+  produces it.~~ → **D-081** (2026-08-09; corrected 2026-08-11 — first
+  recorded here as `D-064`, then briefly as `D-075`; both IDs collided
+  with unrelated real entries; see D-081's own entry and its editorial
+  note): stylised low-poly with strong
   silhouettes, ~300 tris/soldier; produced by committed Python scripts
   driving Blender headless as a library, not by hand in the GUI. Tier 2
   is absorbed rather than skipped — parametric composition is how the
