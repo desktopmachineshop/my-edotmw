@@ -2596,6 +2596,23 @@ func _refresh_buildings() -> void:
 	if _state.space == null:
 		return
 
+	# Playtest fix: wall-family cells, gathered up front so each segment's
+	# rotation below can see its ACTUAL current neighbours rather than
+	# only the one `facing` chosen at placement. `_building_defs` rather
+	# than a fresh BuildingSim.def_by_id() per building — cheap, and a
+	# brand new building simply not counting as a neighbour for the one
+	# frame before its own def gets cached is a self-correcting non-issue,
+	# not the M4 disk-load-per-call defect this avoids repeating.
+	var wall_family_cells := {}
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var def: BuildingDef = _building_defs.get(wire_id, null)
+		if def == null or def.footprint_radius != 0 or def.is_access_tower:
+			continue
+		wall_family_cells[_state.space.from_index(int(info["cell"]))] = int(wire_id)
+
 	for wire_id in _state.buildings:
 		var info: Dictionary = _state.buildings[wire_id]
 		var instance: MeshInstance3D = _building_nodes.get(wire_id, null)
@@ -2695,8 +2712,25 @@ func _refresh_buildings() -> void:
 		# The actual fix is in the mesh itself: art/buildings/__init__.py
 		# extends every wall-family body well below y=0 (a buried skirt),
 		# so broken ground is hidden by depth instead of by leaning the
-		# whole segment. Nothing to do here any more — rotation stays
-		# whatever `instance.rotation.y`'s facing set at creation.
+		# whole segment.
+		#
+		# What DOES still belong here: playtest fix, second issue — a
+		# segment's rotation was set ONCE at placement from the single
+		# `facing` chosen then, which only ever matched ONE of up to two
+		# actual connections. Built as a sequence of individual clicks
+		# (not one continuous drag) rather than a straight drag, each new
+		# segment snapped to face whichever neighbour existed AT THAT
+		# MOMENT — so the FIRST segment in a bending run kept its
+		# placement-time facing forever, visibly unaligned with a bend
+		# that only took shape afterward. Recomputed every frame instead,
+		# from the buildings that actually exist right now.
+		var rotating_wall_def: BuildingDef = _building_defs.get(wire_id, null)
+		if rotating_wall_def != null and rotating_wall_def.footprint_radius == 0 \
+				and not rotating_wall_def.is_access_tower:
+			var neighbour_dirs := _wall_segment_neighbour_dirs(
+				wall_family_cells, _state.space.from_index(int(info["cell"])))
+			instance.rotation.y = _wall_segment_yaw(
+				neighbour_dirs, int(info.get("facing", 0)))
 
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
@@ -2762,48 +2796,96 @@ func _refresh_buildings() -> void:
 				_maybe_launch_missile(
 					"building:%d" % int(wire_id), launch, landing, def.attack_interval)
 
-	_refresh_wall_joints()
+	_refresh_wall_joints(wall_family_cells)
+
+
+## Which of `TorusSpace.DIRECTIONS`' 6 indices actually have a living
+## wall-family neighbour right now (playtest fix) — the shared basis for
+## both a segment's rendered rotation (`_wall_segment_yaw`) and whether a
+## junction still needs a post (`_wall_segment_is_flush`), so the two can
+## never disagree about what is actually connected to what.
+func _wall_segment_neighbour_dirs(wall_family_cells: Dictionary, cell: Vector2i) -> Array:
+	var dirs := []
+	for i in range(TorusSpace.DIRECTIONS.size()):
+		if wall_family_cells.has(_state.space.normalize(cell + TorusSpace.DIRECTIONS[i])):
+			dirs.append(i)
+	return dirs
+
+
+## A wall-family segment's rendered yaw (playtest fix), from its ACTUAL
+## current neighbours rather than the single `facing` chosen once at
+## placement:
+##
+## - 0 neighbours: nothing to align to — the stored facing, unchanged.
+## - 1 neighbour (a wall's dead end): point straight at it. Symmetric box,
+##   so facing it or its opposite reads identically — no reason to prefer
+##   the stored facing over the connection that actually exists.
+## - 2 neighbours: bisect. A mitred corner — the segment's axis pointing
+##   halfway between its two connections — reads far better than a
+##   segment aimed squarely at only one side of a bend, and for a
+##   perfectly STRAIGHT run (the two neighbours opposite each other) the
+##   vector sum below degenerates toward zero, so that case is handled
+##   separately by picking either neighbour (the box is symmetric, so
+##   which one cannot matter).
+## - 3+ neighbours (a T or 4-way junction): no single axis can bisect a
+##   junction meaningfully. Falls back to the stored facing and leans on
+##   the joint post instead, same as before this fix existed.
+func _wall_segment_yaw(neighbour_dirs: Array, stored_facing: int) -> float:
+	if neighbour_dirs.size() != 2:
+		return _facing_rotation_y(stored_facing if neighbour_dirs.is_empty() else neighbour_dirs[0])
+
+	var a := _state.space.axial_offset_to_world(Vector2(TorusSpace.DIRECTIONS[neighbour_dirs[0]]))
+	var b := _state.space.axial_offset_to_world(Vector2(TorusSpace.DIRECTIONS[neighbour_dirs[1]]))
+	var bisector := a.normalized() + b.normalized()
+	if bisector.length_squared() < 0.01:
+		return _facing_rotation_y(neighbour_dirs[0])
+	return atan2(-bisector.z, bisector.x)
+
+
+## Whether a wall-family segment's OWN rendered rotation already reaches
+## flush toward every one of its current neighbours, with no gap for a
+## post to cover (playtest fix — see `_wall_segment_yaw`'s doc for why
+## each case below aligns exactly the way it claims to).
+func _wall_segment_is_flush(neighbour_dirs: Array) -> bool:
+	if neighbour_dirs.size() <= 1:
+		return true
+	if neighbour_dirs.size() == 2:
+		return (int(neighbour_dirs[0]) + 3) % 6 == int(neighbour_dirs[1])
+	return false
 
 
 ## Playtest fix (D-076 follow-up): a vertical post at every wall-family-to-
-## wall-family adjacency, bridging the gap a single rigid segment's own
-## rotation can't close on its own whenever a run bends. A straight run's
-## two segments already meet with zero gap at the midpoint between their
-## cells (see the wall-length note on buildings/wall.tres etc.) because
-## each reaches exactly half the hex spacing from its own centre — but a
-## SINGLE `facing` can only ever point one segment at ONE neighbour, so a
-## corner, T, or 4-way junction leaves whichever other neighbour(s) it
-## connects to unaddressed by that segment's geometry. A post at the shared
-## midpoint fixes every angle at once instead of needing per-junction mesh
-## variants.
+## wall-family adjacency that ISN'T already flush (`_wall_segment_is_flush`
+## — a straight run or a dead end need none), bridging the gap a T or
+## 4-way junction's rigid geometry can never close on its own, and topping
+## up whatever a genuine bend's bisected rotation (`_wall_segment_yaw`)
+## doesn't quite reach.
 ##
-## O(buildings * 6) via a cell -> wire_id lookup, not a pairwise building x
-## building scan — the same shape as the standing "disk_offsets/bucket map
-## before distance()" rule elsewhere in this project (vision, combat,
-## production), just for the wall network instead of a radius scan.
-func _refresh_wall_joints() -> void:
+## `wall_family_cells` is `_refresh_buildings`' own map, passed in rather
+## than rebuilt — the two already have to agree on who is a wall-family
+## neighbour of whom, so computing it twice would just be two chances to
+## disagree.
+##
+## O(buildings * 6) via the cell -> wire_id lookup, not a pairwise
+## building x building scan — the same shape as the standing "disk_offsets/
+## bucket map before distance()" rule elsewhere in this project (vision,
+## combat, production), just for the wall network instead of a radius scan.
+func _refresh_wall_joints(wall_family_cells: Dictionary) -> void:
 	if _state.space == null:
 		return
-	var by_cell := {}
-	for wire_id in _state.buildings:
-		var info: Dictionary = _state.buildings[wire_id]
-		if bool(info.get("destroyed", false)):
-			continue
-		var def: BuildingDef = _building_defs.get(wire_id, null)
-		if def == null or def.footprint_radius != 0 or def.is_access_tower:
-			continue
-		by_cell[_state.space.from_index(int(info["cell"]))] = int(wire_id)
 
-	for cell in by_cell:
-		var wire_id: int = by_cell[cell]
+	for cell in wall_family_cells:
+		var wire_id: int = wall_family_cells[cell]
 		for i in range(TorusSpace.DIRECTIONS.size()):
 			var neighbour_cell: Vector2i = _state.space.normalize(cell + TorusSpace.DIRECTIONS[i])
-			if not by_cell.has(neighbour_cell):
+			if not wall_family_cells.has(neighbour_cell):
 				continue
-			var other_id: int = by_cell[neighbour_cell]
+			var other_id: int = wall_family_cells[neighbour_cell]
 			if other_id <= wire_id:
 				continue  # each unordered pair handled once
-			_update_wall_joint(wire_id, other_id, cell, neighbour_cell, i)
+			_update_wall_joint(wire_id, other_id, cell, neighbour_cell,
+				_wall_segment_neighbour_dirs(wall_family_cells, cell),
+				_wall_segment_neighbour_dirs(wall_family_cells, neighbour_cell))
 
 
 ## How many tread blocks a stair connector between two differently-tall
@@ -2834,12 +2916,13 @@ const WALL_JOINT_MIN_RADIUS := WALL_JOINT_HALF_SPACING \
 ## `_building_nodes` (see `_free_nodes` for the one place everything is
 ## torn down together, on disconnect).
 ##
-## `a_to_b_dir` is the exact hex-direction index (0-5) from `a_cell` to
-## `b_cell` — the caller already has it from the neighbour scan, so this
-## compares against each segment's stored `facing` directly instead of
-## re-deriving a direction from world-space positions.
+## `a_dirs`/`b_dirs` are each segment's full neighbour-direction list
+## (`_wall_segment_neighbour_dirs`) — the caller already has both from its
+## own scan, and this needs the FULL list (not just the direction to the
+## other side) to ask `_wall_segment_is_flush` whether either segment's
+## own bisected rotation already reaches this junction with no gap.
 func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i,
-		a_to_b_dir: int) -> void:
+		a_dirs: Array, b_dirs: Array) -> void:
 	var key := "%d|%d" % [a_id, b_id]
 	var rig: Node3D = _wall_joint_nodes.get(key, null)
 	if rig == null:
@@ -2930,15 +3013,13 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 	# --- the angle post: covers a horizontal gap, not a vertical one -----
 	#
 	# A segment's box already reaches flush to this neighbour with no gap
-	# if its own `facing` points straight along this connection, in either
-	# direction. Skip the post when BOTH sides are flush that way — a
-	# straight run already closes on its own, and a bump at every one of
-	# its junctions read as unwanted studding rather than a fix.
-	var opposite_dir := (a_to_b_dir + 3) % 6
-	var a_facing := int(a_info.get("facing", 0))
-	var b_facing := int(b_info.get("facing", 0))
-	var a_flush := a_facing == a_to_b_dir or a_facing == opposite_dir
-	var b_flush := b_facing == a_to_b_dir or b_facing == opposite_dir
+	# if its own (now bisected — see _wall_segment_yaw) rotation already
+	# points straight along this connection. Skip the post when BOTH sides
+	# are flush that way — a straight run or a dead end already closes on
+	# its own, and a bump at every one of its junctions read as unwanted
+	# studding rather than a fix.
+	var a_flush := _wall_segment_is_flush(a_dirs)
+	var b_flush := _wall_segment_is_flush(b_dirs)
 	var post_height := minf(a_def.mesh_size.y, b_def.mesh_size.y) * progress
 	if (a_flush and b_flush) or post_height <= 0.01:
 		post.visible = false
@@ -4596,6 +4677,17 @@ func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
 		_last_snap_cell = Vector2i(-1, -1)
 		return raw
 
+	# Playtest fix: hovering directly over a compatible upgrade target
+	# (BuildingDef.upgrade_from — e.g. an existing wall segment, arming a
+	# wall_tower) must land exactly there, not get pulled to a
+	# neighbouring EMPTY cell by the snap-to-a-wall's-neighbour logic
+	# below. That logic exists to CHAIN a new segment onto an existing
+	# one — the opposite of what an upgrade wants, and without this a
+	# player could never actually click the segment they meant to upgrade.
+	if _upgrade_target_at(raw, def) >= 0:
+		_last_snap_cell = Vector2i(-1, -1)
+		return raw
+
 	var best_cell := raw
 	var best_distance := 999999
 	var best_facing := 0
@@ -4971,6 +5063,31 @@ func _hide_drag_line_ghosts() -> void:
 		instance.visible = false
 
 
+## The living building at `cell` that `def` would upgrade in place
+## (playtest fix — see BuildingDef.upgrade_from's doc), or -1 if none
+## qualifies. Mirrors server.gd's `_upgrade_target_at` exactly (own,
+## complete, compatible) so the client only ever previews what the server
+## would actually accept — advisory only, like everything else client-side
+## about a placement; the server re-checks all three on arrival regardless.
+func _upgrade_target_at(cell: Vector2i, def: BuildingDef) -> int:
+	if def == null or def.upgrade_from.is_empty():
+		return -1
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		if _state.space.from_index(int(info["cell"])) != cell:
+			continue
+		if int(info["owner"]) != _state.player:
+			continue
+		if _derived_progress(int(wire_id), info) < 1.0:
+			continue
+		var existing_def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if existing_def != null and def.upgrade_from.has(existing_def.id):
+			return int(wire_id)
+	return -1
+
+
 ## Whether the ground under the cursor looks buildable from here.
 ##
 ## Advisory only — the server is the authority (D-002) and re-checks on
@@ -4978,13 +5095,20 @@ func _hide_drag_line_ghosts() -> void:
 ## ground taken. This exists so the preview is not misleading, not so the
 ## client can decide.
 func _can_place_at(cell: Vector2i) -> bool:
+	var placing_def := BuildingSim.def_by_id(_placing)
+	var upgrade_target := _upgrade_target_at(cell, placing_def)
 	for wire_id in _state.buildings:
 		var info: Dictionary = _state.buildings[wire_id]
 		if bool(info["destroyed"]):
 			continue
 		var at := _state.space.from_index(int(info["cell"]))
 		if at == cell:
-			return false
+			# Playtest fix: a compatible in-place upgrade (BuildingDef.
+			# upgrade_from — e.g. a wall_tower raised on an existing wall
+			# segment) is the one exception to "occupied ground refuses a
+			# build".
+			if int(wire_id) != upgrade_target:
+				return false
 
 		# Ground claimed by somebody else's building (D-062). Shown here so
 		# the ghost turns red before you click, rather than the order being

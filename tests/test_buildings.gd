@@ -1018,6 +1018,50 @@ func test_a_wall_under_construction_does_not_block() -> void:
 		"a COMPLETE wall blocks exactly as before, including against its own builder")
 
 
+## Guards the playtest fix letting a wall_tower be raised in place of an
+## already-built wall segment (BuildingDef.upgrade_from), instead of
+## requiring it be torn down first. server.gd has no test file of its own
+## (a Node, not scene-tree-dependent for these two methods), so it is
+## instantiated directly and its state set by hand — exactly the state
+## `_upgrade_target_at`/`_is_buildable` actually read, nothing more.
+func test_a_compatible_upgrade_replaces_the_old_building_in_place() -> void:
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var server = load("res://server.gd").new()
+	server._sim = sim
+	server._buildings = buildings
+	server._passable = PackedByteArray()  # empty means "fully open"
+
+	var wall_cell := Vector2i(10, 6)
+	var wall := buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell, true)
+	var tower_def := BuildingSim.def_by_id(&"wall_tower")
+	var wall_def := BuildingSim.def_by_id(&"wall")
+
+	assert_eq(server._upgrade_target_at(wall_cell, tower_def, 1), wall,
+		"a complete, owned wall should be a valid upgrade target for a tower")
+	assert_eq(server._upgrade_target_at(wall_cell, tower_def, 2), -1,
+		"a different owner's wall must not be upgradeable")
+	assert_eq(server._upgrade_target_at(wall_cell, wall_def, 1), -1,
+		"only a def that actually lists this as an upgrade source qualifies")
+
+	assert_true(server._is_buildable(wall_cell, tower_def, 1),
+		"occupied ground must still be buildable when it is a compatible upgrade")
+	assert_false(server._is_buildable(wall_cell, wall_def, 1),
+		"but ordinary occupied ground still refuses a build, same as before this fix")
+	assert_false(server._is_buildable(wall_cell),
+		"and the no-def/no-owner call every OTHER caller still uses is unaffected")
+
+	# The still-under-construction case: nothing finished to upgrade yet.
+	buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, Vector2i(4, 4))
+	assert_eq(server._upgrade_target_at(Vector2i(4, 4), tower_def, 1), -1,
+		"a wall not yet complete has nothing finished to replace")
+
+	server.free()
+
+
 func test_an_open_gate_stops_blocking_but_a_closed_one_still_does() -> void:
 	var space := TorusSpace.new(32, 16, 1.0)
 	var buildings := BuildingSim.new(space)
