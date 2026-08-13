@@ -1963,6 +1963,10 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 
 
 var _node_meshes := {}
+## cell -> bool, whether that cell's marker is the authored model (as
+## opposed to the primitive fallback) — decides whether `_refresh_resource_nodes`
+## needs the primitive's centre-to-base lift.
+var _node_authored := {}
 
 ## Per-soldier render easing (D-059). Client-only, one-way, never read
 ## back by anything authoritative — see soldier_motion.gd's header for
@@ -2453,31 +2457,67 @@ func _refresh_resource_nodes() -> void:
 			continue
 		var marker: MeshInstance3D = _node_meshes.get(cell, null)
 		if marker == null:
-			# Big enough to see across a map and to aim at. These were
-			# noticeably smaller, which made them both easy to miss when
-			# scanning for somewhere to send workers and fiddly to click.
-			var mesh := CylinderMesh.new()
-			mesh.top_radius = 0.7
-			mesh.bottom_radius = 1.05
-			mesh.height = 1.5
-			var material := StandardMaterial3D.new()
-			material.albedo_color = _node_colour(int(_state.nodes[cell]))
-			material.roughness = 0.75
-			# Slight glow so a node reads against terrain of a similar
-			# hue — food pink over sand was the worst case.
-			material.emission_enabled = true
-			material.emission = material.albedo_color * 0.35
-			marker = MeshInstance3D.new()
-			marker.mesh = mesh
-			marker.material_override = material
+			var kind := int(_state.nodes[cell])
+			var mesh: Mesh = UnitMesh.mesh_for(_node_model_id(kind))
+			var authored := mesh != null
+			if authored:
+				# Authored (art/resources, D-028's markers): the mesh carries
+				# its own real per-part materials (bark, leaves, ore, stone —
+				# see art/resources/split_markers.gd), unlike a building's
+				# single vertex-coloured material, so no material_override
+				# here would just mean "no owner tint", which is correct —
+				# a resource node belongs to no player.
+				marker = MeshInstance3D.new()
+				marker.mesh = mesh
+			else:
+				# Fallback: the art build hasn't run, or the model failed to
+				# load. Big enough to see across a map and to aim at — these
+				# were noticeably smaller, which made them both easy to miss
+				# when scanning for somewhere to send workers and fiddly to
+				# click.
+				var primitive := CylinderMesh.new()
+				primitive.top_radius = 0.7
+				primitive.bottom_radius = 1.05
+				primitive.height = 1.5
+				var material := StandardMaterial3D.new()
+				material.albedo_color = _node_colour(kind)
+				material.roughness = 0.75
+				# Slight glow so a node reads against terrain of a similar
+				# hue — food pink over sand was the worst case.
+				material.emission_enabled = true
+				material.emission = material.albedo_color * 0.35
+				marker = MeshInstance3D.new()
+				marker.mesh = primitive
+				marker.material_override = material
 			_node_meshes[cell] = marker
+			_node_authored[cell] = authored
 			add_child(marker)
 
 		var world := _state.space.to_world(_state.space.from_index(int(cell)))
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
-		world.y += 0.75
+		# The authored models are already grounded at y=0 in their own
+		# space (art/resources/split_markers.gd bakes every part relative to
+		# that origin); only the primitive fallback's centred cylinder needs
+		# lifting so its BASE sits on the terrain rather than its middle.
+		if not bool(_node_authored.get(cell, false)):
+			world.y += 0.75
 		marker.position = world + _lattice_offset_for(world)
+
+
+## Resource kind -> authored model_id (art/resources/split_markers.gd's
+## output names). Mirrors `_node_colour`'s match so the two cannot disagree
+## about which kind is which.
+func _node_model_id(kind: int) -> StringName:
+	match kind:
+		Economy.ResourceKind.FOOD:
+			return &"resource_food"
+		Economy.ResourceKind.WOOD:
+			return &"resource_wood"
+		Economy.ResourceKind.GOLD:
+			return &"resource_gold"
+		_:
+			return &"resource_stone"
 
 
 ## The placeholder mesh for a building whose authored model is missing.
@@ -5193,6 +5233,7 @@ func _teardown_match() -> void:
 	_free_nodes(_building_nodes)
 	_free_nodes(_health_bars)
 	_free_nodes(_node_meshes)
+	_node_authored.clear()
 	_free_nodes(_selection_discs)
 	_free_nodes(_progress_anchor)
 	_free_nodes(_queue_anchor)

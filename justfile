@@ -761,6 +761,29 @@ build-assets ONLY="":
     "{{blender_python}}" art/build.py $args
     {{just_executable()}} _import
 
+# Rebuild the resource-node markers (D-028's food/wood/gold/stone props)
+# from the hand-authored source under art/resources/source/.
+#
+# UNLIKE build-assets, this needs no bpy: the source is already a glTF
+# binary and Godot's own GLTFDocument can read and write that format, so
+# this runs on the plain headless image. It is a deliberate exception to
+# the parametric art/ pipeline (CLAUDE.md: "any forced binary-only or
+# GUI-only step ... should be flagged explicitly as an exception"), not a
+# second generator pattern to imitate — see art/resources/split_markers.gd's
+# header for why merging into one mesh per kind matters, not just splitting.
+[doc("Rebuild resource-node marker models from art/resources/source/")]
+build-resource-models:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p edotmw run --rm --no-deps test \
+            --path . --script res://art/resources/split_markers.gd
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --path . --script res://art/resources/split_markers.gd
+    fi
+    {{just_executable()}} _import
+
 # Fetch the pinned bpy into a gitignored venv under tools/.
 #
 # Separate from `bootstrap` because it is ~1 GB and only asset work needs
