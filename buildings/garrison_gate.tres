@@ -31,4 +31,4 @@ top_range_bonus = 2.5
 top_vision_bonus = 4.0
 top_height = 3.0
 is_access_tower = false
-mesh_size = Vector3(1.766692, 3.2, 1.0)
+mesh_size = Vector3(3.666692, 3.2, 1.0)

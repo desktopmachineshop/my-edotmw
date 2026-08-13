@@ -91,10 +91,26 @@ const CHIP_GAP := 6.0
 ## the threshold lives beside the geometry it is chosen to fit.
 const CHIP_COLLAPSE_THRESHOLD := 8
 
-const ACTION_BUTTON := Vector2(136.0, 38.0)
 const ACTION_GAP := Vector2(8.0, 6.0)
 const ACTION_COLUMNS := 3
 const ACTIONS_Y := 8.0
+
+## Playtest fix: the actions column was a small FIXED width (~448px on the
+## 1280-wide reference window, ~35% of it) regardless of how much room the
+## panel actually had — reported as "the command section is still really
+## squished" once build buttons started carrying two-line cost labels.
+## Sized to roughly HALF the reference window's width instead of a
+## hand-picked button size. This is a deliberate partial departure from
+## the "never has to reflow" design the column used to lean on entirely:
+## the GRID still doesn't reflow (ACTION_COLUMNS stays fixed at 3, and
+## `action_slot`/`build_slot`'s index math is unchanged) — the BUTTONS
+## themselves just got wider to fill the space, which needed no reflow
+## logic at all.
+const ACTIONS_COLUMN_TARGET_WIDTH := REFERENCE.x * 0.5
+const ACTION_BUTTON := Vector2(
+	(ACTIONS_COLUMN_TARGET_WIDTH - PANEL_PAD * 2.0
+		- ACTION_GAP.x * float(ACTION_COLUMNS - 1)) / float(ACTION_COLUMNS),
+	38.0)
 const ACTIONS_COLUMN_WIDTH := ACTION_BUTTON.x * float(ACTION_COLUMNS) \
 	+ ACTION_GAP.x * float(ACTION_COLUMNS - 1)
 

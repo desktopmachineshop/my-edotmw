@@ -34,6 +34,18 @@ from ..lib.geom import Model, box, prism, rotate_geometry
 _HEX_SPACING = 1.7320508075688772  # sqrt(3) * hex_size, hex_size == 1.0
 WALL_LENGTH = _HEX_SPACING * 1.02
 
+# Playtest fix: the garrison gate is meant to pass a whole SQUAD through in
+# tight formation, not one soldier at a time — WALL_LENGTH (~1.77, sized to
+# match one hex's worth of wall) is nowhere near enough. This segment is
+# deliberately wider than WALL_LENGTH, and than the hex cell it still
+# occupies exactly one of for placement/simulation purposes (D-076's model
+# is one building per cell regardless of how wide its mesh is drawn) — a
+# gatehouse bulging out past the curtain wall's own line is the expected
+# silhouette, not a bug. GARRISON_GATE_OPENING is the clear width once the
+# leaf swings away, after the two framing posts; the requested figure.
+GARRISON_GATE_LENGTH = WALL_LENGTH + 1.9
+GARRISON_GATE_OPENING = 3.0
+
 # Playtest fix: a wall segment used to TILT to follow sloped terrain — reverted
 # (client.gd no longer touches rotation.z at all) because a leaning wall reads
 # as toppling, not as following the ground; a real wall's courses stay
@@ -277,32 +289,28 @@ def _build_wall(name: str, p: BuildingParams) -> Model:
         # cue, and nothing ever visibly passed through it. A gate now
         # leaves the same kind of gap the cheap "stake" tier always did,
         # filled by a real hinged leaf (`_add_gate_leaf`).
+        # Playtest fix: this archetype is the ONLY style="timber_slats"
+        # user (garrison_wall is style="stone"), and it is meant for a
+        # whole SQUAD to pass through in tight formation, not one soldier
+        # at a time — so `length` is overridden well past WALL_LENGTH in
+        # ROSTER below, and the span between the two framing posts is one
+        # wide hinged leaf, not a row of slats that would just narrow the
+        # passage back down. (The cheap "gate" stays WALL_LENGTH and keeps
+        # its narrow stake-and-single-leaf doorway — a budget-tier plain
+        # blocker, not a garrison gatehouse.)
         body_h = p.height
-        slats = 7
-        span = p.length * 0.94
-        slat_w = span / slats
-        centre_gap = (slats - 1) / 2.0
-        for i in range(slats):
-            if p.is_gate and abs(i - centre_gap) < 1.6:
-                continue  # left open for the hinged leaf below
-            x = (i - centre_gap) * slat_w
-            m.add(f"slat_{i}",
-                  _buried((slat_w * 0.82, body_h, p.thickness * 0.9),
-                          (x, body_h / 2.0, 0.0)),
-                  rgb=p.timber, mask=0.12)
         for sx in (-1.0, 1.0):
             m.add(f"post_{'w' if sx < 0 else 'e'}",
-                  _buried((0.18, body_h + 0.08, 0.18),
-                          (sx * (half - 0.09), (body_h + 0.08) / 2.0, 0.0)),
+                  _buried((0.22, body_h + 0.08, 0.22),
+                          (sx * (half - 0.11), (body_h + 0.08) / 2.0, 0.0)),
                   rgb=p.timber, mask=0.0)
         m.add("walkway", box((p.length * 0.98, 0.14, p.thickness * 0.98),
                               centre=(0.0, body_h + 0.07, 0.0)),
               rgb=p.timber, mask=0.0)
-        _add_merlons(m, p, body_h + 0.14, half_t, half, count=3, colour=p.timber)
-        if p.is_gate:
-            _add_gate_leaf(m, width=slat_w * 3.0, height=body_h * 0.92,
-                           thickness=p.thickness * 0.82, centre_y=body_h * 0.46,
-                           rgb=p.timber, mask=0.08)
+        _add_merlons(m, p, body_h + 0.14, half_t, half, count=5, colour=p.timber)
+        _add_gate_leaf(m, width=GARRISON_GATE_OPENING, height=body_h * 0.92,
+                       thickness=p.thickness * 0.82, centre_y=body_h * 0.46,
+                       rgb=p.timber, mask=0.08)
 
     return m
 
@@ -406,7 +414,7 @@ ROSTER: dict[str, BuildingParams] = {
     # hinged leaf rather than a gap in the rampart alone.
     "garrison_gate": BuildingParams(
         shape="wall", style="timber_slats", is_gate=True, walkway=True,
-        length=WALL_LENGTH, thickness=1.0, height=2.86,
+        length=GARRISON_GATE_LENGTH, thickness=1.0, height=2.86,
         timber=(0.42, 0.30, 0.19),
     ),
 

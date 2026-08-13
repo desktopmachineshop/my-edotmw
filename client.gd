@@ -1242,6 +1242,12 @@ var _building_top_offset := {}
 ## never-freed-per-entry lifetime (see `_free_nodes` for the one place
 ## everything is torn down together).
 var _wall_joint_nodes := {}
+## wire id -> float in [0,1], the SHADER-FACING gate-open fraction, smoothed
+## client-side toward the server's boolean `gate_open` at GATE_SWING_SECONDS
+## — see the doc where this is written for why a boolean drove the shader
+## directly before and read as the door not animating at all.
+var _gate_visual_open := {}
+const GATE_SWING_SECONDS := 0.8
 ## wire id -> { "back": MeshInstance3D, "fill": MeshInstance3D,
 ## "fraction": float } — the health bar drawn OVER a damaged building.
 var _health_bars := {}
@@ -2711,8 +2717,23 @@ func _refresh_buildings() -> void:
 				var base_colour := gate_def.mesh_color.lightened(0.5) if open else gate_def.mesh_color
 				gate_material.albedo_color = owner_colour.lerp(base_colour, 0.75)
 			elif instance.material_override is ShaderMaterial:
+				# Playtest fix: `gate_open` is a server-replicated BOOLEAN
+				# (D-076), and the shader used to read it directly — so the
+				# leaf snapped instantly between fully closed and fully
+				# open in one frame instead of swinging, which read as "the
+				# door doesn't seem to animate" even though the shader math
+				# was correct (confirmed by rendering both states directly:
+				# the leaf really does move). Smoothed here, client-side
+				# only — this is cosmetic interpolation toward a value the
+				# server owns, the same one-way relationship
+				# cosmetic_offset.gd's whole file exists to keep (D-006
+				# clause 2), not a second source of truth for gate state.
+				var target := 1.0 if open else 0.0
+				var current: float = _gate_visual_open.get(wire_id, target)
+				current = move_toward(current, target, _frame_delta / GATE_SWING_SECONDS)
+				_gate_visual_open[wire_id] = current
 				(instance.material_override as ShaderMaterial).set_shader_parameter(
-					"gate_open", 1.0 if open else 0.0)
+					"gate_open", current)
 
 		# Armed and complete (a half-built town centre has no garrison to
 		# fire from). Same client-inferred approach as `_activity_for`:
@@ -2796,6 +2817,15 @@ const WALL_STAIR_STEPS := 4
 ## nothing, if the run is flush) is enough.
 const WALL_STAIR_THRESHOLD := 0.2
 
+## The angle-post's true minimum radius — see the derivation where it's
+## used, in `_update_wall_joint`. Half the hex spacing minus how far a
+## wall segment's own half-thickness (1.0/2, every wall-family def) puts
+## its edge from centre at the one angle (60 degrees) that ever matters.
+const WALL_JOINT_HALF_SPACING := 0.8660254037844386  # sqrt(3)/2 * hex_size
+const WALL_JOINT_HALF_THICKNESS := 0.5
+const WALL_JOINT_MIN_RADIUS := WALL_JOINT_HALF_SPACING \
+	- WALL_JOINT_HALF_THICKNESS / 0.8660254037844386  # sin(60 degrees)
+
 
 ## One joint RIG for the (a_id, b_id) pair — a corner post (angle gaps,
 ## D-076 follow-up) plus a fixed pool of stair treads (walkway height
@@ -2817,19 +2847,30 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 		add_child(rig)
 
 		var post_mesh := CylinderMesh.new()
-		# Radius bug (first pass): 0.42-0.5 only covers a junction where the
-		# two segments are nearly colinear. A segment's own box only has
-		# geometry along ITS ONE stored facing and that facing's opposite
-		# (D-076) — for a genuine bend, the neighbour sits along neither, so
-		# the segment's silhouette toward it is just the box's THIN side
-		# face, reaching barely past its half-thickness (0.5) from centre.
-		# A post has to reach past the midpoint all the way back to each
-		# segment's own CELL CENTRE to be guaranteed to overlap that box
-		# regardless of its facing — that distance is half the hex spacing
-		# (~0.866 at this map's hex_size). Sized with margin over that
-		# bound rather than tuned to look right on one screenshot.
-		post_mesh.top_radius = 0.85
-		post_mesh.bottom_radius = 0.95
+		# Radius bug, SECOND pass: the first attempt (0.42-0.5) was too
+		# small; the fix for that (0.85-0.95) was too generous in the
+		# other direction — sized to reach all the way back to each
+		# segment's own CELL CENTRE (half the hex spacing, ~0.866), which
+		# guarantees coverage but is far more than the geometry actually
+		# needs. Chained across a winding wall's several close-together
+		# bends, posts that big overlap EACH OTHER and read as grey blobs
+		# swallowing the wall rather than a corner accent.
+		#
+		# The real requirement is touching the segment's own BOX EDGE, not
+		# its centre. A segment's box only ever meets a neighbour at a
+		# multiple of 60 degrees off its own facing (D-076's six canonical
+		# directions), and by the box's symmetry every non-flush case
+		# reduces to the SAME 60-degree one — so there is exactly one
+		# angle to solve for, not a family of them. At 60 degrees the
+		# box's edge, toward the post, sits `half_thickness / sin(60deg)`
+		# from the segment's own centre — nearer than half the hex
+		# spacing precisely because a box is narrower on its side than it
+		# is long. `WALL_JOINT_MIN_RADIUS` is the midpoint-to-edge
+		# distance that falls out of that, and the actual radius below
+		# keeps a small margin over it so the join reads as deliberate
+		# rather than tangent.
+		post_mesh.top_radius = WALL_JOINT_MIN_RADIUS + 0.03
+		post_mesh.bottom_radius = WALL_JOINT_MIN_RADIUS + 0.13
 		post_mesh.height = 1.0
 		var post_material := StandardMaterial3D.new()
 		post_material.roughness = 0.9
@@ -5587,6 +5628,7 @@ func _teardown_match() -> void:
 	_building_defs.clear()
 	_building_ground_lift.clear()
 	_building_top_offset.clear()
+	_gate_visual_open.clear()
 	_missile_next_launch.clear()
 	_selected = []
 	_selected_building = -1
