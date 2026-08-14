@@ -359,9 +359,10 @@ runs failed with `buildings_known=0` and identical numbers, and it looked
 exactly like the change under test. A second container held port 4433 and
 the bots were reaching that one — the tell was **server-side
 instrumentation printing nothing at all**, which no code-level bug can
-do. `docker ps` first. Note also that `just down` (and every recipe that
-tears down) will remove containers in the pinned `edotmw` project that
-somebody else started.
+do. `docker ps` first. That incident is why D-095 exists: every checkout
+now derives its own compose project and host port (see the isolation
+section below), so `just down` is scoped to THIS worktree's containers
+and cannot remove anybody else's.
 
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
@@ -818,6 +819,12 @@ model_preview.gd         Renders every authored model, animated, and
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
+instance-id.sh           THE definition of this checkout's dev-instance
+                        identity (D-095): instance name from the git
+                        branch, udp port hashed from it. The justfile
+                        derives its per-worktree compose project, ports
+                        and container names from this — nothing may
+                        re-derive it. See "Multi-agent isolation" below.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         needs a real GPU, and prints which one.
 terrain_preview.gd       Headless terrain preview + chunk profiling.
@@ -897,6 +904,42 @@ Three things bought the hard way, all in one milestone:
   winding, so everything was lit by the inverse of the sun. It was only
   visible once a *building* was big enough to see through. **The check
   that catches this class is a picture of something large.**
+
+## Multi-agent isolation (D-095) — HARD RULES
+
+Several agents develop this repo in parallel, each in its own worktree,
+each launching servers and clients for the owner to look at. Every
+checkout is its own **dev instance**: `instance-id.sh` derives an
+instance name from the git branch and a udp port from its hash
+(20000–29999), and the justfile threads them through every compose
+project name, container name, teardown sweep and client `--port`.
+`just instance` prints this worktree's identity.
+
+The rules, none of which need remembering because the recipes enforce
+them — but which must not be undone:
+
+- **Start and stop instances only through the just recipes, from your
+  own worktree.** They are scoped so you structurally cannot touch
+  another agent's containers. Never `docker rm`/`docker stop` by hand
+  against anything outside your own `edotmw-<instance>` project, and
+  never kill a GUI client process you did not start.
+- **Never hardcode the shared literals back in** — `-p edotmw`, a fixed
+  container `--name`, a `4433` host port or `--port=4433` in a recipe.
+  `tests/test_multi_agent_isolation.gd` fails if they reappear. The
+  in-container port is still 4433 by design; only the HOST side is
+  per-instance.
+- **Crossing instances is the owner's explicit call, never a default.**
+  `EDOTMW_INSTANCE`/`EDOTMW_PORT` override the derivation when two
+  checkouts should deliberately share; do not set them on your own
+  initiative.
+- **The client's title bar names its instance** (`eDotMW —
+  claude-<session>  [host:port]`), which is how the owner tells several
+  test windows apart. Launch clients only through the recipes so the
+  `--instance` flag is always passed.
+- **An agent's quick launch is the dev build:** `just quick-test`
+  resolves `SANDBOX=auto` to on for `claude-*` instances (D-077's
+  sandbox mode, cheats panel included) and off for the owner's own
+  checkout. Pass `SANDBOX=0/1` to override either way.
 
 ## Testing — use the justfile, and use it before claiming something works
 
