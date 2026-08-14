@@ -433,6 +433,30 @@ played match, consistent with the standing rule against launching the
 game unprompted. Until criterion 14 closes, **M7 is landed, not
 complete** — the same distinction M2 and M6 both had to learn.
 
+**Resource nodes are forests now (D-087, 2026-08-14).** Placement is a
+per-biome density field riding the same moisture noise `biome_at`
+classifies with — dense forest hearts, groves thickening toward the
+treeline, orchards mid-moisture, arid trees and palms on dry ground and
+beaches, stone at the mountain FOOT (its old MOUNTAIN-cell placement was
+unreachable scenery; the AI's give-up mechanism existed because of it).
+Standard map: **1,920 natural nodes vs ~134 before (~14x)**. Trees
+(wood/food) carry `TREE_STOCK` 105 — one shipped gatherer crew works one
+out in **~60 s**, pinned by a test against the shipped def — while
+gold/stone keep 2400. A worked-out tree auto-retargets its crew to the
+nearest surviving node of the SAME kind within 8 cells (never
+substituting kinds). Depletion is a fog-gated wire event
+(`S2C_NODES_DEPLETED`): told when the knower can SEE the cell, stale
+ghost-tree otherwise; the client fells it with a tip-and-sink animation.
+Rendering is 50 authored variants (10 species × 5, split from
+`tree-variants.glb` by `split_markers.gd`) picked per cell by
+`resource_visuals.gd` (pure/static — species by biome+moisture, 35%
+boundary borrowing so treelines fray, hash yaw/scale), batched into one
+MultiMesh per (16-cell chunk, model) with the torus tax paid per chunk.
+Bots finally ORDER the gatherers they produce — the haul cycle had never
+run under `test-load`'s wire before — and report `nodes_felled` in the
+verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
+gating would re-set D-031's stale-timing trap).
+
 **D-086 (2026-08-11): the lighting layer M7's art never had.** The
 "low poly vs cartoon vs current" style question turned out to have a
 false premise — the game was already low poly at the extreme end (two
