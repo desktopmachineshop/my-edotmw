@@ -219,6 +219,17 @@ func _ready() -> void:
 		default_address = DEFAULT_SERVER_ADDRESS
 	var address := String(args.get("address", default_address))
 	var port := int(args.get("port", DEFAULT_SERVER_PORT))
+	# Which dev instance (agent worktree / branch) launched this client
+	# (D-095). Several agents run servers and clients on one desktop in
+	# parallel, so the title bar names the instance and the endpoint —
+	# otherwise two identical windows are only tellable apart by clicking
+	# around in them, and the human tests the wrong agent's build.
+	var instance := String(args.get("instance", ""))
+	var window_title := "eDotMW"
+	if instance != "":
+		window_title += " — %s" % instance
+	window_title += "  [%s:%d]" % [address, port]
+	get_window().title = window_title
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
