@@ -67,20 +67,44 @@ const TONEMAP_EXPOSURE := 1.1
 const TONEMAP_WHITE := 1.0
 
 ## Depth fog. Aerial perspective is a strong depth cue at RTS zoom
-## (camera height 8-31 on the shipped map, D-045's `max_camera_height`),
-## and tying its colour to the sky horizon rather than a separate flat fog
-## colour is what makes it read as haze rather than a grey wall.
+## (camera height 8-31 on the shipped Standard map, D-045's
+## `max_camera_height`), and tying its colour to the sky horizon rather
+## than a separate flat fog colour is what makes it read as haze rather
+## than a grey wall.
 ##
-## `fog_density` is tuned to stay unnoticeable across the play area and
-## only assert itself near the render horizon: at 30 units (a common play
-## distance) it blends in at ~16%; at 60 units (near `max_camera_height`'s
-## forward reach) ~30%. `fog_height_density = 0.0` keeps this pure
-## distance fog — the map has no elevation dramatic enough to key height
-## fog off.
+## Playtest fix: fog_density used to be the one constant below, tuned only
+## against the Standard map's ~31-unit `max_camera_height`. A Huge map's
+## `max_camera_height` reaches D-045's 90-unit ceiling — RenderCull's
+## `max_camera_height` scales with map size, and Huge is the first size
+## that actually reaches the ceiling — and the SAME density at that
+## height fogs out roughly two thirds of the view instead of the intended
+## ~30% at the render horizon, which read as "the terrain is just grey".
+## `fog_density_for` derives the density from the actual per-map camera
+## ceiling instead, so every map size keeps the same ~30%-at-the-horizon
+## feel this was tuned by eye to.
+##
+## Ground the camera can see extends about `FORWARD_REACH_FACTOR` times
+## its own height forward (measured — see client.gd's `_camera_max_height`
+## doc). `TARGET_HORIZON_FOG` is that original ~30%-at-the-far-edge feel.
+## `DEFAULT_CAMERA_MAX_HEIGHT` is the Standard map's `max_camera_height`
+## (RenderCull.max_camera_height on an 84x96 map) — the default so a
+## caller that doesn't know a specific map's bounds (bench_render.gd,
+## model_preview.gd) reproduces the exact density this was tuned at.
+const FORWARD_REACH_FACTOR := 1.9
+const TARGET_HORIZON_FOG := 0.30
+const DEFAULT_CAMERA_MAX_HEIGHT := 31.6
+
 const FOG_COLOR := Color(0.62, 0.68, 0.74)
-const FOG_DENSITY := 0.006
 const FOG_AERIAL_PERSPECTIVE := 0.5
 const FOG_SKY_AFFECT := 1.0
+
+
+## The fog density that keeps ~TARGET_HORIZON_FOG of haze at a camera
+## sitting at `camera_max_height`'s own forward reach — see the constants'
+## doc above for the reasoning and the derivation.
+static func fog_density_for(camera_max_height: float) -> float:
+	var forward_reach := maxf(1.0, FORWARD_REACH_FACTOR * camera_max_height)
+	return -log(1.0 - TARGET_HORIZON_FOG) / forward_reach
 
 
 ## A `DirectionalLight3D` ready to `add_child()`. Callers own the node —
@@ -99,7 +123,13 @@ static func make_sun(preview: bool = false) -> DirectionalLight3D:
 ## `preview` keeps `model_preview.gd`'s original flat, tonemap-less studio
 ## backdrop untouched; every other caller gets the sky/ambient/tonemap/fog
 ## battlefield rig.
-static func make_environment(preview: bool = false) -> Environment:
+##
+## `camera_max_height` (playtest fix) scales the fog to match how far this
+## particular map actually lets the camera zoom out — see
+## `fog_density_for`'s doc. Defaulted to the Standard map's own value, so
+## every existing caller that never passes it is unaffected.
+static func make_environment(preview: bool = false,
+		camera_max_height: float = DEFAULT_CAMERA_MAX_HEIGHT) -> Environment:
 	var env := Environment.new()
 
 	if preview:
@@ -130,7 +160,7 @@ static func make_environment(preview: bool = false) -> Environment:
 
 	env.fog_enabled = true
 	env.fog_light_color = FOG_COLOR
-	env.fog_density = FOG_DENSITY
+	env.fog_density = fog_density_for(camera_max_height)
 	env.fog_aerial_perspective = FOG_AERIAL_PERSPECTIVE
 	env.fog_sky_affect = FOG_SKY_AFFECT
 	env.fog_height_density = 0.0

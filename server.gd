@@ -457,6 +457,16 @@ func _process(delta: float) -> void:
 		# where a razed town hall used to be.
 		if not _sim.destroyed_buildings.is_empty():
 			_refresh_passability()
+		# Playtest fix: a wall-family building only blocks ground movement
+		# once complete (BuildingSim.blocking_cells) — an unfinished
+		# segment doesn't yet, so a builder walking a drag-built chain
+		# can't be sealed into a pocket by its own still-under-
+		# construction wall. That makes completion, not just placement or
+		# destruction, a passability-changing event; without this refresh
+		# the flow field would keep treating a just-finished wall as open
+		# until some unrelated building change happened to touch it.
+		if not _sim.completed_buildings.is_empty():
+			_refresh_passability()
 		_update_auto_gates()
 		_advance_pending_builds()
 		_advance_match()
@@ -1322,7 +1332,7 @@ func _do_order_build(peer, data: PackedByteArray, replace: bool) -> void:
 		return
 
 	var cell := _sim.space.from_index(int(order["cell"]))
-	if not _is_buildable(cell):
+	if not _is_buildable(cell, def, _sim.owner_of(squad)):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
 
@@ -1395,9 +1405,14 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 		facing: int = 0) -> void:
 	if def == null:
 		return
+	var owner := _sim.owner_of(squad)
 	# Re-checked here, not just at order time: a builder that walked for
-	# twenty seconds may arrive to find the ground taken.
-	if not _is_buildable(cell):
+	# twenty seconds may arrive to find the ground taken. `owner` also
+	# makes this the upgrade-aware check (see _is_buildable/
+	# _upgrade_target_at) — an upgrade target might have been destroyed
+	# (or captured) out from under the order while the builder walked, the
+	# same "recheck on arrival" reasoning as every rule below it.
+	if not _is_buildable(cell, def, owner):
 		_notify(peer, "Cannot build there — water, mountain, or already occupied")
 		return
 
@@ -1405,7 +1420,7 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# for twenty seconds, and an opponent may have planted something in
 	# the meantime. Checking only at order time would let a slow walk beat
 	# the rule.
-	var blocked := _claimed_against(cell, _sim.owner_of(squad))
+	var blocked := _claimed_against(cell, owner)
 	if blocked >= 0:
 		_notify(peer, "Too close to an enemy %s" % _buildings.def_of(blocked).display_name)
 		return
@@ -1423,10 +1438,23 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# UnitDef.cost fell into for two milestones. Charged before anything
 	# is committed, and all-or-nothing, so a refused build never leaves a
 	# part-spent wallet.
-	var owner := _sim.owner_of(squad)
 	if not _economy.try_spend(owner, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
 		_notify(peer, "Cannot afford a %s" % def.display_name)
 		return
+
+	# Playtest fix: raising a compatible upgrade (e.g. a wall_tower) in
+	# place of an existing building consumes it — the whole point is not
+	# needing a separate delete-then-rebuild trip. No partial refund (the
+	# economy has no mechanism to refund INTO, the same as any other
+	# cancelled or overwritten order); the player pays the new building's
+	# full cost, same as any other build. Reusing `damage()` rather than
+	# a bespoke removal keeps this on the exact same path a real
+	# destruction takes (dirty flag, wall-top network recomputed by the
+	# `_refresh_passability()` below) instead of a second one to keep in
+	# sync with it.
+	var upgraded_from := _upgrade_target_at(cell, def, owner)
+	if upgraded_from >= 0:
+		_buildings.damage(upgraded_from, _buildings.health_of(upgraded_from))
 
 	# Sandbox's instant_build (dev testing only): raised already complete
 	# rather than at 0 progress. Cost is still charged above — instant
@@ -1635,15 +1663,38 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 
 
 ## Buildable ground: passable terrain (no lakes, no mountains) with
-## nothing already standing on it.
-func _is_buildable(cell: Vector2i) -> bool:
+## nothing already standing on it — UNLESS `def`/`owner` name a compatible
+## in-place upgrade (playtest fix, D.upgrade_from) for whatever is already
+## there, which is the one deliberate exception.
+func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> bool:
 	var index := _sim.space.index(cell)
 	if index < _passable.size() and _passable[index] == 0:
 		return false
+	var upgrade_target := _upgrade_target_at(cell, def, owner) if def != null else -1
 	for i in range(_buildings.building_count()):
-		if _buildings.cell_index_of(i) == index and not _buildings.is_destroyed(i):
+		if _buildings.cell_index_of(i) == index and not _buildings.is_destroyed(i) \
+				and i != upgrade_target:
 			return false
 	return true
+
+
+## The living building at `cell` that `def` would upgrade in place
+## (playtest fix), or -1 if none qualifies. Only the OWNER'S OWN, COMPLETE
+## building counts — an enemy's wall is not `owner`'s to upgrade, and a
+## still-under-construction one has nothing finished to replace yet
+## (queue behind it, or wait).
+func _upgrade_target_at(cell: Vector2i, def: BuildingDef, owner: int) -> int:
+	if def == null or def.upgrade_from.is_empty():
+		return -1
+	var index := _sim.space.index(cell)
+	for i in range(_buildings.building_count()):
+		if _buildings.is_destroyed(i) or _buildings.cell_index_of(i) != index:
+			continue
+		if _buildings.owner_of(i) != owner or not _buildings.is_complete(i):
+			continue
+		if def.upgrade_from.has(_buildings.def_of(i).id):
+			return i
+	return -1
 
 
 ## The hostile building whose claimed ground covers `cell`, or -1 (D-062).

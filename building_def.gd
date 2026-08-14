@@ -73,6 +73,17 @@ class_name BuildingDef
 ## any squad can do wherever it happens to be standing.
 @export var built_by: Array[StringName] = []
 
+## Playtest fix: which EXISTING building ids (as BuildingDef.id) this
+## archetype may be raised in place of, upgrading it rather than requiring
+## it be torn down first — the natural way a player expects to add a
+## tower to a wall that already exists. Empty (every def but wall_tower)
+## means this can only ever be founded on genuinely empty, unbuilt ground.
+## Checked against the EXISTING building's def id, and only ever lets an
+## owner upgrade their OWN, COMPLETE building (server.gd's
+## `_upgrade_target_at`) — an enemy's wall is not yours to upgrade, and a
+## still-under-construction one has nothing finished to replace yet.
+@export var upgrade_from: Array[StringName] = []
+
 # Cost, per resource (D-028's four: food, wood, gold, stone). Declared
 # now, consumed in slice 5 — unlike UnitDef.cost, which sat unread for two
 # milestones, this one has a named consumer already designed.

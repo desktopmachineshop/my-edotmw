@@ -25,6 +25,7 @@ category = "defensive"
 model_id = &"wall_tower"
 footprint_radius = 0
 built_by = Array[StringName]([&"gatherers"])
+upgrade_from = Array[StringName]([&"wall", &"gate", &"garrison_wall", &"garrison_gate"])
 is_gate = false
 walkable_top = true
 top_range_bonus = 3.0

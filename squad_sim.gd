@@ -128,6 +128,14 @@ var last_combat_events: Array = []
 ## is for the match rules and the log.
 var destroyed_buildings: Array = []
 
+## Local BuildingSim ids that finished construction on the most recent
+## tick (BuildingSim.advance_construction's own return value, kept here
+## for the same reason `destroyed_buildings` is: a wall-family building
+## only blocks ground movement once complete — playtest fix, see
+## BuildingSim.blocking_cells — so server.gd needs to know the moment one
+## crosses that line to refresh passability, not just on a destruction.
+var completed_buildings: Array = []
+
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
 var _fields := {}
@@ -1409,7 +1417,7 @@ func tick() -> void:
 	# message — and a tick with neither kind of fighting still sends
 	# nothing at all (D-003).
 	if buildings != null:
-		buildings.advance_construction(1.0 / TICK_HZ)
+		completed_buildings = buildings.advance_construction(1.0 / TICK_HZ)
 
 		# Production closes the loop: resources become squads (D-028).
 		# Spawned next to the building that made them, which is why this
