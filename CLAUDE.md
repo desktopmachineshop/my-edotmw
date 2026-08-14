@@ -395,14 +395,14 @@ run with strictly *less* work reported 146 ms where a fuller run reported
 52 ms, because the host was building containers throughout. Zero dropped
 ticks in both.
 
-**M7 (real models and textures) — in progress.** The ladder gained a
-rung: art is M7 and Steam becomes M8. Exit criteria are **D-085**;
-the work is **D-081** (art direction and pipeline, superseding D-011 and
-closing Q12), **D-082** (animation) and **D-083** (terrain texturing).
-(These were first recorded here as D-063/D-064/D-065/D-066 — IDs that
-collided with unrelated, already-real entries. Corrected 2026-08-11; see
-D-081's editorial note in `game_design_decisions.md` for why.)
-`just test-unit` is green at **424 tests** across 29 scripts.
+**M7 (real models and textures) — complete, as of 2026-08-14.** The
+ladder gained a rung: art is M7 and Steam becomes M8. Exit criteria are
+**D-085**; the work is **D-081** (art direction and pipeline, superseding
+D-011 and closing Q12), **D-082** (animation) and **D-083** (terrain
+texturing). (These were first recorded here as D-063/D-064/D-065/D-066 —
+IDs that collided with unrelated, already-real entries. Corrected
+2026-08-11; see D-081's editorial note in `game_design_decisions.md` for
+why.)
 
 Landed: eight authored unit archetypes and four buildings, animated,
 on textured terrain, all generated from committed Python and rendering
@@ -427,11 +427,14 @@ soldiers)**, against M5's pre-authored-model 35.66 ms / 28 fps on the
 same hardware. Authored VAT models cost **51% more** at full scale than
 the primitive capsules M5 measured. This also discharges Q15's re-armed
 trigger. **Criterion 14 (a human plays a match with the new art) is
-still open** — D-086's own verification was automated (`bench-render`,
-`test-unit`, `test-client`, `gen-terrain-preview`, `test-load`), never a
-played match, consistent with the standing rule against launching the
-game unprompted. Until criterion 14 closes, **M7 is landed, not
-complete** — the same distinction M2 and M6 both had to learn.
+discharged, 2026-08-14** — closed by the live human playtests of
+2026-08-12/13 (see D-076's amendments and D-085's own), confirmed by the
+owner as real matches with the authored models and D-086's lighting on.
+That closes the last open criterion and is what moved M7 from *landed* to
+*complete* — the landed-vs-complete distinction M2 and M6 both had to
+learn, honoured this time. The one caveat that survives: criterion 11's
+numbers are all from integrated graphics, and the discrete-GPU re-run
+trigger in D-085 stays armed.
 
 **D-086 (2026-08-11): the lighting layer M7's art never had.** The
 "low poly vs cartoon vs current" style question turned out to have a
@@ -498,6 +501,84 @@ resolution of Q7 (D-024) satisfies this trivially rather than delicately:
 `alive` is the only formation input a death changes, so casualty
 reassignment needs no per-soldier identity anywhere, and `Formation`
 gained no instance state to support combat.
+
+**Between M7 and M9, three days of playtest-driven work landed (2026-08-11
+to 08-14) that belongs to no numbered milestone.** `just test-unit` is
+green at **563 tests** across 37 scripts (measured 2026-08-14);
+`test-load` clean at **57.88 µs/squad** (4 bots, the usual ~52 squads —
+quote it with the count, as ever). The pieces:
+
+- **Walls, gates, and a walkable wall-top tier (D-076)** — the feature
+  D-069 explicitly fenced out of M9 and said needed its own decision.
+  Chained single-cell buildings, not edges; the wall-top is a second
+  `FlowField` layer with its OWN cell budget (sharing D-040's counter
+  would halve ground-pathing throughput on any tick both run); climbing
+  is one explicit teleport hop through an access tower's door, which is
+  what keeps a squad's tier legal under D-006 (nowhere for a
+  partial-climb value to live). Tier-1 squads fight with their own stats
+  plus a range bonus and can only be hit by tier-1 or ranged attackers.
+  Two standing gaps: **no AI builds or uses walls, so `just ai-ladder`
+  cannot exercise any of this feature**, and the geometry/placement UX
+  is only proven by playing (it lives in `client.gd`, unreachable from
+  GUT).
+- **The playtests that closed M7's criterion 14 also earned their keep in
+  bugs.** The best one: `_finish_build` consumed ANY builder on
+  completion, not just founders — so every gatherer that finished a
+  barracks, tower or wall had been silently vanishing since D-031. The
+  declared-and-unread defect family, in its over-READ variant; nothing
+  fails, the game just quietly loses a rule. Found only by playing.
+- **Sandbox mode (D-077)** for dev testing, structurally unable to leak
+  into a real match; **leave-to-lobby and no-humans-means-no-server
+  (D-075)**; the in-game UI reworked to the reference design; authored
+  models for resource nodes and the wall family; tower upgrades.
+
+**M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
+2026-08-14 and produced **D-087 through D-094**, closing every question
+in the old "Blocking M7 / product-level" block (Q3, Q5, Q10, Q11, Q13,
+Q14). Everything in them is design; no code, no export preset, no
+Steamworks anything exists in the repo. The shape:
+
+- **M8 is Steam-ready, not launched** (D-087). Its output is a private
+  depot branch and a repeatable playtest loop; the public launch waits
+  on M9's content. "Seamless" closed by inspection: one contiguous
+  wrapped map, true by construction since D-008.
+- **Player-hosted first, official dedicated later** (D-088, owner's
+  call). The host runs the authoritative sim **in-process** — the
+  loopback peer D-051's AI clients already use connects the host's own
+  client; remote players arrive over Steam relay. D-042's
+  reliable-ordered contract is a hard requirement on the Steam path.
+  ENet stays for LAN, docker, bots and the whole test estate.
+  Host-quit kills the match and the host is trusted — both accepted
+  with eyes open, both fixed by dedicated-later.
+- **20 players is a design target** (D-089, owner's call): Steam lobby
+  browser + invites, AI seat-fill, drop-in/drop-out. No matchmaking
+  service.
+- **Reconnection is repossession** (D-090): disconnect hands the seat
+  to an AI immediately (no grace-period limbo, no timeout — the AI is
+  the grace mechanism); rejoin reclaims by **SteamID, not connection**
+  (the D-038 ownership-cache lesson); desync recovery is
+  drop-and-rejoin, cheap because D-025's reveal semantics make every
+  join cheap. Supersedes D-033's wipe-on-disconnect for humans.
+- **The server IS the anti-cheat** (D-091): no kernel AC; fog gating
+  means the maphack's memory isn't there. Ranked play is explicitly
+  gated on dedicated servers.
+- **No saves** (D-092): reconnection + replays cover the real need;
+  revisit triggers named.
+- **GodotSteam behind one script** (D-093): D-021 amended by exactly
+  one category (platform integration). One boundary script names
+  Steam, a grep-test enforces it (the D-046-criterion-3 pattern), and
+  absent Steam costs Steam features, never the game — docker and every
+  test recipe stay Steam-less by construction. Still no C#.
+- **Exit criteria are D-094** — ten of them, written before the code.
+  The load-bearing early ones: a protocol **version handshake** (none
+  exists today, and Steam's rolling updates make mixed versions
+  routine) carrying SteamID seat identity, and the export→depot→install
+  loop, since the headline criterion (a 20-seat match with ≥3 real
+  remote humans over the real internet) needs playtesters on installed
+  builds. Criterion 9 finally takes the discrete-GPU `bench-render`
+  number Q15 has been waiting on. Criterion 10 is a human playing
+  end-to-end through the Steam build — the D-085-criterion-14 lesson,
+  applied from day one.
 
 **M9 (epochs, six civs) is PLANNED but NOT BUILT** — the planning
 milestone Q15 reserved ran on 2026-08-04 and produced **D-068 through
@@ -853,8 +934,8 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 492 tests across
-  33 scripts, measured 2026-08-11)*
+- `just test-unit` — GUT unit tests, headless *(green: 563 tests across
+  37 scripts, measured 2026-08-14)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on
