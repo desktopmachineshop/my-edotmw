@@ -54,6 +54,14 @@ class_name TerrainGen
 @export var beach_level: float = 0.44
 @export var mountain_level: float = 0.74
 
+## Moisture thresholds splitting land into dry grassland / grassland /
+## forest. Constants rather than exports because `Economy.generate` shapes
+## its tree densities against the same boundaries `biome_at` classifies
+## with — two copies of these numbers would let "how dense is a forest"
+## drift away from "what is a forest".
+const MOISTURE_DRY := 0.35
+const MOISTURE_FOREST := 0.62
+
 # Bounds on the sampling torus's minor radius. The actual value tracks
 # the map's aspect ratio (see _sample) so features come out about as
 # large in cells vertically as horizontally; these just keep the torus
@@ -276,9 +284,9 @@ func biome_at(space: TorusSpace, cell: Vector2i) -> Biome:
 		return Biome.PEAK if e > mountain_level + 0.12 else Biome.MOUNTAIN
 
 	var m := moisture_at(space, cell)
-	if m < 0.35:
+	if m < MOISTURE_DRY:
 		return Biome.DRY_GRASSLAND
-	if m < 0.62:
+	if m < MOISTURE_FOREST:
 		return Biome.GRASSLAND
 	return Biome.FOREST
 

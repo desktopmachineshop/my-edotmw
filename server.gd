@@ -87,6 +87,12 @@ var _matches_played := 0
 var _match: MatchState
 var _buildings: BuildingSim
 var _economy: Economy
+
+## Every node that has run dry this match (cell index -> true). The
+## match-lifetime union of Economy.take_depleted()'s per-tick drains, kept
+## because depletion is told to each client on ITS schedule — when that
+## client can see the cell — not on the tick it happened.
+var _depleted_nodes := {}
 var _passable := PackedByteArray()
 
 ## Sampled once at map load and never recomputed — see the note where it
@@ -357,6 +363,7 @@ func _build_world() -> void:
 	# the map's symmetry order, so all four starts hold equal resources
 	# without anything here reasoning about fairness (D-036).
 	_economy = Economy.new(space)
+	_depleted_nodes.clear()
 	_economy.generate(terrain, 1)
 	# Fairness on an asymmetric map is a post-pass now, not a property of
 	# the generator (D-036 revised): every start is guaranteed a minimum
@@ -1139,16 +1146,42 @@ func _send_visible_nodes(peer, player: int, record) -> void:
 	for cell in _economy.nodes:
 		if known.has(cell):
 			continue
+		# A worked-out node stays in the dictionary (that is how depletion
+		# is remembered) but it is not news: a scout arriving AFTER the
+		# felling must not be told a stump is a resource — it was never
+		# known here, so it needs no depletion event either.
+		if _depleted_nodes.has(cell):
+			continue
 		if not _sim.vision.is_visible(player, int(cell)):
 			continue
 		known[cell] = true
 		fresh.append(cell)
 	record["nodes_known"] = known
 
-	if fresh.is_empty():
-		return
-	peer.send(0, NetProtocol.encode_nodes(_economy.node_entries(fresh)),
-		ENetPacketPeer.FLAG_RELIABLE)
+	if not fresh.is_empty():
+		peer.send(0, NetProtocol.encode_nodes(_economy.node_entries(fresh)),
+			ENetPacketPeer.FLAG_RELIABLE)
+
+	# Fellings, on this client's schedule: a known node that has run dry is
+	# reported when the client can SEE the cell — immediately for whoever
+	# is standing there, on next sight for a player behind the fog, never
+	# for one who never returns (their client keeps drawing the tree, the
+	# same staleness a building ghost has, D-030). `told` only ever grows,
+	# so an explored, worked-out map costs nothing per tick.
+	var told: Dictionary = record.get("nodes_depleted_told", {})
+	var felled := []
+	for cell in _depleted_nodes:
+		if told.has(cell) or not known.has(cell):
+			continue
+		if not _sim.vision.is_visible(player, int(cell)):
+			continue
+		told[cell] = true
+		felled.append(cell)
+	record["nodes_depleted_told"] = told
+
+	if not felled.is_empty():
+		peer.send(0, NetProtocol.encode_nodes_depleted(felled),
+			ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Terrain passability with living buildings stamped out of it, so squads
@@ -1895,6 +1928,14 @@ func _replicate() -> void:
 	var wallet_changes := {}
 	for player in _sim.last_wallet_changes:
 		wallet_changes[player] = true
+
+	# Trees that came down this tick. Taken once, out here, because
+	# take_depleted() clears — then folded into the match-lifetime set so
+	# the per-client pass below can tell each player when THEY can see the
+	# stump, which for a player behind the fog may be minutes from now.
+	if _economy != null:
+		for cell in _economy.take_depleted():
+			_depleted_nodes[cell] = true
 
 	# AI seats are fed through the SAME loop as humans (D-051). They hold a
 	# LoopbackPeer whose send() hands bytes to a ClientState, so an AI

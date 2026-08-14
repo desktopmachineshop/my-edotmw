@@ -43,6 +43,7 @@ extends SceneTree
 ## (see `just build-resource-models`).
 
 const SRC := "res://art/resources/source/resource-markers.glb"
+const VARIANTS_SRC := "res://art/resources/source/tree-variants.glb"
 const OUT_DIR := "res://generated/models"
 
 ## Source group name -> output model_id. model_id is what UnitMesh.mesh_for()
@@ -56,62 +57,115 @@ const GROUPS := {
 
 
 func _initialize() -> void:
-	var doc := GLTFDocument.new()
-	var state := GLTFState.new()
-	var err := doc.append_from_file(SRC, state)
-	if err != OK:
-		push_error("split_markers: could not read %s (error %d)" % [SRC, err])
-		quit(1)
-		return
+	var ok := _split_markers()
+	ok = _split_variants() and ok
+	quit(0 if ok else 1)
 
-	var scene := doc.generate_scene(state)
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
+
+func _split_markers() -> bool:
+	var scene := _load_source(SRC)
+	if scene == null:
+		return false
 
 	var ok := true
 	for group_name in GROUPS:
-		var model_id: String = GROUPS[group_name]
 		var group := scene.find_child(group_name, true, false)
 		if group == null or not (group is Node3D):
 			push_error("split_markers: no group node named '%s' in the source" % group_name)
 			ok = false
 			continue
+		ok = _export_group(group as Node3D, GROUPS[group_name]) and ok
+	return ok
 
-		var merged := _merge(group as Node3D)
-		if merged == null:
-			push_error("split_markers: %s has no mesh parts" % group_name)
+
+## The tree-variants source (same third-party origin as SRC, same layout
+## convention): a `forest_variants` root whose children are wrapper nodes
+## named `<species>_<n>_v`, each holding one group `<species>_<n>` of mesh
+## parts. Groups are discovered rather than listed, so adding a species to
+## the source asset needs no edit here — the output set is
+## `tree_<species>_<n>.glb`, the ids ResourceVisuals hands out.
+func _split_variants() -> bool:
+	var scene := _load_source(VARIANTS_SRC)
+	if scene == null:
+		return false
+
+	var root := scene.find_child("forest_variants", true, false)
+	if root == null:
+		push_error("split_markers: no 'forest_variants' root in %s" % VARIANTS_SRC)
+		return false
+
+	var ok := true
+	var count := 0
+	for wrapper in root.get_children():
+		if not (wrapper is Node3D):
+			continue
+		var group_name := String(wrapper.name).trim_suffix("_v")
+		var group := wrapper.find_child(group_name, false, false)
+		if group == null or not (group is Node3D):
+			push_error("split_markers: wrapper '%s' holds no group '%s'"
+				% [wrapper.name, group_name])
 			ok = false
 			continue
+		ok = _export_group(group as Node3D, "tree_%s" % group_name) and ok
+		count += 1
+	if count == 0:
+		push_error("split_markers: no variant groups found under forest_variants")
+		return false
+	print("split_markers: %d tree variants split" % count)
+	return ok
 
-		var instance := MeshInstance3D.new()
-		instance.name = model_id
-		instance.mesh = merged
 
-		var out_doc := GLTFDocument.new()
-		var out_state := GLTFState.new()
-		var append_err := out_doc.append_from_scene(instance, out_state)
-		if append_err != OK:
-			push_error("split_markers: append_from_scene failed for %s (error %d)"
-				% [model_id, append_err])
-			ok = false
-			instance.queue_free()
-			continue
+func _load_source(path: String) -> Node:
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	var err := doc.append_from_file(path, state)
+	if err != OK:
+		push_error("split_markers: could not read %s (error %d)" % [path, err])
+		return null
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
+	return doc.generate_scene(state)
 
-		var out_path := "%s/%s.glb" % [OUT_DIR, model_id]
-		var write_err := out_doc.write_to_filesystem(out_state, out_path)
-		if write_err != OK:
-			push_error("split_markers: write_to_filesystem failed for %s (error %d)"
-				% [model_id, write_err])
-			ok = false
-		else:
-			var tris := 0
-			for si in range(merged.get_surface_count()):
-				tris += _tri_count(merged, si)
-			print("  %-14s %d surfaces  %4d tris  -> %s"
-				% [model_id, merged.get_surface_count(), tris, out_path])
 
+func _export_group(group: Node3D, model_id: String) -> bool:
+	var merged := _merge(group)
+	if merged == null:
+		push_error("split_markers: %s has no mesh parts" % model_id)
+		return false
+
+	var instance := MeshInstance3D.new()
+	instance.name = model_id
+	instance.mesh = merged
+
+	var out_doc := GLTFDocument.new()
+	var out_state := GLTFState.new()
+	var append_err := out_doc.append_from_scene(instance, out_state)
+	if append_err != OK:
+		push_error("split_markers: append_from_scene failed for %s (error %d)"
+			% [model_id, append_err])
 		instance.queue_free()
+		return false
 
-	quit(0 if ok else 1)
+	var out_path := "%s/%s.glb" % [OUT_DIR, model_id]
+	var write_err := out_doc.write_to_filesystem(out_state, out_path)
+	var ok := write_err == OK
+	if not ok:
+		push_error("split_markers: write_to_filesystem failed for %s (error %d)"
+			% [model_id, write_err])
+	else:
+		var tris := 0
+		for si in range(merged.get_surface_count()):
+			tris += _tri_count(merged, si)
+		# base_y is the grounding check: the client sits these models
+		# directly on the terrain, so a model whose lowest vertex is far
+		# from y=0 either floats or is buried. Printed rather than
+		# asserted because root flares and buttresses legitimately dip a
+		# little below grade.
+		print("  %-22s %d surfaces  %5d tris  base_y=%+.2f  -> %s"
+			% [model_id, merged.get_surface_count(), tris,
+				merged.get_aabb().position.y, out_path])
+
+	instance.queue_free()
+	return ok
 
 
 ## Bakes every part's local transform into its vertex data and merges parts
