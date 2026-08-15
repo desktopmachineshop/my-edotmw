@@ -214,13 +214,19 @@ func test_every_cell_is_meshed_exactly_once_regardless_of_chunk_size() -> void:
 	# size — including sizes that do not divide the map evenly.
 	var space := _space()
 	var terrain := _terrain()
-	var expected_vertices := space.cell_count() * 7  # centre + 6 corners
-	var expected_triangles := space.cell_count() * 6
 
 	for chunk_size in [7, 16, 30]:
 		var stats := TerrainChunk.build_all(space, terrain, chunk_size)
+		# The ground is 7 vertices and 6 triangles per cell; since D-097 the
+		# cliff faces share the same chunk meshes and are counted in the same
+		# totals, at 4 vertices and 2 triangles per quad. Subtracting them by
+		# arithmetic rather than ignoring them keeps this test pinning the SHAPE
+		# of the skirt as well as the count of the ground.
+		var quads := int(stats["cliff_quads"])
+		var expected_vertices := space.cell_count() * 7 + quads * 4
+		var expected_triangles := space.cell_count() * 6 + quads * 2
 		assert_eq(stats["vertices"], expected_vertices,
-			"Chunk size %d meshed %d verts, expected %d — cells are being dropped or duplicated" % [chunk_size, stats["vertices"], expected_vertices])
+			"Chunk size %d meshed %d verts, expected %d (%d cells + %d cliff faces) — cells are being dropped or duplicated" % [chunk_size, stats["vertices"], expected_vertices, space.cell_count(), quads])
 		assert_eq(stats["triangles"], expected_triangles,
 			"Chunk size %d meshed %d tris, expected %d" % [chunk_size, stats["triangles"], expected_triangles])
 

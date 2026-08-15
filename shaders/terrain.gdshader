@@ -37,12 +37,10 @@ uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 // place it can be wrong.
 uniform vec2 atlas_grid = vec2(4.0, 2.0);
 
-// How strongly the detail multiplies the colour. 0 is flat vertex colour — the
-// pre-atlas look — and is what the fallback path would produce. Exposed so the
-// cost of the taps can be measured against a like-for-like frame.
-uniform float detail_strength : hint_range(0.0, 1.0) = 1.0;
-
-uniform float terrain_roughness : hint_range(0.0, 1.0) = 0.95;
+// Matching the StandardMaterial3D this replaced. A constant rather than a
+// uniform: nothing sets it, and a knob nothing turns is this project's
+// fourth-most-repeated defect.
+const float TERRAIN_ROUGHNESS = 0.95;
 
 // Half a texel of a 512-px tile. Keeps the bilinear tap at the wrap point from
 // reaching into the neighbouring biome's tile, at the cost of a jump of one
@@ -82,7 +80,7 @@ void fragment() {
 		+ tile_sample(tile_index.y, uv, ddx, ddy) * tile_weight.y
 		+ tile_sample(tile_index.z, uv, ddx, ddy) * tile_weight.z;
 
-	ALBEDO = COLOR.rgb * mix(vec3(1.0), detail, detail_strength);
-	ROUGHNESS = terrain_roughness;
+	ALBEDO = COLOR.rgb * detail;
+	ROUGHNESS = TERRAIN_ROUGHNESS;
 	SPECULAR = 0.5;
 }

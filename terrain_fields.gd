@@ -39,6 +39,11 @@ var biome := PackedByteArray()
 ## noise a second time to ask the same question.
 var passable := PackedByteArray()
 
+## One `TerrainGen.CliffClass` per cell — `passable` split by WHICH of its two
+## reasons applies (D-097). `passable[i] == 1` exactly when this is LAND, which
+## is what keeps the drawn cliff and the pathed one the same boundary.
+var cliff_class := PackedByteArray()
+
 ## `TerrainGen.SURFACE_STRIDE` rendered heights per cell: the centre first,
 ## then corners 0..5 in the order `TerrainChunk` emits them.
 var surface := PackedFloat32Array()

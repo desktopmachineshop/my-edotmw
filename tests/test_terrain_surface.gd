@@ -30,6 +30,15 @@ func _terrain() -> TerrainGen:
 # --- the sampler and the mesh agree (the whole point) -------------------
 
 
+## Since D-097 the surface has deliberate STEPS in it, so a point sitting
+## exactly on a shared corner has up to three drawn heights and no single right
+## answer. The claim that still holds — and the one everything standing on the
+## ground depends on — is that a point strictly INSIDE a cell samples that
+## cell's own drawn surface.
+##
+## So each vertex is nudged 2% of the way toward its cell's centre, which is far
+## enough inside for `round_axial` to name the same cell and near enough that
+## the mesh's height there is a known lerp between the vertex and the centre.
 func test_the_sampler_returns_the_height_the_mesh_was_built_with() -> void:
 	var space := _space()
 	var terrain := _terrain()
@@ -41,11 +50,21 @@ func test_the_sampler_returns_the_height_the_mesh_was_built_with() -> void:
 	var vertices: PackedVector3Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	assert_gt(vertices.size(), 0)
 
+	const INWARD := 0.02
 	var worst := 0.0
-	for vertex in vertices:
-		var sampled := TerrainChunk.height_at(space, surface, vertex.x, vertex.z)
-		worst = maxf(worst, absf(sampled - vertex.y))
+	var checked := 0
+	for cell in range(vertices.size() / TerrainGen.SURFACE_STRIDE):
+		var base := cell * TerrainGen.SURFACE_STRIDE
+		var centre := vertices[base]
+		for vertex in range(TerrainGen.SURFACE_STRIDE):
+			var here := vertices[base + vertex]
+			var probe := here.lerp(centre, INWARD)
+			var expected := lerpf(here.y, centre.y, INWARD)
+			var sampled := TerrainChunk.height_at(space, surface, probe.x, probe.z)
+			worst = maxf(worst, absf(sampled - expected))
+			checked += 1
 
+	assert_gt(checked, 0)
 	assert_lt(worst, 0.001,
 		"the ground sampler disagrees with the mesh by up to %.4f world units. "
 			% worst
@@ -79,17 +98,19 @@ func test_the_sampler_interpolates_between_vertices_rather_than_stepping() -> vo
 # --- watertight: neighbours agree at every shared corner ----------------
 
 
-## Two adjacent cells must place their SHARED corner at the same height, or a
-## vertical slot opens between them. That slot is what produced dark seams
-## across the whole map: elevation is continuous noise sampled per cell, so
-## essentially no two neighbours shared a height and almost every boundary had
-## one.
+## Two adjacent cells must either place their SHARED corner at the same height,
+## or step by a whole cliff (D-097). What must never happen is a sliver: a
+## vertical slot too small to be a cliff and too large to be nothing, which
+## nothing draws and which shows as a dark seam. That was the pre-D-084 defect —
+## elevation is continuous noise sampled per cell, so essentially no two
+## neighbours shared a height and almost every boundary had one.
+##
 ## `a` and `b` are UNWRAPPED cell coordinates. Positions come from
 ## `axial_offset_to_world` rather than `to_world`, because `to_world` normalises
 ## and a seam-crossing pair would then sit a whole map apart and share nothing —
 ## the same unwrapped-geometry/wrapped-data rule `terrain_chunk.gd` documents.
 func _assert_corners_agree(space: TorusSpace, surface: PackedFloat32Array,
-		a: Vector2i, b: Vector2i) -> void:
+		a: Vector2i, b: Vector2i, min_step := 0.0) -> void:
 	var world_a := space.axial_offset_to_world(Vector2(a))
 	var world_b := space.axial_offset_to_world(Vector2(b))
 	var shared := 0
@@ -102,9 +123,14 @@ func _assert_corners_agree(space: TorusSpace, surface: PackedFloat32Array,
 			shared += 1
 			var ha := surface[space.index(a) * TerrainGen.SURFACE_STRIDE + 1 + ka]
 			var hb := surface[space.index(b) * TerrainGen.SURFACE_STRIDE + 1 + kb]
-			assert_almost_eq(ha, hb, 0.0001,
-				"cells %s and %s disagree about their shared corner (%.4f vs "
-					% [a, b, ha] + "%.4f) — that gap is what shows as a seam" % hb)
+			var gap := absf(ha - hb)
+			if gap <= 0.0001:
+				continue
+			assert_gte(gap, min_step,
+				"cells %s and %s differ by %.4f at their shared corner — too "
+					% [a, b, gap]
+				+ "small to be a cliff and too large to be nothing, so nothing "
+				+ "draws it and it shows as a seam")
 	assert_eq(shared, 2, "adjacent hexes share exactly two corners, found %d"
 		% shared)
 
@@ -120,7 +146,7 @@ func test_neighbouring_cells_agree_at_their_shared_corners() -> void:
 	var cell := Vector2i(5, 3)
 	for direction in range(6):
 		_assert_corners_agree(space, surface, cell,
-			cell + TorusSpace.DIRECTIONS[direction])
+			cell + TorusSpace.DIRECTIONS[direction], _terrain().cliff_min_step)
 
 
 func test_cells_agree_across_the_seam_too() -> void:
@@ -134,7 +160,7 @@ func test_cells_agree_across_the_seam_too() -> void:
 		# the last column is cell `width`, whose geometry sits just past the
 		# seam while its data comes from column 0.
 		_assert_corners_agree(space, surface, edge,
-			edge + TorusSpace.DIRECTIONS[direction])
+			edge + TorusSpace.DIRECTIONS[direction], _terrain().cliff_min_step)
 
 
 # --- water ---------------------------------------------------------------
@@ -286,7 +312,10 @@ func test_a_shared_corner_gets_the_same_normal_from_every_cell_that_owns_it() ->
 	# between cells and must carry one agreed normal.
 	var by_position := {}
 	for i in range(vertices.size()):
-		var key := "%.3f,%.3f" % [vertices[i].x, vertices[i].z]
+		# Position AND height: a cliff corner is two points at the same place,
+		# and lighting the plateau with the valley's normal is exactly what
+		# D-097 stopped doing.
+		var key := "%.3f,%.3f,%.3f" % [vertices[i].x, vertices[i].z, vertices[i].y]
 		if not by_position.has(key):
 			by_position[key] = []
 		by_position[key].append(i)

@@ -43,7 +43,10 @@ func test_a_shared_corner_gets_the_same_colour_from_every_cell_that_owns_it() ->
 
 	var by_position := {}
 	for i in range(vertices.size()):
-		var key := "%.3f,%.3f" % [vertices[i].x, vertices[i].z]
+		# Position AND height, because since D-097 a cliff corner is two points
+		# at the same place: the colour steps with the surface there, so that the
+		# rock face is not painted in the colours of the valley below it.
+		var key := "%.3f,%.3f,%.3f" % [vertices[i].x, vertices[i].z, vertices[i].y]
 		if not by_position.has(key):
 			by_position[key] = []
 		by_position[key].append(i)
@@ -152,16 +155,20 @@ func test_the_pillow_changes_the_centre_vertex() -> void:
 	flat.pillow = 0.0
 
 	var raw := domed.elevation_field(space)
-	var domed_surface := domed.build_fields(space).surface
+	var domed_fields := domed.build_fields(space)
+	var domed_surface := domed_fields.surface
 	var flat_surface := flat.build_fields(space).surface
 
 	var moved := 0
 	for i in range(space.cell_count()):
 		var base := i * TerrainGen.SURFACE_STRIDE
 		# pillow 1.0 is the pre-D-096 behaviour exactly: the centre sits at the
-		# cell's own (clamped) elevation.
-		assert_almost_eq(domed_surface[base],
-			maxf(raw[i], domed.sea_level) * domed.height_scale, 0.0001,
+		# cell's own (clamped) elevation — plus D-097's rise, on the impassable
+		# tier that is deliberately drawn above its own elevation.
+		var own := maxf(raw[i], domed.sea_level) * domed.height_scale
+		if domed_fields.cliff_class[i] == int(TerrainGen.CliffClass.HIGH):
+			own += domed.cliff_rise
+		assert_almost_eq(domed_surface[base], own, 0.0001,
 			"pillow 1.0 must reproduce the old centre height")
 		# pillow 0.0 puts the centre on the plane of its own six corners.
 		var corner_mean := 0.0

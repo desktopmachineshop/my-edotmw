@@ -967,6 +967,47 @@ gen-cover-preview SECONDS="0.6": _import
     fi
     echo "VERDICT: ok - $summary; LOOK AT artifacts/cover-godot.png"
 
+# A rendered picture of the GROUND, in the shipping lighting rig (D-096/D-097).
+#
+# `gen-terrain-preview` prints healthy numbers and a top-down biome PNG, and
+# both stayed healthy for two milestones while the ground read as a honeycomb
+# of flat hexes with no cliff visible anywhere. `test-client` renders the real
+# thing but points its camera at a spawn, which is walkable ground by
+# construction and therefore the one place a cliff cannot be. This frames the
+# terrain on purpose: it finds the longest stretch of passability boundary on
+# the map and looks at it from a shallow angle.
+#
+# Software-rasterised like `gen-model-preview`, so it needs no GPU and says
+# nothing about speed — `bench-render` is the recipe for that.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render the terrain, framed on a cliff, to artifacts/terrain-3d.png")]
+gen-terrain-shot HEIGHT="14": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-terrain-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/terrain-3d.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            terrain_shot.tscn -- --height={{HEIGHT}}
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 terrain_shot.tscn -- --height={{HEIGHT}}
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-terrain-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #
 # Drives the simulation directly at 100/250/500/1000 squads rather than

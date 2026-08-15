@@ -226,6 +226,18 @@ static func corner_cells(space: TorusSpace, cell_index: int, corner: int) -> Vec
 	return Vector3i(lo, cell_index + a + b - lo - hi, hi)
 
 
+## The corner index each of a corner's OTHER two owners files the same physical
+## point under.
+##
+## `.x` belongs to the neighbour in direction (1 - corner) and `.y` to the one
+## in direction (-corner) — the same two `corner_cells` collects, before it
+## sorts them. Needed by anything that has to read both sides of a corner out of
+## one array: the cliff skirt, and the corner normal now that a corner can carry
+## two heights.
+static func corner_partners(corner: int) -> Vector2i:
+	return Vector2i(posmod(2 + corner, 6), posmod(4 + corner, 6))
+
+
 ## The RENDERED height of every vertex of every cell, in world units (D-067).
 ##
 ## This is the surface the ground is drawn as, and it is deliberately NOT the
@@ -267,6 +279,175 @@ func surface_field(space: TorusSpace) -> PackedFloat32Array:
 	return build_fields(space).surface
 
 
+## The three classes of ground the rendered surface is allowed to STEP between
+## (D-097).
+##
+## This is `passability` split by WHICH of its two reasons applies, and nothing
+## else: `passable` is true exactly when the class is LAND, which
+## `tests/test_terrain_cliffs.gd` asserts cell by cell on the shipped map. A
+## cliff must be a drawing of the predicate the flow field already routes
+## around — two definitions that could disagree is how this project has been
+## bitten before.
+##
+## Water and mountain need separate classes even though both are impassable: a
+## corner where a lake meets a peak would otherwise average sea level with rock
+## and hang the surface halfway up the mountainside.
+enum CliffClass { WATER, LAND, HIGH }
+
+
+## Which class a biome belongs to. Derived from the biome rather than
+## re-thresholding the elevation, so there is one ladder of thresholds and not
+## two to keep in step (`biome_at`'s own warning).
+static func cliff_class_of(biome: Biome) -> CliffClass:
+	match biome:
+		Biome.DEEP_WATER, Biome.WATER:
+			return CliffClass.WATER
+		Biome.MOUNTAIN, Biome.PEAK:
+			return CliffClass.HIGH
+		_:
+			return CliffClass.LAND
+
+
+## The smallest step, in WORLD units, that is drawn as a cliff rather than
+## smoothed away (D-097).
+##
+## The corner-averaging that makes the surface watertight (D-084) also averages
+## ACROSS the passability boundary, which is what turned every mountain into a
+## smooth ramp that happened to be grey. Averaging within a class instead gives
+## the corner two heights and a real vertical face — but applied to every class
+## boundary it would also put a hard lip along every shoreline, where the land
+## beside the water is usually only a few hundredths above sea level.
+##
+## So classes whose heights differ by less than this MERGE at that corner, and
+## the two results fall out of one mechanism: a highland dropping into the sea
+## gives a sea cliff, a beach sloping into it draws no skirt at all and reads as
+## a shore.
+##
+## In world units rather than raw elevation because a cliff is a thing you see:
+## `height_scale` is a per-preset knob and this is a fraction of a hex's width
+## whatever it is set to.
+##
+## 0.4 was chosen from a measurement, not by eye. The natural step where two
+## classes meet on the shipped map is small — median 0.20 world units along the
+## coast, p90 0.65, and 0.66 at a mountain foot — because elevation is smooth
+## noise and `passability` is a level set on it, so the ground genuinely does
+## ramp across the boundary. At 0.8 only 87 faces were drawn on the whole map,
+## which is the "mechanism correct, shipped numbers do nothing" failure exactly.
+## At 0.4 roughly a quarter of the coastline gets a rock ledge and the rest
+## keeps its beach, which is the shore-versus-sea-cliff split D-097 wants.
+@export var cliff_min_step: float = 0.4
+
+## How far above its own elevation the impassable HIGH class is DRAWN, in world
+## units (D-097).
+##
+## The one place the picture is deliberately not the data, and it needs saying
+## plainly. Measured on the shipped map, the natural rise from the last walkable
+## cell to the first mountain cell is 0.66 world units — under half a hex's
+## width, and quite invisible at play distance. The passability threshold is a
+## level set on smooth noise, so it can never fall anywhere the ground is
+## already steep: a truthful drawing of it, with no lift at all, is a truthful
+## drawing of nothing.
+##
+## So mountains are lifted onto their own tier. The wall still stands EXACTLY
+## where `passability` changes — that is the part that must not be negotiable —
+## and the lift only makes it tall enough to see.
+##
+## Rendering only, like `height_scale` and `pillow`: `build_fields` is the sole
+## reader, `passability` still thresholds the unscaled elevation, and nothing
+## stands on impassable ground for the offset to disagree with. Any cell a
+## soldier can walk on is LAND and is drawn at its own height, which is what
+## `tests/test_terrain_cliffs.gd`'s band test pins down.
+@export var cliff_rise: float = 2.0
+
+
+## The height each of a corner's three owners renders it at, in world units
+## (D-097).
+##
+## Returns one height per member of `trio`, in `trio`'s order. Where all three
+## agree the corner is a single point and the surface is smooth; where they do
+## not, the corner resolves into two or three heights and `TerrainChunk` fills
+## the step with a rock skirt.
+##
+## ## Why this is a pure function of the sorted triple
+##
+## All three owners run it, over the same three cells, in the same order, and
+## must reach the same answer — otherwise the "cliff" is a hole. Grouping by
+## class and merging by gap is deterministic; taking `trio` sorted (which
+## `corner_cells` guarantees) is what makes the arithmetic identical rather than
+## merely equivalent.
+static func corner_heights(classes: PackedByteArray,
+		clamped: PackedFloat32Array, trio: Vector3i, step: float) -> Vector3:
+	# The overwhelmingly common case, and worth its own branch: three cells of
+	# one class have nothing to step between, so the answer is the plain mean
+	# D-084 always took. On the shipped map that is 99% of the map's 48,384
+	# corners, and the general path below allocates half a dozen small arrays
+	# per call — meshing the standard map cost twice as long without this.
+	var class_x := classes[trio.x]
+	if class_x == classes[trio.y] and class_x == classes[trio.z]:
+		var mean := (clamped[trio.x] + clamped[trio.y] + clamped[trio.z]) / 3.0
+		return Vector3(mean, mean, mean)
+
+	var members := [trio.x, trio.y, trio.z]
+
+	# Partition by class. At most three groups, so the linear scan is the
+	# cheapest thing that could work.
+	var keys: Array[int] = []
+	var sums: Array[float] = []
+	var counts: Array[int] = []
+	var group_of := [0, 0, 0]
+	for m in range(3):
+		var key := int(classes[members[m]])
+		var found := -1
+		for g in range(keys.size()):
+			if keys[g] == key:
+				found = g
+				break
+		if found < 0:
+			found = keys.size()
+			keys.append(key)
+			sums.append(0.0)
+			counts.append(0)
+		group_of[m] = found
+		sums[found] += clamped[members[m]]
+		counts[found] += 1
+
+	# Lowest first, so merging walks up the slope. Ties broken by class so the
+	# order is total — two groups at the same mean must merge the same way every
+	# time this runs.
+	var order: Array[int] = []
+	for g in range(keys.size()):
+		order.append(g)
+	order.sort_custom(func(a: int, b: int) -> bool:
+		var ma := sums[a] / float(counts[a])
+		var mb := sums[b] / float(counts[b])
+		if ma != mb:
+			return ma < mb
+		return keys[a] < keys[b])
+
+	var resolved: Array[float] = [0.0, 0.0, 0.0]
+	var start := 0
+	while start < order.size():
+		var sum := sums[order[start]]
+		var count := counts[order[start]]
+		var stop := start + 1
+		while stop < order.size():
+			var next_mean := sums[order[stop]] / float(counts[order[stop]])
+			# Compared against the RUNNING mean, so a staircase of small steps
+			# merges into one slope rather than into two half-cliffs.
+			if next_mean - sum / float(count) >= step:
+				break
+			sum += sums[order[stop]]
+			count += counts[order[stop]]
+			stop += 1
+		var mean := sum / float(count)
+		for g in range(start, stop):
+			resolved[order[g]] = mean
+		start = stop
+
+	return Vector3(
+		resolved[group_of[0]], resolved[group_of[1]], resolved[group_of[2]])
+
+
 ## Every per-cell and per-vertex field the mesher needs, in one pass (D-096).
 ##
 ## Heights, colours, biomes and passability all walk the same cells and share
@@ -286,6 +467,7 @@ func build_fields(space: TorusSpace) -> TerrainFields:
 	var fields := TerrainFields.new()
 	fields.biome.resize(count)
 	fields.passable.resize(count)
+	fields.cliff_class.resize(count)
 
 	# Clamped once up front rather than inside the corner loop, where each cell
 	# is read six times by its neighbours.
@@ -305,25 +487,63 @@ func build_fields(space: TorusSpace) -> TerrainFields:
 		# The identical predicate `passability()` applies, spelled once here so
 		# the rendering side and the flow field cannot drift (D-097).
 		fields.passable[i] = 0 if (e < sea_level or e >= mountain_level) else 1
+		fields.cliff_class[i] = int(cliff_class_of(b))
 		clamped[i] = maxf(e, sea_level)
 		cell_color[i] = color_of(b)
 
 	fields.surface.resize(count * SURFACE_STRIDE)
 	fields.colors.resize(count * SURFACE_STRIDE)
+	# The cliff threshold in raw elevation units, converted once. A zero or
+	# negative height_scale would make every corner a cliff, so guard rather
+	# than divide by it.
+	var step := cliff_min_step / maxf(height_scale, 0.0001)
+	# The rendered elevation: the clamped one, plus the tier the HIGH class is
+	# drawn on. Applied to the CENTRE as well as the corners, or a mountain hex
+	# would tilt into its own cliff.
+	var rise := cliff_rise / maxf(height_scale, 0.0001)
+	var rendered := PackedFloat32Array()
+	rendered.resize(count)
+	for i in range(count):
+		rendered[i] = clamped[i] + (rise if fields.cliff_class[i] == int(CliffClass.HIGH) else 0.0)
 	for i in range(count):
 		var base := i * SURFACE_STRIDE
 		var corner_total := 0.0
 		for k in range(6):
 			var trio := corner_cells(space, i, k)
-			var height := (clamped[trio.x] + clamped[trio.y] + clamped[trio.z]) \
-				/ 3.0 * height_scale
+			# Heights average WITHIN a passability class and step between them
+			# (D-097). Colour still averages over all three owners, so the cliff
+			# face and the ground above it belong to the same landscape.
+			var resolved := corner_heights(fields.cliff_class, rendered, trio, step)
+			var mine := resolved.x
+			if trio.y == i:
+				mine = resolved.y
+			elif trio.z == i:
+				mine = resolved.z
+			var height := mine * height_scale
 			fields.surface[base + 1 + k] = height
-			fields.colors[base + 1 + k] = (cell_color[trio.x] + cell_color[trio.y] \
-				+ cell_color[trio.z]) / 3.0
+			# Colour blends over the owners on THIS side of the step, not over
+			# all three. Where nothing steps that is all three and the blend is
+			# D-096's; where a cliff steps, a mountain plateau would otherwise be
+			# painted in the colours of the valley it towers over — rock walls
+			# with grassland on top, which is what the first render of D-097
+			# actually showed.
+			var blended := Color(0.0, 0.0, 0.0, 0.0)
+			var owners := 0.0
+			for owner in [trio.x, trio.y, trio.z]:
+				var owner_height := resolved.x
+				if owner == trio.y:
+					owner_height = resolved.y
+				elif owner == trio.z:
+					owner_height = resolved.z
+				if absf(owner_height - mine) > 1e-6:
+					continue
+				blended += cell_color[owner]
+				owners += 1.0
+			fields.colors[base + 1 + k] = blended / owners
 			corner_total += height
 		# The pillow, as a tunable rather than an implicit 1.0 — see `pillow`.
 		fields.surface[base] = lerpf(corner_total / 6.0,
-			clamped[i] * height_scale, pillow)
+			rendered[i] * height_scale, pillow)
 		fields.colors[base] = cell_color[i]
 	return fields
 
