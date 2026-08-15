@@ -475,6 +475,37 @@ ruler-straight line. Cost, measured before deciding, on Intel Iris Xe:
 27,300 soldiers** against a 2 ms budget — the frame is CPU-bound on
 soldier derivation, 48 ms of 52, so two more ground taps are nearly free.
 
+**A one-cell blend is not enough at high contrast, and that took a second
+pass to learn.** Blending a corner over its three cells makes every
+transition exactly ONE CELL wide. At grass-to-sand that reads as soft; at
+sand-against-water — the strongest contrast on the map — one cell is one
+HEX, the 50% contour runs along the hex edges because that is where the
+three weights are equal, and the shoreline comes out visibly scalloped.
+An isolated sand cell in open water rendered as a clean six-pointed STAR.
+So two more things: the contour is pushed off the lattice by a
+low-frequency periodic warp of the corner weights (`blend_warp`, sampled
+at the CORNER so all three owners agree), and the band is widened past
+one cell by letting a centre take some of its own already-blended corners
+(`centre_bleed`). **Warping alone was measured and was not enough** — its
+first version moved the rendered picture by at most 19/255, because
+`FastNoiseLite` rarely approaches ±1 and an amplitude that reads as "most
+of a hex" displaces about a third of that.
+
+The centre-vertex invariant changed with it and the new one is narrower
+but still real: **a cell whose six neighbours share its biome carries
+`biome_color` at every vertex exactly**; boundary cells deliberately do
+not, because that is the feathering. The test asserts the interior case
+exactly rather than loosening to a tolerance everywhere.
+
+**And a perturbation the suite failed.** Sampling the warp at the calling
+CELL rather than at the corner — which gives a corner's three owners
+three different answers — left every test green, because `build_fields`
+computes each corner once and hands the same cached triple to all three.
+**The cache made the mesh watertight however wrong the arithmetic was.**
+Only calling the function from each of the three sides can see it. When
+an optimisation makes a property hold structurally, the test for that
+property has to bypass the optimisation.
+
 **The finding worth carrying forward: a truthful drawing of the
 passability boundary draws nothing.** The natural height step where two
 classes meet on the shipped map has a **median of 0.20 world units along
@@ -1146,8 +1177,8 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 611 tests across
-  41 scripts, measured 2026-08-15)*
+- `just test-unit` — GUT unit tests, headless *(green: 637 tests across
+  42 scripts, measured 2026-08-15)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

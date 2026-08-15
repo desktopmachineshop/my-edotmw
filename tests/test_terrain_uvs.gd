@@ -219,12 +219,16 @@ func test_a_corner_asks_for_the_biomes_that_actually_meet_there() -> void:
 					continue
 				var b := int(slots[slot])
 				asked[b] = float(asked.get(b, 0.0)) + w
-			# What is really there: a third of each of the three owners.
+			# What is really there: each owner at the weight the WARP gave it
+			# (D-096 amendment). Before the warp this was a third each; a test
+			# still asserting thirds would report three quarters of the map's
+			# corners as truncated and be measuring its own stale arithmetic.
 			var truth := {}
 			var trio := TerrainGen.corner_cells(space, i, k)
-			for owner in [trio.x, trio.y, trio.z]:
-				var b := int(fields.biome[owner])
-				truth[b] = float(truth.get(b, 0.0)) + 1.0 / 3.0
+			var blend := fields.weights(i, k)
+			for m in range(3):
+				var b := int(fields.biome[trio[m]])
+				truth[b] = float(truth.get(b, 0.0)) + blend[m]
 			var same := asked.size() == truth.size()
 			if same:
 				for b in truth:

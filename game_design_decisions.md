@@ -237,6 +237,88 @@ difference measured at 0.09% of corners).
   path in `cell_tiles` measured no gain and was removed rather than kept
   on the strength of the argument for it.
 
+**Amendment, 2026-08-15 (same day), on the owner's report that the
+transitions were still hard hex-shaped edges.** D-096 as written above
+fixes the low-contrast boundaries and does not fix the high-contrast
+one, and the distinction is the whole content of this amendment.
+
+**What was wrong.** A mean-of-three corner blend makes every transition
+exactly ONE CELL wide. Where the two colours are close — grass to dry
+grass, sand to grass — that reads as soft. At sand against water, the
+highest contrast on the map, one cell is one HEX: the 50% contour runs
+along the hex edges, because that is precisely where the three weights
+are equal, and the eye reads the resulting chain of arcs as a scalloped
+lattice. An isolated sand cell in open water rendered as a clean
+six-pointed STAR, which is the same fact stated at its most obvious.
+
+Feathering harder does not help. A wider soft band centred on the same
+contour is still centred on the lattice.
+
+**Two changes, and both were needed — the first alone was measured and
+found insufficient.**
+
+1. **The contour moves off the lattice.** Each corner's three weights
+   are skewed by a low-frequency periodic noise field sampled at the
+   corner's own position (`blend_warp`, `blend_warp_frequency`). The
+   boundary meanders across cells instead of along them. Unwarped it
+   returns exact thirds, so D-096's original blend is recovered rather
+   than approximated.
+2. **The band widens past one cell.** A cell's CENTRE takes some of its
+   own six (already blended) corners (`centre_bleed`, 0.45). Because a
+   corner already carries a third of each of its three owners, averaging
+   the six of them reaches the neighbours' neighbours — a roughly
+   two-cell transition for three lines of arithmetic and no extra
+   sampling.
+
+**The invariant that changed, stated plainly.** D-096 said the centre
+vertex carries `biome_color` EXACTLY. That now holds for every cell
+whose six neighbours share its biome — most of any map — and is
+deliberately relaxed at boundaries, where the point is that the colour
+is on its way to being the neighbour's. `biome_color` is still the only
+source of colour and the minimap still reads it per cell; the test
+asserts the interior case exactly rather than loosening to a tolerance
+everywhere, so what survives is a real invariant and not a weaker one
+wearing the same name.
+
+**Three things the pictures found that no count could.**
+
+- **The warp alone changed almost nothing.** Its first version moved the
+  blend by at most 19/255 — the rendered coastline was pixel-for-pixel
+  the same scallop. `FastNoiseLite` rarely approaches ±1, so an
+  amplitude that reads as "most of a hex" displaces about a third of
+  that. Shipped at 2.0 for that reason, and there is now a test that
+  asserts the mean skew on the SHIPPED map rather than that the
+  mechanism exists.
+- **Pushed harder, black blots appeared along the coast.** Where the
+  warp clamps every weight in a cliff group to zero, the blend divided
+  near-nothing by near-nothing. It falls back to the unweighted mean of
+  the group now.
+- **The per-corner sampling was untested and a perturbation proved it.**
+  Sampling the warp at the calling CELL instead — which skews every
+  corner of a cell the same way and gives a corner's three owners three
+  different answers — left the entire suite green, because
+  `build_fields` computes each corner once and hands the same cached
+  triple to all three owners. The cache made the mesh watertight however
+  wrong the arithmetic was. Only calling the function from each of the
+  three sides can see it, and a test now does.
+
+**Cost:** ~0.25 s of terrain build at client start on the standard map
+(1.47–1.65 s to 1.70–2.20 s, three paired runs), and nothing per frame —
+the weights are baked into vertex colours and the shader's existing tile
+channel. Every hex corner is computed once and looked up twice more
+(a hex lattice has two corners per cell), which is the same
+compute-once-index-after shape as `TorusSpace.disk_offsets` and
+`elevation_field`; without it the warp's two noise samples per corner
+cost a second of build on their own. `TorusSpace.delta` was in the first
+draft of the weight function and cost five seconds — the
+`distance()`-per-candidate defect in its sixth outfit, and caught by
+watching the build time rather than by reading the code.
+
+**What this does NOT fix, deliberately.** The cliff skirts are still
+hard-edged and hexagonal in plan, because a cliff IS the passability
+boundary and that boundary is per-cell (D-097). Feathering a cliff would
+be drawing something the simulation does not have.
+
 **Revisit trigger:** a map whose width and height/2 are coprime, where
 `uv_scale`'s granularity forces the repeat count to the full map width
 and the texture stretches; or a biome roster large enough that corner

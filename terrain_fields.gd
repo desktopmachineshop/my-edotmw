@@ -48,6 +48,24 @@ var cliff_class := PackedByteArray()
 ## then corners 0..5 in the order `TerrainChunk` emits them.
 var surface := PackedFloat32Array()
 
+## Three blend weights per CORNER — 18 floats per cell, in the sorted order
+## `TerrainGen.corner_cells` returns and skipping the centre, which is always
+## wholly its own cell's.
+##
+## Stored rather than recomputed because colour and the shader's atlas tiles
+## must use the SAME weights: if the texture boundary and the colour boundary
+## meandered differently they would cross each other, which reads worse than
+## either following the lattice.
+var corner_weights := PackedFloat32Array()
+
+
+## The three owner weights at corner `corner` (0..5) of a cell.
+func weights(cell_index: int, corner: int) -> Vector3:
+	var base := (cell_index * 6 + corner) * 3
+	return Vector3(corner_weights[base], corner_weights[base + 1],
+		corner_weights[base + 2])
+
+
 ## `TerrainGen.SURFACE_STRIDE` vertex colours per cell, laid out exactly like
 ## `surface`. A corner takes the mean of the three cells meeting there; the
 ## centre keeps its own. `TerrainGen.biome_color` is still the single source of

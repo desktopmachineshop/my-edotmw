@@ -212,9 +212,14 @@ static func cell_tiles(space: TorusSpace, fields: TerrainFields,
 	for k in range(6):
 		var trio := TerrainGen.corner_cells(space, cell_index, k)
 		corner_trios.append(trio)
-		for owner in [trio.x, trio.y, trio.z]:
-			var b := int(fields.biome[owner])
-			demand[b] = float(demand.get(b, 0.0)) + 1.0 / 3.0
+		# The SAME warped weights the colour blend used (D-096 amendment), so
+		# the texture boundary and the colour boundary meander together. Two
+		# boundaries wandering independently would cross, which reads worse than
+		# either of them following the lattice.
+		var weights := fields.weights(cell_index, k)
+		for m in range(3):
+			var b := int(fields.biome[trio[m]])
+			demand[b] = float(demand.get(b, 0.0)) + weights[m]
 
 	# Own biome first — a cell must always be able to paint itself — then the
 	# rest by demand, ties broken by biome index so the choice is deterministic.
@@ -250,12 +255,13 @@ static func cell_tiles(space: TorusSpace, fields: TerrainFields,
 	weights[0] = 1.0
 	for k in range(6):
 		var base := (1 + k) * TILE_SLOTS
-		for owner in [corner_trios[k].x, corner_trios[k].y, corner_trios[k].z]:
+		var blend := fields.weights(cell_index, k)
+		for m in range(3):
 			# A biome with no slot falls back to the cell's own, which keeps the
 			# weights summing to exactly 1. A shortfall would darken the fragment
 			# rather than merely mis-texture it.
-			var slot: int = slot_of.get(int(fields.biome[owner]), 0)
-			weights[base + slot] += 1.0 / 3.0
+			var slot: int = slot_of.get(int(fields.biome[corner_trios[k][m]]), 0)
+			weights[base + slot] += blend[m]
 
 	return {"tiles": tiles, "weights": weights}
 

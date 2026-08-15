@@ -58,6 +58,7 @@ func _ready() -> void:
 	var grid := TerrainChunk.chunk_grid(space, chunk_size)
 	var material := TerrainChunk.make_material()
 	var cliff_quads := 0
+	var meshes: Array[ArrayMesh] = []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
 			var mesh := TerrainChunk.build_mesh(space, terrain,
@@ -69,10 +70,27 @@ func _ready() -> void:
 					TerrainChunk.SKIRT_SURFACE)[Mesh.ARRAY_INDEX]
 				@warning_ignore("integer_division")
 				cliff_quads += faces.size() / 6
-			var instance := MeshInstance3D.new()
-			instance.mesh = mesh
-			instance.material_override = material
-			add_child(instance)
+			meshes.append(mesh)
+
+	# All NINE lattice copies, as the client draws them (D-035) — sharing the
+	# same Mesh resources, so this costs draw calls rather than memory.
+	#
+	# The first version of this shot drew one copy, and the cell it framed
+	# happened to sit on row 0. Half the ground around the cliff was on the far
+	# side of the seam and therefore drawn nowhere, so the picture showed a rock
+	# wall hanging over a void — which reads exactly like a hole in the mesh and
+	# was reported as one. A terrain shot that does not tile the torus is a
+	# picture of a different world than the one the game renders.
+	for i in [-1, 0, 1]:
+		for j in [-1, 0, 1]:
+			var tile := Node3D.new()
+			tile.position = space.lattice_steps()[0] * float(i) 				+ space.lattice_steps()[1] * float(j)
+			for mesh in meshes:
+				var instance := MeshInstance3D.new()
+				instance.mesh = mesh
+				instance.material_override = material
+				tile.add_child(instance)
+			add_child(tile)
 
 	var target := _most_interesting_cell(space, fields)
 	var focus := space.to_world(target)
