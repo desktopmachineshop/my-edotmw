@@ -41,11 +41,16 @@ if _ROOT not in sys.path:
 
 from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
 from art.buildings import build as build_building                  # noqa: E402
-from art.lib.bake import door_hinge_uv, flatten, write_glb, write_vat  # noqa: E402
+from art.lib.bake import (                                        # noqa: E402
+    door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
+)
 from art.lib.godot_import import (                               # noqa: E402
     ATLAS_PARAMS, VAT_PARAMS, ensure_import_params,
 )
 from art.lib.soldier import build as build_soldier              # noqa: E402
+from art.scatter.props import ROSTER as PROP_ROSTER             # noqa: E402
+from art.scatter.props import build as build_prop               # noqa: E402
+from art.scatter.props import validate as validate_prop         # noqa: E402
 from art.terrain.atlas import write_atlas                       # noqa: E402
 from art.units import ROSTER                                    # noqa: E402
 
@@ -143,6 +148,36 @@ def build_buildings() -> dict:
     return entries
 
 
+def build_props() -> dict:
+    """Ground-cover props (D-100): mesh only, materials baked in.
+
+    Their budget and their HEIGHT limit are both enforced inside
+    `art/scatter/props.py`'s `validate`, which also refuses inside-out
+    geometry — see that module's header for why a prop is the exact shape
+    that hides a winding mistake.
+    """
+    models_dir = os.path.join(GENERATED, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    entries: dict[str, dict] = {}
+    for prop in sorted(PROP_ROSTER):
+        model = build_prop(prop)
+        bounds = validate_prop(prop, model)
+        glb_path = os.path.join(models_dir, f"{prop}.glb")
+        stats = write_prop_glb(model, glb_path)
+
+        entries[prop] = {
+            "model": f"generated/models/{prop}.glb",
+            "triangles": model.triangle_count(),
+            "note": PROP_ROSTER[prop].note,
+            **bounds,
+            **stats,
+        }
+        print(f"  {prop:20s} {model.triangle_count():3d} tris  "
+              f"{bounds['height']:.2f} tall  {stats['materials']} mat")
+    return entries
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", default=None,
@@ -157,6 +192,9 @@ def main() -> None:
     print("building structures:")
     buildings = build_buildings()
 
+    print("building ground cover:")
+    props = build_props()
+
     terrain = {}
     if not args.skip_terrain:
         print("building terrain atlas:")
@@ -170,6 +208,7 @@ def main() -> None:
         "source_hash": source_hash(),
         "units": units,
         "buildings": buildings,
+        "props": props,
         "terrain": terrain,
     }
     # sort_keys + trailing newline: two runs must diff clean.
