@@ -20,6 +20,479 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-095 · 2026-08-14 · Accepted — parallel dev instances are isolated by construction
+
+**Decision:** every checkout of this repo — the owner's main clone and
+each Claude Code agent worktree — is its own **dev instance**, and an
+instance can only ever start, see, and stop its own servers and
+clients. The identity has ONE definition, `instance-id.sh` at the repo
+root, which derives:
+
+- **instance name** from the git branch (agent worktrees:
+  `claude-<session>`; the main clone: `main`), sanitised into a docker
+  project fragment;
+- **UDP port** as a stable hash of that name into 20000–29999 —
+  deliberately far from the historical shared 4433, so a hardcoded 4433
+  that sneaks back in fails to connect rather than connecting to the
+  *wrong* server;
+- **compose project** `edotmw-<instance>`.
+
+The justfile evaluates the script for its `instance`/`port` variables
+and threads them everywhere the old shared literals were: every
+`docker compose -p`, every `--name`d container, the `down` recipe's
+stray-container label sweep, and every client/bot `--port`. The compose
+file publishes `${EDOTMW_HOST_PORT}:4433/udp` — **in-container the
+server still listens on 4433**, so the bots and `client-test` services
+(in-network, reaching `server:4433`) needed no change, and per-project
+compose networks keep them scoped for free. The GUI client accepts
+`--instance` and puts it in its **title bar** with the endpoint
+(`eDotMW — claude-foo  [127.0.0.1:24817]`), so several clients on one
+desktop are tellable apart before clicking anything. `just instance`
+prints a worktree's identity. `just quick-test` resolves a new
+`SANDBOX=auto` parameter to **on** for agent instances (`claude-*`) —
+an agent going straight into quick launch is always dev-testing, so it
+gets D-077's sandbox by default — and off for the main clone.
+
+**Why:** parallel agents kept killing each other's test sessions. Both
+halves were structural: `just down` (and every recipe's teardown trap)
+removed containers in the one pinned `edotmw` project regardless of who
+started them, and with one shared port a client connected to whichever
+instance's server held 4433 — CLAUDE.md already records a load-test
+failure mis-diagnosed for a session because of exactly that stray-server
+shape. Fixing it by convention ("agents, be careful") is the
+declared-but-unenforced pattern this project keeps paying for, so the
+isolation is derived, not remembered, and
+`tests/test_multi_agent_isolation.gd` fails if a shared literal
+(`-p edotmw`, a fixed `--name`, a hardcoded host port or `--port=4433`)
+reappears in the justfile or compose file.
+
+**Sharing is explicit, never accidental:** `EDOTMW_INSTANCE` /
+`EDOTMW_PORT` override the derivation when the owner deliberately wants
+two checkouts talking to one server; nothing else crosses instances.
+
+**Rejected alternatives:** a lock file or registry of running instances
+(state to leak, and D-014's teardown discipline says nothing may
+outlive its recipe); letting agents share one server with per-agent
+match ids (the server is authoritative per-process — one agent's
+restart still kills everyone); random free-port allocation at launch
+(a client started later could no longer find its server — the port must
+be a pure function of the identity).
+
+> **D-087 through D-094 are the M8 planning session, 2026-08-14.** Run
+> the way the M9 session (D-068–D-074) was: everything in them is design,
+> no code was written, and the owner made the four calls that shape the
+> rest in the same session (scope, hosting, whether 20 players is a
+> design target, saves). They close Q3, Q5, Q10, Q11, Q13 and Q14 — the
+> entire "Blocking M7 / product-level" block of section 2, which dates
+> from when Steam was numbered M7. IDs were checked free against `main`
+> at fd4ee6e immediately before writing, per the renumbering lesson in
+> the editorial note below.
+
+### D-087 · 2026-08-14 · Accepted — M8 is Steam-ready, not launched; and "seamless" closed by inspection
+
+**Decision:** M8's definition of done is **the game is a real Steam
+build, proven by private playtests that reach a match entirely through
+Steam** — install from a private depot branch, host, invite, play,
+disconnect, rejoin. **Public launch is not M8.** Launch (store page,
+pricing, marketing) waits on M9's content, because shipping a game whose
+matches decide in three minutes (D-056) would earn exactly the reviews it
+deserves. M8 and M9 can proceed in either order or in parallel; the
+launch gate is both complete.
+
+In scope, each with its own entry below: hosting model (D-088), what a
+20-player design target obliges (D-089), reconnection (D-090), anti-cheat
+posture (D-091), saves — out (D-092), the platform boundary (D-093), and
+the export/upload pipeline plus exit criteria (D-094).
+
+**Q14 is closed here, by inspection.** "Seamless" means one contiguous
+wrapped map with no loading screens — and that has been true by
+construction since D-008: the torus is a single simulated space, terrain
+is one meshed domain drawn nine times (M3 slice 3), and nothing streams.
+No streaming work exists in any milestone because none is needed. The
+question only stayed open because the word was never pinned down;
+recording the definition is the whole decision.
+
+**Rejected alternatives:** *Early Access on current content* — faster
+feedback, but the 3–4 minute match problem is structural (D-056 says so
+explicitly) and first impressions on Steam are not revisable. *Making M8
+the 1.0 launch* — that just reorders the ladder to M9-then-M8 and makes
+M8 unplannable until M9's content questions settle; splitting
+"Steam-ready" from "launched" keeps M8 executable now.
+
+**Consequences:** M8 produces no public artifact — its output is a
+private depot branch and a repeatable playtest loop. The discrete-GPU
+bench trigger (Q15, sharpened in section 2) finally becomes reachable
+through playtesters' hardware and is folded into D-094's criteria.
+
+**Revisit trigger:** if M9 slips badly enough that an Early Access
+launch on partial content starts looking better than silence, that is a
+new decision against this one, not an amendment.
+
+---
+
+### D-088 · 2026-08-14 · Accepted — Q3: player-hosted first, official dedicated later
+
+**Decision (the owner's call, 2026-08-14):** at first ship, matches are
+**player-hosted**: the host player's machine runs the authoritative
+simulation, and remote players connect over **Steam's networking with
+relay** (SteamNetworkingSockets / SDR via D-093's boundary), so NAT and
+port-forwarding never reach a user. **Official dedicated servers are a
+later rung**, not M8 — they are also the eventual fix for the two
+limitations this decision knowingly accepts (host-quit and host-trust,
+below).
+
+**The measured basis that makes hosting-while-playing viable.** This
+question was written when "who pays for servers" looked expensive.
+M4/M6 made it small: bandwidth is ~1 KB/s per client (D-042's 933 B/s at
+20 players) — 19 remote clients cost a host about **20 KB/s of upload**;
+the server is roughly **half a core and ~42.5 MB** at full scale
+(D-038/D-040). A machine that can run the client (the expensive half —
+D-041) hosts the simulation without noticing.
+
+**Process shape: in-process host, and `loopback_peer.gd` already built
+the seam.** The host's game runs the server *in-process* — the same
+`SquadSim`/`server.gd` machinery, ticked by D-023's accumulator — with
+the host's own client connected through the loopback peer that D-051's
+AI clients already use, and remote clients arriving through Steam
+sockets. This is not a new architecture: `bot_client.gd` proves N
+clients in one process, and `loopback_peer.gd` exists precisely because
+a peer is duck-typed to `ENetPacketPeer.send`'s shape. A Steam peer
+wrapper implements the same shape behind D-093's boundary. D-002's
+authority split (clients send input, server decides) is a protocol
+property, not a process property, and is unchanged.
+
+**D-042's contract is a hard requirement on the new transport.** Curve
+packets carry no sequence number; in-order reliable delivery is
+load-bearing. Steam sockets must run reliable-ordered, and the ordering
+test D-042 named
+(`test_curve_application_is_last_write_wins_so_order_is_load_bearing`)
+applies to the Steam path exactly as to ENet. **ENet stays** for
+LAN/direct-IP, docker, bots and the whole test estate — containers have
+no Steam and never will, so every existing recipe keeps running without
+it (see D-093's fallback rule).
+
+**Two consequences accepted with eyes open:**
+- **Host-quit kills the match** for everyone in it. No host migration —
+  authoritative-state handoff is a milestone of its own and a fresh
+  cheating surface (whoever inherits the server inherits omniscience).
+  Dedicated-later is the real fix; until then it is a documented
+  property of unranked play.
+- **The host is trusted** — they hold the whole truth and the authority.
+  D-091 owns this consequence.
+
+**Rejected alternatives:** *Official dedicated first* (recommended by
+the analysis for keeping ENet untouched, declined by the owner — player-
+hosted reaches playtesters without standing infrastructure or monthly
+cost, and the Steamworks integration it forces is needed for D-089's
+lobbies anyway). *Player-run headless server as a separate process* —
+splits the Steam context across processes (the listen socket needs the
+game's Steam session) and buys nothing the in-process shape doesn't.
+*Host migration* — see above.
+
+**Revisit trigger:** ranked/competitive play (requires dedicated — see
+D-091); playtests showing the host's 0-RTT advantage is felt in play; or
+a measured case of host upload/CPU being the binding constraint at real
+player counts.
+
+---
+
+### D-089 · 2026-08-14 · Accepted — Q5: 20 players is a design target, and what M8 owes it
+
+**Decision (the owner's call, 2026-08-14):** 20 concurrent players is a
+**design target** — the product's headline match, not merely the ceiling
+the architecture was sized against. What that obliges, scoped honestly:
+
+- **Discovery:** Steam lobby browser plus friend invites, mapped onto
+  the existing lobby (D-048/D-050 — seats, teams, civs, AI). **No
+  skill-based matchmaking service** — discovery is lobbies, not MMR
+  queues; a matchmaker is a standing service with a population
+  prerequisite this game does not have and M8 must not pretend it does.
+- **Fill:** a 20-seat match must start without 20 humans. AI players
+  (D-051) fill empty seats — already real (`just run-server AI=3`), the
+  lobby already seats them.
+- **Resilience:** drop-OUT hands the army to an AI (D-090); drop-IN is
+  D-090's repossession — a returning human reclaims their own seat, and
+  a NEW human may take over an AI-held seat mid-match through the same
+  machinery. That last is what makes a 20-player match fillable in
+  practice rather than only at the lobby screen.
+
+**Rationale:** the alternative reading (engineering ceiling, design for
+2–8) was recommended and declined. Taking 20 seriously as design means
+the fill/resilience machinery above is core product, not tooling — a
+20-human lobby that dissolves on its third disconnect is not a 20-player
+game. Note the architecture side owes nothing new: D-018/D-020's budgets
+were always sized at 20, and D-042 measured transport at 20.
+
+**Rejected alternatives:** matchmaking service (above); spectator-slot
+drop-in (observers are cheap under D-003 — a spectator is a client with
+maximum vision — but it is scope, and nothing in the 20-player claim
+needs it; noted for later, not built in M8).
+
+**Consequences:** M8's headline verification (D-094 criterion 8) is a
+20-seat match through Steam networking with real remote humans in it.
+The per-connection-ownership defect family (D-038's amendment) becomes
+seat-identity work in D-090 — binding by SteamID, not connection.
+
+**Revisit trigger:** if real playtests show the fun ceiling is well
+below 20 (coordination, readability, pacing), the design target moves
+and this entry is superseded — the engineering ceiling stays where
+D-018 put it either way.
+
+---
+
+### D-090 · 2026-08-14 · Accepted — Q10: reconnection is repossession; AI holds the seat; rejoin is also the desync repair
+
+**Decision:** a human's mid-match disconnect no longer wipes their army
+(superseding D-033's wipe-on-disconnect for humans; explicit leave via
+D-075 also hands off rather than wiping). Instead:
+
+1. **The seat passes to an AI immediately.** D-051 built exactly the
+   right object: an AI player is a client without a socket, held to
+   every rule a human is. Takeover is seating one on the abandoned
+   army's curves — no grace-period limbo where 19 players fight a
+   statue.
+2. **Reconnection is repossession.** A returning player (identified by
+   **SteamID, not connection** — the per-connection ownership cache was
+   already this project's bug once, D-038's amendment) reclaims the
+   seat from the AI at any point while the match runs. There is no
+   timeout after which return is refused: the AI holding the seat IS
+   the grace mechanism, indefinitely.
+3. **Rejoin is architecturally cheap, and that is not luck.** A
+   rejoining client is a fresh join: D-025's reveal semantics already
+   define how any client learns current state — horizon-clipped curves,
+   sent fresh, no synthetic catch-up. The one non-obvious obligation:
+   persistent-explored building fog must be replayed as the
+   **ever-revealed set** on rejoin, exactly the distinction its hash
+   rule already warns about.
+4. **Desync recovery is the same door.** Q10's second half gets the
+   same answer: the client already computes state hashes continuously;
+   on mismatch, the recovery policy is **drop and rejoin through the
+   repossession path** — fresh curves rebuild the world from truth.
+   No incremental repair protocol; rejoin *is* the repair, and it is
+   cheap for the same D-025 reasons. (Server-side, a desync report is
+   logged with the replay per D-016 — forensics first, the M1 lesson.)
+
+**Rationale:** every alternative builds new machinery; this composes
+three things that exist (AI clients, reveal semantics, state hashes)
+and one thing M8 needs anyway (SteamID identity). For D-056's eventual
+1–2 hour matches, wipe-on-disconnect would be brutal to the
+disconnected player's *team* (D-050 shared vision makes armies
+interdependent) — the AI holding the line is what keeps one dropped
+connection from deciding a team match.
+
+**Rejected alternatives:** *grace-period pause* (PA-style — freezes 19
+players for one); *wipe after a timeout* (punishes the team, and the
+timeout constant has no defensible value); *incremental desync repair*
+(a diff protocol against curve state — large, and rejoin already
+achieves the same end).
+
+**Consequences:** the join handshake carries SteamID → seat binding
+(wire change, D-094 criterion 3's version handshake is the natural
+place); `match_state.gd`'s elimination definition needs one amendment —
+a seat is abandoned only if its AI is also dead; D-051's AI must cope
+with inheriting any mid-match position, which `ai-ladder` cannot fully
+exercise (it never inherits) — a scripted takeover scenario is D-094
+criterion 6's job.
+
+**Revisit trigger:** if AI-holds-indefinitely is abused in practice
+(a losing player "AFKs behind a competent AI"), add a forfeit vote or
+an idle-seat rule — a social-rules patch, not a rewrite of this shape.
+
+---
+
+### D-091 · 2026-08-14 · Accepted — Q11: the server IS the anti-cheat, and the host is trusted, stated plainly
+
+**Decision:** no kernel anti-cheat, no third-party client-side
+anti-cheat, VAC at Steam's defaults only. The posture is the
+architecture, which was built for this from D-002 on:
+
+- **A client cannot assert state** — it sends orders; the server
+  validates every one through the shared helper (M3), and refuses what
+  the player doesn't own.
+- **A client cannot know what its player shouldn't** — fog is curve
+  *gating* (D-003/D-004/D-025): concealed state never reaches the wire.
+  A maphack reads memory that isn't there.
+- **A modified client changes only its own picture** — soldier
+  positions are client-derived cosmetics (D-006, one-way by
+  construction).
+
+The two residual surfaces, named so nobody rediscovers them: what a
+horizon-clipped curve still leaks (D-003's own note — intent within the
+horizon), and **the host under D-088** — whoever hosts holds the whole
+truth and the authority, so a modified host is omniscient and
+unaccountable. **Accepted for unranked/friends play and documented as
+such; ranked or competitive play requires official dedicated servers
+and is explicitly gated on D-088's later rung.** Replays (D-016) are
+the accountability tool that exists today: byte-identical to the wire,
+they make an accusation checkable after the fact.
+
+**Rejected alternatives:** kernel/client anti-cheat (an arms race this
+project cannot staff, aimed at the one surface — the client — the
+architecture already made low-value to cheat); trusting no host and
+shipping dedicated-only (rejected by D-088's owner call, and unranked
+friends-lobby play doesn't warrant it).
+
+**Consequences:** none in code for M8 beyond what D-088/D-090 already
+require. The word "ranked" appearing anywhere in a future milestone is
+this entry's tripwire.
+
+**Revisit trigger:** ranked play; or evidence of host cheating being a
+practical problem in unranked lobbies rather than a theoretical one.
+
+---
+
+### D-092 · 2026-08-14 · Accepted — Q13: no mid-match saves; reconnection and replays are what the need decomposes into
+
+**Decision (the owner's call, 2026-08-14):** M8 ships no save/resume.
+The realistic failure a long multiplayer match faces is *a player
+dropping* — D-090 covers that with AI takeover and repossession. The
+other thing "saves" usually means — reviewing a finished match — has
+been free since M1: replays are the curve log (D-016). What remains is
+genuinely "suspend a live multiplayer session and resurrect it later",
+which requires state serialization with versioning plus a resume
+ceremony every participant must attend, for an event (all N players
+agree to stop and all N return later) that lobby-discovered matches
+essentially never produce.
+
+**Rejected alternatives:** server-side session snapshot (feasible —
+packed arrays serialize cleanly — but the cost is the ceremony and the
+versioning, not the bytes); client-side saves (meaningless in an
+authoritative-server game).
+
+**Revisit trigger:** two named. (1) M9's real 1–2 hour matches showing
+abandonment pain that repossession doesn't cover — measured by
+playtest, not assumed. (2) A single-player or skirmish-vs-AI mode
+becoming a product surface — there the ceremony collapses (one human,
+server in-process per D-088) and saves become cheap enough to justify
+themselves.
+
+---
+
+### D-093 · 2026-08-14 · Accepted — the platform boundary: GodotSteam, and D-021 amended by exactly one category
+
+**Decision:** Steamworks reaches this project through the **GodotSteam
+GDExtension**, and D-021 gains a second sanctioned GDExtension
+category: **platform integration**. D-021's original category
+(performance kernels, on measured evidence only) is untouched and still
+has zero members. Three constraints keep the amendment from becoming a
+hole:
+
+1. **One script names Steam.** Every Steamworks call lives behind a
+   single boundary script (`steam_platform.gd` or equivalent); no other
+   `.gd` file mentions Steam at all, and **a test enforces it** — the
+   same falsifiable-by-grep pattern as D-046 criterion 3 (no script
+   names a civ) and D-086's lighting-rig guard. This is the project's
+   proven mechanism for keeping a rule true after everyone stops
+   looking.
+2. **Absent Steam costs Steam, never the game.** No Steam context —
+   docker, CI, bots, LAN, a clone that never installed the extension —
+   means the boundary reports unavailable and everything else works
+   over ENet exactly as today. The precedent is D-081's empty
+   `model_id`: a failed integration degrades fidelity (here: no
+   relay, no lobbies, no invites), not function. The entire existing
+   test estate runs Steam-less by construction, which is also why the
+   Steam path needs its own verification story (D-094).
+3. **Still no C#** (D-021's yes/no answer stands): GodotSteam's
+   GDExtension build, not the .NET binding; no `.csproj` appears.
+
+**Rationale:** D-088 (relay) and D-089 (lobbies, invites) are
+impossible without Steamworks, and Steamworks has no GDScript-native
+path. The alternative reading — that D-021 forbids this — would make
+D-021 decide product scope, which was never its job; it was a toolchain
+cost/reversibility decision, and a pinned prebuilt extension behind one
+script is toolchain-cheap and reversible.
+
+**Rejected alternatives:** shipping with no Steamworks at all (steamcmd
+upload needs none — but D-088/D-089 die with it); the C# Steamworks
+bindings (D-021); hand-rolled GDExtension against the Steamworks SDK
+(GodotSteam exists, is maintained, and is the community-standard
+binding).
+
+**Consequences:** the extension binary is a pinned dependency fetched
+by bootstrap (the `tools/` pattern), never committed; `.godot-version`
+gains a sibling pin. `just doctor` learns to report Steam availability.
+The boundary script is the natural home for the SteamID identity D-090
+needs and the lobby mapping D-089 needs.
+
+**Revisit trigger:** GodotSteam abandonment or a Godot upgrade it lags
+badly (the standing risk of any binding); at that point the fallback
+ladder is: pin harder, then hand-roll the minimal surface actually used
+(sockets, lobbies, identity — small by then, since the boundary script
+documents exactly what is used).
+
+---
+
+### D-094 · 2026-08-14 · Accepted — M8's exit criteria, written before the code
+
+**Decision:** M8 is complete when all of the following hold. Written
+before any M8 code exists, per the standing rule (D-022, D-026, D-046,
+D-074 — and D-085's reconstruction is the cautionary tale for skipping
+it). Every new check below is subject to the observed-to-fail rule.
+
+1. **Export:** `just export` produces a runnable Windows client build
+   and a Linux headless server build from a clean clone (the latter is
+   what docker already proves possible, and is the dedicated-later
+   seed). Build version is stamped from one source of truth.
+2. **Upload:** a `just` recipe pushes a build to a Steam depot via
+   steamcmd, to a **private** branch; a fresh machine installs and runs
+   it from Steam. (No store page, no public visibility — D-087.)
+3. **Version handshake:** the join flow carries a protocol version and
+   the SteamID seat identity (D-090); a mismatched client is refused
+   loudly at join with a message a player can act on. Verified by
+   connecting a deliberately version-bumped client and watching the
+   refusal — this criterion exists because Steam's rolling updates make
+   mixed versions routine, and today's protocol has no version field
+   at all.
+4. **Host flow:** a host starts a match from inside the game (server
+   in-process per D-088), a second machine joins via Steam invite and
+   via the lobby browser, and no participant touches an IP address or
+   a router. LAN/direct-IP still works with Steam absent (D-093).
+5. **Transport contract:** a real match runs over Steam sockets with
+   reliable-ordered delivery, the state-hash machinery reports zero
+   desyncs on it, and D-042's ordering test is extended to cover the
+   Steam peer wrapper. The bots/test estate continue to run entirely
+   over ENet/loopback, Steam-less.
+6. **Reconnection (D-090), each leg observed to fail first:** kill a
+   client mid-match → its AI takes over within a tick and plays on;
+   the same human rejoins → repossesses the seat, and post-rejoin
+   state hashes are clean (including the ever-revealed building-fog
+   set — the known trap); a second human takes over a different
+   AI-held seat mid-match (D-089's drop-in). A scripted takeover
+   scenario covers the part `ai-ladder` structurally cannot (an AI
+   inheriting a mid-match position it didn't build).
+7. **Platform boundary (D-093):** the no-script-names-Steam test
+   exists and has been observed to fail; the full unit suite passes in
+   docker with no Steam present (automatic, but assert it — that is
+   the fallback rule proven, not assumed).
+8. **The 20-seat match (D-089):** one match, 20 seats filled — at
+   least 3 remote humans over the real internet (not loopback, not
+   LAN), the rest AI — through Steam networking, completing with a
+   decided result or a clean cap. Bandwidth, worst tick and µs/squad
+   quoted **with their counts**, per the standing rule, against
+   D-020's budget and D-042's measured baseline.
+9. **The discrete-GPU number (Q15's armed trigger):** `just
+   bench-render` run on at least one discrete GPU — playtesters'
+   machines finally make this reachable — at ship map size and squad
+   count, adapter name in the output. This settles D-085 criterion
+   11's caveat as a side effect.
+10. **A human plays a full match end-to-end through the Steam-installed
+    build** — install, lobby, match, disconnect/rejoin, finish. The
+    criterion-14 lesson (D-085), applied from day one this time: this
+    is the criterion nothing automated substitutes for, and M8 is
+    "landed, not complete" until it is checked.
+
+**Consequences:** criteria 3, 5 and 6 are wire-protocol work and should
+land early — they are the part every other criterion sits on.
+Criterion 8 is the milestone's headline and its long pole: it needs
+real humans on real networks, which means the private-branch loop
+(criteria 1–2) is the first thing to build, not the last.
+
+**Revisit trigger:** any criterion found unverifiable as written gets
+amended here in the open, not quietly reinterpreted — the D-043
+retroactive-audit lesson.
+
+---
+
 > **Editorial note on D-081 through D-085, added 2026-08-11.** M7's art
 > work landed under decision IDs D-063 through D-067 — but by the time it
 > shipped, those IDs had already been taken by real, unrelated entries
@@ -227,6 +700,116 @@ position for a *simulation* answer rather than a rendering one — the latter
 would mean the discrete/continuous split this decision depends on has leaked.
 
 ---
+### D-087 · 2026-08-14 · Accepted — forests are made of trees: biome-density nodes, 1-minute trees, authored variants, fellings on the wire
+
+**Decision:** Resource nodes stop being a uniform sprinkle of rich markers
+and become terrain-shaped vegetation, with everything downstream of that
+adjusted to match. Six coupled parts:
+
+1. **Placement is a density field, not a stride.** `Economy.generate`
+   rolls each cell against per-biome densities shaped by the SAME
+   moisture field `biome_at` classifies with (`TerrainGen.MOISTURE_DRY` /
+   `MOISTURE_FOREST` are constants now so the two cannot drift): forest
+   cells are 65–98% trees riding moisture, grassland carries groves that
+   thicken toward the forest line plus orchards in the mid-moisture band,
+   dry grassland gets sparse hardy trees and its old gold cadence, and
+   beaches grow the odd palm. The per-cell roll is an FNV hash of the
+   quadrant-local index and the terrain seed (Combat's `_roll_unit`
+   idiom), so placement stays deterministic and inherits map symmetry by
+   construction. Measured on the Standard 84×96 map: **1,920 natural
+   nodes vs ~134 before — 14x** (the goal said "target 15x"), one tree
+   per ~4 cells, total map stock 334k vs ~322k before.
+
+2. **Trees are small and quick; ore stays rich and held.** Per-kind
+   stock: `TREE_STOCK` 105 for wood/food — sized so one shipped gatherer
+   squad (5 × 0.35/s) works a tree out in **~60 s**, pinned against the
+   shipped def by a test (D-066's lesson) — and `RICH_STOCK` 2400 for
+   gold/stone, which keep the "place worth holding" economics (D-039).
+
+3. **Stone moved to the mountain FOOT.** The old generator put stone ON
+   mountain/peak cells, which `passability()` marks unwalkable — every
+   naturally placed stone node was unreachable scenery, and the AI's
+   whole give-up-on-unreachable-nodes mechanism (D-034's amendment) was
+   built against exactly these. A foot cell (walkable, bordering
+   mountain) is reachable by construction; a test now asserts every
+   natural stone node sits on passable ground.
+
+4. **A worked-out tree retargets its crew.** With trees a minute deep a
+   crew retires one per haul cycle; making the player re-issue the order
+   per tree would be micro tax, so `Economy._retarget` walks
+   `TorusSpace.disk_offsets(RETARGET_RADIUS=8)` (nearest-first since
+   D-067) for the closest surviving node of the SAME kind — never
+   substituting kinds, which was the AI's own old bug — and releases the
+   crew if none stands. Deterministic, server-side, replay-safe.
+
+5. **Fellings are a wire event** (`S2C_NODES_DEPLETED`), fog-gated per
+   client exactly as reveals are (D-025's shape): sent when a client that
+   KNOWS the node can SEE the cell — immediately for whoever is standing
+   there, on next sight for a player behind the fog, never for one who
+   never returns, whose client keeps drawing the tree (a building
+   ghost's staleness, D-030). The fresh-node scan skips already-dry
+   nodes, so a late scout is never told a stump is a resource. The
+   client erases the node on receipt (AI targeting and the minimap read
+   `nodes`) and queues the felling for the renderer.
+
+6. **The client draws forests, not markers.** 50 authored tree models —
+   10 species × 5 variants, split from the hand-authored
+   `tree-variants.glb` by the same `split_markers.gd` pipeline (groups
+   discovered, not listed) — are picked per cell by `ResourceVisuals`,
+   a new all-static pure class (the RenderCull/SelectionPick split):
+   species pools follow biome and moisture (wet forest swaps toward
+   willow/cypress), boundary cells borrow a neighbour's pool 35% of the
+   time so treelines fray instead of snapping along the noise threshold,
+   and yaw/scale jitter comes from per-cell hashes. Trees batch into one
+   MultiMesh per (16-cell chunk, model) — thousands of trees cannot be
+   thousands of Node3Ds — with the torus tax paid per CHUNK per frame
+   (D-035). A felled tree leaves its chunk and becomes a short-lived
+   individual instance playing `fall_pose`: an accelerating tip about
+   its base, then a sink; ore sinks without tipping. Trees stand at
+   0.60–0.92 of authored size because the source canopies (~2.5 world
+   units) are wider than a cell and full-size dense forest merged into
+   a single blob on screen.
+
+**Rationale:** The goal was visual (forests that look like forests,
+aligned to the ground, with variety and a felling animation) but the
+honest version demanded economy changes: many small nodes is a different
+resource model from few rich ones, and a felling animation needs the
+client to LEARN of depletion, which nothing on the wire carried — stock
+was deliberately never replicated (D-028). Fog-gating the new event per
+client rather than broadcasting keeps D-025's "you learn what you can
+see" intact for the map itself.
+
+**Rejected alternatives:** Replicating remaining stock per node
+(constantly changing state on the wire for a number the client only needs
+one bit of); client-side depletion inference from gather traffic (bots
+and fog make it unknowable); one MeshInstance3D per tree (the M4 `by_id`
+shape: thousands of scene nodes for things that never individually move);
+per-tree lattice-offset updates (torus tax per tree per frame — paid per
+chunk instead); trees as passability obstacles (a forest you cannot walk
+through changes flow fields and D-007's sharing claim — explicitly out of
+scope); gating the load-test verdict on `nodes_felled > 0` (a felling
+needs hall + crew + 60 s of gathering, so the gate would pin every run to
+~3 minutes — the exact stale-timing trap D-031 set for `test-load 4 40`;
+it is a printed metric instead, asserted by running long and reading it).
+
+**Consequences:** Bots now put produced gatherers to work (they had
+produced and never ORDERED them for two milestones, so the whole haul
+cycle ran under the load test for the first time) and report
+`nodes_felled` in the verdict line. Total map resource dropped ~0% on
+Standard but the map's WOOD is now ~1,438 trees × 105 rather than ~30
+nodes × 2400 — armies chew through a forest front visibly. The
+`_explored` client-side gate on node drawing was removed: the server has
+fog-gated node knowledge since D-061, and double-gating hid nodes
+revealed by an ally's shared vision (D-050). `test_economy`'s density
+guards inverted for trees only (dense woods asserted, scarce ore still
+asserted).
+
+**Revisit trigger:** If gatherer stats change, `TREE_STOCK` must move
+with them (a test pins the ~60 s relationship). If tree counts grow past
+~8k (Huge maps) and chunk rebuilds or the per-node placement pass show up
+in a frame profile, promote placement to a bulk pass. If forests ever
+gain gameplay meaning (concealment, passability), that is a new decision
+— this one is explicitly cosmetic-plus-economy.
 
 ### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
 
@@ -440,6 +1023,28 @@ consistent with what `CLAUDE.md` already said before this entry existed.
 available, to settle the caveat above. Close criterion 14 the next time
 a human plays a match — at that point M7's completeness can be asserted
 rather than argued from a reconstructed criteria list.
+
+**Amendment, 2026-08-14 — criterion 14 discharged; M7 is complete.**
+Human playtests happened on 2026-08-12 and 2026-08-13 — the live sessions
+D-076's own 2026-08-12 amendment documents ("native client, human player"),
+plus the follow-up rounds that produced its fix lists — all with the
+authored models (D-081/D-082) and the D-086 lighting rig active. The owner
+confirmed on 2026-08-14 that these count as "a human plays a match with the
+new art", which is the criterion's actual text. So criterion 14 is closed
+by play, the way this entry's revisit trigger asked for, and **M7 moves
+from landed to complete**.
+
+Two things this amendment does NOT change. Criterion 11's caveat stands:
+every `bench-render` number is still from Intel Iris Xe integrated
+graphics, and the discrete-GPU re-run trigger above stays armed.
+And closing criterion 14 arms D-086's own toon/outline revisit trigger —
+"if playtesting after criterion 14 is discharged says readability at zoom
+is the binding problem" — which is now a live question for future
+playtests rather than a hypothetical. Worth noting the sessions that
+closed this criterion spent their findings on interface and geometry
+defects (see D-076's amendments), not on readability complaints, which is
+weak evidence in polished-low-poly's favour but was not a question anyone
+was asking at the time.
 
 ---
 
@@ -5853,17 +6458,33 @@ items resolved as:
   predicts a discrete GPU changes little and makes *derivation*, not
   fill rate, the thing to watch.
 
-**Blocking M7 / product-level:**
-- **Q3 — Who runs the server?** Dedicated (whose money, per-match cost?),
-  player-hosted (lower unit ceiling), or Steam relay with a host player.
-  Constrains the netcode budget and the business model.
-- **Q5 — Is 20 players a design target or an engineering ceiling?** If a
-  design target, matchmaking, drop-in/drop-out, and AI takeover for
-  disconnects are all in scope and are large.
-- **Q10 — Reconnection and desync recovery policy.**
-- **Q11 — Anti-cheat posture.** Authoritative server (D-002) helps; the
-  leak surfaces are curve horizon clipping (D-003) and client-derived
-  soldier positions (D-006).
+**Blocking M7 / product-level** *(header kept for history — "M7" here
+is the old numbering, when Steam was M7; it is M8 now. All six product
+questions in this block were closed by the M8 planning session,
+2026-08-14, D-087 through D-094)*:
+- ~~**Q3 — Who runs the server?**~~ → **D-088** (2026-08-14):
+  player-hosted first — the host's machine runs the authoritative sim
+  in-process, remote players arrive over Steam relay; official
+  dedicated servers are a later rung and the eventual fix for
+  host-quit and host-trust. The question's premise aged: hosting
+  turned out measured-cheap (~half a core, ~20 KB/s up at 20 players).
+- ~~**Q5 — Is 20 players a design target or an engineering
+  ceiling?**~~ → **D-089** (2026-08-14): a **design target**, by the
+  owner's call. What it obliges: Steam lobby browser + invites (no
+  matchmaking service), AI seat-fill, and drop-in/drop-out via D-090's
+  repossession. The engineering ceiling stays where D-018 put it.
+- ~~**Q10 — Reconnection and desync recovery policy.**~~ → **D-090**
+  (2026-08-14): disconnect hands the seat to an AI immediately (D-051
+  built the right object); reconnection is repossession by SteamID,
+  with no timeout — the AI *is* the grace mechanism; a client-detected
+  desync recovers by drop-and-rejoin through the same path, because
+  D-025's reveal semantics make a fresh join cheap. Supersedes
+  D-033's wipe-on-disconnect for humans.
+- ~~**Q11 — Anti-cheat posture.**~~ → **D-091** (2026-08-14): the
+  architecture is the anti-cheat — server authority plus curve gating;
+  no kernel AC, VAC defaults only. The host under D-088 is trusted,
+  stated plainly; ranked play is explicitly gated on official
+  dedicated servers.
 - ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
   produces it.~~ → **D-081** (2026-08-09; corrected 2026-08-11 — first
   recorded here as `D-064`, then briefly as `D-075`; both IDs collided
@@ -5873,10 +6494,17 @@ items resolved as:
   driving Blender headless as a library, not by hand in the GUI. Tier 2
   is absorbed rather than skipped — parametric composition is how the
   generators are written.
-- **Q13 — Persistence/saves** for long matches on a seamless map.
-- **Q14 — Terminology: what does "seamless" mean here** — no loading
-  screens between regions, or one contiguous map? Implies very different
-  streaming work.
+- ~~**Q13 — Persistence/saves** for long matches on a seamless map.~~
+  → **D-092** (2026-08-14): out of M8, by the owner's call. The need
+  decomposes into reconnection (D-090) and replays (D-016), both of
+  which exist or are specified; true suspend/resume of a multiplayer
+  session waits on a measured reason. Two revisit triggers named in
+  the entry.
+- ~~**Q14 — Terminology: what does "seamless" mean here?**~~ →
+  **D-087** (2026-08-14): one contiguous wrapped map with no loading
+  screens — true by construction since D-008, no streaming work exists
+  anywhere in the plan because none is needed. Closed by writing the
+  definition down.
 - **Q15 — Age/tech progression, and what a 1–2 hour match is made of.**
   **DISCHARGED 2026-08-04 by D-068 through D-074.** The planning
   milestone the owner reserved on 2026-08-02 ran; the text below is kept

@@ -53,9 +53,27 @@ var wallet_updates: int = 0
 var last_notice := ""
 var notices_received: int = 0
 
-## Resource nodes: cell index -> ResourceKind. Sent once at join; the
-## client draws where resources are, never how much is left.
+## Resource nodes: cell index -> ResourceKind. Fog-gated by the server as
+## vision reaches them; the client draws where resources are, never how
+## much is left.
 var nodes := {}
+
+## Nodes the server reported worked out, in arrival order, not yet shown
+## falling. Removal from `nodes` happens immediately on receipt — that is
+## what stops the AI ordering crews at a stump and takes the dot off the
+## minimap — while this queue lets the GUI fell the tree it drew there.
+## Drain with `take_felled()`; a felled cell carries its last known kind,
+## because `nodes` no longer does.
+var felled := []
+
+
+## Fellings not yet animated. Draining hands ownership to the caller; the
+## headless consumers (bots, AI seats) never call this, and the queue is
+## bounded by the map's node count, so it cannot grow without limit.
+func take_felled() -> Array:
+	var out := felled
+	felled = []
+	return out
 
 var buildings := {}
 var buildings_revealed: int = 0
@@ -170,6 +188,11 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+		NetProtocol.S2C_NODES_DEPLETED:
+			for cell in NetProtocol.decode_nodes_depleted(data):
+				if nodes.has(int(cell)):
+					felled.append({"cell": int(cell), "kind": int(nodes[int(cell)])})
+					nodes.erase(int(cell))
 		NetProtocol.S2C_CHAT:
 			_handle_chat(data)
 		NetProtocol.S2C_MAP_SETTINGS:
@@ -853,6 +876,7 @@ func leave_match() -> void:
 	_ghosts.clear()
 	buildings.clear()
 	nodes.clear()
+	felled.clear()
 	wallet = PackedInt32Array()
 
 	server_tick = 0

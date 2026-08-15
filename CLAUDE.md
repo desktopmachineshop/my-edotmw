@@ -359,9 +359,10 @@ runs failed with `buildings_known=0` and identical numbers, and it looked
 exactly like the change under test. A second container held port 4433 and
 the bots were reaching that one — the tell was **server-side
 instrumentation printing nothing at all**, which no code-level bug can
-do. `docker ps` first. Note also that `just down` (and every recipe that
-tears down) will remove containers in the pinned `edotmw` project that
-somebody else started.
+do. `docker ps` first. That incident is why D-095 exists: every checkout
+now derives its own compose project and host port (see the isolation
+section below), so `just down` is scoped to THIS worktree's containers
+and cannot remove anybody else's.
 
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
@@ -395,14 +396,14 @@ run with strictly *less* work reported 146 ms where a fuller run reported
 52 ms, because the host was building containers throughout. Zero dropped
 ticks in both.
 
-**M7 (real models and textures) — in progress.** The ladder gained a
-rung: art is M7 and Steam becomes M8. Exit criteria are **D-085**;
-the work is **D-081** (art direction and pipeline, superseding D-011 and
-closing Q12), **D-082** (animation) and **D-083** (terrain texturing).
-(These were first recorded here as D-063/D-064/D-065/D-066 — IDs that
-collided with unrelated, already-real entries. Corrected 2026-08-11; see
-D-081's editorial note in `game_design_decisions.md` for why.)
-`just test-unit` is green at **424 tests** across 29 scripts.
+**M7 (real models and textures) — complete, as of 2026-08-14.** The
+ladder gained a rung: art is M7 and Steam becomes M8. Exit criteria are
+**D-085**; the work is **D-081** (art direction and pipeline, superseding
+D-011 and closing Q12), **D-082** (animation) and **D-083** (terrain
+texturing). (These were first recorded here as D-063/D-064/D-065/D-066 —
+IDs that collided with unrelated, already-real entries. Corrected
+2026-08-11; see D-081's editorial note in `game_design_decisions.md` for
+why.)
 
 Landed: eight authored unit archetypes and four buildings, animated,
 on textured terrain, all generated from committed Python and rendering
@@ -427,11 +428,38 @@ soldiers)**, against M5's pre-authored-model 35.66 ms / 28 fps on the
 same hardware. Authored VAT models cost **51% more** at full scale than
 the primitive capsules M5 measured. This also discharges Q15's re-armed
 trigger. **Criterion 14 (a human plays a match with the new art) is
-still open** — D-086's own verification was automated (`bench-render`,
-`test-unit`, `test-client`, `gen-terrain-preview`, `test-load`), never a
-played match, consistent with the standing rule against launching the
-game unprompted. Until criterion 14 closes, **M7 is landed, not
-complete** — the same distinction M2 and M6 both had to learn.
+discharged, 2026-08-14** — closed by the live human playtests of
+2026-08-12/13 (see D-076's amendments and D-085's own), confirmed by the
+owner as real matches with the authored models and D-086's lighting on.
+That closes the last open criterion and is what moved M7 from *landed* to
+*complete* — the landed-vs-complete distinction M2 and M6 both had to
+learn, honoured this time. The one caveat that survives: criterion 11's
+numbers are all from integrated graphics, and the discrete-GPU re-run
+trigger in D-085 stays armed.
+
+**Resource nodes are forests now (D-087, 2026-08-14).** Placement is a
+per-biome density field riding the same moisture noise `biome_at`
+classifies with — dense forest hearts, groves thickening toward the
+treeline, orchards mid-moisture, arid trees and palms on dry ground and
+beaches, stone at the mountain FOOT (its old MOUNTAIN-cell placement was
+unreachable scenery; the AI's give-up mechanism existed because of it).
+Standard map: **1,920 natural nodes vs ~134 before (~14x)**. Trees
+(wood/food) carry `TREE_STOCK` 105 — one shipped gatherer crew works one
+out in **~60 s**, pinned by a test against the shipped def — while
+gold/stone keep 2400. A worked-out tree auto-retargets its crew to the
+nearest surviving node of the SAME kind within 8 cells (never
+substituting kinds). Depletion is a fog-gated wire event
+(`S2C_NODES_DEPLETED`): told when the knower can SEE the cell, stale
+ghost-tree otherwise; the client fells it with a tip-and-sink animation.
+Rendering is 50 authored variants (10 species × 5, split from
+`tree-variants.glb` by `split_markers.gd`) picked per cell by
+`resource_visuals.gd` (pure/static — species by biome+moisture, 35%
+boundary borrowing so treelines fray, hash yaw/scale), batched into one
+MultiMesh per (16-cell chunk, model) with the torus tax paid per chunk.
+Bots finally ORDER the gatherers they produce — the haul cycle had never
+run under `test-load`'s wire before — and report `nodes_felled` in the
+verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
+gating would re-set D-031's stale-timing trap).
 
 **D-086 (2026-08-11): the lighting layer M7's art never had.** The
 "low poly vs cartoon vs current" style question turned out to have a
@@ -498,6 +526,84 @@ resolution of Q7 (D-024) satisfies this trivially rather than delicately:
 `alive` is the only formation input a death changes, so casualty
 reassignment needs no per-soldier identity anywhere, and `Formation`
 gained no instance state to support combat.
+
+**Between M7 and M9, three days of playtest-driven work landed (2026-08-11
+to 08-14) that belongs to no numbered milestone.** `just test-unit` is
+green at **563 tests** across 37 scripts (measured 2026-08-14);
+`test-load` clean at **57.88 µs/squad** (4 bots, the usual ~52 squads —
+quote it with the count, as ever). The pieces:
+
+- **Walls, gates, and a walkable wall-top tier (D-076)** — the feature
+  D-069 explicitly fenced out of M9 and said needed its own decision.
+  Chained single-cell buildings, not edges; the wall-top is a second
+  `FlowField` layer with its OWN cell budget (sharing D-040's counter
+  would halve ground-pathing throughput on any tick both run); climbing
+  is one explicit teleport hop through an access tower's door, which is
+  what keeps a squad's tier legal under D-006 (nowhere for a
+  partial-climb value to live). Tier-1 squads fight with their own stats
+  plus a range bonus and can only be hit by tier-1 or ranged attackers.
+  Two standing gaps: **no AI builds or uses walls, so `just ai-ladder`
+  cannot exercise any of this feature**, and the geometry/placement UX
+  is only proven by playing (it lives in `client.gd`, unreachable from
+  GUT).
+- **The playtests that closed M7's criterion 14 also earned their keep in
+  bugs.** The best one: `_finish_build` consumed ANY builder on
+  completion, not just founders — so every gatherer that finished a
+  barracks, tower or wall had been silently vanishing since D-031. The
+  declared-and-unread defect family, in its over-READ variant; nothing
+  fails, the game just quietly loses a rule. Found only by playing.
+- **Sandbox mode (D-077)** for dev testing, structurally unable to leak
+  into a real match; **leave-to-lobby and no-humans-means-no-server
+  (D-075)**; the in-game UI reworked to the reference design; authored
+  models for resource nodes and the wall family; tower upgrades.
+
+**M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
+2026-08-14 and produced **D-087 through D-094**, closing every question
+in the old "Blocking M7 / product-level" block (Q3, Q5, Q10, Q11, Q13,
+Q14). Everything in them is design; no code, no export preset, no
+Steamworks anything exists in the repo. The shape:
+
+- **M8 is Steam-ready, not launched** (D-087). Its output is a private
+  depot branch and a repeatable playtest loop; the public launch waits
+  on M9's content. "Seamless" closed by inspection: one contiguous
+  wrapped map, true by construction since D-008.
+- **Player-hosted first, official dedicated later** (D-088, owner's
+  call). The host runs the authoritative sim **in-process** — the
+  loopback peer D-051's AI clients already use connects the host's own
+  client; remote players arrive over Steam relay. D-042's
+  reliable-ordered contract is a hard requirement on the Steam path.
+  ENet stays for LAN, docker, bots and the whole test estate.
+  Host-quit kills the match and the host is trusted — both accepted
+  with eyes open, both fixed by dedicated-later.
+- **20 players is a design target** (D-089, owner's call): Steam lobby
+  browser + invites, AI seat-fill, drop-in/drop-out. No matchmaking
+  service.
+- **Reconnection is repossession** (D-090): disconnect hands the seat
+  to an AI immediately (no grace-period limbo, no timeout — the AI is
+  the grace mechanism); rejoin reclaims by **SteamID, not connection**
+  (the D-038 ownership-cache lesson); desync recovery is
+  drop-and-rejoin, cheap because D-025's reveal semantics make every
+  join cheap. Supersedes D-033's wipe-on-disconnect for humans.
+- **The server IS the anti-cheat** (D-091): no kernel AC; fog gating
+  means the maphack's memory isn't there. Ranked play is explicitly
+  gated on dedicated servers.
+- **No saves** (D-092): reconnection + replays cover the real need;
+  revisit triggers named.
+- **GodotSteam behind one script** (D-093): D-021 amended by exactly
+  one category (platform integration). One boundary script names
+  Steam, a grep-test enforces it (the D-046-criterion-3 pattern), and
+  absent Steam costs Steam features, never the game — docker and every
+  test recipe stay Steam-less by construction. Still no C#.
+- **Exit criteria are D-094** — ten of them, written before the code.
+  The load-bearing early ones: a protocol **version handshake** (none
+  exists today, and Steam's rolling updates make mixed versions
+  routine) carrying SteamID seat identity, and the export→depot→install
+  loop, since the headline criterion (a 20-seat match with ≥3 real
+  remote humans over the real internet) needs playtesters on installed
+  builds. Criterion 9 finally takes the discrete-GPU `bench-render`
+  number Q15 has been waiting on. Criterion 10 is a human playing
+  end-to-end through the Steam build — the D-085-criterion-14 lesson,
+  applied from day one.
 
 **M9 (epochs, six civs) is PLANNED but NOT BUILT** — the planning
 milestone Q15 reserved ran on 2026-08-04 and produced **D-068 through
@@ -678,6 +784,15 @@ selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
                         ranking that was wrong does not.
+ground_cover.gd          Which decorative props dress a cell (D-100).
+                        Same shape as resource_visuals.gd and the exact
+                        OPPOSITE of what it dresses: cover is client-
+                        derived, NOT fog-gated, and costs nothing on the
+                        wire, because a grass tuft leaks no information.
+                        All-static and pure. A cell holding a node,
+                        building or wall gets none — the caller supplies
+                        that fact rather than the module reading sim
+                        state.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -730,13 +845,30 @@ unit_mesh.gd            Loads authored models, their VATs and their
 /generated/             Committed build output: .glb, VAT .exr, the
                         terrain atlas, and a manifest whose source hash
                         makes a stale build a test failure.
+art/scatter/props.py     The ground-cover props (D-100). Fails its own
+                        build on an inside-out part, a prop tall enough
+                        to hide a soldier, or one that does not sit on
+                        y=0 — the checks a triangle count cannot make.
+                        Props carry real glTF MATERIALS, not vertex
+                        colours: they are drawn from a MultiMesh, and a
+                        MultiMesh overrides COLOR (see art/lib/bake.py).
 model_preview.gd         Renders every authored model, animated, and
                         screenshots it. The picture is the point.
+cover_preview.gd         The same idea for ground cover: every prop, on
+                        generated terrain, with a real squad standing in
+                        it so "cover never hides a unit" is looked at
+                        rather than asserted.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
+instance-id.sh           THE definition of this checkout's dev-instance
+                        identity (D-095): instance name from the git
+                        branch, udp port hashed from it. The justfile
+                        derives its per-worktree compose project, ports
+                        and container names from this — nothing may
+                        re-derive it. See "Multi-agent isolation" below.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         needs a real GPU, and prints which one.
 terrain_preview.gd       Headless terrain preview + chunk profiling.
@@ -816,6 +948,54 @@ Three things bought the hard way, all in one milestone:
   winding, so everything was lit by the inverse of the sun. It was only
   visible once a *building* was big enough to see through. **The check
   that catches this class is a picture of something large.**
+  (`art/scatter/props.py` now fails its own build on a part whose signed
+  volume is negative, which is the same check without waiting for a
+  building — but only for props.)
+- **A colour that crosses an asset pipeline is not the colour that comes
+  out** (D-100). Ground-cover props carry glTF materials rather than
+  vertex colours, because a MultiMesh overrides `COLOR`; Godot's importer
+  then converts `baseColorFactor` linear → sRGB and NOTHING converts it
+  back, so an authored 0.36 rendered as 0.63 and every fern looked
+  frosted beside ground painted with the same numbers. `bake.py`
+  pre-compensates and a test compares the imported material against the
+  authored value in the manifest. Same family as the VAT's silent VRAM
+  compression: **assert the value on the far side of the boundary.**
+
+## Multi-agent isolation (D-095) — HARD RULES
+
+Several agents develop this repo in parallel, each in its own worktree,
+each launching servers and clients for the owner to look at. Every
+checkout is its own **dev instance**: `instance-id.sh` derives an
+instance name from the git branch and a udp port from its hash
+(20000–29999), and the justfile threads them through every compose
+project name, container name, teardown sweep and client `--port`.
+`just instance` prints this worktree's identity.
+
+The rules, none of which need remembering because the recipes enforce
+them — but which must not be undone:
+
+- **Start and stop instances only through the just recipes, from your
+  own worktree.** They are scoped so you structurally cannot touch
+  another agent's containers. Never `docker rm`/`docker stop` by hand
+  against anything outside your own `edotmw-<instance>` project, and
+  never kill a GUI client process you did not start.
+- **Never hardcode the shared literals back in** — `-p edotmw`, a fixed
+  container `--name`, a `4433` host port or `--port=4433` in a recipe.
+  `tests/test_multi_agent_isolation.gd` fails if they reappear. The
+  in-container port is still 4433 by design; only the HOST side is
+  per-instance.
+- **Crossing instances is the owner's explicit call, never a default.**
+  `EDOTMW_INSTANCE`/`EDOTMW_PORT` override the derivation when two
+  checkouts should deliberately share; do not set them on your own
+  initiative.
+- **The client's title bar names its instance** (`eDotMW —
+  claude-<session>  [host:port]`), which is how the owner tells several
+  test windows apart. Launch clients only through the recipes so the
+  `--instance` flag is always passed.
+- **An agent's quick launch is the dev build:** `just quick-test`
+  resolves `SANDBOX=auto` to on for `claude-*` instances (D-077's
+  sandbox mode, cheats panel included) and off for the owner's own
+  checkout. Pass `SANDBOX=0/1` to override either way.
 
 ## Testing — use the justfile, and use it before claiming something works
 
@@ -853,8 +1033,8 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 492 tests across
-  33 scripts, measured 2026-08-11)*
+- `just test-unit` — GUT unit tests, headless *(green: 563 tests across
+  37 scripts, measured 2026-08-14)*
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on
@@ -876,6 +1056,14 @@ Dev loop and tests:
   needs no GPU. It renders TWICE and fails if the two frames are
   byte-identical — a frozen VAT would otherwise produce a perfectly
   plausible still. **Look at `artifacts/models-godot.png`.**
+- `just gen-cover-preview [SECONDS]` — ground cover (D-100) on generated
+  terrain, through the REAL path (`GroundCover`, `UnitMesh`, one MultiMesh
+  per model), with a real squad standing in it. Software-rasterised, no
+  GPU. Fails if nothing was drawn or if a palette names a model that did
+  not load. **Look at `artifacts/cover-godot.png`** — every prop colour in
+  `art/scatter/props.py` was chosen off that picture, because a prop's
+  near-vertical geometry renders a good deal darker than ground painted
+  with the same number.
 
 Every recipe listed is real and verified; none are stubs.
 

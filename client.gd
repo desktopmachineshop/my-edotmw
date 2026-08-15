@@ -238,6 +238,17 @@ func _ready() -> void:
 		default_address = DEFAULT_SERVER_ADDRESS
 	var address := String(args.get("address", default_address))
 	var port := int(args.get("port", DEFAULT_SERVER_PORT))
+	# Which dev instance (agent worktree / branch) launched this client
+	# (D-095). Several agents run servers and clients on one desktop in
+	# parallel, so the title bar names the instance and the endpoint —
+	# otherwise two identical windows are only tellable apart by clicking
+	# around in them, and the human tests the wrong agent's build.
+	var instance := String(args.get("instance", ""))
+	var window_title := "eDotMW"
+	if instance != "":
+		window_title += " — %s" % instance
+	window_title += "  [%s:%d]" % [address, port]
+	get_window().title = window_title
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
@@ -481,6 +492,7 @@ func _build_terrain() -> void:
 	# constructing a default TerrainGen — an implicit contract that could
 	# not survive terrain becoming tunable.
 	var terrain := _state.terrain_from_settings()
+	_terrain_gen = terrain
 	var chunk_size := 16
 	var grid := TerrainChunk.chunk_grid(space, chunk_size)
 
@@ -2063,11 +2075,45 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 	return minf(stated + elapsed / build_time, 0.99)
 
 
-var _node_meshes := {}
-## cell -> bool, whether that cell's marker is the authored model (as
-## opposed to the primitive fallback) — decides whether `_refresh_resource_nodes`
-## needs the primitive's centre-to-base lift.
-var _node_authored := {}
+# --- resource nodes as forests --------------------------------------
+
+## Cells per side of a tree chunk. With trees at roughly one per four
+## cells (Economy's forest densities), one MeshInstance3D per tree would
+## put thousands of Node3Ds in the scene — so trees batch into one
+## MultiMesh per (chunk, model) instead, the same instancing idea
+## PrimitiveUnit uses per squad (D-009), chunked so Godot's frustum
+## culling still discards the forests behind the camera.
+const NODE_CHUNK := 16
+
+## chunk key (cell region) -> { "root": Node3D, "centre": Vector3,
+##   "multis": {model_id: MultiMeshInstance3D},
+##   "cells": {cell: {"model": StringName, "xform": Transform3D}},
+##   "dirty": bool }
+## The root is repositioned every frame to the lattice copy nearest the
+## camera (D-035) — per CHUNK, not per tree, which is what keeps the
+## torus tax off the per-tree path.
+var _tree_chunks := {}
+
+## cell -> {"chunk": Vector2i, "world": Vector3, "model": StringName,
+## "kind": int} — the reverse index the click test and the felling read.
+var _node_placed := {}
+
+## Fellings mid-animation: {"node": MeshInstance3D, "kind": int,
+## "cell": int, "age": float, "base": Transform3D}. A felled tree leaves
+## its chunk's MultiMesh and becomes a short-lived individual instance —
+## the one moment a tree is worth a node of its own.
+var _fallings := []
+
+## kind -> the primitive stand-in mesh used when the art build is missing
+## (model_id resolves to no file). Cached: one mesh per kind serves every
+## such node through the MultiMesh path.
+var _node_fallback_meshes := {}
+
+## The generator the terrain meshes were built from, kept so tree species
+## can follow the same ground (ResourceVisuals reads biome and moisture
+## from it). Same instance, so the dressing cannot disagree with the
+## drawn terrain.
+var _terrain_gen: TerrainGen = null
 
 ## Per-soldier render easing (D-059). Client-only, one-way, never read
 ## back by anything authoritative — see soldier_motion.gd's header for
@@ -2645,107 +2691,210 @@ func _lattice_offset_for(world: Vector3) -> Vector3:
 	return RenderCull.nearest_offset(offsets, world, _camera_target)
 
 
-## Draw resource nodes IN THE WORLD, not only on the minimap.
+## Draw resource nodes IN THE WORLD as forests — many small trees whose
+## species follow the ground (ResourceVisuals), batched into chunked
+## MultiMeshes, felled with a tip-and-sink when the server reports a node
+## worked out.
 ##
-## They were minimap pixels and nothing else, so on the actual map there
-## was no way to tell a forest cell from any other grass — a player was
-## asked to send gatherers somewhere they could not see. Reported from a
-## real game as "it's impossible to see the resource nodes", which it was.
+## Fog gating lives on the SERVER now (D-061's `_send_visible_nodes`):
+## everything in `_state.nodes` was earned by vision, so there is no
+## client-side `_explored` check here — the old one predated the server
+## gate, and double-gating hid nodes revealed by an ally's vision (D-050)
+## that this player's own units had never walked to.
 ##
-## Colour comes from the same `_node_colour` the minimap uses, so the two
-## views cannot disagree about what a node is. Drawn as a squat marker
-## rather than anything clever: the mesh pipeline is still at its
-## primitive tier (D-011) and jumping ahead of that is explicitly out of
-## bounds.
-##
-## Gated on `_explored`, exactly as the minimap is.
-##
-## The first version was not, and the capture frame showed every node on
-## the map including ground this player had never walked — a fog leak, and
-## a worse one than it looks: the minimap deliberately hides those, so the
-## two views disagreed about what the player was allowed to know. "Fog
-## governs what you know about the map, and that includes what is on it"
-## is the minimap's own comment, and it applies identically here.
-##
-## Once explored, a node stays drawn. That matches the minimap and matches
-## buildings (D-030's persistent-explored): you remember where the forest
-## was after you walk away from it.
+## Once known, a node stays drawn until reported felled — the minimap's
+## persistent-explored rule (D-030). A known node felled OUT of sight
+## stays standing here, deliberately: the server withholds the felling
+## until this player can see the cell, the same staleness a building
+## ghost has.
 func _refresh_resource_nodes() -> void:
 	if _state.space == null:
 		return
 
-	for cell in _state.nodes:
-		if not _explored.has(cell):
+	# Fellings first: the felled cell leaves its chunk in the same frame
+	# the wire said so, whether or not anything new arrived.
+	for felled in _state.take_felled():
+		_begin_felling(felled)
+
+	# Place nodes the server newly revealed. Additions only — the diff is
+	# cheap because both sides shrink together on a felling.
+	if _state.nodes.size() != _node_placed.size():
+		for cell in _state.nodes:
+			if not _node_placed.has(cell):
+				_place_node(int(cell), int(_state.nodes[cell]))
+
+	# Rebuild only chunks whose membership changed, then swing every chunk
+	# to its lattice copy — per chunk, never per tree (D-035's tax, paid
+	# wholesale).
+	for key in _tree_chunks:
+		var chunk: Dictionary = _tree_chunks[key]
+		if bool(chunk["dirty"]):
+			_rebuild_tree_chunk(chunk)
+		(chunk["root"] as Node3D).position = _lattice_offset_for(chunk["centre"])
+
+	_advance_fallings()
+
+
+## One node enters the world: pick its model from the ground it stands on,
+## pose it, and file it in its chunk.
+func _place_node(cell: int, kind: int) -> void:
+	var space := _state.space
+	var coord := space.from_index(cell)
+	var world := space.to_world(coord)
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+
+	var model := _node_model_for(cell, coord, kind)
+	# The authored models are grounded at y=0 (split_markers bakes them
+	# so); the primitive fallback is a centred cylinder and needs lifting
+	# onto its base.
+	var lift := 0.0 if UnitMesh.mesh_for(model) != null else 0.75
+	var basis := Basis(Vector3.UP, ResourceVisuals.yaw_for(cell)) \
+		.scaled(Vector3.ONE * ResourceVisuals.scale_for(cell))
+	var xform := Transform3D(basis, world + Vector3(0.0, lift, 0.0))
+
+	var key := Vector2i(coord.x / NODE_CHUNK, coord.y / NODE_CHUNK)
+	var chunk: Dictionary = _tree_chunks.get(key, {})
+	if chunk.is_empty():
+		var root := Node3D.new()
+		add_child(root)
+		var centre_cell := Vector2i(key.x * NODE_CHUNK + NODE_CHUNK / 2,
+			key.y * NODE_CHUNK + NODE_CHUNK / 2)
+		chunk = {"root": root, "centre": space.to_world(centre_cell),
+			"multis": {}, "cells": {}, "dirty": true}
+		_tree_chunks[key] = chunk
+	chunk["cells"][cell] = {"model": model, "xform": xform}
+	chunk["dirty"] = true
+	_node_placed[cell] = {"chunk": key, "world": world, "model": model, "kind": kind}
+
+
+## The model a node wears — species from the same TerrainGen the ground
+## was meshed from, so a desert grows arid types and a treeline frays into
+## its neighbour region's species (ResourceVisuals's job; this is just the
+## plumbing that feeds it terrain samples).
+func _node_model_for(cell: int, coord: Vector2i, kind: int) -> StringName:
+	var biome := TerrainGen.Biome.GRASSLAND
+	var moisture := 0.5
+	var neighbours := []
+	if _terrain_gen != null:
+		biome = _terrain_gen.biome_at(_state.space, coord)
+		moisture = _terrain_gen.moisture_at(_state.space, coord)
+		for neighbour in _state.space.neighbors(coord):
+			neighbours.append(_terrain_gen.biome_at(_state.space, neighbour))
+	return ResourceVisuals.model_for(kind, biome, neighbours, moisture, cell)
+
+
+## The mesh behind a model id, or the per-kind primitive stand-in when the
+## art build is missing. The stand-in keeps the old marker's readability
+## rules: node colour from the same table as the minimap, slight emission
+## so it reads against similar-hued terrain.
+func _node_mesh_for(model: StringName, kind: int) -> Mesh:
+	var authored: Mesh = UnitMesh.mesh_for(model)
+	if authored != null:
+		return authored
+	var cached: Mesh = _node_fallback_meshes.get(kind, null)
+	if cached != null:
+		return cached
+	var primitive := CylinderMesh.new()
+	primitive.top_radius = 0.7
+	primitive.bottom_radius = 1.05
+	primitive.height = 1.5
+	var material := StandardMaterial3D.new()
+	material.albedo_color = _node_colour(kind)
+	material.roughness = 0.75
+	material.emission_enabled = true
+	material.emission = material.albedo_color * 0.35
+	primitive.material = material
+	_node_fallback_meshes[kind] = primitive
+	return primitive
+
+
+## Repack one chunk's trees into its MultiMeshes: one per model actually
+## present, instance transforms straight from the placement table. Runs
+## only when membership changed (a reveal or a felling), so a settled
+## forest costs nothing here.
+func _rebuild_tree_chunk(chunk: Dictionary) -> void:
+	var groups := {}
+	for cell in chunk["cells"]:
+		var entry: Dictionary = chunk["cells"][cell]
+		var model: StringName = entry["model"]
+		if not groups.has(model):
+			groups[model] = []
+		groups[model].append(entry["xform"])
+
+	var multis: Dictionary = chunk["multis"]
+	for model in multis.keys():
+		if not groups.has(model):
+			(multis[model] as MultiMeshInstance3D).queue_free()
+			multis.erase(model)
+
+	for model in groups:
+		var instance: MultiMeshInstance3D = multis.get(model, null)
+		if instance == null:
+			instance = MultiMeshInstance3D.new()
+			var multimesh := MultiMesh.new()
+			multimesh.transform_format = MultiMesh.TRANSFORM_3D
+			var kind := Economy.ResourceKind.WOOD
+			for cell in chunk["cells"]:
+				if chunk["cells"][cell]["model"] == model:
+					kind = int(_node_placed[cell]["kind"])
+					break
+			multimesh.mesh = _node_mesh_for(model, kind)
+			instance.multimesh = multimesh
+			(chunk["root"] as Node3D).add_child(instance)
+			multis[model] = instance
+		var transforms: Array = groups[model]
+		instance.multimesh.instance_count = transforms.size()
+		for i in range(transforms.size()):
+			instance.multimesh.set_instance_transform(i, transforms[i])
+	chunk["dirty"] = false
+
+
+## A node the server reported worked out: pull it from its chunk and stand
+## up a short-lived individual instance to play the fall.
+func _begin_felling(felled: Dictionary) -> void:
+	var cell := int(felled["cell"])
+	var placed: Dictionary = _node_placed.get(cell, {})
+	if placed.is_empty():
+		return  # never drawn (revealed and felled between frames)
+	_node_placed.erase(cell)
+
+	var chunk: Dictionary = _tree_chunks.get(placed["chunk"], {})
+	var xform := Transform3D()
+	if not chunk.is_empty() and chunk["cells"].has(cell):
+		xform = chunk["cells"][cell]["xform"]
+		chunk["cells"].erase(cell)
+		chunk["dirty"] = true
+
+	var kind := int(felled["kind"])
+	var instance := MeshInstance3D.new()
+	instance.mesh = _node_mesh_for(placed["model"], kind)
+	add_child(instance)
+	_fallings.append({"node": instance, "kind": kind, "cell": cell,
+		"age": 0.0, "base": xform})
+
+
+## Advance every mid-animation felling: trees tip about their base with an
+## accelerating crash, then sink; ore just sinks. Pure pose math lives in
+## ResourceVisuals.fall_pose, so this is only scene-tree application.
+func _advance_fallings() -> void:
+	if _fallings.is_empty():
+		return
+	var kept := []
+	for fall in _fallings:
+		fall["age"] = float(fall["age"]) + _frame_delta
+		var pose: Dictionary = ResourceVisuals.fall_pose(int(fall["kind"]), float(fall["age"]))
+		if bool(pose["done"]):
+			(fall["node"] as MeshInstance3D).queue_free()
 			continue
-		var marker: MeshInstance3D = _node_meshes.get(cell, null)
-		if marker == null:
-			var kind := int(_state.nodes[cell])
-			var mesh: Mesh = UnitMesh.mesh_for(_node_model_id(kind))
-			var authored := mesh != null
-			if authored:
-				# Authored (art/resources, D-028's markers): the mesh carries
-				# its own real per-part materials (bark, leaves, ore, stone —
-				# see art/resources/split_markers.gd), unlike a building's
-				# single vertex-coloured material, so no material_override
-				# here would just mean "no owner tint", which is correct —
-				# a resource node belongs to no player.
-				marker = MeshInstance3D.new()
-				marker.mesh = mesh
-			else:
-				# Fallback: the art build hasn't run, or the model failed to
-				# load. Big enough to see across a map and to aim at — these
-				# were noticeably smaller, which made them both easy to miss
-				# when scanning for somewhere to send workers and fiddly to
-				# click.
-				var primitive := CylinderMesh.new()
-				primitive.top_radius = 0.7
-				primitive.bottom_radius = 1.05
-				primitive.height = 1.5
-				var material := StandardMaterial3D.new()
-				material.albedo_color = _node_colour(kind)
-				material.roughness = 0.75
-				# Slight glow so a node reads against terrain of a similar
-				# hue — food pink over sand was the worst case.
-				material.emission_enabled = true
-				material.emission = material.albedo_color * 0.35
-				marker = MeshInstance3D.new()
-				marker.mesh = primitive
-				marker.material_override = material
-			_node_meshes[cell] = marker
-			_node_authored[cell] = authored
-			add_child(marker)
-			# A resource node has no `facing` at all — nothing mechanical
-			# reads its orientation — so it gets a free cosmetic yaw with no
-			# exclusion, unlike a building's wall/tower carve-out.
-			marker.rotation.y = PlacementJitter.yaw(int(cell))
-
-		var world := _state.space.to_world(_state.space.from_index(int(cell)))
-		world += PlacementJitter.position_offset(int(cell),
-			_state.space.hex_size * RESOURCE_NODE_JITTER_FRACTION)
-		if _state.terrain_sampler.is_valid():
-			world.y = _state.terrain_sampler.call(world.x, world.z)
-		# The authored models are already grounded at y=0 in their own
-		# space (art/resources/split_markers.gd bakes every part relative to
-		# that origin); only the primitive fallback's centred cylinder needs
-		# lifting so its BASE sits on the terrain rather than its middle.
-		if not bool(_node_authored.get(cell, false)):
-			world.y += 0.75
-		marker.position = world + _lattice_offset_for(world)
-
-
-## Resource kind -> authored model_id (art/resources/split_markers.gd's
-## output names). Mirrors `_node_colour`'s match so the two cannot disagree
-## about which kind is which.
-func _node_model_id(kind: int) -> StringName:
-	match kind:
-		Economy.ResourceKind.FOOD:
-			return &"resource_food"
-		Economy.ResourceKind.WOOD:
-			return &"resource_wood"
-		Economy.ResourceKind.GOLD:
-			return &"resource_gold"
-		_:
-			return &"resource_stone"
+		var base: Transform3D = fall["base"]
+		var tip := Basis(ResourceVisuals.tip_axis_for(int(fall["cell"])),
+			float(pose["angle"]))
+		var origin := base.origin + Vector3(0.0, -float(pose["sink"]), 0.0)
+		(fall["node"] as MeshInstance3D).transform = Transform3D(
+			tip * base.basis, origin + _lattice_offset_for(base.origin))
+		kept.append(fall)
+	_fallings = kept
 
 
 ## The placeholder mesh for a building whose authored model is missing.
@@ -5786,26 +5935,24 @@ func _gather_selected() -> void:
 ## hitbox feeling tiny, which it was — one cell.
 ##
 ## Same screen-distance test as enemies and squads, so everything on the
-## map is clicked the same way, and against the DRAWN marker position so a
+## map is clicked the same way, and against the DRAWN position — the
+## placement table plus the same lattice offset the chunks use — so a
 ## node past the seam is clickable where it appears (D-035).
 ##
-## Only explored nodes: fog governs what you know about the map, and that
-## includes what is on it (D-004).
+## Only known nodes can be here at all: the server fog-gates what
+## `_state.nodes` (and so `_node_placed`) ever learns (D-061).
 func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 	if _state.space == null:
 		return Vector2i(-1, -1)
 
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
-	for cell in _state.nodes:
-		if not _explored.has(cell):
+	for cell in _node_placed:
+		var world: Vector3 = _node_placed[cell]["world"]
+		var drawn := world + _lattice_offset_for(world)
+		if _camera.is_position_behind(drawn):
 			continue
-		var marker: MeshInstance3D = _node_meshes.get(cell, null)
-		if marker == null or not marker.visible:
-			continue
-		if _camera.is_position_behind(marker.position):
-			continue
-		var distance := _camera.unproject_position(marker.position).distance_to(screen_position)
+		var distance := _camera.unproject_position(drawn).distance_to(screen_position)
 		if distance < best_distance:
 			best_distance = distance
 			best = _state.space.from_index(int(cell))
@@ -6359,8 +6506,15 @@ func _teardown_match() -> void:
 	_free_nodes(_building_nodes)
 	_free_nodes(_wall_joint_nodes)
 	_free_nodes(_health_bars)
-	_free_nodes(_node_meshes)
-	_node_authored.clear()
+	# Tree chunks: freeing each chunk root takes its MultiMeshes with it.
+	for key in _tree_chunks:
+		(_tree_chunks[key]["root"] as Node3D).queue_free()
+	_tree_chunks.clear()
+	_node_placed.clear()
+	for fall in _fallings:
+		(fall["node"] as MeshInstance3D).queue_free()
+	_fallings.clear()
+	_terrain_gen = null
 	_free_nodes(_selection_discs)
 	_free_nodes(_progress_anchor)
 	_free_nodes(_queue_anchor)

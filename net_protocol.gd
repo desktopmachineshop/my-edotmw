@@ -65,6 +65,7 @@ const C2S_CHEAT_SPAWN_BUILDING := 32
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
 const S2C_NODES := 17
+const S2C_NODES_DEPLETED := 33
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -461,6 +462,37 @@ static func decode_nodes(data: PackedByteArray) -> Array:
 	var out := []
 	for i in range(count):
 		out.append({"cell": buf.get_u32(), "kind": buf.get_u8()})
+	return out
+
+
+## NODES_DEPLETED: these nodes ran dry — the client fells the trees it
+## drew there and stops offering them as gather targets.
+##
+## Its own message rather than a field on S2C_NODES because the two travel
+## in opposite directions of knowledge: NODES tells you something exists,
+## this tells you it no longer does. Sent only for nodes the receiving
+## player KNOWS (was ever sent) and can currently SEE — a felling behind
+## the fog is news you have not earned, exactly the reasoning that keeps a
+## concealed squad a ghost (D-025). A known-but-unseen node therefore
+## stays standing on that client until it next sees the cell, the same
+## staleness a building ghost has (D-030).
+static func encode_nodes_depleted(cells: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NODES_DEPLETED)
+	buf.put_u32(cells.size())
+	for cell in cells:
+		buf.put_u32(int(cell))
+	return buf.data_array
+
+
+static func decode_nodes_depleted(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		out.append(buf.get_u32())
 	return out
 
 

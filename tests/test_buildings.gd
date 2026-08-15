@@ -1099,8 +1099,12 @@ func test_a_resource_node_is_ground_you_cannot_build_on() -> void:
 		"setup: with no economy attached this ground should be free")
 
 	var economy := Economy.new(space)
+	# `stock_for(kind)`, not a single NODE_STOCK constant: stock is per-kind
+	# since forests became many small trees rather than one rich marker, so
+	# this seeds the node the same way `Economy` itself does.
 	economy.nodes[space.index(wood_cell)] = {
-		"kind": Economy.ResourceKind.WOOD, "remaining": Economy.NODE_STOCK,
+		"kind": Economy.ResourceKind.WOOD,
+		"remaining": Economy.stock_for(Economy.ResourceKind.WOOD),
 	}
 	server._economy = economy
 
