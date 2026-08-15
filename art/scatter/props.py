@@ -1,6 +1,6 @@
 """Ground-cover props: the small stuff between the forests (D-100).
 
-Seventeen low-poly clumps — ferns, tufts, mushrooms, driftwood, scree — built
+Eighteen low-poly clumps — ferns, tufts, mushrooms, driftwood, scree — built
 from the same two primitives every other model in this project uses
 (`art/lib/geom.py`), baked to `generated/models/prop_*.glb` by `art/build.py`.
 `GroundCover` (ground_cover.gd) decides which of them a cell wears.
@@ -29,8 +29,8 @@ nothing failed, because a small convex object under back-face culling has an
 identical silhouette either way — only the LIGHTING was inverted (see the note
 at the top of `geom.py`). Props are small convex objects, which is exactly the
 shape that hides it, and there will be dozens of thousands of them. So
-`build()` computes each part's signed volume and fails the build if any part
-is inside-out: outward-wound closed geometry has positive volume by the
+`validate()` computes each part's signed volume and fails the build if any
+part is inside-out: outward-wound closed geometry has positive volume by the
 divergence theorem. Rotations preserve winding; MIRRORING does not, which is
 why nothing here is built by negating a coordinate.
 """
@@ -290,7 +290,9 @@ def _shell() -> Model:
     shell = rotate_geometry(
         prism(0.075, 0.05, sides=5, centre=(0.0, 0.025, 0.0), taper=0.15),
         "x", 0.5)
-    m.add("shell", _at(shell, 0.0, 0.015, 0.0), rgb=SHELL)
+    # `_grounded`, not a hand-tuned lift: tilting a prism swings its rim below
+    # y=0 and the exact amount is a trig accident nobody should be maintaining.
+    m.add("shell", _grounded(shell), rgb=SHELL)
     m.add("chip", prism(0.04, 0.02, sides=5, centre=(0.09, 0.01, -0.05), taper=0.3),
           rgb=SAND)
     return m
@@ -391,18 +393,57 @@ ROSTER: dict[str, PropSpec] = {
 }
 
 
-def validate(name: str, model: Model) -> dict:
+## How far `settle` may move a model before that stops being a rounding fix
+## and starts being a mis-authored prop. Blades rotate about their own base
+## and dip a few millimetres doing it; anything past this is somebody having
+## built a prop floating in the air or sunk into the ground, and the settle
+## would hide it perfectly.
+SETTLE_TOLERANCE = 0.02
+
+
+def settle(model: Model) -> float:
+    """Drop the model until its lowest vertex sits on y=0. Returns the shift.
+
+    Applied to the WHOLE model, never per part — settling a mushroom's cap
+    separately would push it down through its own stem.
+
+    `GroundCover` places a prop at the terrain height sampled under it, so
+    "the model's lowest point is its footing" is the contract between this
+    file and that one, and a prop authored 5 mm high hovers over the whole
+    map. The shift is returned rather than swallowed so `validate` can judge
+    it: see SETTLE_TOLERANCE.
+    """
+    lowest = min(v[1] for part in model.parts for v in part.verts)
+    if lowest != 0.0:
+        for part in model.parts:
+            part.verts = [(v[0], v[1] - lowest, v[2]) for v in part.verts]
+    return lowest
+
+
+def validate(name: str, model: Model, settled_by: float) -> dict:
     """Fail the build on anything a picture would only find later.
 
-    Three gates, each of which has actually gone wrong in this repo or is one
-    step away from it: inside-out winding (a whole milestone, silently),
-    a prop tall enough to hide a soldier (D-045's readability rule, and the
-    reason cover is allowed to exist at all), and a prop floating above or
-    sunk below the ground it is placed on.
+    Four gates, each of which has actually gone wrong in this repo or is one
+    step away from it: inside-out winding (a whole milestone, silently), a
+    prop tall enough to hide a soldier (D-045's readability rule, and the
+    reason cover is allowed to exist at all), a prop too short to see, and a
+    prop authored well off the ground.
+
+    ## Why the last one is phrased against `settled_by`
+
+    It used to assert that the model's lowest vertex was not below y=0 — on a
+    model `settle` had just moved onto y=0. It could not fail, and a check
+    that cannot fail is worse than no check: its silence reads as evidence
+    (M1 spent a whole milestone on a log scan for a word no code path ever
+    printed, and the D-095 stray-server incident was diagnosed by noticing
+    that instrumentation had gone quiet). The property that is NOT guaranteed
+    is that the settle was a small correction, so that is what is asserted;
+    the caller must hand over what the settle actually moved.
 
     Returns the bounds the manifest records, so the GDScript side can assert
-    the same height rule against the SHIPPED numbers rather than trusting
-    this to have run.
+    the same rules against the SHIPPED numbers rather than trusting this to
+    have run — including that the exported mesh really does sit on y=0, which
+    is the cross-boundary version of the check deleted above.
     """
     for part in model.parts:
         volume = _signed_volume(part.verts, part.faces)
@@ -413,16 +454,19 @@ def validate(name: str, model: Model) -> dict:
                 f"it would be lit by the inverse of the sun — the defect that "
                 f"hid for a whole milestone in geom.box (D-081).")
 
+    if abs(settled_by) > SETTLE_TOLERANCE:
+        raise SystemExit(
+            f"{name}: authored {settled_by:+.3f} off the ground, past the "
+            f"{SETTLE_TOLERANCE} settle tolerance. Props are placed ON the "
+            f"sampled terrain, so build it standing on y=0 rather than letting "
+            f"`settle` quietly move it.")
+
     ys = [v[1] for part in model.parts for v in part.verts]
     low, high = min(ys), max(ys)
     if high > MAX_HEIGHT:
         raise SystemExit(
             f"{name}: {high:.3f} units tall exceeds MAX_HEIGHT {MAX_HEIGHT} — "
             f"ground cover must never hide a soldier (D-045, D-100).")
-    if low < -0.01:
-        raise SystemExit(
-            f"{name}: reaches {low:.3f} below its base. Props are placed ON the "
-            f"sampled ground, so anything below y=0 is buried.")
     if high < 0.05:
         raise SystemExit(f"{name}: {high:.3f} units tall is invisible at play distance.")
 
@@ -432,21 +476,16 @@ def validate(name: str, model: Model) -> dict:
             f"{name}: {tris} triangles exceeds the {TRIANGLE_BUDGET} prop budget. "
             f"Tens of thousands of these are drawn at once (D-100).")
 
-    return {"height": round(high, 6), "base": round(low, 6)}
+    return {"height": round(high, 6), "base": round(low, 6),
+            "settled_by": round(settled_by, 6)}
 
 
 def build(name: str) -> Model:
-    """Build one prop by name. Pure — no seeds, no clock, no globals.
+    """Build one prop by name, AS AUTHORED. Pure — no seeds, no clock.
 
-    The assembled model is settled onto y=0 as a whole (never per part, which
-    would push a mushroom cap down through its own stem). `GroundCover` places
-    a prop at the terrain height sampled at its own offset, so "the model's
-    lowest point is its footing" is the contract between this file and that
-    one — a prop authored 5 mm high hovers over the whole map.
+    Deliberately does not settle the result: `build.py` settles and then
+    validates, so the settle is a step with a visible output rather than
+    something that happens on the way out of here and makes the check that
+    follows it vacuous.
     """
-    model = ROSTER[name].build()
-    lowest = min(v[1] for part in model.parts for v in part.verts)
-    if lowest != 0.0:
-        for part in model.parts:
-            part.verts = [(v[0], v[1] - lowest, v[2]) for v in part.verts]
-    return model
+    return ROSTER[name].build()

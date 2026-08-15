@@ -65,6 +65,7 @@
       "materials": 2,
       "model": "generated/models/prop_boulder.glb",
       "note": "the occasional bare rock; open and high ground",
+      "settled_by": 0.0,
       "triangles": 44,
       "vertices": 26
     },
@@ -86,6 +87,7 @@
       "materials": 2,
       "model": "generated/models/prop_bush.glb",
       "note": "small shrub; forest floor and grassland alike",
+      "settled_by": 0.0,
       "triangles": 36,
       "vertices": 24
     },
@@ -102,6 +104,7 @@
       "materials": 1,
       "model": "generated/models/prop_cactus.glb",
       "note": "arid marker, matches the acacia/saguaro trees",
+      "settled_by": 0.0,
       "triangles": 48,
       "vertices": 30
     },
@@ -123,6 +126,7 @@
       "materials": 2,
       "model": "generated/models/prop_cracked_slab.glb",
       "note": "sun-cracked stone on dry ground",
+      "settled_by": 0.0,
       "triangles": 24,
       "vertices": 16
     },
@@ -144,6 +148,7 @@
       "materials": 2,
       "model": "generated/models/prop_driftwood.glb",
       "note": "beach flotsam",
+      "settled_by": 0.000454,
       "triangles": 24,
       "vertices": 16
     },
@@ -165,6 +170,7 @@
       "materials": 2,
       "model": "generated/models/prop_dry_tussock.glb",
       "note": "sparse dry grass",
+      "settled_by": 0.0,
       "triangles": 68,
       "vertices": 44
     },
@@ -181,6 +187,7 @@
       "materials": 1,
       "model": "generated/models/prop_dune_grass.glb",
       "note": "marram grass above the waterline",
+      "settled_by": 0.0,
       "triangles": 48,
       "vertices": 32
     },
@@ -202,6 +209,7 @@
       "materials": 2,
       "model": "generated/models/prop_fern.glb",
       "note": "forest undergrowth",
+      "settled_by": 0.0,
       "triangles": 68,
       "vertices": 44
     },
@@ -218,6 +226,7 @@
       "materials": 1,
       "model": "generated/models/prop_grass_tuft.glb",
       "note": "pasture grass; the grassland staple",
+      "settled_by": 0.0,
       "triangles": 48,
       "vertices": 32
     },
@@ -244,6 +253,7 @@
       "materials": 3,
       "model": "generated/models/prop_log.glb",
       "note": "fallen trunk; says the forest is old",
+      "settled_by": 0.005,
       "triangles": 36,
       "vertices": 24
     },
@@ -265,6 +275,7 @@
       "materials": 2,
       "model": "generated/models/prop_moss_rock.glb",
       "note": "mossy rock; forest floor",
+      "settled_by": 0.0,
       "triangles": 36,
       "vertices": 22
     },
@@ -286,6 +297,7 @@
       "materials": 2,
       "model": "generated/models/prop_mushrooms.glb",
       "note": "damp forest floor detail",
+      "settled_by": 0.0,
       "triangles": 64,
       "vertices": 40
     },
@@ -302,6 +314,7 @@
       "materials": 1,
       "model": "generated/models/prop_reeds.glb",
       "note": "waterline reeds on the beach side",
+      "settled_by": 0.0,
       "triangles": 60,
       "vertices": 40
     },
@@ -323,6 +336,7 @@
       "materials": 2,
       "model": "generated/models/prop_rock_spike.glb",
       "note": "angular outcrop; mountain",
+      "settled_by": 0.0,
       "triangles": 40,
       "vertices": 24
     },
@@ -344,6 +358,7 @@
       "materials": 2,
       "model": "generated/models/prop_scree.glb",
       "note": "loose stone at the mountain foot",
+      "settled_by": 0.0,
       "triangles": 48,
       "vertices": 32
     },
@@ -365,6 +380,7 @@
       "materials": 2,
       "model": "generated/models/prop_shell.glb",
       "note": "shells at the tide line",
+      "settled_by": 0.0,
       "triangles": 40,
       "vertices": 24
     },
@@ -386,6 +402,7 @@
       "materials": 2,
       "model": "generated/models/prop_snow_boulder.glb",
       "note": "snow-dusted rock; peaks",
+      "settled_by": 0.0,
       "triangles": 48,
       "vertices": 28
     },
@@ -412,11 +429,12 @@
       "materials": 3,
       "model": "generated/models/prop_wildflowers.glb",
       "note": "colour accent on open ground",
+      "settled_by": 0.0,
       "triangles": 72,
       "vertices": 48
     }
   },
-  "source_hash": "7a3514a570841758c25d4772653fe0c224045ab9eefb4fed8e79dc5bae9f69f0",
+  "source_hash": "b0741f3fd0b025206214506e3efc26c4f972ab878133c8af6bce6431a7ed21b5",
   "terrain": {
     "biomes": [
       "deep_water",

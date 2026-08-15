@@ -50,6 +50,7 @@ from art.lib.godot_import import (                               # noqa: E402
 from art.lib.soldier import build as build_soldier              # noqa: E402
 from art.scatter.props import ROSTER as PROP_ROSTER             # noqa: E402
 from art.scatter.props import build as build_prop               # noqa: E402
+from art.scatter.props import settle as settle_prop             # noqa: E402
 from art.scatter.props import validate as validate_prop         # noqa: E402
 from art.terrain.atlas import write_atlas                       # noqa: E402
 from art.units import ROSTER                                    # noqa: E402
@@ -162,7 +163,10 @@ def build_props() -> dict:
     entries: dict[str, dict] = {}
     for prop in sorted(PROP_ROSTER):
         model = build_prop(prop)
-        bounds = validate_prop(prop, model)
+        # Settle, then validate what the settle DID — `validate` used to be
+        # handed an already-settled model and asked whether it was settled.
+        settled_by = settle_prop(model)
+        bounds = validate_prop(prop, model, settled_by)
         glb_path = os.path.join(models_dir, f"{prop}.glb")
         stats = write_prop_glb(model, glb_path)
 
