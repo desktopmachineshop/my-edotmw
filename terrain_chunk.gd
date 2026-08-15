@@ -117,13 +117,14 @@ static func chunk_count(space: TorusSpace, chunk_size: int) -> int:
 ## Build one chunk's mesh. `chunk` is a chunk-grid coordinate, not a cell
 ## coordinate. Returns null if the chunk contains no cells.
 static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
-		chunk_size: int, surface := PackedFloat32Array()) -> ArrayMesh:
-	# Callers meshing more than one chunk should build the surface once and pass
-	# it: it is O(cells), and recomputing it per chunk would evaluate the
+		chunk_size: int, fields: TerrainFields = null) -> ArrayMesh:
+	# Callers meshing more than one chunk should build the fields once and pass
+	# them: they are O(cells), and recomputing them per chunk would evaluate the
 	# elevation noise for the whole map once per chunk. Defaulted rather than
-	# required so existing call sites and tests keep working.
-	if surface.is_empty():
-		surface = terrain.surface_field(space)
+	# required so short tests and one-off call sites keep working.
+	if fields == null:
+		fields = terrain.build_fields(space)
+	var surface := fields.surface
 
 	var size := maxi(1, chunk_size)
 	var origin := Vector2i(chunk.x * size, chunk.y * size)
@@ -145,7 +146,6 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 			# Geometry unwrapped...
 			var centre := space.axial_offset_to_world(Vector2(float(unwrapped.x), float(unwrapped.y)))
 			# ...data wrapped.
-			var color := terrain.biome_color(space, unwrapped)
 			var surface_base := space.index(unwrapped) * TerrainGen.SURFACE_STRIDE
 			centre.y = surface[surface_base]
 
@@ -167,7 +167,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 			var base := vertices.size()
 			vertices.append(centre)
 			normals.append(_centre_normal(centre, corner_positions))
-			colors.append(color)
+			colors.append(fields.colors[surface_base])
 			uvs.append(uv_centre)
 
 			for corner in range(CORNERS):
@@ -180,7 +180,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 				# faceting the map back into hexes after the geometry stopped
 				# doing so.
 				normals.append(_corner_normal(space, surface, unwrapped, corner))
-				colors.append(color)
+				colors.append(fields.colors[surface_base + 1 + corner])
 				# The same corner, turned by this cell's rotation, inside its
 				# biome's tile. V is negated because UV space runs downward
 				# while the world's +Z runs away from the camera.
@@ -345,7 +345,7 @@ static func build_all(space: TorusSpace, terrain: TerrainGen, chunk_size: int) -
 	var grid := chunk_grid(space, chunk_size)
 	var started := Time.get_ticks_usec()
 	# Once for the whole map, not once per chunk — see build_mesh.
-	var surface := terrain.surface_field(space)
+	var fields := terrain.build_fields(space)
 
 	var meshes := 0
 	var vertices := 0
@@ -353,7 +353,7 @@ static func build_all(space: TorusSpace, terrain: TerrainGen, chunk_size: int) -
 
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, surface)
+			var mesh := build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, fields)
 			if mesh == null:
 				continue
 			meshes += 1

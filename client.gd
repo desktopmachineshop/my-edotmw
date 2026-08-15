@@ -497,7 +497,13 @@ func _build_terrain() -> void:
 	# uses. That sharing is the point: a sampler that agreed with the mesh
 	# only by construction-in-two-places is a sampler that will eventually
 	# disagree, and the symptom is a floating army with every number green.
-	var surface := terrain.surface_field(space)
+	#
+	# One `build_fields` call rather than a surface call, a colour call and a
+	# passability call: they are all O(cells) over the same noise, and pairing
+	# heights from one build with colours from another is a mistake nothing
+	# would report (D-096).
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(space, surface, x, z)
 
@@ -509,7 +515,7 @@ func _build_terrain() -> void:
 	var meshes := []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, surface)
+			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, fields)
 			if mesh != null:
 				meshes.append(mesh)
 
@@ -553,7 +559,7 @@ func _build_terrain() -> void:
 	# the same one the server built its own from (both from the settings
 	# on the wire, D-049). So the build preview agrees with the server
 	# about where the water is by construction rather than by luck.
-	_passable = terrain.passability(space)
+	_passable = fields.passable
 
 	_minimap_base = Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
 	for y in range(space.height):

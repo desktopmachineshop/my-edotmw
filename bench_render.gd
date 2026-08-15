@@ -157,7 +157,8 @@ func _build_terrain() -> void:
 	# The same continuous surface the client uses (D-067), through the same
 	# helper — a benchmark that sampled the ground differently would be pricing
 	# something the game does not do.
-	var surface := terrain.surface_field(_space)
+	var fields := terrain.build_fields(_space)
+	var surface := fields.surface
 	_terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(_space, surface, x, z)
 
@@ -169,7 +170,7 @@ func _build_terrain() -> void:
 	var meshes: Array = []
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, surface)
+			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, fields)
 			if mesh != null:
 				meshes.append(mesh)
 

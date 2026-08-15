@@ -49,6 +49,24 @@ class_name TerrainGen
 ## ground is walkable).
 @export var height_scale: float = 15.0
 
+## How much of its OWN elevation a cell's centre vertex keeps, against the mean
+## of that cell's six (shared) corners (D-096).
+##
+## 1.0 is the pre-D-096 behaviour: the centre sat at the cell's own elevation
+## while every corner was averaged with two neighbours, which made each hex a
+## shallow dome. `surface_field`'s own comment used to call that a feature —
+## "keeps the hex grid faintly readable" — and it is precisely what made the
+## ground read as a honeycomb of flat hexes once the terrain was textured.
+##
+## 0.0 would flatten a cell to the plane of its corners and lose the cell's
+## true height at its centre entirely. 0.15 keeps a trace of it — enough that a
+## lone high cell still bulges — without the lighting picking the lattice out.
+##
+## Purely cosmetic, like `height_scale`: `build_fields` is the only reader, and
+## `passability` still thresholds the unscaled elevation. It is therefore not
+## on the wire, and both sides using their own default cannot desync.
+@export_range(0.0, 1.0, 0.01) var pillow: float = 0.15
+
 ## Normalised thresholds in [0,1].
 @export var sea_level: float = 0.38
 @export var beach_level: float = 0.44
@@ -180,6 +198,34 @@ func elevation_field(space: TorusSpace) -> PackedFloat32Array:
 const SURFACE_STRIDE := 7
 
 
+## The three cells that meet at corner `corner` of cell `cell_index`, as cell
+## indices SORTED ascending (D-096).
+##
+## Corner k lies between two neighbours. With `TorusSpace.DIRECTIONS` ordered
+## counter-clockwise from east and corner k drawn at (60k - 30) degrees, those
+## are directions (1 - k) and (-k) — the relationship `surface_field` has always
+## used and `TerrainChunk._corner_normal` re-derived by hand.
+##
+## ## Why sorted
+##
+## All three owners of a corner must produce the SAME value for it, or the
+## surface is not watertight. Each owner enumerates the same three cells but in
+## its own order, and floating-point addition is not associative, so
+## `(a + b + c) / 3` computed three ways can differ in the last bit. Sorting
+## first makes the three sums bit-identical, which turns "watertight" from a
+## property checked against a tolerance into a property of the arithmetic.
+##
+## That mattered little for heights and matters a great deal for what D-096
+## adds on top of it: a vertex's blended colour, and (with the shader) its
+## atlas tile weights, both of which are chosen from the same triple.
+static func corner_cells(space: TorusSpace, cell_index: int, corner: int) -> Vector3i:
+	var a := space.neighbor_index(cell_index, 1 - corner)
+	var b := space.neighbor_index(cell_index, -corner)
+	var lo := mini(cell_index, mini(a, b))
+	var hi := maxi(cell_index, maxi(a, b))
+	return Vector3i(lo, cell_index + a + b - lo - hi, hi)
+
+
 ## The RENDERED height of every vertex of every cell, in world units (D-067).
 ##
 ## This is the surface the ground is drawn as, and it is deliberately NOT the
@@ -198,10 +244,10 @@ const SURFACE_STRIDE := 7
 ## shared a height. The result was a small vertical wall at almost every
 ## boundary that nothing drew, which read as dark seams across the whole map.
 ##
-## The CENTRE vertex keeps the cell's own elevation. That makes each hex a very
-## shallow pillow rather than a flat plane, which keeps the hex grid faintly
-## readable in the ground without any hard edge, and keeps a cell's true height
-## meaningful at its centre.
+## The CENTRE vertex used to keep the cell's own elevation outright, which made
+## each hex a shallow dome — "keeps the hex grid faintly readable", said the
+## comment that lived here, and that readability is exactly what D-096 removes.
+## It now sits at `lerp(mean of its own six corners, own elevation, pillow)`.
 ##
 ## ## Water
 ##
@@ -218,30 +264,68 @@ const SURFACE_STRIDE := 7
 ## two cannot disagree about where the ground is — which is exactly the bug that
 ## would leave soldiers floating.
 func surface_field(space: TorusSpace) -> PackedFloat32Array:
+	return build_fields(space).surface
+
+
+## Every per-cell and per-vertex field the mesher needs, in one pass (D-096).
+##
+## Heights, colours, biomes and passability all walk the same cells and share
+## the same corner-averaging rule, so they are built together: separate builders
+## would evaluate the elevation noise once each, and — worse — could be paired
+## up wrongly by a caller. See `terrain_fields.gd` for that argument in full.
+##
+## Colour is blended at shared corners by exactly the trick D-084 used for
+## heights: a corner takes the mean of the three cells meeting there, a centre
+## keeps its own. `biome_color` remains the single source of truth (D-083) and
+## is still what the minimap and the terrain preview read per cell — the blend
+## is DERIVED from it, so the small picture and the big one cannot drift.
+func build_fields(space: TorusSpace) -> TerrainFields:
 	var count := space.cell_count()
 	var raw := elevation_field(space)
+
+	var fields := TerrainFields.new()
+	fields.biome.resize(count)
+	fields.passable.resize(count)
 
 	# Clamped once up front rather than inside the corner loop, where each cell
 	# is read six times by its neighbours.
 	var clamped := PackedFloat32Array()
 	clamped.resize(count)
-	for i in range(count):
-		clamped[i] = maxf(raw[i], sea_level)
+	# One colour per CELL, from which the per-vertex colours below are averaged.
+	# Deriving a corner's colour by calling biome_color for its three owners
+	# would evaluate the elevation and moisture noise eighteen times per hex.
+	var cell_color := PackedColorArray()
+	cell_color.resize(count)
 
-	var out := PackedFloat32Array()
-	out.resize(count * SURFACE_STRIDE)
+	for i in range(count):
+		var e := raw[i]
+		var cell := space.from_index(i)
+		var b := _classify(space, cell, e)
+		fields.biome[i] = int(b)
+		# The identical predicate `passability()` applies, spelled once here so
+		# the rendering side and the flow field cannot drift (D-097).
+		fields.passable[i] = 0 if (e < sea_level or e >= mountain_level) else 1
+		clamped[i] = maxf(e, sea_level)
+		cell_color[i] = color_of(b)
+
+	fields.surface.resize(count * SURFACE_STRIDE)
+	fields.colors.resize(count * SURFACE_STRIDE)
 	for i in range(count):
 		var base := i * SURFACE_STRIDE
-		out[base] = clamped[i] * height_scale
+		var corner_total := 0.0
 		for k in range(6):
-			# Corner k lies between two neighbours. With TorusSpace.DIRECTIONS
-			# ordered counter-clockwise from east and corner k drawn at
-			# (60k - 30) degrees, those are directions (1 - k) and (-k).
-			var a := space.neighbor_index(i, 1 - k)
-			var b := space.neighbor_index(i, -k)
-			out[base + 1 + k] = (clamped[i] + clamped[a] + clamped[b]) \
+			var trio := corner_cells(space, i, k)
+			var height := (clamped[trio.x] + clamped[trio.y] + clamped[trio.z]) \
 				/ 3.0 * height_scale
-	return out
+			fields.surface[base + 1 + k] = height
+			fields.colors[base + 1 + k] = (cell_color[trio.x] + cell_color[trio.y] \
+				+ cell_color[trio.z]) / 3.0
+			corner_total += height
+		# The pillow, as a tunable rather than an implicit 1.0 — see `pillow`.
+		fields.surface[base] = lerpf(corner_total / 6.0,
+			clamped[i] * height_scale, pillow)
+		fields.colors[base] = cell_color[i]
+	return fields
 
 
 ## Squads cannot cross water or mountains in M1. This is the array the
@@ -272,8 +356,14 @@ enum Biome { DEEP_WATER, WATER, BEACH, DRY_GRASSLAND, GRASSLAND, FOREST, MOUNTAI
 ## forest is a cell that yields wood, by construction rather than by two
 ## threshold ladders being kept in sync by hand.
 func biome_at(space: TorusSpace, cell: Vector2i) -> Biome:
-	var e := elevation_at(space, cell)
+	return _classify(space, cell, elevation_at(space, cell))
 
+
+## `biome_at` with the elevation already in hand, so `build_fields` can classify
+## the whole map from `elevation_field` instead of re-evaluating the noise per
+## cell. Split out rather than duplicated: two ladders of thresholds kept in
+## step by hand is precisely what `biome_at`'s own comment warns against.
+func _classify(space: TorusSpace, cell: Vector2i, e: float) -> Biome:
 	if e < sea_level * 0.6:
 		return Biome.DEEP_WATER
 	if e < sea_level:
@@ -306,7 +396,16 @@ func biome_at(space: TorusSpace, cell: Vector2i) -> Biome:
 ## reads at a glance, and `biome_at()` — the thing that actually gates
 ## passability — is untouched.
 func biome_color(space: TorusSpace, cell: Vector2i) -> Color:
-	match biome_at(space, cell):
+	return color_of(biome_at(space, cell))
+
+
+## The colour of a biome, with the classification already done.
+##
+## Static and taking the enum rather than a cell, so `build_fields` can paint
+## from `fields.biome` without re-sampling the noise — and so this stays the ONE
+## table of colours that `biome_color`, the minimap and the mesh all read.
+static func color_of(biome: Biome) -> Color:
+	match biome:
 		Biome.DEEP_WATER:
 			return Color(0.08, 0.20, 0.42)
 		Biome.WATER:

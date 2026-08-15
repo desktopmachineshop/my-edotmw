@@ -33,8 +33,9 @@ func _terrain() -> TerrainGen:
 func test_the_sampler_returns_the_height_the_mesh_was_built_with() -> void:
 	var space := _space()
 	var terrain := _terrain()
-	var surface := terrain.surface_field(space)
-	var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(0, 0), CHUNK, surface)
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
+	var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(0, 0), CHUNK, fields)
 	assert_not_null(mesh)
 
 	var vertices: PackedVector3Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
@@ -58,7 +59,8 @@ func test_the_sampler_interpolates_between_vertices_rather_than_stepping() -> vo
 	# cell's single height, so the ground was a field of plateaus.
 	var space := _space()
 	var terrain := _terrain()
-	var surface := terrain.surface_field(space)
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
 
 	var centre := space.to_world(Vector2i(4, 4))
 	var samples := []
@@ -142,14 +144,23 @@ func test_the_sea_is_flat_however_deep_the_noise_goes() -> void:
 	var space := _space()
 	var terrain := _terrain()
 	var raw := terrain.elevation_field(space)
-	var surface := terrain.surface_field(space)
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
 
-	# Two water cells whose RAW elevations differ. Without clamping their
+	# Two OPEN-water cells whose RAW elevations differ. Without clamping their
 	# rendered heights would differ too, and the sea would visibly tilt.
+	#
+	# Open water — every one of the six neighbours also under water — because
+	# D-096's pillow moved the centre vertex off the cell's own elevation and
+	# onto a blend with its six shared corners. At a shoreline those corners are
+	# averaged with the land beside them and the water genuinely does lift, by
+	# the fraction `terrain_gen.gd`'s water section has always described. The
+	# claim being tested is that the SEA is flat, not that every wet cell is;
+	# the shore lift is bounded by the test below.
 	var first := -1
 	var second := -1
 	for i in range(space.cell_count()):
-		if raw[i] >= terrain.sea_level:
+		if not _is_open_water(space, terrain, raw, i):
 			continue
 		if first < 0:
 			first = i
@@ -158,7 +169,7 @@ func test_the_sea_is_flat_however_deep_the_noise_goes() -> void:
 			break
 
 	if second < 0:
-		pass_test("no two water cells with different depths at this seed")
+		pass_test("no two open-water cells with different depths at this seed")
 		return
 
 	assert_almost_eq(
@@ -170,10 +181,61 @@ func test_the_sea_is_flat_however_deep_the_noise_goes() -> void:
 		"water should render at exactly sea level")
 
 
+## Water with water on every side. Its corners are then averaged over water
+## alone, so nothing about it can lift above sea level.
+func _is_open_water(space: TorusSpace, terrain: TerrainGen,
+		raw: PackedFloat32Array, index: int) -> bool:
+	if raw[index] >= terrain.sea_level:
+		return false
+	for direction in range(6):
+		if raw[space.neighbor_index(index, direction)] >= terrain.sea_level:
+			return false
+	return true
+
+
+## The shoreline lift the clamp buys, bounded. A water cell touching land takes
+## some of that land's height through its shared corners; if that were ever
+## large the sea would visibly ramp up to the beach instead of meeting it.
+func test_water_beside_land_lifts_only_slightly() -> void:
+	var space := _space()
+	var terrain := _terrain()
+	var raw := terrain.elevation_field(space)
+	var surface := terrain.build_fields(space).surface
+	var sea := terrain.sea_level * terrain.height_scale
+
+	var checked := 0
+	for i in range(space.cell_count()):
+		if raw[i] >= terrain.sea_level:
+			continue
+		checked += 1
+		# The most any vertex of this cell can legally take from the land: a
+		# corner is the mean of three cells, one of which is this water cell
+		# sitting at exactly sea level, so two thirds of the tallest neighbour's
+		# excess is the ceiling. Anything above it means something OTHER than a
+		# shared corner is lifting the water.
+		var tallest := 0.0
+		for direction in range(6):
+			tallest = maxf(tallest,
+				raw[space.neighbor_index(i, direction)] - terrain.sea_level)
+		var bound := tallest * 2.0 / 3.0 * terrain.height_scale + 0.0001
+		for vertex in range(TerrainGen.SURFACE_STRIDE):
+			var lift := surface[i * TerrainGen.SURFACE_STRIDE + vertex] - sea
+			# Below sea level is the clamp failing: without it a deep cell's own
+			# elevation would drag its rendered height down and the sea would
+			# have a hole in it.
+			assert_gte(lift, -0.0001, "water rendered BELOW sea level")
+			assert_lte(lift, bound,
+				"a water vertex sits %.3f above sea level, more than the %.3f "
+					% [lift, bound]
+				+ "its neighbours can account for through shared corners")
+	assert_gt(checked, 0, "no water at this seed; the test proved nothing")
+
+
 func test_clamping_water_did_not_flatten_the_land() -> void:
 	var space := _space()
 	var terrain := _terrain()
-	var surface := terrain.surface_field(space)
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
 	var heights := {}
 	for i in range(space.cell_count()):
 		heights[snappedf(surface[i * TerrainGen.SURFACE_STRIDE], 0.001)] = true
@@ -213,8 +275,9 @@ func test_slopes_have_real_normals_now() -> void:
 func test_a_shared_corner_gets_the_same_normal_from_every_cell_that_owns_it() -> void:
 	var space := _space()
 	var terrain := _terrain()
-	var surface := terrain.surface_field(space)
-	var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(0, 0), CHUNK, surface)
+	var fields := terrain.build_fields(space)
+	var surface := fields.surface
+	var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(0, 0), CHUNK, fields)
 	var arrays := mesh.surface_get_arrays(0)
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
