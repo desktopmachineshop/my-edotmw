@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://oyok5m17d4nn"
-path="res://.godot/imported/cavalry.glb-20539b1894802654ad95b042a1873d16.scn"
+uid="uid://dnj3ef1ko3cpq"
+path="res://.godot/imported/bastion_stone.glb-d30b2b6cb55bb03812bc6a971a7f6969.scn"
 
 [deps]
 
-source_file="res://generated/models/cavalry.glb"
-dest_files=["res://.godot/imported/cavalry.glb-20539b1894802654ad95b042a1873d16.scn"]
+source_file="res://generated/models/bastion_stone.glb"
+dest_files=["res://.godot/imported/bastion_stone.glb-d30b2b6cb55bb03812bc6a971a7f6969.scn"]
 
 [params]
 

@@ -43,7 +43,7 @@ from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
 from art.buildings import build as build_building                  # noqa: E402
 from art.lib.bake import door_hinge_uv, flatten, write_glb, write_vat  # noqa: E402
 from art.lib.godot_import import (                               # noqa: E402
-    ATLAS_PARAMS, VAT_PARAMS, ensure_import_params,
+    ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
 )
 from art.lib.soldier import build as build_soldier              # noqa: E402
 from art.terrain.atlas import write_atlas                       # noqa: E402
@@ -98,6 +98,8 @@ def build_units(only: str | None) -> dict:
         glb_path = os.path.join(models_dir, f"{archetype}.glb")
         vat_path = os.path.join(vat_dir, f"{archetype}.exr")
         write_glb(model, flat, glb_path)
+        # LODs and vertex compression off — see MODEL_PARAMS.
+        ensure_import_params(glb_path, MODEL_PARAMS)
         layout = write_vat(model, flat, vat_path)
         # A VAT that Godot re-imports as a compressed 3D texture is silently
         # ruined; see godot_import.py.
@@ -133,6 +135,10 @@ def build_buildings() -> dict:
         flat = flatten(model)
         glb_path = os.path.join(models_dir, f"{building}.glb")
         write_glb(model, flat, glb_path, uv1_override=door_hinge_uv(model, flat))
+        # Critical HERE specifically: this is the call that smuggles the
+        # door hinge through UV2, which LOD welding and UV quantisation
+        # both destroy. See MODEL_PARAMS.
+        ensure_import_params(glb_path, MODEL_PARAMS)
 
         entries[building] = {
             "model": f"generated/models/{building}.glb",

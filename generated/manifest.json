@@ -5,6 +5,21 @@
       "triangles": 72,
       "vertices": 216
     },
+    "bastion_stake": {
+      "model": "generated/models/bastion_stake.glb",
+      "triangles": 204,
+      "vertices": 612
+    },
+    "bastion_stone": {
+      "model": "generated/models/bastion_stone.glb",
+      "triangles": 208,
+      "vertices": 624
+    },
+    "bastion_timber": {
+      "model": "generated/models/bastion_timber.glb",
+      "triangles": 208,
+      "vertices": 624
+    },
     "garrison_gate": {
       "model": "generated/models/garrison_gate.glb",
       "triangles": 168,
@@ -46,7 +61,7 @@
       "vertices": 504
     }
   },
-  "source_hash": "b9616930d4e06ec33021027746a6cafb56dbf1ac83d8c9d33199e7bd2cafd7ac",
+  "source_hash": "99b8458a333d522ba5c00908c73612a7d9b67af0d6595a734fd92d3d7e8af9ca",
   "terrain": {
     "biomes": [
       "deep_water",

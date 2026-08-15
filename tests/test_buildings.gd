@@ -1049,8 +1049,22 @@ func test_a_compatible_upgrade_replaces_the_old_building_in_place() -> void:
 
 	assert_true(server._is_buildable(wall_cell, tower_def, 1),
 		"occupied ground must still be buildable when it is a compatible upgrade")
-	assert_false(server._is_buildable(wall_cell, wall_def, 1),
-		"but ordinary occupied ground still refuses a build, same as before this fix")
+	# D-096 changed this case ON PURPOSE, so it is re-pointed rather than
+	# deleted. A cell is an ANCHOR for the wall family, not an exclusive
+	# slot: consecutive segments of a continuously-placed run sit ~1.77
+	# apart while a hex is ~1.73 across, so two of them occasionally round
+	# into the same cell, and refusing the second would leave a hole in a
+	# wall the player watched themselves draw.
+	assert_true(server._is_buildable(wall_cell, wall_def, 1),
+		"two wall-family segments may share an anchor cell (D-096) — they stand at different offsets")
+
+	# The rule this assertion originally existed to guard is still real for
+	# everything that is NOT wall-on-wall, which is what keeps it a guard
+	# rather than a relaxation: a storehouse may not be dropped onto a cell
+	# a wall already anchors in.
+	var storehouse_def := BuildingSim.def_by_id(&"storehouse")
+	assert_false(server._is_buildable(wall_cell, storehouse_def, 1),
+		"ordinary occupied ground still refuses a non-wall build")
 	assert_false(server._is_buildable(wall_cell),
 		"and the no-def/no-owner call every OTHER caller still uses is unaffected")
 
@@ -1058,6 +1072,48 @@ func test_a_compatible_upgrade_replaces_the_old_building_in_place() -> void:
 	buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, Vector2i(4, 4))
 	assert_eq(server._upgrade_target_at(Vector2i(4, 4), tower_def, 1), -1,
 		"a wall not yet complete has nothing finished to replace")
+
+	server.free()
+
+
+func test_a_resource_node_is_ground_you_cannot_build_on() -> void:
+	# Playtest fix. Nothing consulted the economy when deciding whether
+	# ground was buildable, so a town centre could be founded directly on
+	# top of a forest: the node stayed gatherable underneath, the building
+	# stood in the middle of it, and the gatherers who need to stand there
+	# were quietly denied the cell. Nothing FAILED, which is why it survived
+	# — the same shape as this project's other declared-but-unenforced rules.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var server = load("res://server.gd").new()
+	server._sim = sim
+	server._buildings = buildings
+	server._passable = PackedByteArray()  # empty means "fully open"
+
+	var wood_cell := Vector2i(9, 5)
+	var clear_cell := Vector2i(12, 5)
+	assert_true(server._is_buildable(wood_cell),
+		"setup: with no economy attached this ground should be free")
+
+	var economy := Economy.new(space)
+	economy.nodes[space.index(wood_cell)] = {
+		"kind": Economy.ResourceKind.WOOD, "remaining": Economy.NODE_STOCK,
+	}
+	server._economy = economy
+
+	assert_false(server._is_buildable(wood_cell),
+		"a cell holding a live resource node must refuse a build")
+	assert_true(server._is_buildable(clear_cell),
+		"ordinary ground beside it is unaffected")
+
+	# A depleted node is not an obstacle — `has_node` is about live stock,
+	# and ground you have finished mining should build like any other.
+	economy.nodes[space.index(wood_cell)]["remaining"] = 0
+	assert_true(server._is_buildable(wood_cell),
+		"an exhausted node must stop blocking, or the map fills with permanent dead spots")
 
 	server.free()
 
@@ -1172,10 +1228,36 @@ func test_every_building_carries_a_facing_not_just_the_tower(
 	assert_eq(buildings.facing_of(default_facing), 0,
 		"a building placed with no facing argument defaults to 0 (east)")
 
+	# D-096 moved the 6-way wrap to the ACCESS TOWER alone. Its door has to
+	# open onto a real neighbouring cell, so it is the one structure whose
+	# facing still has to be one of the six. Walls used to wrap here too,
+	# and that is exactly what locked a wall run to six angles.
 	var wrapped := buildings.add_building(
-		BuildingSim.def_by_id(&"wall"), 1, Vector2i(8, 4), true, -1, 9)
+		BuildingSim.def_by_id(&"wall_tower"), 1, Vector2i(8, 4), true, -1, 9)
 	assert_eq(buildings.facing_of(wrapped), 3,
-		"an out-of-range facing must wrap into 0..5 (9 mod 6), never be stored raw")
+		"an access tower's out-of-range facing must wrap into 0..5 (9 mod 6), never be stored raw")
+
+
+func test_a_freestanding_buildings_facing_is_a_continuous_byte_not_a_hex_direction(
+		) -> void:
+	# Placement decoupling: a wall/gate/access-tower's facing MUST stay one
+	# of 6 hex directions (wall-joint alignment, the door), but a
+	# freestanding building's is purely cosmetic (client.gd's
+	# scroll-to-rotate control), so it must NOT be forced through the same
+	# mod-6 wrap — that would silently put it back on a 6-way grid. See
+	# `add_building`'s own `wraps_to_hex_direction` split.
+	var space := TorusSpace.new(32, 16, 1.0)
+	var buildings := BuildingSim.new(space)
+
+	var storehouse := buildings.add_building(
+		BuildingSim.def_by_id(&"storehouse"), 1, Vector2i(4, 4), true, -1, 200)
+	assert_eq(buildings.facing_of(storehouse), 200,
+		"a freestanding building's facing byte must survive un-wrapped-mod-6 (200, not 200 mod 6 = 2)")
+
+	var wrapped_byte := buildings.add_building(
+		BuildingSim.def_by_id(&"storehouse"), 1, Vector2i(6, 4), true, -1, 300)
+	assert_eq(buildings.facing_of(wrapped_byte), 300 - 256,
+		"still wrapped into a sane byte range (300 mod 256 = 44), just not mod 6")
 
 
 func test_building_info_entries_carry_facing() -> void:

@@ -464,6 +464,32 @@ func _handle_building_info(data: PackedByteArray) -> void:
 			"head_remaining": float(entry.get("head_remaining", 0.0)),
 			"queue": entry.get("queue", []),
 			"rally": int(entry.get("rally", 0)),
+			# Everything below was DECODED and then thrown away here.
+			#
+			# This dictionary is rebuilt field by field rather than taking
+			# the decoded entry wholesale, so a field added to the protocol
+			# reaches the client and then silently stops at this line. The
+			# renderer's `info.get("facing", 0)` and
+			# `info.get("gate_open", false)` were therefore reading their
+			# DEFAULTS on every building, forever — nothing failed, nothing
+			# logged, and the wire carried the right values the whole time.
+			#
+			# Symptoms it was causing, none of which pointed here: walls
+			# built at their cell centres instead of their true offsets,
+			# which along a diagonal reads as a staircase while the
+			# placement ghost (which never crosses the wire) looks perfect;
+			# every wall drawn at facing 0; and a gate that could be opened,
+			# could be walked through, and never looked open.
+			#
+			# This is D-065's rule almost word for word — "a decision entry
+			# saying a field is on the wire is not evidence that it is" —
+			# and the answer is the same: open the code that CONSUMES it and
+			# look for the field, not just the encoder.
+			"facing": int(entry.get("facing", 0)),
+			"offset_x": float(entry.get("offset_x", 0.0)),
+			"offset_z": float(entry.get("offset_z", 0.0)),
+			"gate_open": bool(entry.get("gate_open", false)),
+			"gate_mode": int(entry.get("gate_mode", 0)),
 		}
 
 
@@ -515,18 +541,20 @@ func encode_gather(squad: int, cell: Vector2i) -> PackedByteArray:
 ## Build order for the server (D-031). The server re-checks everything —
 ## ownership, who may build what, whether the ground is buildable — so
 ## this only avoids sending obvious nonsense.
-func encode_build(squad: int, def_id: String, cell: Vector2i, facing: int = 0) -> PackedByteArray:
+func encode_build(squad: int, def_id: String, cell: Vector2i, facing: int = 0,
+		offset: Vector2 = Vector2.ZERO) -> PackedByteArray:
 	if space == null or not owns(squad):
 		return PackedByteArray()
-	return NetProtocol.encode_order_build(squad, def_id, space.index(cell), facing)
+	return NetProtocol.encode_order_build(squad, def_id, space.index(cell), facing, offset)
 
 
 ## As above, but APPENDS to the squad's build queue instead of replacing
 ## it (D-076's drag-to-build-a-line tool) — see `NetProtocol.C2S_ORDER_BUILD_QUEUE`.
-func encode_build_queue(squad: int, def_id: String, cell: Vector2i, facing: int = 0) -> PackedByteArray:
+func encode_build_queue(squad: int, def_id: String, cell: Vector2i, facing: int = 0,
+		offset: Vector2 = Vector2.ZERO) -> PackedByteArray:
 	if space == null or not owns(squad):
 		return PackedByteArray()
-	return NetProtocol.encode_order_build_queue(squad, def_id, space.index(cell), facing)
+	return NetProtocol.encode_order_build_queue(squad, def_id, space.index(cell), facing, offset)
 
 
 func owns(squad: int) -> bool:

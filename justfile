@@ -313,8 +313,8 @@ lobby PLAYERS="1":
 # same reason `lobby` is its own recipe: server and client have to agree on
 # port and mode, and skipping the lobby means there is no admin screen to
 # fall back on if you get that wrong.
-[doc("Quick test: you + 3 AI, all random civs, no lobby")]
-quick-test SEED="1337":
+[doc("Quick test: you + 3 AI, all random civs, no lobby, sandbox dev tools on")]
+quick-test SEED="1337" SANDBOX="1":
     #!/usr/bin/env bash
     set -euo pipefail
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
@@ -333,9 +333,15 @@ quick-test SEED="1337":
     "{{just_executable()}}" _import
     # Not --rm, for the same reason as `lobby`: the server now exits on the
     # last human disconnect (D-075) and would take its own log with it.
+    #
+    # SANDBOX defaults ON: this recipe exists for iterating on a running
+    # match, and the sandbox debug panel (spawn units/buildings, grant
+    # resources) is what that iteration actually needs — a quick test that
+    # opened without it just meant re-launching to get it. `just quick-test
+    # SANDBOX=0` still gets you the plain, no-cheats match.
     docker compose -p edotmw run --service-ports -d --name edotmw-quick-test \
         server --path . "{{server_scene}}" -- \
-        --ai=3 --players=1 --lobby=0 --seed={{SEED}} --random-civs=1 > /dev/null
+        --ai=3 --players=1 --lobby=0 --seed={{SEED}} --random-civs=1 --sandbox={{SANDBOX}} > /dev/null
 
     # Wait for the port rather than sleeping a guessed number of seconds.
     for _i in $(seq 1 60); do
@@ -759,7 +765,15 @@ build-assets ONLY="":
     args=""
     [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
     "{{blender_python}}" art/build.py $args
-    {{just_executable()}} _import
+    # QUOTED, unlike every other `{{just_executable()}}` call in this file,
+    # because this one is reached on Windows where the path is absolute and
+    # backslash-separated: unquoted, the shell eats the separators and the
+    # line dies as `C:UsersdmasoDocuments...toolsjust.exe: command not
+    # found`. The build itself had already succeeded, so the only casualty
+    # was the import — which is the step CLAUDE.md warns about, since a
+    # rebuild Godot has not re-imported is invisible and gives confident
+    # wrong answers about a mesh that did change.
+    "{{just_executable()}}" _import
 
 # Rebuild the resource-node markers (D-028's food/wood/gold/stone props)
 # from the hand-authored source under art/resources/source/.

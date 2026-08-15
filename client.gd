@@ -40,6 +40,25 @@ const CAMERA_YAW_WHEEL_STEP := deg_to_rad(7.5)
 ## wrong in the other is soldiers popping in at the screen edge.
 const CULL_MARGIN_PIXELS := 192.0
 
+## Cosmetic placement variation (see `placement_jitter.gd`), as a fraction
+## of `TorusSpace.hex_size`. Kept well under 0.5 (the distance to a cell
+## edge at hex_size 1.0) so a jittered building or node still visibly
+## stands on the cell the simulation says it occupies, never drifting into
+## a neighbour's.
+## How far from an existing wall a new one still snaps to it, in hex widths.
+## Generous enough that you do not have to aim, tight enough that a wall
+## started deliberately clear of a run stays where you put it.
+const WALL_SNAP_CELLS := 2.2
+
+const BUILDING_JITTER_FRACTION := 0.35
+const RESOURCE_NODE_JITTER_FRACTION := 0.4
+
+## One scroll notch's worth of continuous rotation while a freestanding
+## building's ghost is armed (16/256 of a turn, 22.5 degrees) — coarse
+## enough that a couple of notches reads as a deliberate turn, fine enough
+## that 256 notches don't feel like 6 all over again.
+const FREE_FACING_WHEEL_STEP := 16
+
 ## M2 capture-mode scenario (`just test-client`) — see _drive_m2_scenario().
 ##
 ## Active ONLY when _run_seconds > 0.0 (i.e. never during `just run-client`,
@@ -299,6 +318,7 @@ func _process(delta: float) -> void:
 	_refresh_resource_nodes()
 	# After both, so a ring can sit on the position they just set.
 	_refresh_selection_rings()
+	_refresh_build_markers()
 	_update_placement_ghost()
 	_update_hud()
 	_update_minimap()
@@ -1266,6 +1286,13 @@ var _selected_building := -1
 ## `_build_menu_selection_key` is compared) so browsing "Defensive" for
 ## one squad doesn't silently carry over to an unrelated later selection.
 var _build_menu_category: String = ""
+
+## Sub-group within `_build_menu_category` (playtest fix): "" is that
+## category's group picker, otherwise one of `_build_menu_group_of`'s ids.
+## Cleared whenever the category changes, so backing out of "defensive"
+## and into it again starts at the group picker rather than wherever you
+## happened to be last time.
+var _build_menu_group: String = ""
 var _build_menu_selection_key: String = ""
 
 ## Minimap (D-027 criterion 5). Wrap-awareness is free here in a way it
@@ -2296,6 +2323,18 @@ var _drag_ghost_pool: Array[MeshInstance3D] = []
 var _placing_facing: int = 0
 var _door_marker: MeshInstance3D = null
 
+## Continuous facing (0-255, see `PlacementJitter.yaw_byte`/`radians_of_byte`)
+## for a FREESTANDING building's placement — the scroll-wheel-controlled
+## counterpart to `_placing_facing` above, which stays 6-way for a wall
+## segment or the access tower. -1 means "the player hasn't scrolled yet
+## this placement" — the ghost and the eventual build order both fall back
+## to `PlacementJitter.yaw_byte` of the target cell in that case, so a
+## player who never touches the wheel still gets a building that isn't
+## dead-on one of 6 angles, just an automatic one instead of a chosen one.
+## Reset to -1 whenever a fresh placement is armed (`_build_selected`) or
+## cancelled (`_cancel_placement`).
+var _placing_free_facing: int = -1
+
 ## Snap state for a wall-family placement (D-076 amendment): the cell the
 ## ghost last snapped to, so `_placing_facing` is only auto-set the moment
 ## the snap target CHANGES rather than every single frame — otherwise it
@@ -2311,6 +2350,13 @@ var _last_snap_cell := Vector2i(-1, -1)
 ## from start to release, split across every eligible selected squad).
 var _placing_drag := false
 var _placing_drag_start := Vector2i(-1, -1)
+
+## The drag's start in WORLD space (D-096). `_placing_drag_start` above is
+## still the cell it fell in — the snap logic and a few UI checks want that
+## — but a wall run is laid between two continuous points now, and rounding
+## the start to a cell centre first would throw away the sub-cell precision
+## free placement is entirely about. Non-finite while no drag is active.
+var _placing_drag_start_world := Vector3.INF
 
 ## An armed building (wire id, or -1) waiting for a click to name its
 ## focus-fire target — the "Target" button's arming half, mirroring
@@ -2399,6 +2445,108 @@ func _stamp_selection_discs(squad_id, transforms: Array[Transform3D]) -> void:
 ##
 ## Emissive rather than lit, so it is equally visible on dark forest and
 ## pale sand — the same reason the HUD labels carry a hard outline.
+## How long a confirmed build site stays marked. Long enough to watch a
+## builder set off toward it, short enough that a drag-built wall run does
+## not leave a trail of discs across the map for the rest of the match.
+const BUILD_MARKER_SECONDS := 9.0
+
+## Sites this client has ASKED for: [{"pos": Vector3, "radius": float,
+## "at": float}]. Client-only and advisory — the server may refuse any of
+## them (D-002), which is precisely why they expire on a timer rather than
+## waiting for a confirmation that may never come.
+var _build_markers: Array = []
+var _build_marker_nodes: Array[MeshInstance3D] = []
+
+
+## Remember that a build was requested here, so the ground shows it.
+##
+## The gap this closes: a build order is silent until the builder arrives
+## and the foundation appears, which for a distant site is many seconds of
+## nothing happening — indistinguishable from a misclick. Marking the spot
+## at the moment the order goes out makes "I asked for that" visible
+## immediately.
+##
+## Deliberately recorded when the order is SENT rather than when the server
+## acknowledges: this is feedback about the player's own input, and input
+## that waits for a round trip before acknowledging itself feels broken
+## even when it is working.
+func _note_build_site(cell: Vector2i, offset: Vector2, def: BuildingDef,
+		angle: float) -> void:
+	if _state.space == null:
+		return
+	var world := _state.space.to_world(cell) + Vector3(offset.x, 0.0, offset.y)
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	# The building's REAL footprint — its own length and depth, at its own
+	# angle, on the exact spot it will stand. A generic disc on the cell
+	# was the first version and it was close to useless: a wall run marked
+	# with circles told you neither which way the wall would run nor that
+	# the gate was wider than its neighbours, which is most of what you
+	# want to check BEFORE committing a line of them.
+	var size := Vector2(1.8, 1.8)
+	if def != null:
+		if def.mesh_size != Vector3.ZERO:
+			size = Vector2(def.mesh_size.x, def.mesh_size.z)
+		else:
+			# The primitive-tier defs carry no mesh_size; footprint_radius
+			# is what the no-build claim uses, so it is the honest stand-in.
+			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
+			size = Vector2(span, span)
+	_build_markers.append({"pos": world, "size": size, "angle": angle, "at": _now})
+
+
+## Draw and expire the build-site marks. Same pooled-node lifetime as the
+## selection rings above (never freed per entry, only hidden), and the same
+## flat-disc-on-the-ground look so the two read as one visual language.
+func _refresh_build_markers() -> void:
+	# Drop expired entries first, so the pool below only ever sees live
+	# ones and the array cannot grow without bound over a long match.
+	var live := []
+	for marker in _build_markers:
+		if _now - float(marker["at"]) < BUILD_MARKER_SECONDS:
+			live.append(marker)
+	_build_markers = live
+
+	while _build_marker_nodes.size() < _build_markers.size():
+		# A flat SLAB, not a disc: it stands in for a rectangular building,
+		# so it has to be able to be longer than it is wide and to point
+		# somewhere. Unit-sized and scaled per marker below, so one mesh
+		# serves every footprint.
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(1.0, 0.04, 1.0)
+		var material := StandardMaterial3D.new()
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.no_depth_test = true
+		var node := MeshInstance3D.new()
+		node.mesh = mesh
+		node.material_override = material
+		_build_marker_nodes.append(node)
+		add_child(node)
+
+	for i in range(_build_marker_nodes.size()):
+		var node := _build_marker_nodes[i]
+		if i >= _build_markers.size():
+			node.visible = false
+			continue
+		var marker: Dictionary = _build_markers[i]
+		var world: Vector3 = marker["pos"]
+		var size: Vector2 = marker["size"]
+		node.visible = true
+		node.position = world + Vector3(0.0, 0.05, 0.0) + _lattice_offset_for(world)
+		# x is the building's LENGTH along its own local +X, matching the
+		# mesh convention every wall and building already uses, so the mark
+		# and the thing that replaces it are the same shape pointing the
+		# same way.
+		node.scale = Vector3(size.x, 1.0, size.y)
+		node.rotation.y = float(marker["angle"])
+		# Fades out over its life rather than vanishing, so the mark reads
+		# as expiring rather than as the order being cancelled.
+		var age := (_now - float(marker["at"])) / BUILD_MARKER_SECONDS
+		var material := node.material_override as StandardMaterial3D
+		material.albedo_color = Color(0.45, 0.85, 1.0, 0.5 * (1.0 - age))
+
+
 func _refresh_selection_rings() -> void:
 	if _state.space == null:
 		return
@@ -2566,8 +2714,14 @@ func _refresh_resource_nodes() -> void:
 			_node_meshes[cell] = marker
 			_node_authored[cell] = authored
 			add_child(marker)
+			# A resource node has no `facing` at all — nothing mechanical
+			# reads its orientation — so it gets a free cosmetic yaw with no
+			# exclusion, unlike a building's wall/tower carve-out.
+			marker.rotation.y = PlacementJitter.yaw(int(cell))
 
 		var world := _state.space.to_world(_state.space.from_index(int(cell)))
+		world += PlacementJitter.position_offset(int(cell),
+			_state.space.hex_size * RESOURCE_NODE_JITTER_FRACTION)
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
 		# The authored models are already grounded at y=0 in their own
@@ -2712,9 +2866,21 @@ func _refresh_buildings() -> void:
 			_building_ground_lift[wire_id] = lift
 			_building_top_offset[wire_id] = mesh_height - lift
 			add_child(instance)
-			# D-076 amendment: the facing chosen at placement, fixed for the
-			# building's lifetime — set once here rather than every frame.
-			instance.rotation.y = _facing_rotation_y(int(info.get("facing", 0)))
+			# Freestanding building: `facing` is REPLICATED continuous state
+			# now (see building_sim.gd's add_building doc and the
+			# scroll-to-rotate control in `_place_armed_building`) — either
+			# what the player chose, or the automatic default their client
+			# sent if they never touched the wheel — so every client decodes
+			# the exact same angle rather than each computing its own guess.
+			# Set once here since nothing recomputes it later — a building's
+			# rotation doesn't change after it's founded. Wall-family
+			# segments and the access tower are left at the identity
+			# rotation here; the per-frame wall-rotation block below (same
+			# loop, runs unconditionally) sets theirs on this very frame
+			# anyway, from their real neighbours, so setting it twice would
+			# just be dead weight.
+			if def.footprint_radius != 0 and not def.is_access_tower:
+				instance.rotation.y = PlacementJitter.radians_of_byte(int(info.get("facing", 0)))
 
 		if bool(info["destroyed"]):
 			instance.visible = false
@@ -2732,6 +2898,28 @@ func _refresh_buildings() -> void:
 		instance.scale = Vector3(1.0, progress, 1.0)
 
 		var world := _state.space.to_world(_state.space.from_index(int(info["cell"])))
+		# Where the building actually stands, as opposed to which cell it is
+		# filed under. Two different sources, deliberately:
+		#
+		# - A WALL-FAMILY segment reads the REPLICATED offset (D-096). Its
+		#   position was chosen by whoever dragged the run out, so no other
+		#   client could recompute it, and two clients disagreeing about
+		#   where a wall stands is a desync a player would see by walking
+		#   through it.
+		# - A FREESTANDING building derives its own jitter from the cell.
+		#   Nobody chose it, every client computes the same value, and
+		#   keeping it off the wire costs nothing.
+		#
+		# The access tower gets neither: it is a point structure whose door
+		# opens onto a specific neighbouring cell, so it stands dead centre.
+		var building_def: BuildingDef = _building_defs.get(wire_id, null)
+		if building_def != null and not building_def.is_access_tower:
+			if building_def.footprint_radius == 0:
+				world += Vector3(
+					float(info.get("offset_x", 0.0)), 0.0, float(info.get("offset_z", 0.0)))
+			else:
+				world += PlacementJitter.position_offset(int(info["cell"]),
+					_state.space.hex_size * BUILDING_JITTER_FRACTION)
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
 		# Sit the mesh ON the ground rather than half-sunk into it (zero for an
@@ -2764,13 +2952,20 @@ func _refresh_buildings() -> void:
 		# placement-time facing forever, visibly unaligned with a bend
 		# that only took shape afterward. Recomputed every frame instead,
 		# from the buildings that actually exist right now.
+		# D-096: a segment's rotation is now its OWN — chosen when the run
+		# was dragged out, and replicated with it — rather than inferred
+		# every frame from whichever neighbours happen to exist.
+		#
+		# The neighbour-bisection this replaces was a workaround for a
+		# 6-way facing that could not express the angle a run actually ran
+		# at: it had to guess a segment's direction from its company. A
+		# continuous facing states it outright, so a segment points exactly
+		# where it was laid, a bend needs no guessing, and a lone segment
+		# is no longer stuck pointing at whatever it first snapped to.
 		var rotating_wall_def: BuildingDef = _building_defs.get(wire_id, null)
 		if rotating_wall_def != null and rotating_wall_def.footprint_radius == 0 \
 				and not rotating_wall_def.is_access_tower:
-			var neighbour_dirs := _wall_segment_neighbour_dirs(
-				wall_family_cells, _state.space.from_index(int(info["cell"])))
-			instance.rotation.y = _wall_segment_yaw(
-				neighbour_dirs, int(info.get("facing", 0)))
+			instance.rotation.y = PlacementJitter.radians_of_byte(int(info.get("facing", 0)))
 
 		_update_building_health_bar(int(wire_id), instance, progress,
 			clampf(float(info.get("health_fraction", 1.0)), 0.0, 1.0))
@@ -2949,6 +3144,23 @@ const WALL_JOINT_MIN_RADIUS := WALL_JOINT_HALF_SPACING \
 	- WALL_JOINT_HALF_THICKNESS / 0.8660254037844386  # sin(60 degrees)
 
 
+## Which authored bastion (D-096) matches the wall meeting this junction.
+##
+## Derived from DATA the def already carries, not from its id — the same
+## discipline that keeps `client.gd` from naming a civ. `walkable_top`
+## separates the cheap palisade tier from the garrison tier, and `is_gate`
+## picks timber over stone within it, which reproduces exactly the three
+## styles `art/buildings` actually models. A new wall def gets a sensible
+## bastion for free, and adding a fourth style means adding a case here
+## rather than a lookup table of ids to maintain in parallel.
+func _bastion_model_for(def: BuildingDef) -> StringName:
+	if def == null or not def.walkable_top:
+		return &"bastion_stake"
+	if def.is_gate:
+		return &"bastion_timber"
+	return &"bastion_stone"
+
+
 ## One joint RIG for the (a_id, b_id) pair — a corner post (angle gaps,
 ## D-076 follow-up) plus a fixed pool of stair treads (walkway height
 ## mismatches, playtest follow-up) — created once and thereafter only
@@ -2969,37 +3181,52 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 		rig = Node3D.new()
 		add_child(rig)
 
-		var post_mesh := CylinderMesh.new()
-		# Radius bug, SECOND pass: the first attempt (0.42-0.5) was too
-		# small; the fix for that (0.85-0.95) was too generous in the
-		# other direction — sized to reach all the way back to each
-		# segment's own CELL CENTRE (half the hex spacing, ~0.866), which
-		# guarantees coverage but is far more than the geometry actually
-		# needs. Chained across a winding wall's several close-together
-		# bends, posts that big overlap EACH OTHER and read as grey blobs
-		# swallowing the wall rather than a corner accent.
+		# D-096: an AUTHORED round bastion, styled to the wall it joins,
+		# rather than the bare cylinder this replaces.
 		#
-		# The real requirement is touching the segment's own BOX EDGE, not
-		# its centre. A segment's box only ever meets a neighbour at a
-		# multiple of 60 degrees off its own facing (D-076's six canonical
-		# directions), and by the box's symmetry every non-flush case
-		# reduces to the SAME 60-degree one — so there is exactly one
-		# angle to solve for, not a family of them. At 60 degrees the
-		# box's edge, toward the post, sits `half_thickness / sin(60deg)`
-		# from the segment's own centre — nearer than half the hex
-		# spacing precisely because a box is narrower on its side than it
-		# is long. `WALL_JOINT_MIN_RADIUS` is the midpoint-to-edge
-		# distance that falls out of that, and the actual radius below
-		# keeps a small margin over it so the join reads as deliberate
-		# rather than tangent.
-		post_mesh.top_radius = WALL_JOINT_MIN_RADIUS + 0.03
-		post_mesh.bottom_radius = WALL_JOINT_MIN_RADIUS + 0.13
-		post_mesh.height = 1.0
-		var post_material := StandardMaterial3D.new()
-		post_material.roughness = 0.9
+		# The cylinder was wrong in two independent ways and both are worth
+		# remembering. Its SIZE went through three passes (too small, then
+		# too big and blobbing into itself along a winding run, then a
+		# derived radius) — all of them trying to plug a gap that only
+		# existed because a 6-way facing could not express the angle a run
+		# actually ran at. And its COLOUR came from `def.mesh_color`, the
+		# PRIMITIVE FALLBACK colour, which the authored wall never renders
+		# — so it was painted a shade found nowhere else on screen. That is
+		# the same defect class as the stair treads below.
+		#
+		# A round drum is what makes one shape serve every junction: a
+		# corner, a T and a four-way crossing present the same silhouette
+		# in every direction, so nothing needs authoring per angle. The
+		# mesh carries its own materials (art/buildings/_build_bastion), so
+		# there is no tint to get wrong here at all.
 		var post := MeshInstance3D.new()
-		post.mesh = post_mesh
-		post.material_override = post_material
+		post.mesh = UnitMesh.mesh_for(_bastion_model_for(_building_defs.get(a_id, null)))
+		# Recorded as rig METADATA rather than re-derived per frame from
+		# `material_override == null`: the authored branch assigns a
+		# material on its first update, so that test would answer "authored"
+		# once and "primitive" every frame after — silently switching a
+		# bastion to the fallback's cylinder maths a frame after it appeared.
+		var authored_post := post.mesh != null
+		if authored_post:
+			# The authored mesh carries its own per-part materials and bakes
+			# the owner-colour mask into vertex alpha, exactly like the walls
+			# it joins — which is precisely why it matches them and the old
+			# `mesh_color`-tinted cylinder did not.
+			post.material_override = UnitMesh.static_material_for(
+				_state.colour_of(int(_state.buildings.get(a_id, {}).get("owner", 0))))
+		else:
+			# The art build has not run, or the model failed to load. Same
+			# contract as every other authored model in this project
+			# (D-081): a missing mesh costs fidelity, not the game.
+			var fallback := CylinderMesh.new()
+			fallback.top_radius = WALL_JOINT_MIN_RADIUS + 0.03
+			fallback.bottom_radius = WALL_JOINT_MIN_RADIUS + 0.13
+			fallback.height = 1.0
+			post.mesh = fallback
+			var post_material := StandardMaterial3D.new()
+			post_material.roughness = 0.9
+			post.material_override = post_material
+		rig.set_meta("authored_post", authored_post)
 		rig.add_child(post)
 
 		var steps: Array = []
@@ -3050,14 +3277,18 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 		b_ground = _state.terrain_sampler.call(a_world.x + to_b.x, a_world.z + to_b.z)
 		mid.y = _state.terrain_sampler.call(mid.x, mid.z)
 
-	# --- the angle post: covers a horizontal gap, not a vertical one -----
+	# --- the bastion: a round corner where runs meet (D-096) -------------
 	#
-	# A segment's box already reaches flush to this neighbour with no gap
-	# if its own (now bisected — see _wall_segment_yaw) rotation already
-	# points straight along this connection. Skip the post when BOTH sides
-	# are flush that way — a straight run or a dead end already closes on
-	# its own, and a bump at every one of its junctions read as unwanted
-	# studding rather than a fix.
+	# Shown wherever two runs actually MEET AT AN ANGLE. A straight run or a
+	# dead end closes on its own — segments are laid end to end now — and
+	# studding every junction of a straight wall with drums read as
+	# decoration rather than structure.
+	#
+	# `_wall_segment_is_flush` still answers "does this segment's own
+	# geometry already reach its neighbour", which under D-096's continuous
+	# placement is true far more often than it used to be: a run laid along
+	# one line has every segment pointing along it, so only genuine corners
+	# raise a bastion at all.
 	var a_flush := _wall_segment_is_flush(a_dirs)
 	var b_flush := _wall_segment_is_flush(b_dirs)
 	var post_height := minf(a_def.mesh_size.y, b_def.mesh_size.y) * progress
@@ -3065,19 +3296,22 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 		post.visible = false
 	else:
 		post.visible = true
-		(post.mesh as CylinderMesh).height = post_height
-		post.position = mid + Vector3(0.0, post_height / 2.0, 0.0) + _lattice_offset_for(mid)
-		# Colour bug (first pass): 0.35 toward mesh_color is 65% OWNER
-		# colour, which reads as a glowing team-coloured spike jammed into
-		# an otherwise stone/timber wall. Every genuinely structural part
-		# of the authored models (corner posts, stakes, merlons, rails —
-		# see art/buildings) carries mask 0.0-0.12, i.e. little to no
-		# owner tint; this post is exactly that kind of part, not a
-		# banner, so it matches their convention instead of the gate's
-		# colour-as-a-status-cue one.
-		var owner_colour := _state.colour_of(int(a_info["owner"]))
-		(post.material_override as StandardMaterial3D).albedo_color = \
-			owner_colour.lerp(a_def.mesh_color, 0.9)
+		if bool(rig.get_meta("authored_post", false)):
+			# Base-pivoted, like every authored structure here
+			# (art/buildings spans y=0 upward), so it sits on the ground and
+			# grows with construction by scaling Y alone. Its material and
+			# colour were settled once at creation — nothing to tint per
+			# frame, which is the point of it being authored.
+			post.position = mid + _lattice_offset_for(mid)
+			post.scale = Vector3(1.0, clampf(progress, 0.15, 1.0), 1.0)
+		else:
+			# Primitive fallback: centred on its own origin, so it needs
+			# lifting by half its height and resizing rather than scaling.
+			(post.mesh as CylinderMesh).height = post_height
+			post.position = mid + Vector3(0.0, post_height / 2.0, 0.0) + _lattice_offset_for(mid)
+			var owner_colour := _state.colour_of(int(a_info["owner"]))
+			(post.material_override as StandardMaterial3D).albedo_color = \
+				owner_colour.lerp(a_def.mesh_color, 0.9)
 
 	# --- the stair: covers a vertical gap between two walkway tops -------
 	#
@@ -3364,6 +3598,7 @@ func _update_selection_panel() -> void:
 	if selection_key != _build_menu_selection_key:
 		_build_menu_selection_key = selection_key
 		_build_menu_category = ""
+		_build_menu_group = ""
 
 	# Actions offered are the ones EVERY selected squad can do. Offering a
 	# build button because one founder is in the box would produce an
@@ -3455,6 +3690,8 @@ func _show_train_chips(def: BuildingDef) -> void:
 				entries.append({
 					"name": unit.display_name,
 					"cost": _cost_text(unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone),
+					"affordable": _can_afford(unit.cost_food, unit.cost_wood,
+						unit.cost_gold, unit.cost_stone),
 				})
 				_chip_train_ids.append(archetype)
 
@@ -3472,6 +3709,15 @@ func _show_train_chips(def: BuildingDef) -> void:
 			continue
 		_chip_names[i].text = String(entries[i]["name"])
 		_chip_counts[i].text = String(entries[i]["cost"])
+		# Greyed when unaffordable, and its click refused in
+		# `_on_chip_input`. These chips ARE the train control (not a picture
+		# of one), so they need the same affordability gate the build list
+		# has — it was added there first and missed here, which left the
+		# most-used button in the game looking available and then bouncing.
+		var affordable := bool(entries[i].get("affordable", true))
+		_chip_panels[i].modulate = Color(1, 1, 1, 1) if affordable else Color(1, 1, 1, 0.45)
+		_chip_panels[i].tooltip_text = "Click to train" if affordable \
+			else "Not enough resources"
 
 
 func _hide_chips() -> void:
@@ -3494,7 +3740,17 @@ func _on_chip_input(event: InputEvent, index: int) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
-		_train_selected(StringName(String(_chip_train_ids[index])))
+		var archetype := StringName(String(_chip_train_ids[index]))
+		# Refused here as well as greyed in `_show_train_chips` — a chip is
+		# a Panel, not a Button, so dimming it is purely cosmetic and does
+		# nothing to the click. Re-derived rather than cached alongside the
+		# chip: the wallet moves every tick, and a flag captured when the
+		# panel was last relabelled would go stale between refreshes.
+		var unit := UnitRoster.for_civ_archetype(_state.civ_of(_state.player), archetype)
+		if unit != null and not _can_afford(unit.cost_food, unit.cost_wood,
+				unit.cost_gold, unit.cost_stone):
+			return
+		_train_selected(archetype)
 
 
 ## Swaps a chip's own stylebox on hover — see `_build_chip_pool`'s doc
@@ -3600,6 +3856,12 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"label": "%s\n%s" % [unit.display_name, _cost_text(
 				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
 			"kind": "train", "id": archetype,
+			# Same affordability gate as the build list. Missing here at
+			# first, which left the most-used button in the game — training
+			# — looking available and then being refused server-side, while
+			# buildings greyed out properly.
+			"enabled": _can_afford(unit.cost_food, unit.cost_wood,
+				unit.cost_gold, unit.cost_stone),
 		})
 	# Only an ARMED building offers this (D-032's `damage` gate, the same
 	# one Combat.resolve_buildings itself checks) — a storehouse has
@@ -3728,15 +3990,81 @@ func _squad_build_actions(def_id: StringName) -> Array:
 				})
 		return out
 
-	var out := [{"label": "< Back", "kind": "build_category", "id": ""}]
+	# Within a category, defs that fall into named GROUPS get one more level
+	# (playtest fix). "Defensive" had eight entries once the wall family
+	# grew, and the two tiers — a cheap palisade you throw up early and the
+	# garrison wall you actually garrison — are different decisions that
+	# were sitting in one undifferentiated list.
+	#
+	# Grouped by DATA (`walkable_top`), not by naming the defs, for the same
+	# reason `_bastion_model_for` derives its answer that way: a new wall
+	# def lands in the right group without this function learning its name.
+	var groups := {}
 	for building in by_category[_build_menu_category]:
-		out.append({
-			"label": "Build %s\n%s" % [building.display_name, _cost_text(
-				building.cost_food, building.cost_wood,
-				building.cost_gold, building.cost_stone)],
-			"kind": "build", "id": building.id,
-		})
+		var group := _build_menu_group_of(building)
+		if not groups.has(group):
+			groups[group] = []
+		(groups[group] as Array).append(building)
+
+	# Only interpose the extra level when there is genuinely more than one
+	# group to choose between — a category with a single group would
+	# otherwise cost a pointless click on the way to the same list.
+	var grouped: Array = groups.keys().filter(func(g): return g != "")
+	grouped.sort()
+	if grouped.size() > 1 and _build_menu_group == "":
+		var picker := [{"label": "< Back", "kind": "build_category", "id": ""}]
+		for group in grouped:
+			picker.append({
+				"label": BUILD_GROUP_LABELS.get(group, group),
+				"kind": "build_group", "id": group,
+			})
+		# Anything ungrouped in this category still lists directly, so a
+		# stray def can never become unreachable by not having a group.
+		for building in groups.get("", []):
+			picker.append(_build_action_for(building))
+		return picker
+
+	var listing: Array = groups.get(_build_menu_group, by_category[_build_menu_category]) \
+		if _build_menu_group != "" else by_category[_build_menu_category]
+	var out := [{
+		"label": "< Back",
+		"kind": "build_group" if _build_menu_group != "" else "build_category",
+		"id": "",
+	}]
+	for building in listing:
+		out.append(_build_action_for(building))
 	return out
+
+
+## Which sub-group of its category a def belongs to, or "" for none.
+##
+## `walkable_top` is the real dividing line in the wall family: the cheap
+## palisade tier is a pure blocker, the garrison tier is a second elevation
+## layer you put soldiers on (D-076). That is exactly the distinction worth
+## a menu level, and it is already in the data.
+func _build_menu_group_of(def: BuildingDef) -> String:
+	if def.footprint_radius != 0:
+		return ""
+	return "garrison" if def.walkable_top else "palisade"
+
+
+const BUILD_GROUP_LABELS := {
+	"palisade": "Palisade\nwall & gate",
+	"garrison": "Garrison\nwall, gate & tower",
+}
+
+
+## One build button, shared by the grouped and ungrouped paths so a def's
+## label and its affordability cannot differ depending on how you reached it.
+func _build_action_for(building: BuildingDef) -> Dictionary:
+	return {
+		"label": "Build %s\n%s" % [building.display_name, _cost_text(
+			building.cost_food, building.cost_wood,
+			building.cost_gold, building.cost_stone)],
+		"kind": "build", "id": building.id,
+		"enabled": _can_afford(building.cost_food, building.cost_wood,
+			building.cost_gold, building.cost_stone),
+	}
 
 
 ## Relabel the pooled buttons. Never creates or frees Controls — selection
@@ -3751,6 +4079,28 @@ func _set_actions(actions: Array) -> void:
 			continue
 		button.visible = true
 		button.text = String(actions[i]["label"])
+		# Playtest fix: something you cannot afford is greyed and
+		# unpressable, rather than looking available and being silently
+		# refused by the server on click. The server still re-checks (D-002)
+		# — this only decides what the button LOOKS like, exactly as
+		# `_can_place_at` only decides what the ghost looks like.
+		button.disabled = not bool(actions[i].get("enabled", true))
+
+
+## Whether this player's wallet currently covers a cost. All four
+## resources or none, matching `Economy.try_spend`'s all-or-nothing rule
+## (D-028) — a button that lit up when you could afford three quarters of
+## something would be a worse lie than no button state at all.
+##
+## Advisory: the wallet is replicated and the server charges for real.
+func _can_afford(food: int, wood: int, gold: int, stone: int) -> bool:
+	var purse := _state.wallet
+	if purse.size() < 4:
+		return true  # not told yet; do not grey out the whole menu on a cold start
+	return purse[Economy.ResourceKind.FOOD] >= food \
+		and purse[Economy.ResourceKind.WOOD] >= wood \
+		and purse[Economy.ResourceKind.GOLD] >= gold \
+		and purse[Economy.ResourceKind.STONE] >= stone
 
 
 func _on_action_pressed(index: int) -> void:
@@ -3762,6 +4112,9 @@ func _on_action_pressed(index: int) -> void:
 			_train_selected(StringName(action["id"]))
 		"build":
 			_build_selected(String(action["id"]))
+		"build_group":
+			_build_menu_group = String(action["id"])
+			_update_selection_panel()
 		"gather":
 			_gather_selected()
 		"stop":
@@ -3833,6 +4186,14 @@ func _on_build_action_pressed(index: int) -> void:
 		# _build_menu_category's doc. Refreshed immediately rather than
 		# waiting for next frame's automatic pass so a click feels instant.
 		_build_menu_category = String(action["id"])
+		# Changing category always drops the sub-group, so backing out of
+		# "defensive" and into it again starts at its group picker instead
+		# of silently resuming wherever you were last time.
+		_build_menu_group = ""
+		_update_selection_panel()
+		return
+	if String(action["kind"]) == "build_group":
+		_build_menu_group = String(action["id"])
 		_update_selection_panel()
 		return
 	_build_selected(String(action["id"]))
@@ -4032,10 +4393,19 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 		# Ctrl+wheel TURNS, plain wheel zooms. Zoom keeps the bare gesture
 		# because it is the one used constantly; rotation is occasional and
 		# can afford a modifier.
+		#
+		# Third meaning, highest priority of the three: while a FREESTANDING
+		# building's ghost is live, plain wheel rotates IT instead of
+		# zooming — the continuous, player-driven counterpart to the V key's
+		# 6-way snap, which stays V-only for a wall/access-tower piece
+		# (see `_free_rotating_armed_def`'s doc for why those can't be free).
 		MOUSE_BUTTON_WHEEL_UP:
 			if event.pressed:
 				if event.ctrl_pressed:
 					_set_camera_yaw(_camera_yaw + CAMERA_YAW_WHEEL_STEP)
+				elif _free_rotating_armed_def() != null:
+					_placing_free_facing = posmod(
+						_current_free_facing_byte() + FREE_FACING_WHEEL_STEP, 256)
 				else:
 					_camera_height = clampf(_camera_height - CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
 					_update_camera()
@@ -4043,6 +4413,9 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			if event.pressed:
 				if event.ctrl_pressed:
 					_set_camera_yaw(_camera_yaw - CAMERA_YAW_WHEEL_STEP)
+				elif _free_rotating_armed_def() != null:
+					_placing_free_facing = posmod(
+						_current_free_facing_byte() - FREE_FACING_WHEEL_STEP, 256)
 				else:
 					_camera_height = clampf(_camera_height + CAMERA_ZOOM_STEP, CAMERA_MIN_HEIGHT, _camera_max_height)
 					_update_camera()
@@ -4082,6 +4455,12 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 					if armed_def != null and armed_def.footprint_radius == 0:
 						_placing_drag = true
 						_placing_drag_start = _snapped_placement_cell(event.position)
+						# The SNAPPED start, not the raw cursor point. A run
+						# dragged off an existing wall has to begin flush
+						# against it, and this is also half of why a plain
+						# click used to build somewhere other than where the
+						# ghost showed — see `_finish_placement_drag`.
+						_placing_drag_start_world = _wall_attach_world(event.position, armed_def)
 						return
 					if _place_armed_building(event.position):
 						return
@@ -4480,11 +4859,17 @@ func _handle_key(event: InputEventKey) -> void:
 ## PREVIOUS pass's height estimate instead of 0, and the estimate settles
 ## once resampling stops moving it. Falls back to the original flat-plane
 ## behaviour if no sampler is available yet (terrain not built).
-func _cell_under(screen_position: Vector2) -> Vector2i:
+## The WORLD point under the cursor, or a non-finite vector on a miss.
+##
+## Split out from `_cell_under` for D-096: continuous wall placement needs
+## where on the ground the player is actually pointing, not merely which
+## cell contains it, and rounding to a cell first would throw away exactly
+## the sub-cell precision the whole change exists to keep.
+func _world_under(screen_position: Vector2) -> Vector3:
 	var from := _camera.project_ray_origin(screen_position)
 	var direction := _camera.project_ray_normal(screen_position)
 	if absf(direction.y) < 0.0001:
-		return Vector2i(-1, -1)
+		return Vector3.INF
 
 	var height := 0.0
 	var distance := 0.0
@@ -4492,12 +4877,19 @@ func _cell_under(screen_position: Vector2) -> Vector2i:
 	for i in range(iterations):
 		distance = (height - from.y) / direction.y
 		if distance <= 0.0:
-			return Vector2i(-1, -1)
+			return Vector3.INF
 		if i < iterations - 1:
 			var probe := from + direction * distance
 			height = _state.terrain_sampler.call(probe.x, probe.z)
 
-	return _state.space.world_to_cell(from + direction * distance)
+	return from + direction * distance
+
+
+func _cell_under(screen_position: Vector2) -> Vector2i:
+	var world := _world_under(screen_position)
+	if not world.is_finite():
+		return Vector2i(-1, -1)
+	return _state.space.world_to_cell(world)
 
 
 ## Right-click orders the SELECTION, not everything owned (D-027
@@ -4692,8 +5084,46 @@ func _build_selected(def_id: String) -> void:
 		return
 	_placing = StringName(def_id)
 	_placing_facing = 0
+	_placing_free_facing = -1
 	_last_snap_cell = Vector2i(-1, -1)
 	_update_placement_ghost()
+
+
+## The armed def, if one is armed that turns FREELY and we are not mid-drag.
+##
+## As of D-096 that is everything except the access tower. Walls used to be
+## excluded here — their rotation was mechanically load-bearing for joint
+## alignment — but a segment now carries its own continuous angle and the
+## joints are derived from real geometry, so nothing depends on a wall
+## being one of six directions any more.
+##
+## The access tower is still out: its door has to open onto an actual
+## neighbouring cell, so it keeps the 6-way V-controlled `_placing_facing`.
+##
+## Mid-drag returns null because a dragged run takes its angle from the
+## line, not from the wheel — see `_update_drag_line_ghosts`.
+func _free_rotating_armed_def() -> BuildingDef:
+	if _placing == &"" or _placing_drag:
+		return null
+	var def := BuildingSim.def_by_id(_placing)
+	if def == null or def.is_access_tower:
+		return null
+	return def
+
+
+## The facing byte ([0, 256)) a freestanding placement would use RIGHT NOW
+## — the player's scroll-chosen value if they've touched the wheel this
+## placement, else the automatic default for the cell under the cursor.
+## Shared by the ghost preview, the wheel handler (so the first notch turns
+## FROM whatever's currently showing rather than jumping from a hardcoded
+## 0) and the eventual build order, so the three can never disagree.
+func _current_free_facing_byte() -> int:
+	if _placing_free_facing >= 0:
+		return _placing_free_facing
+	var cell := _snapped_placement_cell(get_viewport().get_mouse_position())
+	if cell.x < 0 or _state.space == null:
+		return 0
+	return PlacementJitter.yaw_byte(_state.space.index(cell))
 
 
 ## Snap the cursor's cell to the nearest cell adjacent to an EXISTING
@@ -4770,21 +5200,133 @@ func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
 func _place_armed_building(screen_position: Vector2) -> bool:
 	if _placing == &"":
 		return false
-	var cell := _snapped_placement_cell(screen_position)
 	# Typed explicitly: `_selected` is untyped, so a ternary over it has
 	# no inferable type and the whole script fails to parse.
 	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
 	var def_id := _placing
-	var facing := _placing_facing
+	var free_def := _free_rotating_armed_def()
+	var pose := _armed_pose(screen_position, free_def)
 	_cancel_placement()
+	var cell: Vector2i = pose["cell"]
 	if cell.x < 0 or squad < 0:
 		return true
 
-	var order := _state.encode_build(squad, String(def_id), cell, facing)
+	# No signed-range dance any more: `facing` is an UNSIGNED 0-255 byte on
+	# the wire (NetProtocol's `put_u8`). It was `put_8`, and this call site
+	# compensated by folding values >= 128 negative while the drag path did
+	# not — so every angle in the upper half of the circle built rotated
+	# differently from the ghost that aimed it. Making the field unsigned
+	# fixes both paths at once and removes the thing there was to forget.
+	var facing: int = int(pose["facing"])
+	var order := _state.encode_build(squad, String(def_id), cell, facing, pose["offset"])
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+		_note_build_site(cell, pose["offset"], BuildingSim.def_by_id(def_id), float(pose["angle"]))
 		print("client: asked squad %d to found a %s at %s" % [squad, def_id, cell])
 	return true
+
+
+## Where an armed building would actually stand, and how it would be
+## turned, for the point the cursor is over. THE one answer, shared by the
+## placement ghost and the click that commits it (D-096).
+##
+## Sharing it is the whole point. The ghost and the build order used to
+## compute their own answers, and when those two drifted apart the ghost
+## promised one thing and the build delivered another — reported as a wall
+## previewing correctly and then building in the wrong orientation.
+##
+## `free_def` is `_free_rotating_armed_def()`, passed in rather than
+## re-derived so the caller's decision and this one cannot disagree either.
+## Returns cell (-1,-1) when the cursor is not over the ground.
+func _armed_pose(screen_position: Vector2, free_def: BuildingDef) -> Dictionary:
+	var miss := {"cell": Vector2i(-1, -1), "facing": 0, "offset": Vector2.ZERO, "angle": 0.0}
+	if _state.space == null:
+		return miss
+
+	# `facing` is the WIRE value and `angle` is radians for drawing. They
+	# are not the same scale and must not be conflated: the access tower's
+	# facing is one of 6 hex directions, everything else's is a 0-255 byte.
+	# Returning both means no caller has to know which rule applies, and a
+	# caller that guessed would silently draw a tower at ~1 degree instead
+	# of pointing its door.
+	#
+	# The access tower also still SNAPS to its cell centre: its door opens
+	# onto a neighbouring cell, so standing it off-centre would aim the
+	# door at something that is not a cell boundary at all.
+	if free_def == null:
+		var snapped := _snapped_placement_cell(screen_position)
+		if snapped.x < 0:
+			return miss
+		return {
+			"cell": snapped, "facing": _placing_facing, "offset": Vector2.ZERO,
+			"angle": _facing_rotation_y(_placing_facing),
+		}
+
+	var world := _world_under(screen_position)
+	if not world.is_finite():
+		return miss
+
+	# A wall snaps to whatever wall is already there and pivots about that
+	# join; everything else stands where the cursor is.
+	#
+	# The arithmetic lives in `WallRun.place_single` — deliberately NOT
+	# here. An earlier version of this function had its own inline copy,
+	# which meant the snap behaviour could only be checked by playing the
+	# game, and it shipped wrong three times running. It is now a pure
+	# function with tests that lay walls along a diagonal and assert they
+	# come out collinear, so "what happens when I click" is something that
+	# fails in CI rather than in a screenshot.
+	if free_def.footprint_radius == 0:
+		return WallRun.place_single(
+			_state.space, free_def, _existing_wall_segments(), world,
+			_placing_free_facing, _state.space.hex_size * WALL_SNAP_CELLS)
+
+	var facing := _current_free_facing_byte()
+	var entry := WallRun.entry(_state.space, world, 0.0)
+	entry["facing"] = facing
+	entry["angle"] = PlacementJitter.radians_of_byte(facing)
+	return entry
+
+
+## The world point a wall being placed here should attach to — the snap
+## point if one is in reach, otherwise the raw ground point under the
+## cursor. The one definition, so the ghost, the drag's start and the
+## committed build all snap to the same place.
+func _wall_attach_world(screen_position: Vector2, def: BuildingDef) -> Vector3:
+	var world := _world_under(screen_position)
+	if not world.is_finite() or def == null or def.footprint_radius != 0 \
+			or def.is_access_tower or _state.space == null:
+		return world
+	var attach := WallRun.nearest_attach(
+		_state.space, _existing_wall_segments(), world,
+		_state.space.hex_size * WALL_SNAP_CELLS)
+	return attach["point"] if bool(attach["found"]) else world
+
+
+## Every wall-family segment this client knows about, in the shape
+## `WallRun.nearest_attach` wants: true world centre, real angle, real
+## length. Built from replicated state (D-096's pose), so it is the same
+## geometry the renderer draws — snapping to a wall that is drawn somewhere
+## else would be worse than not snapping at all.
+func _existing_wall_segments() -> Array:
+	var out := []
+	if _state.space == null:
+		return out
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var def: BuildingDef = _building_defs.get(wire_id, null)
+		if def == null or def.footprint_radius != 0 or def.is_access_tower:
+			continue
+		var pos := _state.space.to_world(_state.space.from_index(int(info["cell"]))) \
+			+ Vector3(float(info.get("offset_x", 0.0)), 0.0, float(info.get("offset_z", 0.0)))
+		out.append({
+			"pos": pos,
+			"angle": PlacementJitter.radians_of_byte(int(info.get("facing", 0))),
+			"length": def.mesh_size.x,
+		})
+	return out
 
 
 ## Finish a wall-family placement drag (D-076 amendment): a straight click
@@ -4797,53 +5339,71 @@ func _place_armed_building(screen_position: Vector2) -> bool:
 func _finish_placement_drag(end_screen_position: Vector2) -> void:
 	var def_id := _placing
 	var def := BuildingSim.def_by_id(def_id)
-	var start := _placing_drag_start
-	var end := _snapped_placement_cell(end_screen_position)
+	var start_world := _placing_drag_start_world
+	var end_world := _world_under(end_screen_position)
+	# Captured BEFORE `_cancel_placement`, which clears `_placing` and the
+	# scroll-chosen `_placing_free_facing` this depends on. Reading it after
+	# would silently fall back to the default angle and throw away whatever
+	# the player had aimed — the click would build at a different rotation
+	# than the ghost it was aimed with.
+	var click_pose := _armed_pose(end_screen_position, _free_rotating_armed_def())
 	_cancel_placement()
-	if def == null or start.x < 0 or end.x < 0 or _state.space == null:
+	if def == null or _state.space == null \
+			or not start_world.is_finite() or not end_world.is_finite():
 		return
 
-	if start == end:
-		var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
-		if squad < 0:
-			return
-		var order := _state.encode_build(squad, String(def_id), start, _placing_facing)
-		if not order.is_empty():
-			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
-			print("client: asked squad %d to found a %s at %s" % [squad, def_id, start])
-		return
-
-	var line := _hex_line(start, end)
 	var builders := _eligible_builders(def_id)
 	if builders.is_empty():
 		_notify_line_needs_a_builder()
 		return
 
-	# The bug: every segment used to send whatever `_placing_facing` was
-	# left over from BEFORE the drag (a stale V-key rotation, or a snap
-	# that only ever looked at the start cell) instead of the direction
-	# the line actually runs. One facing for the whole straight line is
-	# correct — `_hex_line` only ever produces a straight one — as long
-	# as it is derived from the real start->end direction.
-	var line_facing := _direction_index_of(_state.space.delta(start, end))
+	# D-096: the run is laid along the TRUE dragged line — segments end to
+	# end at the def's own length, each turned to the line's real angle —
+	# rather than one segment per hex cell snapped to six directions.
+	# `WallRun` owns that arithmetic (and its wrap-awareness) so it can be
+	# tested without a client.
+	var run := WallRun.segments(_state.space, def, start_world, end_world)
+
+	# A CLICK, not a drag: take the pose straight from `_armed_pose`, which
+	# is the exact thing the ghost was drawing a frame ago.
+	#
+	# This is the fix for a real bug. A wall click starts a drag (every
+	# wall-family piece does), so it never went through
+	# `_place_armed_building` and never saw the snap — the ghost showed a
+	# wall attached to its neighbour and the build put one at the raw cursor
+	# point instead. Deriving the single-segment case from the same function
+	# the ghost uses is what makes "what you see is what you build" true for
+	# walls too, rather than only for everything else.
+	if run.size() <= 1 and click_pose["cell"].x >= 0:
+		run = [{
+			"cell": click_pose["cell"],
+			"facing": int(click_pose["facing"]),
+			"offset": click_pose["offset"],
+		}]
+	if run.is_empty():
+		return
 
 	var queues := {}
-	for i in range(line.size()):
+	for i in range(run.size()):
 		var squad: int = builders[i % builders.size()]
 		if not queues.has(squad):
 			queues[squad] = []
-		(queues[squad] as Array).append(line[i])
+		(queues[squad] as Array).append(run[i])
 
 	for squad in queues:
-		var cells: Array = queues[squad]
+		var mine: Array = queues[squad]
 		var first := true
-		for cell in cells:
-			var order := _state.encode_build(squad, String(def_id), cell, line_facing) \
-				if first else _state.encode_build_queue(squad, String(def_id), cell, line_facing)
+		for segment in mine:
+			var cell: Vector2i = segment["cell"]
+			var facing: int = int(segment["facing"])
+			var offset: Vector2 = segment["offset"]
+			var order := _state.encode_build(squad, String(def_id), cell, facing, offset) \
+				if first else _state.encode_build_queue(squad, String(def_id), cell, facing, offset)
 			first = false
 			if not order.is_empty():
 				_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
-	print("client: drew a %d-cell %s line across %d squad(s)" % [line.size(), def_id, builders.size()])
+				_note_build_site(cell, offset, def, PlacementJitter.radians_of_byte(facing))
+	print("client: drew a %d-segment %s run across %d squad(s)" % [run.size(), def_id, builders.size()])
 
 
 ## Nothing to build a drag-line with — silent would look like the drag
@@ -4915,6 +5475,7 @@ func _round_axial(q: float, r: float) -> Vector2i:
 func _cancel_placement() -> void:
 	_placing = &""
 	_placing_drag = false
+	_placing_free_facing = -1
 	if _placement_ghost != null:
 		_placement_ghost.visible = false
 	if _door_marker != null:
@@ -4968,19 +5529,26 @@ func _update_placement_ghost() -> void:
 	else:
 		(_placement_ghost.mesh as BoxMesh).size = size
 
-	var cell := _snapped_placement_cell(get_viewport().get_mouse_position())
+	# THE SAME `_armed_pose` the click will commit (D-096). Previously the
+	# ghost worked out its own position and angle and the build order
+	# worked out another, and the two drifting apart is exactly what was
+	# reported as a wall previewing correctly and then building rotated.
+	# One function, one answer, no opportunity to disagree.
+	var pose := _armed_pose(get_viewport().get_mouse_position(), _free_rotating_armed_def())
+	var cell: Vector2i = pose["cell"]
 	if cell.x < 0:
 		_placement_ghost.visible = false
 		if _door_marker != null:
 			_door_marker.visible = false
 		return
 
-	var world := _state.space.to_world(cell)
+	var offset: Vector2 = pose["offset"]
+	var world := _state.space.to_world(cell) + Vector3(offset.x, 0.0, offset.y)
 	if _state.terrain_sampler.is_valid():
 		world.y = _state.terrain_sampler.call(world.x, world.z)
 	_placement_ghost.visible = true
 	_placement_ghost.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
-	_placement_ghost.rotation.y = _facing_rotation_y(_placing_facing)
+	_placement_ghost.rotation.y = float(pose["angle"])
 
 	var ok := _can_place_at(cell)
 	var material := _placement_ghost.material_override as StandardMaterial3D
@@ -5060,14 +5628,18 @@ func _direction_index_of(delta: Vector2i) -> int:
 ## `_finish_placement_drag` will build it, so nothing about the release
 ## is a surprise.
 func _update_drag_line_ghosts(size: Vector3) -> void:
-	var end := _snapped_placement_cell(get_viewport().get_mouse_position())
-	if end.x < 0:
+	var def := BuildingSim.def_by_id(_placing)
+	var end_world := _world_under(get_viewport().get_mouse_position())
+	if def == null or not end_world.is_finite() or not _placing_drag_start_world.is_finite():
 		_hide_drag_line_ghosts()
 		return
 
-	var line := _hex_line(_placing_drag_start, end)
-	var rotation_y := _facing_rotation_y(
-		_direction_index_of(_state.space.delta(_placing_drag_start, end)))
+	# D-096: preview the run through the SAME `WallRun.segments` that
+	# `_finish_placement_drag` builds it with, so the boxes you are looking
+	# at are the segments you will get — same count, same continuous
+	# positions, same angle. The old version previewed one box per hex cell
+	# at six possible angles while the build did something else entirely.
+	var line := WallRun.segments(_state.space, def, _placing_drag_start_world, end_world)
 
 	while _drag_ghost_pool.size() < line.size():
 		var mesh := BoxMesh.new()
@@ -5085,13 +5657,15 @@ func _update_drag_line_ghosts(size: Vector3) -> void:
 		if i >= line.size():
 			instance.visible = false
 			continue
-		var cell: Vector2i = line[i]
+		var segment: Dictionary = line[i]
+		var cell: Vector2i = segment["cell"]
+		var offset: Vector2 = segment["offset"]
 		(instance.mesh as BoxMesh).size = size
-		var world := _state.space.to_world(cell)
+		var world := _state.space.to_world(cell) + Vector3(offset.x, 0.0, offset.y)
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
 		instance.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
-		instance.rotation.y = rotation_y
+		instance.rotation.y = PlacementJitter.radians_of_byte(int(segment["facing"]))
 		instance.visible = true
 		var ok := _can_place_at(cell)
 		var material := instance.material_override as StandardMaterial3D
@@ -5168,6 +5742,15 @@ func _can_place_at(cell: Vector2i) -> bool:
 		var index := _state.space.index(cell)
 		if index < _passable.size() and _passable[index] == 0:
 			return false
+	# A resource node is ground you cannot build on, mirroring the server's
+	# own check in `_is_buildable` so the ghost turns red before the click
+	# rather than the order being refused after a twenty-second walk.
+	#
+	# `_state.nodes` is already fog-gated (it only holds what this client has
+	# been shown), so this leaks nothing about unexplored ground — the same
+	# reasoning as the enemy-claim check above.
+	if _state.nodes.has(_state.space.index(cell)):
+		return false
 	return true
 
 

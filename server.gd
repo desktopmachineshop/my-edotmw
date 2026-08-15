@@ -676,8 +676,15 @@ func _admit_player(peer, player: int) -> void:
 	# was missing, and only looking at the picture found it.
 	# The seat list too, so the client knows every player's colour
 	# (D-052) whichever way the match began. Small, and sent once.
+	# Playtest fix: this call omitted sandbox/instant_build/ai_economy_only,
+	# which default to false in `encode_lobby` — so a player joining a
+	# --lobby=0 match (every quick-test) always saw sandbox mode reported
+	# OFF regardless of the launch flag, and the debug panel never opened.
+	# `_broadcast_lobby` (the actual lobby phase) already passed these
+	# correctly; this direct-join path just never got them.
 	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.seats,
-		_settings.to_dict(), int(_match.phase)), ENetPacketPeer.FLAG_RELIABLE)
+		_settings.to_dict(), int(_match.phase),
+		_match.sandbox, _match.instant_build, _match.ai_economy_only), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -1168,10 +1175,67 @@ func _refresh_passability() -> void:
 	# (still occupies its cell for placement/combat purposes) but is
 	# passable while open (D-076), so its cell must not be blocked here
 	# even though the building itself is still very much there.
+	# Where living squads are standing RIGHT NOW, so a building completing
+	# around one cannot seal it in.
+	#
+	# Playtest fix, and a direct consequence of D-096. A wall used to block
+	# exactly its own cell, so a builder standing beside the segment it had
+	# just finished was safe. A wall now blocks every cell its body crosses
+	# — a band, not a point — and the crew that raised it is frequently
+	# inside that band when it completes. Reported as gatherers stuck in
+	# garrison walls and towers during building.
+	#
+	# It cannot be fixed by ordering them out afterwards: a squad standing
+	# on an impassable cell has no flow-field value to follow (D-040 — an
+	# unreachable cell reads as "no path"), so the order is cancelled and
+	# the squad stays exactly where it is. The cell has to REMAIN passable
+	# until they are actually out of it.
+	var occupied := {}
+	for squad in range(_sim.squad_count()):
+		if _sim.alive_of(squad) > 0:
+			occupied[_sim.space.index(_sim.cell_of(squad))] = squad
+
+	var trapped := []
 	for index in _buildings.blocking_cells():
-		if index < blocked.size():
-			blocked[index] = 0
+		if index >= blocked.size():
+			continue
+		if occupied.has(index):
+			# Left passable this pass, and the squad shoved clear. The cell
+			# blocks on the next refresh once nobody is standing in it, so
+			# this is a brief hole rather than a permanent one — a squad
+			# cannot idle inside a wall to keep it open, because it is being
+			# actively walked out.
+			trapped.append(occupied[index])
+			continue
+		blocked[index] = 0
 	_sim.set_passable(blocked)
+
+	for squad in trapped:
+		var out_cell := _nearest_open_cell(_sim.cell_of(squad), blocked)
+		if out_cell != _sim.cell_of(squad):
+			_sim.force_move(squad, out_cell)
+
+
+## The closest cell to `from` that `passable` says is open, or `from` itself
+## if nothing near enough is.
+##
+## `disk_offsets` is sorted nearest-first (D-067), so the first open cell it
+## finds IS the closest — this is the "walk outward until you find one"
+## the standing rule explicitly permits, rather than a `distance()` scan.
+func _nearest_open_cell(from: Vector2i, passable: PackedByteArray) -> Vector2i:
+	for offset in TorusSpace.disk_offsets(NEAREST_OPEN_CELL_RADIUS):
+		var candidate := _sim.space.normalize(from + offset)
+		var index := _sim.space.index(candidate)
+		if index < passable.size() and passable[index] != 0:
+			return candidate
+	return from
+
+
+## How far to look for open ground when shoving a squad out of a building
+## that completed around it. A wall band is one or two cells thick, so this
+## only has to clear that plus a margin — searching further would mean
+## teleporting a squad somewhere it never chose to be.
+const NEAREST_OPEN_CELL_RADIUS := 4
 
 
 ## How many ticks pass between looks at auto-mode gates (D-076). Every
@@ -1275,7 +1339,7 @@ func _advance_pending_builds() -> void:
 
 		_finish_build(intent["peer"], squad,
 			BuildingSim.def_by_id(StringName(intent["def_id"])), cell,
-			int(intent.get("facing", 0)))
+			int(intent.get("facing", 0)), intent.get("offset", Vector2.ZERO))
 
 		# Straight on to the next queued segment (D-076's drag-line tool),
 		# rather than waiting for the player to click again — the whole
@@ -1319,11 +1383,14 @@ func _do_order_build(peer, data: PackedByteArray, replace: bool) -> void:
 		push_error("server: client asked for unknown building '%s'" % order["def_id"])
 		return
 
-	# D-076: every building carries a facing (0-5); wrapped rather than
-	# trusted, since the client is not (D-002) and a stray value must not
-	# desync `BuildingSim.add_building`'s own posmod from what was checked
-	# here.
-	var facing := posmod(int(order.get("facing", 0)), 6)
+	# D-076: every building carries a facing; wrapped rather than trusted,
+	# since the client is not (D-002). Only into a generic safe byte range
+	# here — the real wrap (0-5 for a wall/access-tower's hex direction, or
+	# 0-255 for a freestanding building's continuous cosmetic angle) is
+	# `def`-dependent, and `BuildingSim.add_building` already has `def` and
+	# decides it there, once, rather than this duplicating that judgement
+	# and risking disagreeing with it.
+	var facing := posmod(int(order.get("facing", 0)), 256)
 
 	# Every refusal below tells the player WHY. Silence made a refused
 	# order indistinguishable from a broken key during the first playtest.
@@ -1351,8 +1418,19 @@ func _do_order_build(peer, data: PackedByteArray, replace: bool) -> void:
 		_notify(peer, "Too close to another building")
 		return
 
+	# Sub-cell offset (D-096), clamped rather than trusted: the client picks
+	# where along a dragged line each segment sits, and an unclamped value
+	# would let a crafted packet plant a wall an arbitrary distance from the
+	# cell whose buildability was just checked above. One hex's width is the
+	# most any legitimate offset can be.
+	var reach := _sim.space.hex_size * TorusSpace.SQRT_3
+	var offset := Vector2(
+		clampf(float(order.get("offset_x", 0.0)), -reach, reach),
+		clampf(float(order.get("offset_z", 0.0)), -reach, reach))
+
 	_enqueue_build(squad, {
 		"def_id": def.id, "cell": cell, "peer": peer, "facing": facing,
+		"offset": offset,
 	}, replace)
 	_notify(peer, "Moving to build a %s" % def.display_name)
 
@@ -1388,7 +1466,7 @@ func _enqueue_build(squad: int, intent: Dictionary, replace: bool) -> void:
 		# actually committed, same as the walked-there path.
 		_finish_build(intent["peer"], squad,
 			BuildingSim.def_by_id(StringName(intent["def_id"])), cell,
-			int(intent.get("facing", 0)))
+			int(intent.get("facing", 0)), intent.get("offset", Vector2.ZERO))
 		if not queue.is_empty() and _sim.alive_of(squad) > 0:
 			_sim.order_move(squad, queue[0]["cell"])
 	else:
@@ -1402,7 +1480,7 @@ func _enqueue_build(squad: int, intent: Dictionary, replace: bool) -> void:
 ## implementation rather than two that can drift — the same reason
 ## `_admit_player` is shared by joining and by starting a match.
 func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
-		facing: int = 0) -> void:
+		facing: int = 0, offset: Vector2 = Vector2.ZERO) -> void:
 	if def == null:
 		return
 	var owner := _sim.owner_of(squad)
@@ -1460,7 +1538,7 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# rather than at 0 progress. Cost is still charged above — instant
 	# build skips the WAIT, not the economy, so it stays useful for
 	# testing the economy itself.
-	var built := _buildings.add_building(def, owner, cell, _match.instant_build, squad, facing)
+	var built := _buildings.add_building(def, owner, cell, _match.instant_build, squad, facing, offset)
 	_send_wallet(peer, owner)
 	_refresh_passability()
 
@@ -1656,7 +1734,10 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 		return
 
 	var player := int(record["player"])
-	var facing := posmod(int(order.get("facing", 0)), 6)
+	# Same generic safety wrap as `_do_order_build` — `add_building` is the
+	# one place that knows whether `def` wants a 6-way hex direction or a
+	# continuous byte.
+	var facing := posmod(int(order.get("facing", 0)), 256)
 	_buildings.add_building(def, player, cell, true, -1, facing)
 	_refresh_passability()
 	_notify(peer, "Cheat: spawned a %s" % def.display_name)
@@ -1670,11 +1751,38 @@ func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> 
 	var index := _sim.space.index(cell)
 	if index < _passable.size() and _passable[index] == 0:
 		return false
+	# Resource nodes are ground you cannot build on (playtest fix). Nothing
+	# checked this before, so a town centre could be founded straight on top
+	# of a forest — the node stayed gatherable underneath and the building
+	# stood in the middle of it, which looks broken and quietly denies the
+	# node to the gatherers who need to stand there.
+	#
+	# Guarded on null because `_is_buildable` is exercised directly by tests
+	# that stand up a server with only `_sim`/`_buildings`/`_passable` set;
+	# an economy-less server simply has no nodes to collide with.
+	if _economy != null and _economy.has_node(index):
+		return false
+
 	var upgrade_target := _upgrade_target_at(cell, def, owner) if def != null else -1
 	for i in range(_buildings.building_count()):
-		if _buildings.cell_index_of(i) == index and not _buildings.is_destroyed(i) \
-				and i != upgrade_target:
-			return false
+		if _buildings.cell_index_of(i) != index or _buildings.is_destroyed(i) \
+				or i == upgrade_target:
+			continue
+		# D-096: for the wall family a cell is an ANCHOR, not an exclusive
+		# slot. Segments of a continuously-placed run sit WALL_LENGTH
+		# (~1.77) apart while a hex is ~1.73 across, so two consecutive
+		# segments occasionally round into the same anchor cell — refusing
+		# the second would silently drop it and leave a hole in a wall the
+		# player watched themselves draw. Both sides must be wall family:
+		# a wall still may not share a cell with a town hall, and the
+		# access tower stays exclusive (it is a point structure with a
+		# door — see BuildingSim.span_cells).
+		var other_def := _buildings.def_of(i)
+		if def != null and other_def != null \
+				and def.footprint_radius == 0 and not def.is_access_tower \
+				and other_def.footprint_radius == 0 and not other_def.is_access_tower:
+			continue
+		return false
 	return true
 
 

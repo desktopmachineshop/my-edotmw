@@ -59,6 +59,175 @@ supersede instead, so the rationale trail survives.
 > parallel. Check `main` immediately before merging, not only before
 > writing.
 
+### D-097 · 2026-08-15 · Accepted — build sites are contestable shared state
+
+**Decision:** A pending foundation stops being a private note the server
+keeps for one squad and becomes a **build site**: authoritative, replicated
+to its owner, and contestable by everyone else.
+
+1. **Shared.** Any squad of the owner's that may build that def can work an
+   existing site. Progress **pools** — two gatherers on one foundation build
+   it in half the time, three in a third.
+2. **Persistent and owner-visible.** A site is replicated to its owner (only)
+   and drawn on the ground until it is built or destroyed. No timeout.
+3. **Contestable.** A site does **not** reserve ground against enemies. If an
+   enemy completes a building overlapping it, the site is destroyed, and
+   whatever was spent on it is gone.
+4. **Demolishable.** An owner may destroy their own completed building
+   outright. **No refund**, matching D-055's razing — a building is a sunk
+   cost whichever way it comes down.
+
+**Rationale:** The immediate cause was a smaller thing — a build order was
+silent until the builder arrived, so a distant site was indistinguishable
+from a misclick for many seconds. The first fix was a client-side marker
+that faded after nine seconds. Playing with it made the real shape obvious:
+a mark that only YOU can see, that no other builder can act on, and that
+vanishes on a timer is a *notification*, when what the player wants is a
+**plan** — something they lay down, come back to, and reinforce.
+
+Pooling rather than merely surviving one builder's death (the alternative
+considered) is what makes helping a real decision: sending a second crew has
+a visible payoff, so "finish this wall NOW" becomes a thing you can spend
+squads on.
+
+Not reserving ground is the deliberately harsh half, and it is what stops
+sites being free territory. A site costs nothing to place and would
+otherwise be a way to claim a map by spamming foundations nobody can build
+over. Making it losable turns forward-building into a genuine race, which is
+the interesting version.
+
+**This crosses a boundary on purpose, and the boundary is worth naming.**
+The marker as originally built was cosmetic and one-way in the spirit of
+D-006 — the simulation could never read it. A build site is the opposite:
+authoritative state that happens to be drawn on the ground. The mark is now
+the *rendering of* the site, not the thing itself, and the D-006 discipline
+continues to apply to the rendering only. Anything the player can contest,
+lose, or spend squads on is simulation state and lives server-side.
+
+**Rejected alternatives:**
+
+- *Keep it a client-only marker* (rejected — cannot be worked by another
+  squad, cannot be contested, and cannot survive a reconnect. Every property
+  asked for here requires the server to own it.)
+- *Sites reserve ground against enemies* (rejected — a free, instant,
+  uncontestable land claim. `_footprint_conflict` already counts pending
+  intents this way, which is fine among your OWN builds and has to be
+  relaxed for enemies.)
+- *Redundancy without pooling* (rejected — a second builder that changes
+  nothing visible is not a decision the player can feel.)
+- *Partial refund on demolish* (rejected — D-055 gives nothing back for
+  razing, and two different answers for "this building came down" is the
+  kind of inconsistency that gets discovered as a exploit rather than as a
+  rule.)
+
+**Consequences:**
+
+- `_pending_builds` moves from a per-squad dictionary to a site list with its
+  own ids, and gains a wire message gated to the owner (fog rules apply —
+  D-004 — but a site is only ever sent to its owner anyway).
+- Construction rate becomes "sum of the crews present", not a fixed rate.
+- A new order opcode for demolition, validated for ownership server-side
+  (D-002) like every other order.
+- `_footprint_conflict` distinguishes own-pending (blocks) from
+  enemy-pending (does not).
+- **Careful with the completion path:** destroying a site when an enemy
+  building lands on it has to go through the same dirty-flag and passability
+  refresh a real destruction does, rather than a second implementation built
+  to match it by hand — the trap D-076's upgrade path already documents.
+
+**Revisit trigger:** If sites become the dominant way players deny ground
+(the opposite failure to the one clause 3 prevents), or if pooled
+construction makes early rushes decide matches faster than D-056's 1-2 hour
+target allows.
+
+---
+
+### D-096 · 2026-08-14 · Accepted — continuous wall placement, rasterised occupancy
+
+**Decision:** A wall-family structure (`footprint_radius == 0` — wall, gate,
+garrison wall, garrison gate, access tower) stops being "one building that
+owns one hex cell". It gains a continuous world position and a continuous
+rotation, and the cells it blocks — and the cells that carry its tier-1
+walkway — are **derived by rasterising its swept rectangle**, rather than
+being the one cell it was placed on.
+
+Concretely:
+
+- `BuildingSim` keeps `_cell` as the **anchor** (the cell the structure's
+  centre falls in). Everything that buckets by cell — combat targeting,
+  vision stamping, the minimap, selection — keeps working untouched.
+- It gains `_offset`, a sub-cell continuous displacement in world units, and
+  `_facing` becomes a continuous angle for the wall family instead of one of
+  six directions. True position is `space.to_world(cell) + offset`.
+- `occupied_cells()` / `blocking_cells()` rasterise the rotated
+  `mesh_size.x × mesh_size.z` rectangle centred on that true position.
+- A placement drag lays segments **end to end along the true dragged line**
+  at exact `WALL_LENGTH` spacing, each rotated to the line's real angle —
+  not one segment per hex cell.
+
+**Rationale:** Grid-locked walls were the most-reported visual problem in
+playtesting, and every symptom traced to the same root. Segments snapped to
+cell centres and to one of six angles cannot follow a shoreline, a ridge, or
+any line a player actually wants to hold. A bend left a gap that had to be
+plugged with a cylindrical post. A gatehouse drawn wider than one cell was
+overlapped by the very walls meant to meet it, because it occupied one cell
+while spanning two.
+
+The insight is that the hex grid was never load-bearing for a wall's
+*appearance* — only for its *effect*. **D-008 is untouched**: cells remain
+the simulation's spatial index, and flow fields, vision and combat all still
+work on them. What changes is only how a wall's occupancy is *computed*.
+
+**The failure mode this must not have** is a wall that looks solid and has a
+pathing hole units walk through. Deriving blocked cells from a segment's true
+swept span, rather than from its centre cell, is precisely what prevents it:
+a segment that visually crosses three cells blocks three cells. This is the
+"looks fine, quietly wrong" class this project keeps getting bitten by, so it
+gets an explicit test — a run dragged at an arbitrary angle must leave **no**
+unblocked cell along its length, and that test must be observed to fail
+before it is trusted.
+
+**Rejected alternatives:**
+
+- *Keep cell placement, render continuously* (rejected — the picture and the
+  simulation would disagree about where a wall stands. A player would aim at
+  a wall that blocked somewhere else, which is worse than an ugly wall.)
+- *Drop the hex grid for a square one* (rejected — costed at the same time.
+  `TorusSpace` is load-bearing under ~15 files, and hex's isotropy is what
+  makes vision and combat disks clean, per the standing `disk_offsets` rule.
+  The grid was never the problem; the one-cell-per-wall model was.)
+- *One cell per segment, tolerating duplicates and skips* (rejected —
+  `WALL_LENGTH` (~1.77) and hex spacing (~1.73) are close but NOT equal, so a
+  run at an arbitrary angle silently skips cells. That is exactly the
+  walk-through-a-solid-wall bug above, arrived at by accident.)
+
+**Consequences:**
+
+- The wire carries a continuous offset and rotation per building.
+- `_footprint_conflict` becomes a span-overlap test for the wall family
+  rather than a cell-equality test.
+- The cylindrical joint post is **replaced by an authored round bastion**,
+  generated per wall style in `art/buildings/` so a stake fence gets a
+  palisade roundel and a stone wall gets a stone drum. Its radius comes from
+  the incoming segments' real angles, so one shape serves a corner, a T and a
+  four-way junction alike. The post it replaces was a `StandardMaterial3D`
+  tinted with `mesh_color` — the *primitive fallback* colour, which the
+  authored wall never renders — which is why it read as a differently
+  coloured spike rather than part of the wall.
+- The garrison gate becomes an exact multiple of `WALL_LENGTH`, and a wall
+  run snaps to its true edge instead of into its middle.
+- This is **not** a step toward continuous-space simulation. Squads still
+  move on flow fields over cells, elevation still does not occlude, and the
+  tick still advances on cells. Any proposal to make combat or pathing
+  continuous is a separate decision and does not inherit this one's rationale.
+
+**Revisit trigger:** If per-segment rasterisation shows up in tick profiling
+at D-018's full scale, or if any system starts needing a wall's continuous
+position for a *simulation* answer rather than a rendering one — the latter
+would mean the discrete/continuous split this decision depends on has leaked.
+
+---
+
 ### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
 
 **Decision:** The art style question ("low poly vs cartoon vs the current
