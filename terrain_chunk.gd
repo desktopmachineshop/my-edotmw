@@ -19,15 +19,24 @@ class_name TerrainChunk
 ## stretched geometry or a visible seam, both of which look like noise
 ## bugs rather than indexing bugs.
 
-## ## UVs come from the CELL, never from world position (D-066)
+## ## UVs come from the CELL, never from world position (D-066, D-096)
 ##
-## Each hex is mapped into its biome's tile in the generated atlas, and the
-## whole tile layout is addressed by the biome index. That choice is what keeps
-## the nine lattice copies (D-035) in agreement: the same mesh is drawn nine
-## times at nine offsets, so any UV derived from world position would show a
-## different phase on each copy unless the tile period happened to divide the
-## lattice step exactly. Cell-derived UVs are identical on every copy by
-## construction — the torus tax paid once, at design time, instead of forever.
+## That choice is what keeps the nine lattice copies (D-035) in agreement: the
+## same mesh is drawn nine times at nine offsets, so any UV derived from world
+## position would show a different phase on each copy unless the tile period
+## happened to divide the lattice step exactly. Cell-derived UVs are identical
+## on every copy by construction — the torus tax paid once, at design time,
+## instead of forever.
+##
+## What D-096 changed is that the cell-derived coordinate is now CONTINUOUS
+## across cell boundaries instead of restarting inside each hex's own tile. Each
+## hex used to be inscribed in its biome's atlas tile with a 6% inset and a
+## hashed rotation, which broke the texture at every edge and was the strongest
+## remaining cue of the lattice once the colour was blended.
+##
+## Continuity across the SEAM is a separate condition, and it is why `uv_scale`
+## exists: the texture period must divide the map period exactly on both axes,
+## or the ninth copy meets the first mid-pattern.
 ##
 ## The atlas MODULATES; vertex colour still decides (D-066). `biome_color`
 ## remains the single source of truth that the minimap and the preview PNG also
@@ -65,39 +74,190 @@ const CORNER_DET := 0.8660254037844387
 # because a silent disagreement paints forest on water rather than erroring.
 const ATLAS_COLUMNS := 4
 const ATLAS_ROWS := 2
-## How far inside its tile a hex is drawn, as a fraction of the tile. Keeps the
-## mip chain from sampling a neighbouring biome's tile at distance; the tiles
-## themselves are periodic, so an inset costs continuity nothing.
-const ATLAS_INSET := 0.06
-
-
-## Where cell `unwrapped` samples the atlas, as (centre, radius) in UV space,
-## plus a per-cell rotation.
+## Roughly how many cells one repeat of an atlas tile should cover. The actual
+## repeat count is rounded from this to something that divides the map period
+## (see `uv_scale`), so it is a target rather than a setting.
 ##
-## The rotation is hashed from the WRAPPED cell so it matches across the seam,
-## and exists because a hex grid all sampling its tile at the same orientation
-## reads as a visible repeating pattern — the eye finds the lattice immediately.
-static func _atlas_frame(space: TorusSpace, terrain: TerrainGen,
-		unwrapped: Vector2i) -> Dictionary:
-	var wrapped := space.normalize(unwrapped)
-	var biome := int(terrain.biome_at(space, wrapped))
-	var column := biome % ATLAS_COLUMNS
-	var row := biome / ATLAS_COLUMNS
+## 3 cells was chosen by eye against the shipped tiles: much larger and the
+## noise reads as blotches rather than ground; much smaller and it aliases into
+## a shimmer at play distance, which no amount of mipping fixes because the
+## camera is nearly always moving.
+const UV_CELLS_PER_TILE := 3.0
 
-	var tile_w := 1.0 / float(ATLAS_COLUMNS)
-	var tile_h := 1.0 / float(ATLAS_ROWS)
-	var centre := Vector2(
-		(float(column) + 0.5) * tile_w,
-		(float(row) + 0.5) * tile_h)
+## Corner k's axial offset from its cell's centre, in THIRDS of a cell.
+##
+## Integers on purpose: `vertex_uv` evaluates the UV over a common denominator
+## so its numerator is exact, which is what lets two cells sharing a corner
+## produce bit-identical UVs rather than merely close ones.
+const CORNER_AXIAL_THIRDS: Array[Vector2i] = [
+	Vector2i(2, -1),
+	Vector2i(1, 1),
+	Vector2i(-1, 2),
+	Vector2i(-2, 1),
+	Vector2i(-1, -1),
+	Vector2i(1, -2),
+]
 
-	# One radius in each axis, so a non-square atlas cell does not stretch the
-	# texture; the hex is inscribed in the tile.
-	var radius := Vector2(tile_w * (0.5 - ATLAS_INSET), tile_h * (0.5 - ATLAS_INSET))
 
-	var hash_input := wrapped.x * 73856093 + wrapped.y * 19349663
-	hash_input = (hash_input ^ (hash_input >> 13)) * 1274126177
-	var turn := float((hash_input ^ (hash_input >> 16)) & 0xFFFF) / 65536.0
-	return {"centre": centre, "radius": radius, "rotation": turn * TAU}
+## How many atlas repeats fit across the map on each axis, as a scale applied to
+## the continuous axial coordinate: `u = scale.x * (q + r/2)`, `v = scale.y * r`.
+##
+## ## The seam is what makes this arithmetic rather than a constant
+##
+## The two vectors that tile this torus (`TorusSpace.lattice_steps`) are not
+## axis-aligned: stepping `width` in q moves world x alone, but stepping
+## `height` in r moves BOTH z and x, because x depends on r/2. So a repeating
+## texture meets itself across the seam only if all three of these are whole
+## numbers of repeats: `scale.x * width`, `scale.x * height/2` and
+## `scale.y * height`. Writing scale.x as `repeats / width` turns the first into
+## `repeats` and the second into `repeats * (height/2) / width`, which is whole
+## exactly when `repeats` is a multiple of `width / gcd(width, height/2)`.
+##
+## The v axis has no such coupling — world z depends on r alone — so any whole
+## number of repeats down the map will do, and it is chosen to keep the texture
+## square in WORLD units rather than in axial ones. A hex column is sqrt(3) wide
+## and a hex row 1.5 deep, so an axially square texture comes out stretched.
+static func uv_scale(space: TorusSpace) -> Vector2:
+	var half_height := maxi(1, space.height / 2)
+	var granularity := maxi(1, space.width / _gcd(space.width, half_height))
+	var wanted := float(space.width) / UV_CELLS_PER_TILE
+	var steps := maxi(1, int(round(wanted / float(granularity))))
+	var repeats_u := granularity * steps
+	var repeats_v := maxi(1, int(round(
+		1.5 * float(space.height) * float(repeats_u)
+		/ (TorusSpace.SQRT_3 * float(space.width)))))
+	return Vector2(
+		float(repeats_u) / float(space.width),
+		float(repeats_v) / float(space.height))
+
+
+static func _gcd(a: int, b: int) -> int:
+	var x := absi(a)
+	var y := absi(b)
+	while y != 0:
+		var t := y
+		y = x % y
+		x = t
+	return maxi(1, x)
+
+
+## The UV of one vertex of one cell. `corner` is -1 for the centre and 0..5 for
+## a corner, matching `TerrainGen.SURFACE_STRIDE`'s layout.
+##
+## `cell` is the UNWRAPPED coordinate, so the texture runs continuously across a
+## chunk boundary. The seam is handled by `uv_scale` making the map period a
+## whole number of repeats, not by normalising here — normalising would restart
+## the texture at the map's edge, which is the defect this replaced one scale up.
+##
+## Evaluated as an integer numerator over a common denominator rather than in
+## floats, so two cells sharing a corner compute the identical value. Corner
+## offsets are thirds of a cell and `r/2` contributes a half, which makes sixths
+## the denominator.
+static func vertex_uv(scale: Vector2, cell: Vector2i, corner: int) -> Vector2:
+	var nq := 0
+	var nr := 0
+	if corner >= 0:
+		var offset: Vector2i = CORNER_AXIAL_THIRDS[corner]
+		nq = offset.x
+		nr = offset.y
+	var u_numerator := 6 * cell.x + 2 * nq + 3 * cell.y + nr
+	var v_numerator := 3 * cell.y + nr
+	return Vector2(
+		scale.x * float(u_numerator) / 6.0,
+		scale.y * float(v_numerator) / 3.0)
+
+
+## How many atlas tiles a fragment blends. Three, because a hex corner is shared
+## by exactly three cells and therefore mixes at most three biomes.
+const TILE_SLOTS := 3
+
+
+## The three atlas tiles a cell's fragments may sample, and each of its seven
+## vertices' weights over them (D-096).
+##
+## Returns `{"tiles": PackedFloat32Array (TILE_SLOTS), "weights":
+## PackedFloat32Array (SURFACE_STRIDE * TILE_SLOTS)}`.
+##
+## ## Why the slots are per CELL and the weights per vertex
+##
+## A fragment cannot blend tiles chosen per vertex: the rasteriser interpolates
+## every varying, and an interpolated tile INDEX asks for tile 4.7. So the index
+## set has to be constant over each triangle and the weights — which interpolate
+## perfectly well — carry the variation. Every cell already emits its own seven
+## vertices (no vertex is shared between cells, only positions coincide), so
+## "constant per cell" costs nothing: the same triple is written to all seven and
+## the interpolation is a no-op.
+##
+## ## Where it can be inexact, and why that is acceptable
+##
+## A corner mixes the biomes of its three owners at a third each, and the two
+## cells sharing an edge interpolate between the same two corner mixtures — so
+## the blend is continuous across every boundary, exactly, as long as both cells'
+## slot sets contain every biome involved. Three slots hold any single corner's
+## mixture, but a cell whose six neighbours span more than three biomes must drop
+## the least demanded, and its neighbour may drop a different one. The result is
+## a small difference in texture DETAIL — never in colour, which is exact and
+## carried separately — across that one edge.
+##
+## `tests/test_terrain_uvs.gd` MEASURES how often that happens on the shipped
+## map rather than assuming it is rare.
+static func cell_tiles(space: TorusSpace, fields: TerrainFields,
+		cell_index: int) -> Dictionary:
+	var own := int(fields.biome[cell_index])
+
+	# Total weight this cell's vertices will ask for, per biome: the centre asks
+	# for its own at 1, and each of the six corners for a third of each owner.
+	var demand := {own: 1.0}
+	var corner_trios: Array[Vector3i] = []
+	for k in range(6):
+		var trio := TerrainGen.corner_cells(space, cell_index, k)
+		corner_trios.append(trio)
+		for owner in [trio.x, trio.y, trio.z]:
+			var b := int(fields.biome[owner])
+			demand[b] = float(demand.get(b, 0.0)) + 1.0 / 3.0
+
+	# Own biome first — a cell must always be able to paint itself — then the
+	# rest by demand, ties broken by biome index so the choice is deterministic.
+	var others: Array = []
+	for b in demand:
+		if b != own:
+			others.append(b)
+	others.sort_custom(func(a: int, b: int) -> bool:
+		var da: float = demand[a]
+		var db: float = demand[b]
+		if da != db:
+			return da > db
+		return a < b)
+
+	var tiles := PackedFloat32Array()
+	tiles.resize(TILE_SLOTS)
+	var slot_of := {own: 0}
+	tiles[0] = float(own)
+	for i in range(1, TILE_SLOTS):
+		if i - 1 < others.size():
+			var b: int = others[i - 1]
+			tiles[i] = float(b)
+			slot_of[b] = i
+		else:
+			# An unused slot points at the cell's own tile rather than staying 0,
+			# which is DEEP_WATER and would paint a puddle if any weight ever
+			# leaked into it.
+			tiles[i] = float(own)
+
+	var weights := PackedFloat32Array()
+	weights.resize(TerrainGen.SURFACE_STRIDE * TILE_SLOTS)
+	# The centre asks for its own biome outright.
+	weights[0] = 1.0
+	for k in range(6):
+		var base := (1 + k) * TILE_SLOTS
+		for owner in [corner_trios[k].x, corner_trios[k].y, corner_trios[k].z]:
+			# A biome with no slot falls back to the cell's own, which keeps the
+			# weights summing to exactly 1. A shortfall would darken the fragment
+			# rather than merely mis-texture it.
+			var slot: int = slot_of.get(int(fields.biome[owner]), 0)
+			weights[base + slot] += 1.0 / 3.0
+
+	return {"tiles": tiles, "weights": weights}
 
 
 ## How many chunks tile the map at this chunk size, rounding up.
@@ -134,11 +294,17 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 	if cells_x <= 0 or cells_y <= 0:
 		return null
 
+	var uv_step := uv_scale(space)
+
 	var vertices := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
+	# Four floats per vertex each, because Godot's custom vertex channels come
+	# in fixed widths; the fourth is unused and the shader reads .xyz.
+	var tile_slots := PackedFloat32Array()
+	var tile_weights := PackedFloat32Array()
 
 	for dy in range(cells_y):
 		for dx in range(cells_x):
@@ -146,13 +312,15 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 			# Geometry unwrapped...
 			var centre := space.axial_offset_to_world(Vector2(float(unwrapped.x), float(unwrapped.y)))
 			# ...data wrapped.
-			var surface_base := space.index(unwrapped) * TerrainGen.SURFACE_STRIDE
+			var cell_index := space.index(unwrapped)
+			var surface_base := cell_index * TerrainGen.SURFACE_STRIDE
 			centre.y = surface[surface_base]
 
-			var frame := _atlas_frame(space, terrain, unwrapped)
-			var uv_centre: Vector2 = frame["centre"]
-			var uv_radius: Vector2 = frame["radius"]
-			var uv_turn: float = frame["rotation"]
+			# Which three atlas tiles this cell's fragments may blend, and how
+			# much of each every one of its vertices asks for (D-096).
+			var tiling := cell_tiles(space, fields, cell_index)
+			var slots: PackedFloat32Array = tiling["tiles"]
+			var weights: PackedFloat32Array = tiling["weights"]
 
 			# Corners first, so the centre's normal can be averaged from the fan
 			# they form.
@@ -168,10 +336,12 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 			vertices.append(centre)
 			normals.append(_centre_normal(centre, corner_positions))
 			colors.append(fields.colors[surface_base])
-			uvs.append(uv_centre)
+			# Continuous across cells, derived from the UNWRAPPED cell, and
+			# periodic over the map — see `vertex_uv` and `uv_scale`.
+			uvs.append(vertex_uv(uv_step, unwrapped, -1))
+			_append_tiles(tile_slots, tile_weights, slots, weights, 0)
 
 			for corner in range(CORNERS):
-				var angle := TAU * (float(corner) / float(CORNERS)) - PI / 6.0
 				vertices.append(corner_positions[corner])
 				# A corner's normal is derived from the three CELL CENTRES that
 				# meet there, not from this cell's triangles. All three cells
@@ -181,12 +351,8 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 				# doing so.
 				normals.append(_corner_normal(space, surface, unwrapped, corner))
 				colors.append(fields.colors[surface_base + 1 + corner])
-				# The same corner, turned by this cell's rotation, inside its
-				# biome's tile. V is negated because UV space runs downward
-				# while the world's +Z runs away from the camera.
-				var uv_angle := angle + uv_turn
-				uvs.append(uv_centre + Vector2(
-					uv_radius.x * cos(uv_angle), -uv_radius.y * sin(uv_angle)))
+				uvs.append(vertex_uv(uv_step, unwrapped, corner))
+				_append_tiles(tile_slots, tile_weights, slots, weights, 1 + corner)
 
 			# Fan from the centre vertex.
 			for corner in range(CORNERS):
@@ -203,11 +369,30 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_CUSTOM0] = tile_slots
+	arrays[Mesh.ARRAY_CUSTOM1] = tile_weights
 	arrays[Mesh.ARRAY_INDEX] = indices
 
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# The custom channels have to be declared in the surface format as well as
+	# supplied, or Godot reads the arrays as empty and the shader silently gets
+	# zeroes — which paints the whole map as tile 0, deep water.
+	var format := (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, format)
 	return mesh
+
+
+## One vertex's worth of tile slots and weights, padded to the four floats a
+## custom channel carries.
+static func _append_tiles(slots_out: PackedFloat32Array,
+		weights_out: PackedFloat32Array, slots: PackedFloat32Array,
+		weights: PackedFloat32Array, vertex: int) -> void:
+	for i in range(TILE_SLOTS):
+		slots_out.append(slots[i])
+		weights_out.append(weights[vertex * TILE_SLOTS + i])
+	slots_out.append(0.0)
+	weights_out.append(0.0)
 
 
 ## The normal at a shared corner: the plane through the three cell centres that
@@ -311,6 +496,14 @@ static func height_at(space: TorusSpace, surface: PackedFloat32Array,
 
 
 const ATLAS_PATH := "res://generated/textures/terrain_atlas.png"
+const SHADER_PATH := "res://shaders/terrain.gdshader"
+
+
+## Whether the generated atlas is present. Callers that only want to REPORT
+## which path they are on ask this rather than inspecting the material, which
+## stopped being a StandardMaterial3D when D-096 gave the ground a shader.
+static func has_atlas() -> bool:
+	return ResourceLoader.exists(ATLAS_PATH)
 
 
 ## The material every terrain chunk shares.
@@ -319,22 +512,38 @@ const ATLAS_PATH := "res://generated/textures/terrain_atlas.png"
 ## had drifted into identical copies and a benchmark that renders a different
 ## material than the game measures the wrong thing.
 ##
-## `vertex_color_use_as_albedo` stays on and the atlas MULTIPLIES it (D-066).
-## The texture supplies detail; `biome_color` still supplies the colour, so the
-## minimap and the terrain preview — which read that same function and never
-## touch this material — cannot fall out of step with the 3D view. An atlas
-## whose tiles average near neutral therefore changes the palette not at all,
-## which is what `art/terrain/atlas.py` is written to guarantee.
+## The atlas MULTIPLIES vertex colour (D-066). The texture supplies detail;
+## `biome_color` still supplies the colour, so the minimap and the terrain
+## preview — which read that same function and never touch this material —
+## cannot fall out of step with the 3D view. An atlas whose tiles average near
+## neutral therefore changes the palette not at all, which is what
+## `art/terrain/atlas.py` is written to guarantee.
+##
+## Since D-096 the textured path is a ShaderMaterial: the UVs run continuously
+## across cells, so which of the eight tiles a fragment belongs in is a
+## per-fragment decision and there is no fixed-function way to say it. See
+## `shaders/terrain.gdshader`.
 ##
 ## Falls back to plain vertex colour when `generated/` has not been built, for
 ## the same reason units fall back to primitives: a missing art build should
-## cost fidelity, not the game.
-static func make_material() -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.roughness = 0.95
-	if ResourceLoader.exists(ATLAS_PATH):
-		material.albedo_texture = load(ATLAS_PATH) as Texture2D
+## cost fidelity, not the game. That fallback is also the honest answer for a
+## renderer that cannot compile the shader — nothing here can make a frame
+## without an atlas look textured.
+static func make_material() -> Material:
+	if not has_atlas():
+		var plain := StandardMaterial3D.new()
+		plain.vertex_color_use_as_albedo = true
+		plain.roughness = 0.95
+		return plain
+
+	var material := ShaderMaterial.new()
+	material.shader = load(SHADER_PATH) as Shader
+	material.set_shader_parameter("atlas", load(ATLAS_PATH) as Texture2D)
+	# Passed in rather than hardcoded in the shader, so the layout has exactly
+	# one definition on the Godot side and `test_terrain_uvs.gd` pins that one
+	# to `art/terrain/atlas.py`.
+	material.set_shader_parameter("atlas_grid",
+		Vector2(float(ATLAS_COLUMNS), float(ATLAS_ROWS)))
 	return material
 
 

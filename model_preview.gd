@@ -113,7 +113,7 @@ func _build_terrain() -> void:
 
 	print("model_preview: terrain %dx%d, atlas=%s"
 		% [config.width, config.height,
-			"yes" if material.albedo_texture != null else "NO (generated/ not built)"])
+			"yes" if TerrainChunk.has_atlas() else "NO (generated/ not built)"])
 
 
 ## `--seconds=` and `--out=`, after a bare `--`.
