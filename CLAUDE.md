@@ -784,6 +784,15 @@ selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
                         ranking that was wrong does not.
+ground_cover.gd          Which decorative props dress a cell (D-100).
+                        Same shape as resource_visuals.gd and the exact
+                        OPPOSITE of what it dresses: cover is client-
+                        derived, NOT fog-gated, and costs nothing on the
+                        wire, because a grass tuft leaks no information.
+                        All-static and pure. A cell holding a node,
+                        building or wall gets none — the caller supplies
+                        that fact rather than the module reading sim
+                        state.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -836,8 +845,19 @@ unit_mesh.gd            Loads authored models, their VATs and their
 /generated/             Committed build output: .glb, VAT .exr, the
                         terrain atlas, and a manifest whose source hash
                         makes a stale build a test failure.
+art/scatter/props.py     The ground-cover props (D-100). Fails its own
+                        build on an inside-out part, a prop tall enough
+                        to hide a soldier, or one that does not sit on
+                        y=0 — the checks a triangle count cannot make.
+                        Props carry real glTF MATERIALS, not vertex
+                        colours: they are drawn from a MultiMesh, and a
+                        MultiMesh overrides COLOR (see art/lib/bake.py).
 model_preview.gd         Renders every authored model, animated, and
                         screenshots it. The picture is the point.
+cover_preview.gd         The same idea for ground cover: every prop, on
+                        generated terrain, with a real squad standing in
+                        it so "cover never hides a unit" is looked at
+                        rather than asserted.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -928,6 +948,18 @@ Three things bought the hard way, all in one milestone:
   winding, so everything was lit by the inverse of the sun. It was only
   visible once a *building* was big enough to see through. **The check
   that catches this class is a picture of something large.**
+  (`art/scatter/props.py` now fails its own build on a part whose signed
+  volume is negative, which is the same check without waiting for a
+  building — but only for props.)
+- **A colour that crosses an asset pipeline is not the colour that comes
+  out** (D-100). Ground-cover props carry glTF materials rather than
+  vertex colours, because a MultiMesh overrides `COLOR`; Godot's importer
+  then converts `baseColorFactor` linear → sRGB and NOTHING converts it
+  back, so an authored 0.36 rendered as 0.63 and every fern looked
+  frosted beside ground painted with the same numbers. `bake.py`
+  pre-compensates and a test compares the imported material against the
+  authored value in the manifest. Same family as the VAT's silent VRAM
+  compression: **assert the value on the far side of the boundary.**
 
 ## Multi-agent isolation (D-095) — HARD RULES
 
@@ -1024,6 +1056,14 @@ Dev loop and tests:
   needs no GPU. It renders TWICE and fails if the two frames are
   byte-identical — a frozen VAT would otherwise produce a perfectly
   plausible still. **Look at `artifacts/models-godot.png`.**
+- `just gen-cover-preview [SECONDS]` — ground cover (D-100) on generated
+  terrain, through the REAL path (`GroundCover`, `UnitMesh`, one MultiMesh
+  per model), with a real squad standing in it. Software-rasterised, no
+  GPU. Fails if nothing was drawn or if a palette names a model that did
+  not load. **Look at `artifacts/cover-godot.png`** — every prop colour in
+  `art/scatter/props.py` was chosen off that picture, because a prop's
+  near-vertical geometry renders a good deal darker than ground painted
+  with the same number.
 
 Every recipe listed is real and verified; none are stubs.
 

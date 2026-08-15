@@ -910,6 +910,63 @@ gen-model-preview SECONDS="1.2": _import
     rm -f "{{artifacts_dir}}/models-godot-b.png"
     echo "VERDICT: ok - models rendered and animating; LOOK AT artifacts/models-godot.png"
 
+# Ground cover on real terrain, with real soldiers standing in it (D-100).
+#
+# The same idea as gen-model-preview and for the same reason — every check
+# in tests/test_ground_cover.gd counts things, and none of them can see a
+# fern lit from the inside or grass that vanishes into the ground colour.
+# Software-rasterised, so no GPU: this answers "is the picture right", and
+# `bench-render` answers "how fast".
+#
+# The verdict gates on the two failures a screenshot of bare ground would
+# otherwise hide: nothing drawn at all, and a model the palettes can name
+# that never made it onto the map.
+[doc("Render ground cover to artifacts/cover-godot.png")]
+gen-cover-preview SECONDS="0.6": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-cover-preview needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    log="{{artifacts_dir}}/cover-preview.log"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            cover_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/cover-godot.png" | tee "$log"
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 cover_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/cover-godot.png" | tee "$log"
+    fi
+    if [ ! -s "{{artifacts_dir}}/cover-godot.png" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    summary="$(grep -o 'cells dressed of [0-9]*, [0-9]* instances, [0-9]*/[0-9]* models drawn' "$log" | head -n 1)"
+    if [ -z "$summary" ]; then
+        echo "VERDICT: FAIL - the preview never reported what it drew"
+        exit 1
+    fi
+    drawn="$(echo "$summary" | sed 's/.* \([0-9]*\)\/[0-9]* models drawn/\1/')"
+    known="$(echo "$summary" | sed 's/.*\/\([0-9]*\) models drawn/\1/')"
+    instances="$(echo "$summary" | sed 's/.*, \([0-9]*\) instances.*/\1/')"
+    if [ "$instances" -lt 100 ]; then
+        echo "VERDICT: FAIL - only $instances prop instances; the ground is bare"
+        exit 1
+    fi
+    if [ "$drawn" != "$known" ]; then
+        echo "VERDICT: FAIL - $drawn of $known prop models reached the picture;"
+        echo "         a palette names a model that did not load (run build-assets)."
+        exit 1
+    fi
+    echo "VERDICT: ok - $summary; LOOK AT artifacts/cover-godot.png"
+
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #
 # Drives the simulation directly at 100/250/500/1000 squads rather than
