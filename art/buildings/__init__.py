@@ -18,6 +18,7 @@ on.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..lib.geom import Model, box, prism, rotate_geometry
@@ -36,14 +37,19 @@ WALL_LENGTH = _HEX_SPACING * 1.02
 
 # Playtest fix: the garrison gate is meant to pass a whole SQUAD through in
 # tight formation, not one soldier at a time — WALL_LENGTH (~1.77, sized to
-# match one hex's worth of wall) is nowhere near enough. This segment is
-# deliberately wider than WALL_LENGTH, and than the hex cell it still
-# occupies exactly one of for placement/simulation purposes (D-076's model
-# is one building per cell regardless of how wide its mesh is drawn) — a
-# gatehouse bulging out past the curtain wall's own line is the expected
-# silhouette, not a bug. GARRISON_GATE_OPENING is the clear width once the
-# leaf swings away, after the two framing posts; the requested figure.
-GARRISON_GATE_LENGTH = WALL_LENGTH + 1.9
+# match one hex's worth of wall) is nowhere near enough, so this segment is
+# deliberately wider.
+#
+# It is an EXACT MULTIPLE of WALL_LENGTH, and that matters (D-096). It was
+# WALL_LENGTH + 1.9 (~3.67) against two walls' 3.53, so a run meeting the
+# gate overshot it by ~0.13 and the curtain wall visibly buried itself in
+# the gatehouse — reported from play as walls overlapping the gate. Now
+# that a run is laid continuously at the def's own mesh length, two wall
+# segments span exactly one gate and the join is flush by construction
+# rather than by tuning. Change the multiplier, not the sum, if this ever
+# needs to be wider: WALL_LENGTH * 3 would keep the property.
+GARRISON_GATE_SPAN = 2  # in wall segments
+GARRISON_GATE_LENGTH = WALL_LENGTH * GARRISON_GATE_SPAN
 GARRISON_GATE_OPENING = 3.0
 
 # Playtest fix: a wall segment used to TILT to follow sloped terrain — reverted
@@ -92,6 +98,8 @@ class BuildingParams:
 def build(name: str, p: BuildingParams) -> Model:
     if p.shape == "wall":
         return _build_wall(name, p)
+    if p.shape == "bastion":
+        return _build_bastion(name, p)
     if p.shape == "tower_access":
         return _build_tower_access(name, p)
 
@@ -315,6 +323,72 @@ def _build_wall(name: str, p: BuildingParams) -> Model:
     return m
 
 
+def _build_bastion(name: str, p: BuildingParams) -> Model:
+    """A round corner section, for where wall runs meet (D-096).
+
+    This replaces the plain cylinder client.gd used to drop at a junction.
+    That post existed to plug the gap a bend left, and it read as a foreign
+    object for two reasons worth keeping in mind: it was a `StandardMaterial3D`
+    tinted with `mesh_color` — the PRIMITIVE fallback colour, which the
+    authored wall never renders — and it was a bare shape with none of the
+    detail language (stakes, merlons, rails) the walls around it are built
+    from. It looked like a grey blob because it was one.
+
+    Being genuinely round is what makes ONE shape serve every junction: a
+    corner, a T and a four-way crossing all present the same silhouette to
+    every direction, so nothing has to be authored per angle or rotated to
+    match. It is sized from the wall's own thickness so it always swallows
+    the segment ends it joins, rather than being tuned to look right in one
+    screenshot.
+
+    `sides` is deliberately generous relative to the rest of the roster: a
+    hexagonal post at this scale still reads as faceted, and the whole point
+    is that it should read as a drum.
+    """
+    m = Model(name=name)
+    radius = p.thickness * 0.72
+    body_h = p.height
+
+    if p.style == "stake":
+        # Palisade roundel: a ring of the same pointed stakes the fence is
+        # made of, rather than a smooth drum, so the cheap tier stays
+        # visibly cheap.
+        count = 9
+        for i in range(count):
+            a = (i / count) * math.tau
+            x, z = math.cos(a) * radius, math.sin(a) * radius
+            m.add(f"stake_{i}",
+                  _buried((0.17, body_h, 0.17), (x, body_h / 2.0, z), taper=0.55),
+                  rgb=p.timber, mask=0.0)
+        # Two rails hooping the ring, matching the fence's own tie rails.
+        for level in (0.45, 0.78):
+            m.add(f"hoop_{level}",
+                  prism(radius + 0.06, 0.12, sides=12,
+                        centre=(0.0, body_h * level, 0.0)),
+                  rgb=p.timber, mask=0.06)
+        return m
+
+    # Stone/timber tiers: a real drum, crenellated like the tower so a
+    # junction reads as a defended corner rather than a lump in the wall.
+    colour = p.stone if p.style == "stone" else p.timber
+    m.add("body", prism(radius, body_h + SKIRT_DEPTH, sides=14,
+                        centre=(0.0, (body_h - SKIRT_DEPTH) / 2.0, 0.0),
+                        taper=0.95),
+          rgb=colour, mask=0.12)
+    if p.walkway:
+        m.add("walkway", prism(radius * 1.02, 0.14, sides=14,
+                               centre=(0.0, body_h + 0.07, 0.0)),
+              rgb=colour, mask=0.0)
+        count = 8
+        for i in range(count):
+            a = (i / count) * math.tau
+            x, z = math.cos(a) * (radius - 0.08), math.sin(a) * (radius - 0.08)
+            m.add(f"merlon_{i}",
+                  box((0.22, 0.5, 0.22), centre=(x, body_h + 0.39, z)),
+                  rgb=colour, mask=0.0)
+    return m
+
+
 def _build_tower_access(name: str, p: BuildingParams) -> Model:
     """The wall-top access point (D-076): a squat stone tower, crenellated
     on all four sides, with a door on local +X only.
@@ -424,5 +498,30 @@ ROSTER: dict[str, BuildingParams] = {
     "wall_tower": BuildingParams(
         shape="tower_access", footprint=2.6, height=3.86,
         stone=(0.58, 0.58, 0.56),
+    ),
+
+    # --- D-096: junction bastions --------------------------------------
+    #
+    # One per wall STYLE, not per wall def, because what a junction has to
+    # match is the material and detail language of the runs meeting it —
+    # and `wall`/`gate` share a style, as do `garrison_wall` and (near
+    # enough) `garrison_gate`. Heights match their own tier's segments so a
+    # bastion never stands proud of the wall it joins.
+    #
+    # These are drawn by the client at junctions; they are NOT buildable
+    # defs and deliberately have no .tres. A player builds walls, and the
+    # corners appear because walls meet — the same way the joint post they
+    # replace was never something you placed.
+    "bastion_stake": BuildingParams(
+        shape="bastion", style="stake", thickness=1.0, height=1.95,
+        timber=(0.38, 0.27, 0.16),
+    ),
+    "bastion_stone": BuildingParams(
+        shape="bastion", style="stone", walkway=True, thickness=1.0, height=2.86,
+        stone=(0.58, 0.58, 0.56),
+    ),
+    "bastion_timber": BuildingParams(
+        shape="bastion", style="timber_slats", walkway=True, thickness=1.0, height=2.86,
+        timber=(0.42, 0.30, 0.19),
     ),
 }

@@ -5,6 +5,21 @@
       "triangles": 72,
       "vertices": 216
     },
+    "bastion_stake": {
+      "model": "generated/models/bastion_stake.glb",
+      "triangles": 204,
+      "vertices": 612
+    },
+    "bastion_stone": {
+      "model": "generated/models/bastion_stone.glb",
+      "triangles": 208,
+      "vertices": 624
+    },
+    "bastion_timber": {
+      "model": "generated/models/bastion_timber.glb",
+      "triangles": 208,
+      "vertices": 624
+    },
     "garrison_gate": {
       "model": "generated/models/garrison_gate.glb",
       "triangles": 168,
@@ -46,7 +61,395 @@
       "vertices": 504
     }
   },
-  "source_hash": "b9616930d4e06ec33021027746a6cafb56dbf1ac83d8c9d33199e7bd2cafd7ac",
+  "props": {
+    "prop_boulder": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.62,
+          0.62,
+          0.6
+        ],
+        [
+          0.5,
+          0.49,
+          0.48
+        ]
+      ],
+      "height": 0.26,
+      "materials": 2,
+      "model": "generated/models/prop_boulder.glb",
+      "note": "the occasional bare rock; open and high ground",
+      "settled_by": 0.0,
+      "triangles": 44,
+      "vertices": 26
+    },
+    "prop_bush": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.34,
+          0.52,
+          0.26
+        ],
+        [
+          0.46,
+          0.66,
+          0.3
+        ]
+      ],
+      "height": 0.36,
+      "materials": 2,
+      "model": "generated/models/prop_bush.glb",
+      "note": "small shrub; forest floor and grassland alike",
+      "settled_by": 0.0,
+      "triangles": 36,
+      "vertices": 24
+    },
+    "prop_cactus": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.42,
+          0.58,
+          0.35
+        ]
+      ],
+      "height": 0.42,
+      "materials": 1,
+      "model": "generated/models/prop_cactus.glb",
+      "note": "arid marker, matches the acacia/saguaro trees",
+      "settled_by": 0.0,
+      "triangles": 48,
+      "vertices": 30
+    },
+    "prop_cracked_slab": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.66,
+          0.62,
+          0.54
+        ],
+        [
+          0.62,
+          0.62,
+          0.6
+        ]
+      ],
+      "height": 0.07,
+      "materials": 2,
+      "model": "generated/models/prop_cracked_slab.glb",
+      "note": "sun-cracked stone on dry ground",
+      "settled_by": 0.0,
+      "triangles": 24,
+      "vertices": 16
+    },
+    "prop_driftwood": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.63,
+          0.58,
+          0.49
+        ],
+        [
+          0.55,
+          0.45,
+          0.33
+        ]
+      ],
+      "height": 0.168522,
+      "materials": 2,
+      "model": "generated/models/prop_driftwood.glb",
+      "note": "beach flotsam",
+      "settled_by": 0.000454,
+      "triangles": 24,
+      "vertices": 16
+    },
+    "prop_dry_tussock": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.78,
+          0.7,
+          0.4
+        ],
+        [
+          0.66,
+          0.58,
+          0.34
+        ]
+      ],
+      "height": 0.261867,
+      "materials": 2,
+      "model": "generated/models/prop_dry_tussock.glb",
+      "note": "sparse dry grass",
+      "settled_by": 0.0,
+      "triangles": 68,
+      "vertices": 44
+    },
+    "prop_dune_grass": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.78,
+          0.7,
+          0.4
+        ]
+      ],
+      "height": 0.367122,
+      "materials": 1,
+      "model": "generated/models/prop_dune_grass.glb",
+      "note": "marram grass above the waterline",
+      "settled_by": 0.0,
+      "triangles": 48,
+      "vertices": 32
+    },
+    "prop_fern": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.37,
+          0.58,
+          0.3
+        ],
+        [
+          0.34,
+          0.52,
+          0.26
+        ]
+      ],
+      "height": 0.270592,
+      "materials": 2,
+      "model": "generated/models/prop_fern.glb",
+      "note": "forest undergrowth",
+      "settled_by": 0.0,
+      "triangles": 68,
+      "vertices": 44
+    },
+    "prop_grass_tuft": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.46,
+          0.66,
+          0.3
+        ]
+      ],
+      "height": 0.349663,
+      "materials": 1,
+      "model": "generated/models/prop_grass_tuft.glb",
+      "note": "pasture grass; the grassland staple",
+      "settled_by": 0.0,
+      "triangles": 48,
+      "vertices": 32
+    },
+    "prop_log": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.42,
+          0.31,
+          0.21
+        ],
+        [
+          0.55,
+          0.45,
+          0.33
+        ],
+        [
+          0.39,
+          0.58,
+          0.29
+        ]
+      ],
+      "height": 0.218183,
+      "materials": 3,
+      "model": "generated/models/prop_log.glb",
+      "note": "fallen trunk; says the forest is old",
+      "settled_by": 0.005,
+      "triangles": 36,
+      "vertices": 24
+    },
+    "prop_moss_rock": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.5,
+          0.49,
+          0.48
+        ],
+        [
+          0.39,
+          0.58,
+          0.29
+        ]
+      ],
+      "height": 0.2075,
+      "materials": 2,
+      "model": "generated/models/prop_moss_rock.glb",
+      "note": "mossy rock; forest floor",
+      "settled_by": 0.0,
+      "triangles": 36,
+      "vertices": 22
+    },
+    "prop_mushrooms": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.86,
+          0.82,
+          0.7
+        ],
+        [
+          0.7,
+          0.31,
+          0.25
+        ]
+      ],
+      "height": 0.185,
+      "materials": 2,
+      "model": "generated/models/prop_mushrooms.glb",
+      "note": "damp forest floor detail",
+      "settled_by": 0.0,
+      "triangles": 64,
+      "vertices": 40
+    },
+    "prop_reeds": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.44,
+          0.62,
+          0.38
+        ]
+      ],
+      "height": 0.457351,
+      "materials": 1,
+      "model": "generated/models/prop_reeds.glb",
+      "note": "waterline reeds on the beach side",
+      "settled_by": 0.0,
+      "triangles": 60,
+      "vertices": 40
+    },
+    "prop_rock_spike": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.62,
+          0.62,
+          0.6
+        ],
+        [
+          0.5,
+          0.49,
+          0.48
+        ]
+      ],
+      "height": 0.44,
+      "materials": 2,
+      "model": "generated/models/prop_rock_spike.glb",
+      "note": "angular outcrop; mountain",
+      "settled_by": 0.0,
+      "triangles": 40,
+      "vertices": 24
+    },
+    "prop_scree": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.62,
+          0.62,
+          0.6
+        ],
+        [
+          0.5,
+          0.49,
+          0.48
+        ]
+      ],
+      "height": 0.07,
+      "materials": 2,
+      "model": "generated/models/prop_scree.glb",
+      "note": "loose stone at the mountain foot",
+      "settled_by": 0.0,
+      "triangles": 48,
+      "vertices": 32
+    },
+    "prop_shell": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.9,
+          0.85,
+          0.76
+        ],
+        [
+          0.8,
+          0.73,
+          0.52
+        ]
+      ],
+      "height": 0.083206,
+      "materials": 2,
+      "model": "generated/models/prop_shell.glb",
+      "note": "shells at the tide line",
+      "settled_by": 0.0,
+      "triangles": 40,
+      "vertices": 24
+    },
+    "prop_snow_boulder": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.5,
+          0.49,
+          0.48
+        ],
+        [
+          0.93,
+          0.93,
+          0.96
+        ]
+      ],
+      "height": 0.275,
+      "materials": 2,
+      "model": "generated/models/prop_snow_boulder.glb",
+      "note": "snow-dusted rock; peaks",
+      "settled_by": 0.0,
+      "triangles": 48,
+      "vertices": 28
+    },
+    "prop_wildflowers": {
+      "base": 0.0,
+      "colours": [
+        [
+          0.46,
+          0.66,
+          0.3
+        ],
+        [
+          0.87,
+          0.75,
+          0.3
+        ],
+        [
+          0.76,
+          0.72,
+          0.86
+        ]
+      ],
+      "height": 0.275,
+      "materials": 3,
+      "model": "generated/models/prop_wildflowers.glb",
+      "note": "colour accent on open ground",
+      "settled_by": 0.0,
+      "triangles": 72,
+      "vertices": 48
+    }
+  },
+  "source_hash": "4c296b836e4af2510aff71943741b25d6e4cb3c34c31a5fe61e2ecc826fa1a57",
   "terrain": {
     "biomes": [
       "deep_water",

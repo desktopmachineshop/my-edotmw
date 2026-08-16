@@ -1,7 +1,7 @@
 class_name ScenarioBuilding
 extends Resource
 
-## One building in a scenario's per-player loadout (D-096).
+## One building in a scenario's per-player loadout (D-098).
 ##
 ## Position is an OFFSET from the player's home cell, not an absolute
 ## cell, so the same loadout drops onto any map at any spawn point. The

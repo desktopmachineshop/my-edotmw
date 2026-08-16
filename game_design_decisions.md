@@ -20,7 +20,7 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-096 · 2026-08-11 (renumbered 2026-08-16) · Accepted — tests start mid-game, from a scenario
+### D-098 · 2026-08-11 (renumbered 2026-08-16) · Accepted — tests start mid-game, from a scenario
 **Decision:** A **scenario** is a mid-game world described as data
 (`/scenarios/*.tres`), applied through the game's own calls, and usable
 two ways: in-process by a GUT test, and by the real server via
@@ -115,13 +115,30 @@ becomes the thing people quote instead of `test-load`, which is clause 8
 failing in practice rather than in principle.
 
 **Amendment, 2026-08-16 (merge):** this entry was written as D-076 and is
-renumbered to D-096 here. It was authored in parallel with the work that
-became main's D-075 (lobby return) and D-076 (walls and gates), on a
+renumbered to **D-098** here. It was authored in parallel with the work
+that became main's D-075 (lobby return) and D-076 (walls and gates), on a
 branch that had forked before either existed, so both numbers were spent
 by the time it merged. **Two agents working the same log will collide on
 the next free number, and neither can see the other** — so a number is
 only really claimed once it is on main, and reconciling that is a merge
 step, not a mistake. Nothing but the heading changed.
+
+**It then happened again, in the hour between the two merges.** This
+entry was renumbered to D-096, and by the time the branch was pushed
+main had spent D-096 *and* D-097 — so it moved again, to D-098. Which is
+the rule stated above being demonstrated rather than merely written down:
+**picking "the next free number" from your own checkout is a guess, and
+it goes stale while you work.** The right moment to fix a number is the
+merge, against a freshly fetched main, and not before.
+
+**Main currently carries three duplicate pairs** — two D-087s (M8 scope
+vs. forests), two D-096s (continuous ground vs. continuous wall
+placement) and two D-097s (cliffs vs. contestable build sites) — each
+pair authored on a different branch and merged without either side
+seeing the other. They are recorded here rather than renumbered in
+passing: this log's whole workflow rests on an ID naming exactly one
+decision, and every cross-reference elsewhere in the repo resolves
+through that ID. Reconciling them is its own task, and a deliberate one.
 
 The same fork produced a **second, independent implementation of instance
 isolation** — checkout-derived names, a `$HOME` port registry with atomic
@@ -135,6 +152,311 @@ rediscovered a third time:** a registry makes a port collision impossible
 rather than merely unlikely (D-095 hashes into 10,000 ports and does not
 check), and refusing an implicit teardown of the human's instance is a
 guard D-095 has no equivalent of.
+### D-097 · 2026-08-15 · Accepted — a cliff is the passability boundary, drawn
+
+**Decision:** the rendered surface **steps** where `passability` changes,
+and a vertical rock skirt fills the step. The step is generated from the
+same predicate the flow field routes around — never from a second,
+prettier notion of steepness — and lives entirely on the rendering side:
+`elevation_at` stays discrete per cell, `passability` still thresholds
+it, and nothing new goes on the wire.
+
+Four pieces:
+
+1. **`TerrainGen.CliffClass`** — `passability` split by WHICH of its two
+   reasons applies: WATER, LAND, HIGH. `passable[i] == 1` exactly when
+   the class is LAND, asserted cell by cell on the shipped map. Water and
+   mountain need separate classes even though both are impassable, or a
+   corner where a lake meets a peak averages sea level with rock and
+   hangs the surface halfway up the mountainside.
+2. **Corner heights average within a class** (`TerrainGen.corner_heights`),
+   so a corner where classes meet resolves to two or three heights
+   instead of one. Groups whose means differ by less than
+   `cliff_min_step` MERGE, which is what gives beaches and sea cliffs
+   from one mechanism: a shore that rises gently keeps D-084's smooth
+   blend, a shore that rises sharply steps.
+3. **A skirt per stepped edge**, emitted into the chunk's own ArrayMesh
+   as a second surface — so it inherits D-035's nine-copy tiling, adds no
+   draw-call structure, and needs no material plumbing (it wears the same
+   shader, with all three of D-096's tile slots pointing at MOUNTAIN, so
+   the face gets the atlas's rock strata). Each cell emits for three of
+   its six directions, so every shared edge is drawn exactly once.
+4. **`cliff_rise`** — the impassable HIGH class is DRAWN 2.0 world units
+   above its own elevation.
+
+**Why (4) exists, which the plan did not anticipate.** The plan assumed a
+truthful drawing of the class boundary would produce a visible wall. It
+does not, and the measurement says so plainly. On the shipped map the
+natural height step where two classes meet has a **median of 0.20 world
+units along the coast (p90 0.65) and 0.66 at a mountain foot** — under
+half a hex's width. The reason is structural rather than a matter of
+tuning: elevation is smooth noise and `passability` is a level set on it,
+so the boundary can never fall anywhere the ground is already steep. The
+first implementation drew **87 rock faces on the whole 8,064-cell map**,
+which is the "mechanism correct, shipped numbers do nothing" failure this
+project has hit repeatedly — and it looked like success in every other
+line of output.
+
+So mountains are lifted onto their own tier. The wall still stands
+exactly where `passability` changes, which is the part that is not
+negotiable; the lift only makes it tall enough to see. With
+`cliff_rise` 2.0 and `cliff_min_step` 0.4 the shipped map draws **363
+rock faces**: every land/mountain edge, and roughly a quarter of the
+coastline, with the rest of the coast keeping its beach.
+
+**Rejected alternatives:** slope-based rock shading alone (tracks slope,
+not passability, so it lies exactly at the boundary — kept as a possible
+complement, not as the mechanism); authored cliff prop models along the
+boundary (many instances, hard to keep watertight, placement fiddly);
+marking cliff-adjacent cells impassable so the sim and picture agree
+trivially (deletes visibly flat walkable ground); a `shore_drop` that
+pushes the sea below the land (an extra knob, when the land's own height
+above sea level already varies the drop naturally and gives the
+beach-versus-sea-cliff split for free).
+
+**Consequences and the risk this buys:**
+
+- **`height_at` now has a discontinuity**, and soldiers spill slightly
+  outside their squad's cell. The mitigation is structural: the passable
+  side's corner heights stay flat and the wall sits exactly on the shared
+  edge, so a sampler call near the edge lands on the passable plateau.
+  Bounded by a test — for every passable cell, `height_at` at the centre
+  and at all six edge midpoints stays inside that cell's own drawn range,
+  and never within half a `cliff_rise` of the mountain tier beside it.
+  The first version of that test used the cell's CENTRE height as the
+  datum and failed on ordinary hillsides, because a hex edge is already
+  half a world unit off its centre on a slope; it was measuring the
+  terrain, not the hazard.
+- **Colour steps with the height.** A corner blends only over the owners
+  on its own side of the step. Without that, a mountain plateau is
+  painted in the colours of the valley it towers over — rock walls with
+  grassland on top, which is what the first render actually showed.
+- **The rock face's normal is tilted ~27 degrees up** (`SKIRT_NORMAL_LIFT`)
+  while the geometry stays vertical. D-086's rig is one directional sun
+  with sky ambient and no shadows, so a truly vertical normal catches
+  almost nothing: the first render drew mountain walls at sRGB 0.09, dark
+  enough to read as holes cut in the world. This is the same class of
+  choice as D-045's "distant squads draw thinner, never smaller" — the
+  shading is adjusted so a player can read the picture, and nothing moves.
+- **The shipped default map has almost no mountains.** 21.7% of its cells
+  are impassable and 20.9% are water, which leaves roughly 66 mountain
+  cells and 80 land/mountain edges on an 8,064-cell map. Cliffs are
+  therefore mostly a coastal feature there. That is a terrain-generation
+  fact, not a rendering one: the lever is `mountain_level` and the
+  `/terrain` presets, and it is worth the owner's attention separately.
+- Geometry cost is perimeter-sized, as predicted: **57,900 vertices and
+  49,110 triangles against 56,448 and 48,384** on the standard map,
+  +2.6% and +1.5%. Frame cost on Intel(R) Iris(R) Xe Graphics, terrain
+  only: **3.97 ms before all three slices, 4.05 ms after** — against the
+  0.5 ms this slice was budgeted.
+- **The 1,000-squad absolutes from this session are not usable, and that
+  is a host problem rather than a code one.** Four interleaved A/B pairs
+  put the difference between −9 and +10 ms, inside a band where the SAME
+  code varied by 30 ms run to run; and the unchanged slice-2 build
+  measured 52.1 ms early in the session and 181.1 ms three hours later,
+  after continuous GPU benchmarking. The delta is therefore reported as
+  unresolvable rather than as zero, and the terrain-only row above is the
+  figure that means anything. CLAUDE.md's M6 note about worst ticks
+  measured while the host was building containers is the same lesson.
+
+**Revisit trigger:** elevation acquiring tactical meaning. D-084 noted
+that the rendering/simulation split "stops being free the moment
+elevation acquires tactical meaning", and per-edge blocking (the plan's
+slice 4, its own decision) is exactly that moment — at which point
+`cliff_rise` becomes a thing the simulation can see and this entry needs
+re-reading. Also revisit if a terrain preset ever makes mountains common
+enough that 2.0 units reads as a mesa rather than a cliff.
+
+---
+
+### D-096 · 2026-08-15 · Accepted — the ground is continuous
+
+**Decision:** the ground stops being a honeycomb of flat hexes. Three
+separate causes, all fixed, none of which any number could see:
+
+1. **Vertex colour is per VERTEX.** A shared corner takes the mean of the
+   three cells meeting there — exactly the trick D-084 already used for
+   heights — and a centre keeps its own. `TerrainGen.biome_color()`
+   remains the single source of truth (D-083): the blend is DERIVED from
+   it, and the minimap and the terrain preview PNG still read it per
+   cell. The preview PNG is byte-identical before and after, which is the
+   check that the small picture and the big one cannot have drifted.
+2. **The pillow is a tunable**, `TerrainGen.pillow`, shipping at 0.15
+   against the old implicit 1.0. The centre vertex now sits at
+   `lerp(mean of its own six corners, own elevation, pillow)`. The
+   comment that used to live in `surface_field` called the resulting dome
+   a feature — "keeps the hex grid faintly readable" — and that
+   readability is precisely what the owner asked to be rid of.
+   `height_at` reads the same array, so the ground sampler follows and
+   cannot disagree with the mesh.
+3. **UVs are continuous across cells**, and still derived from the CELL
+   rather than from world position — the D-035 rule that makes the nine
+   lattice copies agree. Each hex used to be inscribed in its biome's
+   atlas tile with a 6% inset and a hashed rotation, so the texture
+   restarted at every edge.
+
+**`shaders/terrain.gdshader` is the project's first terrain shader**, and
+(3) is why one was needed: a continuous coordinate over an eight-tile
+atlas walks out of one biome's tile into its neighbour's, and wrapping it
+back into the right tile is a per-fragment decision with no
+fixed-function expression. Each cell carries three tile indices, constant
+over the cell so interpolation is a no-op — an interpolated INDEX would
+ask for tile 4.7 — and each vertex carries its weights over them, which
+do interpolate. The fragment samples three times with **explicit
+gradients**, because `fract` tears the derivative once per repeat and an
+implicit-derivative sample draws a bright seam every few hexes in a
+ruler-straight line.
+
+**Two arithmetic details are load-bearing, not fussiness:**
+
+- **`TerrainGen.corner_cells` returns the three owners SORTED.** Float
+  addition is not associative, so three owners summing the same triple in
+  three different orders can differ in the last bit. Sorting makes
+  watertightness a property of the arithmetic rather than of a tolerance.
+- **`TerrainChunk.uv_scale` is arithmetic, not a constant.** The texture
+  meets itself across the seam only if `scale.x * width`,
+  `scale.x * height/2` AND `scale.y * height` are all whole numbers of
+  repeats — the middle one because stepping `height` in r moves world x
+  as well as z. A scale that only divides the width tears along the
+  diagonal seams, which is a defect that looks like a noise bug.
+  `vertex_uv` evaluates the coordinate as an integer numerator over a
+  fixed denominator so two cells reaching a corner by different
+  arithmetic land on the same UV exactly.
+
+**The measurement that chose route B.** The plan offered a single neutral
+detail texture (free) against per-biome tiles blended three ways, and
+said the decision would be made with a `bench-render` number rather than
+an opinion. On **Intel(R) Iris(R) Xe Graphics**, 84x96 map, 200 measured
+frames, before and after in one session:
+
+| | terrain only | 1,000 squads / 27,300 soldiers |
+|---|---|---|
+| before | 4.15 ms | 52.07 ms |
+| after (3 taps) | 4.26 ms | 51.98 ms |
+
+**+0.11 ms** on the terrain-only row and a difference at 1,000 squads
+that is inside run-to-run noise, against a 2 ms budget. The frame is CPU
+bound on soldier derivation — 48 ms of 52 — so two more ground taps are
+very nearly free, and the fallback was not needed.
+
+**Rejected alternatives:** bigger or denser atlas tiles (the island seam
+is the problem, not the tile size); per-vertex tile indices with `flat`
+interpolation (the provoking vertex's biomes would paint the whole
+triangle); eight per-biome weights so no index needs interpolating
+(eight taps per fragment); de-indexing the fan so each triangle can carry
+its own four-biome set (exact, and 2.5x the vertex count for a
+difference measured at 0.09% of corners).
+
+**Consequences:**
+
+- **Three tile slots per cell is not always enough**, and the test
+  MEASURES that rather than assuming it: a cell whose six neighbours span
+  more than three biomes drops the least demanded, and its neighbour may
+  drop a different one, so the texture DETAIL can differ across that one
+  edge. On the shipped map it is **45 of 48,384 corners, 0.09%**. Colour
+  is exact everywhere and carried separately.
+- `TerrainGen.build_fields` and `TerrainFields` replace three separate
+  O(cells) walks over the same noise. Heights, colours, biomes and
+  passability are built together because they are indexed identically and
+  share one corner-sharing rule — passing them separately lets a caller
+  pair this build's surface with that build's colours, which nothing
+  would report.
+- Terrain meshing for the standard map costs more at client start:
+  **~600 ms to ~1,100 ms** for all 36 chunks, once per match. Two extra
+  four-float vertex channels and the per-corner class resolution account
+  for it. A fast path for the 99% of corners whose three owners share a
+  class is in `corner_heights` and pays for itself; an equivalent fast
+  path in `cell_tiles` measured no gain and was removed rather than kept
+  on the strength of the argument for it.
+
+**Amendment, 2026-08-15 (same day), on the owner's report that the
+transitions were still hard hex-shaped edges.** D-096 as written above
+fixes the low-contrast boundaries and does not fix the high-contrast
+one, and the distinction is the whole content of this amendment.
+
+**What was wrong.** A mean-of-three corner blend makes every transition
+exactly ONE CELL wide. Where the two colours are close — grass to dry
+grass, sand to grass — that reads as soft. At sand against water, the
+highest contrast on the map, one cell is one HEX: the 50% contour runs
+along the hex edges, because that is precisely where the three weights
+are equal, and the eye reads the resulting chain of arcs as a scalloped
+lattice. An isolated sand cell in open water rendered as a clean
+six-pointed STAR, which is the same fact stated at its most obvious.
+
+Feathering harder does not help. A wider soft band centred on the same
+contour is still centred on the lattice.
+
+**Two changes, and both were needed — the first alone was measured and
+found insufficient.**
+
+1. **The contour moves off the lattice.** Each corner's three weights
+   are skewed by a low-frequency periodic noise field sampled at the
+   corner's own position (`blend_warp`, `blend_warp_frequency`). The
+   boundary meanders across cells instead of along them. Unwarped it
+   returns exact thirds, so D-096's original blend is recovered rather
+   than approximated.
+2. **The band widens past one cell.** A cell's CENTRE takes some of its
+   own six (already blended) corners (`centre_bleed`, 0.45). Because a
+   corner already carries a third of each of its three owners, averaging
+   the six of them reaches the neighbours' neighbours — a roughly
+   two-cell transition for three lines of arithmetic and no extra
+   sampling.
+
+**The invariant that changed, stated plainly.** D-096 said the centre
+vertex carries `biome_color` EXACTLY. That now holds for every cell
+whose six neighbours share its biome — most of any map — and is
+deliberately relaxed at boundaries, where the point is that the colour
+is on its way to being the neighbour's. `biome_color` is still the only
+source of colour and the minimap still reads it per cell; the test
+asserts the interior case exactly rather than loosening to a tolerance
+everywhere, so what survives is a real invariant and not a weaker one
+wearing the same name.
+
+**Three things the pictures found that no count could.**
+
+- **The warp alone changed almost nothing.** Its first version moved the
+  blend by at most 19/255 — the rendered coastline was pixel-for-pixel
+  the same scallop. `FastNoiseLite` rarely approaches ±1, so an
+  amplitude that reads as "most of a hex" displaces about a third of
+  that. Shipped at 2.0 for that reason, and there is now a test that
+  asserts the mean skew on the SHIPPED map rather than that the
+  mechanism exists.
+- **Pushed harder, black blots appeared along the coast.** Where the
+  warp clamps every weight in a cliff group to zero, the blend divided
+  near-nothing by near-nothing. It falls back to the unweighted mean of
+  the group now.
+- **The per-corner sampling was untested and a perturbation proved it.**
+  Sampling the warp at the calling CELL instead — which skews every
+  corner of a cell the same way and gives a corner's three owners three
+  different answers — left the entire suite green, because
+  `build_fields` computes each corner once and hands the same cached
+  triple to all three owners. The cache made the mesh watertight however
+  wrong the arithmetic was. Only calling the function from each of the
+  three sides can see it, and a test now does.
+
+**Cost:** ~0.25 s of terrain build at client start on the standard map
+(1.47–1.65 s to 1.70–2.20 s, three paired runs), and nothing per frame —
+the weights are baked into vertex colours and the shader's existing tile
+channel. Every hex corner is computed once and looked up twice more
+(a hex lattice has two corners per cell), which is the same
+compute-once-index-after shape as `TorusSpace.disk_offsets` and
+`elevation_field`; without it the warp's two noise samples per corner
+cost a second of build on their own. `TorusSpace.delta` was in the first
+draft of the weight function and cost five seconds — the
+`distance()`-per-candidate defect in its sixth outfit, and caught by
+watching the build time rather than by reading the code.
+
+**What this does NOT fix, deliberately.** The cliff skirts are still
+hard-edged and hexagonal in plan, because a cliff IS the passability
+boundary and that boundary is per-cell (D-097). Feathering a cliff would
+be drawing something the simulation does not have.
+
+**Revisit trigger:** a map whose width and height/2 are coprime, where
+`uv_scale`'s granularity forces the repeat count to the full map width
+and the texture stretches; or a biome roster large enough that corner
+truncation rises out of the tenths of a percent.
+
+---
 
 ### D-095 · 2026-08-14 · Accepted — parallel dev instances are isolated by construction
 
@@ -648,6 +970,174 @@ retroactive-audit lesson.
 > parallel. Check `main` immediately before merging, not only before
 > writing.
 
+### D-097 · 2026-08-15 · Accepted — build sites are contestable shared state
+
+**Decision:** A pending foundation stops being a private note the server
+keeps for one squad and becomes a **build site**: authoritative, replicated
+to its owner, and contestable by everyone else.
+
+1. **Shared.** Any squad of the owner's that may build that def can work an
+   existing site. Progress **pools** — two gatherers on one foundation build
+   it in half the time, three in a third.
+2. **Persistent and owner-visible.** A site is replicated to its owner (only)
+   and drawn on the ground until it is built or destroyed. No timeout.
+3. **Contestable.** A site does **not** reserve ground against enemies. If an
+   enemy completes a building overlapping it, the site is destroyed, and
+   whatever was spent on it is gone.
+4. **Demolishable.** An owner may destroy their own completed building
+   outright. **No refund**, matching D-055's razing — a building is a sunk
+   cost whichever way it comes down.
+
+**Rationale:** The immediate cause was a smaller thing — a build order was
+silent until the builder arrived, so a distant site was indistinguishable
+from a misclick for many seconds. The first fix was a client-side marker
+that faded after nine seconds. Playing with it made the real shape obvious:
+a mark that only YOU can see, that no other builder can act on, and that
+vanishes on a timer is a *notification*, when what the player wants is a
+**plan** — something they lay down, come back to, and reinforce.
+
+Pooling rather than merely surviving one builder's death (the alternative
+considered) is what makes helping a real decision: sending a second crew has
+a visible payoff, so "finish this wall NOW" becomes a thing you can spend
+squads on.
+
+Not reserving ground is the deliberately harsh half, and it is what stops
+sites being free territory. A site costs nothing to place and would
+otherwise be a way to claim a map by spamming foundations nobody can build
+over. Making it losable turns forward-building into a genuine race, which is
+the interesting version.
+
+**This crosses a boundary on purpose, and the boundary is worth naming.**
+The marker as originally built was cosmetic and one-way in the spirit of
+D-006 — the simulation could never read it. A build site is the opposite:
+authoritative state that happens to be drawn on the ground. The mark is now
+the *rendering of* the site, not the thing itself, and the D-006 discipline
+continues to apply to the rendering only. Anything the player can contest,
+lose, or spend squads on is simulation state and lives server-side.
+
+**Rejected alternatives:**
+
+- *Keep it a client-only marker* (rejected — cannot be worked by another
+  squad, cannot be contested, and cannot survive a reconnect. Every property
+  asked for here requires the server to own it.)
+- *Sites reserve ground against enemies* (rejected — a free, instant,
+  uncontestable land claim. `_footprint_conflict` already counts pending
+  intents this way, which is fine among your OWN builds and has to be
+  relaxed for enemies.)
+- *Redundancy without pooling* (rejected — a second builder that changes
+  nothing visible is not a decision the player can feel.)
+- *Partial refund on demolish* (rejected — D-055 gives nothing back for
+  razing, and two different answers for "this building came down" is the
+  kind of inconsistency that gets discovered as a exploit rather than as a
+  rule.)
+
+**Consequences:**
+
+- `_pending_builds` moves from a per-squad dictionary to a site list with its
+  own ids, and gains a wire message gated to the owner (fog rules apply —
+  D-004 — but a site is only ever sent to its owner anyway).
+- Construction rate becomes "sum of the crews present", not a fixed rate.
+- A new order opcode for demolition, validated for ownership server-side
+  (D-002) like every other order.
+- `_footprint_conflict` distinguishes own-pending (blocks) from
+  enemy-pending (does not).
+- **Careful with the completion path:** destroying a site when an enemy
+  building lands on it has to go through the same dirty-flag and passability
+  refresh a real destruction does, rather than a second implementation built
+  to match it by hand — the trap D-076's upgrade path already documents.
+
+**Revisit trigger:** If sites become the dominant way players deny ground
+(the opposite failure to the one clause 3 prevents), or if pooled
+construction makes early rushes decide matches faster than D-056's 1-2 hour
+target allows.
+
+---
+
+### D-096 · 2026-08-14 · Accepted — continuous wall placement, rasterised occupancy
+
+**Decision:** A wall-family structure (`footprint_radius == 0` — wall, gate,
+garrison wall, garrison gate, access tower) stops being "one building that
+owns one hex cell". It gains a continuous world position and a continuous
+rotation, and the cells it blocks — and the cells that carry its tier-1
+walkway — are **derived by rasterising its swept rectangle**, rather than
+being the one cell it was placed on.
+
+Concretely:
+
+- `BuildingSim` keeps `_cell` as the **anchor** (the cell the structure's
+  centre falls in). Everything that buckets by cell — combat targeting,
+  vision stamping, the minimap, selection — keeps working untouched.
+- It gains `_offset`, a sub-cell continuous displacement in world units, and
+  `_facing` becomes a continuous angle for the wall family instead of one of
+  six directions. True position is `space.to_world(cell) + offset`.
+- `occupied_cells()` / `blocking_cells()` rasterise the rotated
+  `mesh_size.x × mesh_size.z` rectangle centred on that true position.
+- A placement drag lays segments **end to end along the true dragged line**
+  at exact `WALL_LENGTH` spacing, each rotated to the line's real angle —
+  not one segment per hex cell.
+
+**Rationale:** Grid-locked walls were the most-reported visual problem in
+playtesting, and every symptom traced to the same root. Segments snapped to
+cell centres and to one of six angles cannot follow a shoreline, a ridge, or
+any line a player actually wants to hold. A bend left a gap that had to be
+plugged with a cylindrical post. A gatehouse drawn wider than one cell was
+overlapped by the very walls meant to meet it, because it occupied one cell
+while spanning two.
+
+The insight is that the hex grid was never load-bearing for a wall's
+*appearance* — only for its *effect*. **D-008 is untouched**: cells remain
+the simulation's spatial index, and flow fields, vision and combat all still
+work on them. What changes is only how a wall's occupancy is *computed*.
+
+**The failure mode this must not have** is a wall that looks solid and has a
+pathing hole units walk through. Deriving blocked cells from a segment's true
+swept span, rather than from its centre cell, is precisely what prevents it:
+a segment that visually crosses three cells blocks three cells. This is the
+"looks fine, quietly wrong" class this project keeps getting bitten by, so it
+gets an explicit test — a run dragged at an arbitrary angle must leave **no**
+unblocked cell along its length, and that test must be observed to fail
+before it is trusted.
+
+**Rejected alternatives:**
+
+- *Keep cell placement, render continuously* (rejected — the picture and the
+  simulation would disagree about where a wall stands. A player would aim at
+  a wall that blocked somewhere else, which is worse than an ugly wall.)
+- *Drop the hex grid for a square one* (rejected — costed at the same time.
+  `TorusSpace` is load-bearing under ~15 files, and hex's isotropy is what
+  makes vision and combat disks clean, per the standing `disk_offsets` rule.
+  The grid was never the problem; the one-cell-per-wall model was.)
+- *One cell per segment, tolerating duplicates and skips* (rejected —
+  `WALL_LENGTH` (~1.77) and hex spacing (~1.73) are close but NOT equal, so a
+  run at an arbitrary angle silently skips cells. That is exactly the
+  walk-through-a-solid-wall bug above, arrived at by accident.)
+
+**Consequences:**
+
+- The wire carries a continuous offset and rotation per building.
+- `_footprint_conflict` becomes a span-overlap test for the wall family
+  rather than a cell-equality test.
+- The cylindrical joint post is **replaced by an authored round bastion**,
+  generated per wall style in `art/buildings/` so a stake fence gets a
+  palisade roundel and a stone wall gets a stone drum. Its radius comes from
+  the incoming segments' real angles, so one shape serves a corner, a T and a
+  four-way junction alike. The post it replaces was a `StandardMaterial3D`
+  tinted with `mesh_color` — the *primitive fallback* colour, which the
+  authored wall never renders — which is why it read as a differently
+  coloured spike rather than part of the wall.
+- The garrison gate becomes an exact multiple of `WALL_LENGTH`, and a wall
+  run snaps to its true edge instead of into its middle.
+- This is **not** a step toward continuous-space simulation. Squads still
+  move on flow fields over cells, elevation still does not occlude, and the
+  tick still advances on cells. Any proposal to make combat or pathing
+  continuous is a separate decision and does not inherit this one's rationale.
+
+**Revisit trigger:** If per-segment rasterisation shows up in tick profiling
+at D-018's full scale, or if any system starts needing a wall's continuous
+position for a *simulation* answer rather than a rendering one — the latter
+would mean the discrete/continuous split this decision depends on has leaked.
+
+---
 ### D-087 · 2026-08-14 · Accepted — forests are made of trees: biome-density nodes, 1-minute trees, authored variants, fellings on the wire
 
 **Decision:** Resource nodes stop being a uniform sprinkle of rich markers

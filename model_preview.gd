@@ -87,7 +87,8 @@ func _build_terrain() -> void:
 
 	var terrain := TerrainGen.new()
 	# The continuous ground surface (D-067), shared with the mesh below.
-	var surface := terrain.surface_field(_space)
+	var fields := terrain.build_fields(_space)
+	var surface := fields.surface
 	_terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(_space, surface, x, z)
 
@@ -102,7 +103,7 @@ func _build_terrain() -> void:
 
 	for cy in range(grid.y):
 		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, surface)
+			var mesh := TerrainChunk.build_mesh(_space, terrain, Vector2i(cx, cy), chunk_size, fields)
 			if mesh == null:
 				continue
 			var instance := MeshInstance3D.new()
@@ -112,7 +113,7 @@ func _build_terrain() -> void:
 
 	print("model_preview: terrain %dx%d, atlas=%s"
 		% [config.width, config.height,
-			"yes" if material.albedo_texture != null else "NO (generated/ not built)"])
+			"yes" if TerrainChunk.has_atlas() else "NO (generated/ not built)"])
 
 
 ## `--seconds=` and `--out=`, after a bare `--`.

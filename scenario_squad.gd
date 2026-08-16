@@ -1,7 +1,7 @@
 class_name ScenarioSquad
 extends Resource
 
-## One entry in a scenario's per-player squad loadout (D-096).
+## One entry in a scenario's per-player squad loadout (D-098).
 ##
 ## Names an ARCHETYPE, never a unit id and never a civ. `militia` means
 ## "whatever this player's civilization fields as militia", resolved

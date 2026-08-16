@@ -16,7 +16,7 @@ services:
       context: .
       target: base
     # EDOTMW_SCENARIO starts the match mid-game from res://scenarios
-    # (D-096). Empty — the default — means the real opening, because
+    # (D-098). Empty — the default — means the real opening, because
     # `--scenario=` parses to an empty id and the server treats that as
     # "no scenario". Passed here rather than by `compose run` so the
     # server keeps the `server` network alias that `compose up` gives it

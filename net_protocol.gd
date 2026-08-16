@@ -354,6 +354,17 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		# to render the same rotation the player chose at placement, not
 		# just for the access tower's door.
 		buf.put_u8(int(entry.get("facing", 0)))
+		# Sub-cell offset (D-096). A wall no longer stands at its cell's
+		# centre, so "which cell" is not enough to draw it any more — this
+		# is the rest of the pose. Zero for every non-wall building, and
+		# for every wall built before this field existed.
+		#
+		# On the wire rather than derived client-side: the offset is chosen
+		# by whoever dragged the run out, so a second player's client has
+		# no way to recompute it, and two clients disagreeing about where a
+		# wall stands is a desync a player would see as walking through it.
+		buf.put_float(float(entry.get("offset_x", 0.0)))
+		buf.put_float(float(entry.get("offset_z", 0.0)))
 	return buf.data_array
 
 
@@ -387,6 +398,8 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 		entry["gate_open"] = buf.get_u8() == 1
 		entry["gate_mode"] = int(buf.get_u8())
 		entry["facing"] = int(buf.get_u8())
+		entry["offset_x"] = buf.get_float()
+		entry["offset_z"] = buf.get_float()
 		out.append(entry)
 	return out
 
@@ -687,8 +700,11 @@ static func decode_building_state_hash(data: PackedByteArray) -> Dictionary:
 ## rotation for most buildings; `BuildingDef.is_access_tower` is what
 ## additionally gives it door meaning. Defaults to 0 (east) for any
 ## caller that does not care to choose.
+## `offset` is the sub-cell displacement in world units (D-096) — where
+## inside `cell_index` the structure actually stands. Zero for every
+## non-wall building, which is every caller that does not pass it.
 static func encode_order_build(squad: int, def_id: String, cell_index: int,
-		facing: int = 0) -> PackedByteArray:
+		facing: int = 0, offset: Vector2 = Vector2.ZERO) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_ORDER_BUILD)
 	buf.put_u32(squad)
@@ -696,7 +712,9 @@ static func encode_order_build(squad: int, def_id: String, cell_index: int,
 	buf.put_u16(name_bytes.size())
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
-	buf.put_8(facing)
+	buf.put_u8(facing & 0xFF)
+	buf.put_float(offset.x)
+	buf.put_float(offset.y)
 	return buf.data_array
 
 
@@ -704,7 +722,7 @@ static func encode_order_build(squad: int, def_id: String, cell_index: int,
 ## instead — appends to the squad's build queue rather than replacing it.
 ## Decoded by the same `decode_order_build`.
 static func encode_order_build_queue(squad: int, def_id: String, cell_index: int,
-		facing: int = 0) -> PackedByteArray:
+		facing: int = 0, offset: Vector2 = Vector2.ZERO) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_ORDER_BUILD_QUEUE)
 	buf.put_u32(squad)
@@ -712,7 +730,9 @@ static func encode_order_build_queue(squad: int, def_id: String, cell_index: int
 	buf.put_u16(name_bytes.size())
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
-	buf.put_8(facing)
+	buf.put_u8(facing & 0xFF)
+	buf.put_float(offset.x)
+	buf.put_float(offset.y)
 	return buf.data_array
 
 
@@ -768,7 +788,7 @@ static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing:
 	buf.put_u16(name_bytes.size())
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
-	buf.put_8(facing)
+	buf.put_u8(facing & 0xFF)
 	return buf.data_array
 
 
@@ -781,7 +801,7 @@ static func decode_cheat_spawn_building(data: PackedByteArray) -> Dictionary:
 	return {
 		"def_id": name_bytes.get_string_from_utf8(),
 		"cell": buf.get_u32(),
-		"facing": buf.get_8(),
+		"facing": buf.get_u8(),
 	}
 
 
@@ -796,7 +816,11 @@ static func decode_order_build(data: PackedByteArray) -> Dictionary:
 		"squad": squad,
 		"def_id": name_bytes.get_string_from_utf8(),
 		"cell": buf.get_u32(),
-		"facing": buf.get_8(),
+		"facing": buf.get_u8(),
+		# D-096's sub-cell offset. Dictionary values are evaluated in
+		# order, so these read the two floats the encoders write last.
+		"offset_x": buf.get_float(),
+		"offset_z": buf.get_float(),
 	}
 
 

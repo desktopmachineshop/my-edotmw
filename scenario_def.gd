@@ -1,7 +1,7 @@
 class_name ScenarioDef
 extends Resource
 
-## A mid-game world, as DATA (D-096).
+## A mid-game world, as DATA (D-098).
 ##
 ## The problem this solves: the real opening is slow on purpose. A player
 ## starts with one founding party and no base, a town hall takes 40

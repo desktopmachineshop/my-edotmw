@@ -100,7 +100,7 @@ _import:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Skipped when nothing an import cares about has changed (D-096). It
+    # Skipped when nothing an import cares about has changed (D-098). It
     # is ~10 s and it ran on EVERY recipe, which was half the cost of a
     # filtered unit-test run.
     #
@@ -521,7 +521,7 @@ run-bots N DURATION="-1": _import
 # resolve them, and is otherwise a confusing first-run failure.
 #
 # FILTER selects test FILES by substring, TEST selects one test by name
-# (D-096) — the full suite is minutes, and iterating on one behaviour
+# (D-098) — the full suite is minutes, and iterating on one behaviour
 # should not cost that.
 [doc("Run the GUT suite headless. FILTER selects files, TEST selects one test")]
 test-unit FILTER="" TEST="": _import
@@ -690,7 +690,7 @@ test-load N DURATION:
     grep -E "server: final" "$server_log" || true
 
 # The fast integration loop: a REAL server and REAL bots, but starting
-# mid-match from a scenario instead of playing the opening (D-096).
+# mid-match from a scenario instead of playing the opening (D-098).
 #
 # `test-load` needs ~120 s and that is not waste — a town hall takes 40 s
 # and consumes the founding party (D-031), production runs after it, and
@@ -779,7 +779,7 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     grep -E "VERDICT" "$bots_log"
     grep -E "server: final" "$server_log" || true
 
-# Every shipped scenario and what it is for (D-096).
+# Every shipped scenario and what it is for (D-098).
 [doc("List the mid-game scenarios test-scenario and --scenario can name")]
 scenarios: _import
     #!/usr/bin/env bash
@@ -976,7 +976,15 @@ build-assets ONLY="":
     args=""
     [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
     "{{blender_python}}" art/build.py $args
-    {{just_executable()}} _import
+    # QUOTED, unlike every other `{{just_executable()}}` call in this file,
+    # because this one is reached on Windows where the path is absolute and
+    # backslash-separated: unquoted, the shell eats the separators and the
+    # line dies as `C:UsersdmasoDocuments...toolsjust.exe: command not
+    # found`. The build itself had already succeeded, so the only casualty
+    # was the import — which is the step CLAUDE.md warns about, since a
+    # rebuild Godot has not re-imported is invisible and gives confident
+    # wrong answers about a mesh that did change.
+    "{{just_executable()}}" _import
 
 # Rebuild the resource-node markers (D-028's food/wood/gold/stone props)
 # from the hand-authored source under art/resources/source/.
@@ -1062,6 +1070,104 @@ gen-model-preview SECONDS="1.2": _import
     fi
     rm -f "{{artifacts_dir}}/models-godot-b.png"
     echo "VERDICT: ok - models rendered and animating; LOOK AT artifacts/models-godot.png"
+
+# Ground cover on real terrain, with real soldiers standing in it (D-100).
+#
+# The same idea as gen-model-preview and for the same reason — every check
+# in tests/test_ground_cover.gd counts things, and none of them can see a
+# fern lit from the inside or grass that vanishes into the ground colour.
+# Software-rasterised, so no GPU: this answers "is the picture right", and
+# `bench-render` answers "how fast".
+#
+# The verdict gates on the two failures a screenshot of bare ground would
+# otherwise hide: nothing drawn at all, and a model the palettes can name
+# that never made it onto the map.
+[doc("Render ground cover to artifacts/cover-godot.png")]
+gen-cover-preview SECONDS="0.6": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-cover-preview needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    log="{{artifacts_dir}}/cover-preview.log"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            cover_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/cover-godot.png" | tee "$log"
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 cover_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/cover-godot.png" | tee "$log"
+    fi
+    if [ ! -s "{{artifacts_dir}}/cover-godot.png" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    summary="$(grep -o 'cells dressed of [0-9]*, [0-9]* instances, [0-9]*/[0-9]* models drawn' "$log" | head -n 1)"
+    if [ -z "$summary" ]; then
+        echo "VERDICT: FAIL - the preview never reported what it drew"
+        exit 1
+    fi
+    drawn="$(echo "$summary" | sed 's/.* \([0-9]*\)\/[0-9]* models drawn/\1/')"
+    known="$(echo "$summary" | sed 's/.*\/\([0-9]*\) models drawn/\1/')"
+    instances="$(echo "$summary" | sed 's/.*, \([0-9]*\) instances.*/\1/')"
+    if [ "$instances" -lt 100 ]; then
+        echo "VERDICT: FAIL - only $instances prop instances; the ground is bare"
+        exit 1
+    fi
+    if [ "$drawn" != "$known" ]; then
+        echo "VERDICT: FAIL - $drawn of $known prop models reached the picture;"
+        echo "         a palette names a model that did not load (run build-assets)."
+        exit 1
+    fi
+    echo "VERDICT: ok - $summary; LOOK AT artifacts/cover-godot.png"
+
+# A rendered picture of the GROUND, in the shipping lighting rig (D-096/D-097).
+#
+# `gen-terrain-preview` prints healthy numbers and a top-down biome PNG, and
+# both stayed healthy for two milestones while the ground read as a honeycomb
+# of flat hexes with no cliff visible anywhere. `test-client` renders the real
+# thing but points its camera at a spawn, which is walkable ground by
+# construction and therefore the one place a cliff cannot be. This frames the
+# terrain on purpose: it finds the longest stretch of passability boundary on
+# the map and looks at it from a shallow angle.
+#
+# Software-rasterised like `gen-model-preview`, so it needs no GPU and says
+# nothing about speed — `bench-render` is the recipe for that.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render the terrain, framed on a cliff, to artifacts/terrain-3d.png")]
+gen-terrain-shot HEIGHT="14": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-terrain-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/terrain-3d.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            terrain_shot.tscn -- --height={{HEIGHT}}
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 terrain_shot.tscn -- --height={{HEIGHT}}
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-terrain-shot: no frame was written to $out" >&2
+        exit 1
+    fi
 
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #

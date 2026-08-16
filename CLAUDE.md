@@ -438,6 +438,128 @@ learn, honoured this time. The one caveat that survives: criterion 11's
 numbers are all from integrated graphics, and the discrete-GPU re-run
 trigger in D-085 stays armed.
 
+**The ground is continuous, and cliffs are drawn (D-096/D-097,
+2026-08-15).** The owner's complaint was that the ground read as a
+honeycomb of flat hexes and no cliff was visible anywhere. Four causes,
+all in the code, none visible to any number:
+
+- vertex colour was one flat value per cell, so it stepped at every
+  boundary. A shared corner now takes the mean of its three cells — the
+  same trick D-084 used for heights — and `biome_color()` stays the
+  single source of truth, so the minimap and the preview PNG cannot
+  drift. The preview PNG is byte-identical before and after, which is how
+  that is checked;
+- the centre vertex sat at the cell's own elevation and domed each hex.
+  That is `TerrainGen.pillow` now, shipping at 0.15 against the old
+  implicit 1.0. `height_at` reads the same array, so the sampler follows;
+- each hex sampled its own inset, hash-rotated atlas tile. UVs are
+  continuous across cells now and still CELL-derived, never from world
+  position (D-035). `TerrainChunk.uv_scale` is arithmetic rather than a
+  constant: the texture meets itself across the seam only if the map
+  period is a whole number of repeats on BOTH axes, and stepping `height`
+  in r moves world x as well as z;
+- `surface_field` averaged corners across the passability boundary, so a
+  mountain was a smooth ramp that happened to be grey. Corners now
+  average WITHIN a passability class and step between them, and a rock
+  skirt fills the step.
+
+**`shaders/terrain.gdshader` is the project's first terrain shader**, and
+continuous UVs are why: a continuous coordinate over an eight-tile atlas
+walks out of one biome's tile into its neighbour's, and wrapping it back
+is a per-fragment decision. Each cell carries three tile indices,
+constant over the cell (an interpolated INDEX would ask for tile 4.7),
+and each vertex its weights over them. The fragment samples with
+**explicit gradients**, because `fract` tears the derivative once per
+repeat and the implicit version draws a bright seam every few hexes in a
+ruler-straight line. Cost, measured before deciding, on Intel Iris Xe:
+**+0.11 ms terrain-only and nothing resolvable at 1,000 squads /
+27,300 soldiers** against a 2 ms budget — the frame is CPU-bound on
+soldier derivation, 48 ms of 52, so two more ground taps are nearly free.
+
+**A one-cell blend is not enough at high contrast, and that took a second
+pass to learn.** Blending a corner over its three cells makes every
+transition exactly ONE CELL wide. At grass-to-sand that reads as soft; at
+sand-against-water — the strongest contrast on the map — one cell is one
+HEX, the 50% contour runs along the hex edges because that is where the
+three weights are equal, and the shoreline comes out visibly scalloped.
+An isolated sand cell in open water rendered as a clean six-pointed STAR.
+So two more things: the contour is pushed off the lattice by a
+low-frequency periodic warp of the corner weights (`blend_warp`, sampled
+at the CORNER so all three owners agree), and the band is widened past
+one cell by letting a centre take some of its own already-blended corners
+(`centre_bleed`). **Warping alone was measured and was not enough** — its
+first version moved the rendered picture by at most 19/255, because
+`FastNoiseLite` rarely approaches ±1 and an amplitude that reads as "most
+of a hex" displaces about a third of that.
+
+The centre-vertex invariant changed with it and the new one is narrower
+but still real: **a cell whose six neighbours share its biome carries
+`biome_color` at every vertex exactly**; boundary cells deliberately do
+not, because that is the feathering. The test asserts the interior case
+exactly rather than loosening to a tolerance everywhere.
+
+**And a perturbation the suite failed.** Sampling the warp at the calling
+CELL rather than at the corner — which gives a corner's three owners
+three different answers — left every test green, because `build_fields`
+computes each corner once and hands the same cached triple to all three.
+**The cache made the mesh watertight however wrong the arithmetic was.**
+Only calling the function from each of the three sides can see it. When
+an optimisation makes a property hold structurally, the test for that
+property has to bypass the optimisation.
+
+**The finding worth carrying forward: a truthful drawing of the
+passability boundary draws nothing.** The natural height step where two
+classes meet on the shipped map has a **median of 0.20 world units along
+the coast and 0.66 at a mountain foot**, because elevation is smooth
+noise and `passability` is a level set on it — so the boundary can never
+fall where the ground is already steep. Drawn faithfully it produced
+**87 rock faces on the whole 8,064-cell map**, which is this project's
+"mechanism correct, shipped numbers do nothing" failure wearing a green
+verdict. Mountains are therefore LIFTED onto their own tier
+(`cliff_rise`, 2.0 world units): the wall still stands exactly where
+`passability` changes, and the lift only makes it tall enough to see.
+363 faces now.
+
+**And a related fact about the shipped map that is not a rendering
+matter:** 21.7% of its cells are impassable and 20.9% are water, which
+leaves roughly **66 mountain cells and 80 land/mountain edges** on 8,064.
+Cliffs there are mostly coastal. If more rock is wanted the lever is
+`mountain_level` and the `/terrain` presets.
+
+**`just gen-terrain-shot` is the new recipe, and it exists because the
+old instruments structurally could not see any of this.**
+`gen-terrain-preview` draws a top-down biome map from `biome_color` and
+reports chunk counts — every number healthy throughout. `test-client`
+renders the real thing and points its camera at a spawn, which is
+walkable ground by construction and therefore the one place a cliff
+cannot be. The new recipe frames the terrain on the longest run of
+passability boundary on the map, from a shallow angle, in the SHIPPING
+lighting rig. **Look at `artifacts/terrain-3d.png`.**
+
+Three smaller things bought the same way. The rock face's normal is
+tilted ~27 degrees up while its geometry stays vertical, because D-086's
+rig has no shadows and a truly vertical normal drew mountain walls at
+sRGB 0.09 — dark enough to read as holes cut in the world. Colour steps
+with the height at a cliff, or a mountain plateau is painted in the
+colours of the valley below it. And `TerrainGen.corner_cells` returns its
+three owners SORTED, because float addition is not associative and three
+owners summing one triple in three orders can differ in the last bit —
+which makes watertightness a property of the arithmetic rather than of a
+tolerance.
+
+Terrain meshing for the standard map costs **~600 ms to ~1,100 ms** at
+client start as a result, once per match. Frame cost of the whole change,
+terrain only, on Intel Iris Xe: **3.97 ms to 4.05 ms**.
+
+**And a warning about the numbers, which cost an hour to work out.** The
+1,000-squad `bench-render` absolutes from that session are junk: the same
+unchanged build measured **52.1 ms early and 181.1 ms three hours later**,
+after continuous GPU benchmarking, with worst frames near 900 ms. The A/B
+deltas taken from interleaved pairs are still sound — that is what
+interleaving is for — but any absolute quoted from a long benchmarking
+session should be checked against a fresh one. This is the same lesson as
+M6's worst-tick figures taken while the host was building containers.
+
 **Resource nodes are forests now (D-087, 2026-08-14).** Placement is a
 per-biome density field riding the same moisture noise `biome_at`
 classifies with — dense forest hearts, groves thickening toward the
@@ -761,8 +883,20 @@ vision.gd                Per-player vision field over cells (D-025).
                         Stamped once per player, then an O(1) lookup
                         per squad — closes the "visible_to() returns
                         every squad" stub D-022 flagged for M1.
-terrain_gen.gd           Periodic (seam-continuous) terrain noise.
+terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
+                        `build_fields` — heights, colours, biomes and
+                        passability in one pass (D-096). `corner_cells`
+                        is THE definition of which three cells meet at a
+                        corner, and it returns them sorted so all three
+                        agree bit for bit.
+terrain_fields.gd        What `build_fields` returns. One object, because
+                        surface and colours are indexed identically and a
+                        caller that paired them wrongly would just paint
+                        the ground wrong with nothing failing.
 terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
+                        Owns the continuous cell-derived UVs (D-096), the
+                        per-cell atlas tile slots the shader blends, and
+                        the cliff skirts (D-097).
 render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
@@ -785,6 +919,15 @@ selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
                         ranking that was wrong does not.
+ground_cover.gd          Which decorative props dress a cell (D-100).
+                        Same shape as resource_visuals.gd and the exact
+                        OPPOSITE of what it dresses: cover is client-
+                        derived, NOT fog-gated, and costs nothing on the
+                        wire, because a grass tuft leaks no information.
+                        All-static and pure. A cell holding a node,
+                        building or wall gets none — the caller supplies
+                        that fact rather than the module reading sim
+                        state.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
                         identical to the wire format.
 
@@ -828,17 +971,30 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         materials. CACHED — a .glb is a scene, and
                         loading one per squad is the M4 `by_id` defect
                         with a bigger constant.
-/shaders/*.gdshader     The project's first shaders (D-082). Unit opaque,
-                        unit ghost, building static; VAT sampling shared
-                        via a .gdshaderinc.
+/shaders/*.gdshader     Unit opaque, unit ghost, building static (D-082);
+                        VAT sampling shared via a .gdshaderinc. Plus
+                        `terrain.gdshader` (D-096): three atlas taps per
+                        ground fragment on continuous UVs, which is what
+                        a fixed-function material cannot express.
 /art/**.py              Committed asset GENERATORS (D-081) — the source
                         of truth for every model and texture. Plain
                         Python; `bpy` is imported only by art/lib/bake.py.
 /generated/             Committed build output: .glb, VAT .exr, the
                         terrain atlas, and a manifest whose source hash
                         makes a stale build a test failure.
+art/scatter/props.py     The ground-cover props (D-100). Fails its own
+                        build on an inside-out part, a prop tall enough
+                        to hide a soldier, or one that does not sit on
+                        y=0 — the checks a triangle count cannot make.
+                        Props carry real glTF MATERIALS, not vertex
+                        colours: they are drawn from a MultiMesh, and a
+                        MultiMesh overrides COLOR (see art/lib/bake.py).
 model_preview.gd         Renders every authored model, animated, and
                         screenshots it. The picture is the point.
+cover_preview.gd         The same idea for ground cover: every prop, on
+                        generated terrain, with a real squad standing in
+                        it so "cover never hides a unit" is looked at
+                        rather than asserted.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -850,7 +1006,7 @@ instance-id.sh           THE definition of this checkout's dev-instance
                         derives its per-worktree compose project, ports
                         and container names from this — nothing may
                         re-derive it. See "Multi-agent isolation" below.
-scenario.gd              Applies a mid-game world (D-096). ALL-STATIC,
+scenario.gd              Applies a mid-game world (D-098). ALL-STATIC,
                         like formation.gd: a scenario is an opening
                         position, not a participant. Goes through the
                         game's own add_squad/add_building/credit, and is
@@ -865,7 +1021,15 @@ scenario_world.gd        A complete headless world for a GUT test, in one
 /scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         needs a real GPU, and prints which one.
-terrain_preview.gd       Headless terrain preview + chunk profiling.
+terrain_preview.gd       Headless terrain preview + chunk profiling. The
+                        PNG is a TOP-DOWN biome map, so it can show a
+                        palette drifting and cannot show how the ground
+                        looks — that is terrain_shot.gd's job.
+terrain_shot.gd          A rendered picture of the ground in the SHIPPING
+                        lighting rig, framed deliberately on the longest
+                        stretch of passability boundary on the map
+                        (D-096/D-097). Software-rasterised, so it answers
+                        "is the picture right" and never "how fast".
 replay_info.gd           Reads a replay back and reconstructs state.
 game_design_decisions.md The living design doc. Read before deciding,
                         update after deciding.
@@ -942,6 +1106,18 @@ Three things bought the hard way, all in one milestone:
   winding, so everything was lit by the inverse of the sun. It was only
   visible once a *building* was big enough to see through. **The check
   that catches this class is a picture of something large.**
+  (`art/scatter/props.py` now fails its own build on a part whose signed
+  volume is negative, which is the same check without waiting for a
+  building — but only for props.)
+- **A colour that crosses an asset pipeline is not the colour that comes
+  out** (D-100). Ground-cover props carry glTF materials rather than
+  vertex colours, because a MultiMesh overrides `COLOR`; Godot's importer
+  then converts `baseColorFactor` linear → sRGB and NOTHING converts it
+  back, so an authored 0.36 rendered as 0.63 and every fern looked
+  frosted beside ground painted with the same numbers. `bake.py`
+  pre-compensates and a test compares the imported material against the
+  authored value in the manifest. Same family as the VAT's silent VRAM
+  compression: **assert the value on the far side of the boundary.**
 
 ## Multi-agent isolation (D-095) — HARD RULES
 
@@ -996,7 +1172,7 @@ Isolation is the default: there is no argument to remember, several
 agents can run `test-load` at once without touching each other, and
 `just instance` prints what this checkout resolved.
 
-**Start mid-game when the opening is not what you are testing** (D-096).
+**Start mid-game when the opening is not what you are testing** (D-098).
 The real opening costs ~150 s before anything downstream of it exists —
 one founding party, a 40 s town hall that consumes it, production, then
 armies walking across a 128×64 map. A **scenario** skips to a mid-game
@@ -1058,8 +1234,8 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  599 tests across 40 scripts, measured 2026-08-16)*. FILTER selects
-  files by substring, TEST selects one test by name (D-096).
+  676 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
+  files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
   (~31 s at DURATION=15, ~50 s at the default 30, against `test-load`'s
@@ -1073,7 +1249,16 @@ Dev loop and tests:
   number to watch — plus how many client/server state-hash comparisons
   ran and how many desynced.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
-  plus chunking cost. Vary CHUNK_SIZE to settle D-017 with data.
+  plus chunking cost, and the count of cliff faces the shipped map draws.
+  Vary CHUNK_SIZE to settle D-017 with data. The PNG is **top-down biome
+  colour**, so it cannot show how the ground looks.
+- `just gen-terrain-shot [HEIGHT]` — a RENDERED picture of the ground, in
+  the shipping lighting rig, framed on a cliff. Software-rasterised, no
+  GPU needed. **Look at `artifacts/terrain-3d.png`.** It exists because
+  every number `gen-terrain-preview` prints stayed healthy for two
+  milestones while the ground read as a honeycomb of flat hexes, and
+  because `test-client` aims its camera at a spawn — walkable ground by
+  construction, and therefore the one place a cliff cannot be.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running
@@ -1087,6 +1272,14 @@ Dev loop and tests:
   needs no GPU. It renders TWICE and fails if the two frames are
   byte-identical — a frozen VAT would otherwise produce a perfectly
   plausible still. **Look at `artifacts/models-godot.png`.**
+- `just gen-cover-preview [SECONDS]` — ground cover (D-100) on generated
+  terrain, through the REAL path (`GroundCover`, `UnitMesh`, one MultiMesh
+  per model), with a real squad standing in it. Software-rasterised, no
+  GPU. Fails if nothing was drawn or if a palette names a model that did
+  not load. **Look at `artifacts/cover-godot.png`** — every prop colour in
+  `art/scatter/props.py` was chosen off that picture, because a prop's
+  near-vertical geometry renders a good deal darker than ground painted
+  with the same number.
 
 Every recipe listed is real and verified; none are stubs.
 

@@ -58,6 +58,23 @@ var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 ## versus automatic, only who it currently is.
 var _forced_target := PackedInt32Array()
 
+# --- continuous placement (D-096) -------------------------------------
+#
+# `_cell` above stays the ANCHOR — the cell this structure's centre falls
+# in — because everything that buckets by cell (combat targeting, vision
+# stamping, the minimap, selection) is unchanged and must stay that way.
+# These two carry the rest of the pose: a sub-cell displacement in WORLD
+# units, and a continuous rotation in radians. True position is
+# `space.to_world(cell) + offset`, which `world_position_of` is the one
+# definition of.
+#
+# A wall's effect on the simulation is DERIVED from that pose by
+# `span_cells` rather than being `_cell` alone — see D-096 on why deriving
+# it is what stops a wall looking solid while having a hole in it.
+var _offset_x := PackedFloat32Array()
+var _offset_z := PackedFloat32Array()
+var _angle := PackedFloat32Array()
+
 # --- gates and the wall-top access tower (D-076) ----------------------
 
 const GATE_MODE_MANUAL := 0
@@ -129,21 +146,27 @@ func rally_of(building: int) -> Vector2i:
 ## are orders of magnitude fewer buildings than cells and a map would be a
 ## second source of truth to keep in step with `_cell`. If building counts
 ## ever reach the thousands this is the thing to index.
+## Matches any cell the building's BODY covers as of D-096, not only its
+## anchor — otherwise a wall laid across three cells could be built over on
+## two of them, and a click on its visible end would find nothing there.
 func building_at(cell: Vector2i) -> int:
 	var index := space.index(cell)
 	for i in range(_cell.size()):
-		if _destroyed[i] == 0 and _cell[i] == index:
+		if _destroyed[i] == 0 and span_cells(i).has(index):
 			return i
 	return -1
 
 
 ## Cells that living buildings stand on, for the simulation's passability
 ## (D-007). A squad should walk AROUND a town hall, not through it.
+##
+## Every cell a body COVERS as of D-096, not just its anchor cell — a wall
+## laid at an angle across three cells occupies all three.
 func occupied_cells() -> PackedInt32Array:
 	var out := PackedInt32Array()
 	for i in range(_cell.size()):
 		if _destroyed[i] == 0:
-			out.append(_cell[i])
+			out.append_array(span_cells(i))
 	return out
 
 
@@ -167,11 +190,25 @@ func building_count() -> int:
 ## `builder` is the squad that founded this, or -1. Recorded because
 ## founders are CONSUMED by the town they found (D-031): the founding
 ## party becomes the settlement rather than wandering off from it.
-## `facing` is which of `TorusSpace.DIRECTIONS`' 6 sides this instance
-## faces (0 if unspecified) — cosmetic mesh rotation for most buildings,
-## and also the door for an access tower (D-076).
+## `facing` means one of two things depending on `def`, decided here rather
+## than trusted from the caller.
+##
+## For the ACCESS TOWER it stays one of `TorusSpace.DIRECTIONS`' 6 sides
+## (wrapped into 0..5): its door has to open onto an actual neighbouring
+## cell a squad can stand in (`door_cell_of` calls `space.neighbor_index`),
+## so a continuous angle would have nothing to point at.
+##
+## For everything else — the rest of the wall family included, as of D-096
+## — it is a continuous byte (0-255, `PlacementJitter.yaw_byte` /
+## `radians_of_byte`). Walls used to wrap to 0..5 here alongside the tower,
+## which is precisely what locked a wall run to six angles; D-096 unpicks
+## that, and `_angle` below is the radians it decodes to.
+##
+## `offset` is the sub-cell displacement in WORLD units (D-096) — where
+## inside `at` this structure actually stands. Zero means dead centre,
+## which is what every non-wall building and every existing caller gets.
 func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
-		builder: int = -1, facing: int = 0) -> int:
+		builder: int = -1, facing: int = 0, offset: Vector2 = Vector2.ZERO) -> int:
 	var id := _cell.size()
 	_builder.append(builder)
 	_rally.append(-1)
@@ -185,8 +222,123 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 	_forced_target.append(-1)
 	_gate_open.append(0)
 	_gate_mode.append(GATE_MODE_AUTO)
-	_facing.append(posmod(facing, 6))
+	var wraps_to_hex_direction := def.is_access_tower
+	_facing.append(posmod(facing, 6) if wraps_to_hex_direction else posmod(facing, 256))
+	_angle.append(_angle_from_facing(def, _facing[id]))
+	_offset_x.append(offset.x)
+	_offset_z.append(offset.y)
 	return id
+
+
+## Radians for a stored `facing`, per the two meanings documented on
+## `add_building`. The one place the byte-vs-hex-direction split is turned
+## into an actual angle, so a caller can never pick the wrong divisor.
+static func _angle_from_facing(def: BuildingDef, facing: int) -> float:
+	if def.is_access_tower:
+		return float(posmod(facing, 6)) * TAU / 6.0
+	return float(posmod(facing, 256)) * TAU / 256.0
+
+
+## Continuous rotation in radians. With this as `rotation.y`, the mesh's
+## local +X (its long axis, for a wall segment) points along
+## `(cos, 0, -sin)` — the convention `client.gd`'s `_angle_of_offset`
+## established and `span_cells` below depends on.
+func angle_of(building: int) -> float:
+	return _angle[building] if building >= 0 and building < _angle.size() else 0.0
+
+
+## Sub-cell displacement in world units (D-096).
+func offset_of(building: int) -> Vector2:
+	if building < 0 or building >= _offset_x.size():
+		return Vector2.ZERO
+	return Vector2(_offset_x[building], _offset_z[building])
+
+
+## Where this building actually stands, as opposed to which cell it is
+## filed under. THE definition — anything drawing, aiming at, or measuring
+## against a building should come through here rather than re-deriving it
+## from `cell_of` and getting the pre-D-096 answer.
+func world_position_of(building: int) -> Vector3:
+	if building < 0 or building >= _cell.size():
+		return Vector3.ZERO
+	var base := space.to_world(space.from_index(_cell[building]))
+	return base + Vector3(_offset_x[building], 0.0, _offset_z[building])
+
+
+## Every cell this building's body actually covers (D-096).
+##
+## For anything but a wall-family segment this is just its own cell — a
+## town hall has never spanned more than one, and `footprint_radius` is a
+## separate no-build claim rather than a body.
+##
+## For a wall segment it is the cells its CENTRELINE passes through,
+## sampled along the segment's own long axis. That is what makes a wall
+## drawn at an arbitrary angle block every cell it visibly crosses instead
+## of only the one its midpoint happens to land in — the walk-through-a-
+## solid-wall failure D-096 exists to prevent.
+##
+## Sampled rather than solved analytically: the step below is well under a
+## hex's flat-to-flat width, so no cell along the line can be stepped over,
+## and a handful of `world_to_cell` calls per segment is far cheaper than
+## the polygon clip the exact version would need. Walls are placed rarely
+## and this is not on the tick path — `server._refresh_passability` calls
+## it when something is built or destroyed, not every frame.
+func span_cells(building: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	if building < 0 or building >= _cell.size():
+		return out
+	var def := _defs[building]
+	# The ACCESS TOWER is deliberately excluded even though it is
+	# footprint_radius 0. It is a point structure with a door, not a linear
+	# one: `door_cell_of` puts the climb point on a NEIGHBOURING cell, so a
+	# tower that spanned two cells would swallow its own door and a squad
+	# could never descend. Its mesh is also roughly square (2.6 x 2.6), so
+	# sampling "along its long axis" as if it were a wall was meaningless
+	# in the first place. Caught by test_wall_top's descend test.
+	if def.footprint_radius != 0 or def.is_access_tower or def.mesh_size == Vector3.ZERO:
+		out.append(_cell[building])
+		return out
+
+	var angle := _angle[building]
+	var direction := Vector3(cos(angle), 0.0, -sin(angle))
+	var half_length := def.mesh_size.x * 0.5
+	var anchor := space.from_index(_cell[building])
+	var sub_cell := Vector3(_offset_x[building], 0.0, _offset_z[building])
+
+	# Distance from each nearby cell's CENTRE to the segment, rather than
+	# walking the segment and asking which cell each step lands in.
+	#
+	# The walk was the first attempt and it was wrong in a way worth
+	# recording: a step small enough to never skip a cell does not exist.
+	# A line can clip a hex CORNER in a sliver of any thickness, so any
+	# fixed step misses some cell it genuinely crosses — the D-096 gap test
+	# found 26 such cells on one diagonal run. Sampling can only ever be
+	# approximately right here; a distance test is exactly right.
+	#
+	# The threshold is the hex CIRCUMRADIUS, and that specific choice is
+	# what makes gaps impossible: if the segment touches a hex at all then
+	# some point of that hex lies on the segment, and no point of a hex is
+	# further than the circumradius from its own centre — so the centre is
+	# necessarily within that distance of the segment. Erring outward is
+	# also the safe direction: over-blocking by a sliver is invisible,
+	# while under-blocking is a hole an army walks through.
+	#
+	# `disk_offsets` rather than `distance()` per candidate, per the
+	# standing rule this project has re-learned four times (vision, combat,
+	# UnitRoster, terrain noise). It is sorted nearest-first (D-067), which
+	# this does not need but does not mind.
+	var reach := half_length + space.hex_size
+	var radius := ceili(reach / (space.hex_size * TorusSpace.SQRT_3)) + 1
+	for offset in TorusSpace.disk_offsets(radius):
+		var cell := space.normalize(anchor + offset)
+		# Wrap-aware by construction: `world_delta` takes the short way
+		# round, and the sub-cell offset shifts the segment's true centre
+		# off the anchor's own centre.
+		var to_cell := space.world_delta(anchor, cell) - sub_cell
+		var along := clampf(to_cell.dot(direction), -half_length, half_length)
+		if (to_cell - direction * along).length() <= space.hex_size:
+			out.append(space.index(cell))
+	return out
 
 
 ## The squad that founded this building, or -1. Consumed on completion.
@@ -280,6 +432,9 @@ func access_direction_at(cell: int) -> int:
 ## against its own builder — that's what a gate is for.
 ## server._refresh_passability() reads this, not occupied_cells(), to
 ## build the ground-passable array.
+## As of D-096 this returns every cell a segment's body crosses, not just
+## its anchor — the whole point of continuous placement is that a wall
+## drawn at an angle stops the squad it visibly stands in front of.
 func blocking_cells() -> PackedInt32Array:
 	var out := PackedInt32Array()
 	for i in range(_cell.size()):
@@ -289,7 +444,7 @@ func blocking_cells() -> PackedInt32Array:
 			continue
 		if _defs[i].footprint_radius == 0 and _progress[i] < 1.0:
 			continue
-		out.append(_cell[i])
+		out.append_array(span_cells(i))
 	return out
 
 
@@ -301,7 +456,10 @@ func walkable_top_cells() -> PackedInt32Array:
 	var out := PackedInt32Array()
 	for i in range(_cell.size()):
 		if _destroyed[i] == 0 and _progress[i] >= 1.0 and _defs[i].walkable_top:
-			out.append(_cell[i])
+			# Every cell the walkway actually runs over (D-096), so a
+			# tier-1 route follows an angled wall instead of stopping at
+			# whichever cell each segment is filed under.
+			out.append_array(span_cells(i))
 	return out
 
 
@@ -310,7 +468,8 @@ func walkable_top_cells() -> PackedInt32Array:
 ## allocating the whole `walkable_top_cells()` array would be wasted work.
 func is_walkable_top_cell(cell: int) -> bool:
 	for i in range(_cell.size()):
-		if _cell[i] == cell and _destroyed[i] == 0 and _progress[i] >= 1.0 and _defs[i].walkable_top:
+		if _destroyed[i] == 0 and _progress[i] >= 1.0 and _defs[i].walkable_top \
+				and span_cells(i).has(cell):
 			return true
 	return false
 
@@ -479,6 +638,12 @@ func info_entries(ids: Array) -> Array:
 			# just the access tower's door — the client needs it to render
 			# the same rotation the player chose at placement.
 			"facing": _facing[id],
+			# The rest of the pose (D-096) — without this a client knows
+			# which cell a wall is filed under but not where along it the
+			# wall actually stands, and would draw every segment back at
+			# its cell centre.
+			"offset_x": _offset_x[id],
+			"offset_z": _offset_z[id],
 		})
 	return out
 

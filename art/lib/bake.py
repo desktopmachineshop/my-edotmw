@@ -231,6 +231,116 @@ def write_glb(model: Model, flat: dict, path: str,
     )
 
 
+def _srgb_to_linear(c: float) -> float:
+    """The inverse of the transfer function Godot's glTF importer applies."""
+    if c <= 0.04045:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def write_prop_glb(model: Model, path: str) -> dict:
+    """Export a ground-cover prop: real glTF materials, no VAT (D-100).
+
+    ## Why props carry materials when nothing else here does
+
+    Units and buildings put their colour in COLOR_0 (buildings) or the VAT
+    (units) and read it back in a shader this project owns. Props can do
+    neither. They are drawn from one MultiMesh per (chunk, model) — thousands
+    of scene nodes is the M4 `by_id` shape — and a MultiMesh OVERRIDES the
+    shader's `COLOR` with its own per-instance colour, which is exactly how
+    every soldier came out black in M7. A prop drawn that way would lose the
+    difference between a mushroom's stem and its cap.
+
+    So a prop's colour lives in an ordinary glTF material, one per distinct
+    part colour, which survives the MultiMesh path untouched and needs no
+    shader at all. That is also how the authored TREES already render
+    (client.gd sets no material_override on a tree chunk), so this is the
+    proven path for scattered vegetation rather than a new one.
+
+    No COLOR_0: the exporter drops a vertex colour layer no material's node
+    tree reads (it says so, in a warning worth not ignoring), so writing one
+    here would be code that looks like a fallback and is not one.
+
+    Returns the mesh statistics the manifest records.
+    """
+    import bpy
+
+    _reset_scene(bpy)
+
+    # Parts flow into one mesh, grouped by material. Vertices are NOT split
+    # per corner the way `flatten` splits them: props have no VAT, so there is
+    # no column contract to honour, and `shade_flat` gives the faceted look
+    # without paying three vertices per triangle.
+    verts: list[Vec3] = []
+    faces: list[tuple[int, int, int]] = []
+    face_material: list[int] = []
+    palette: list[tuple[float, float, float]] = []
+
+    for part in model.parts:
+        base = len(verts)
+        verts.extend(tuple(v) for v in part.verts)
+        if part.rgb not in palette:
+            palette.append(tuple(part.rgb))
+        index = palette.index(tuple(part.rgb))
+        for tri in part.faces:
+            faces.append((base + tri[0], base + tri[1], base + tri[2]))
+            face_material.append(index)
+
+    mesh = bpy.data.meshes.new(model.name)
+    mesh.from_pydata([tuple(v) for v in verts], [], faces)
+    mesh.update()
+
+    obj = bpy.data.objects.new(model.name, mesh)
+    bpy.context.collection.objects.link(obj)
+
+    for i, rgb in enumerate(palette):
+        material = bpy.data.materials.new(name="%s_%d" % (model.name, i))
+        material.use_nodes = True
+        shader = material.node_tree.nodes["Principled BSDF"]
+        # sRGB -> linear on the way in, because Godot's glTF importer does
+        # linear -> sRGB on the way out and NOTHING undoes it at render time.
+        # Without this, an authored 0.36 arrives as albedo 0.63: measured, not
+        # assumed (dump a prop's StandardMaterial3D and compare), and visible
+        # as foliage that looks frosted next to ground painted with the same
+        # numbers through the vertex-colour path.
+        #
+        # The property being preserved is that a prop coloured X renders as a
+        # building part coloured X — one palette across the whole game, not one
+        # per asset pipeline. tests/test_ground_cover.gd asserts it against the
+        # imported material.
+        linear = tuple(_srgb_to_linear(c) for c in rgb)
+        shader.inputs["Base Color"].default_value = (
+            linear[0], linear[1], linear[2], 1.0)
+        # Matches `building_static.gdshader`'s ROUGHNESS 0.9 and its disabled
+        # specular: a fern that glints when a town hall does not would read as
+        # a different game's asset.
+        shader.inputs["Roughness"].default_value = 0.9
+        shader.inputs["Metallic"].default_value = 0.0
+        mesh.materials.append(material)
+
+    for polygon, index in zip(mesh.polygons, face_material):
+        polygon.material_index = index
+
+    mesh.shade_flat()
+
+    bpy.ops.export_scene.gltf(
+        filepath=path,
+        export_format="GLB",
+        export_normals=True,
+        export_materials="EXPORT",
+        # Y-up already, as everywhere else here — see write_glb.
+        export_yup=False,
+        use_selection=False,
+    )
+    # The AUTHORED colours, in surface order, so the Godot side can assert that
+    # what it imported is what was painted here.
+    return {
+        "materials": len(palette),
+        "vertices": len(verts),
+        "colours": [[round(c, 6) for c in rgb] for rgb in palette],
+    }
+
+
 def write_vat(model: Model, flat: dict, path: str) -> dict:
     """Bake every clip into a half-float EXR. Returns the layout metadata."""
     import bpy
@@ -304,3 +414,10 @@ def _reset_scene(bpy) -> None:
         bpy.data.objects.remove(obj, do_unlink=True)
     for mesh in list(bpy.data.meshes):
         bpy.data.meshes.remove(mesh, do_unlink=True)
+    # Materials too, since `write_prop_glb` creates them (D-100). Blender
+    # de-duplicates names by appending .001, so a leftover material from the
+    # previous prop would rename this one's and put a build-order dependency
+    # into the exported bytes — precisely what D-081's byte-identical rule
+    # forbids. A no-op for units and buildings, which have no materials.
+    for material in list(bpy.data.materials):
+        bpy.data.materials.remove(material, do_unlink=True)
