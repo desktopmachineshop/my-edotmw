@@ -22,11 +22,32 @@ class_name TerrainGen
 ## explicitly excludes terrain generation beyond that).
 
 @export var noise_seed: int = 1337
-## Roughly how many features fit across the map on each axis. Independent
-## of `axis_repeats` — see _sample, which divides the noise scale by the
-## repeat count so raising symmetry does not silently shrink features.
+## Feature size, expressed as "how many features fit across a map of
+## `REFERENCE_WIDTH` cells" (D-101). Higher means smaller landmasses.
+##
+## Read that as a DENSITY, not as a count: `_sample_at` scales it by the
+## map's own width, so a landmass comes out the same size IN CELLS at
+## every map size and a bigger map holds proportionally more of them.
+## Before D-101 this was a count per map, which made map size a
+## resolution control — a Huge map was the same two continents as a
+## Skirmish map, each 16x larger.
+##
+## Independent of `axis_repeats` — see `_sample_at`, which divides the
+## noise scale by the repeat count so raising symmetry does not silently
+## shrink features.
 @export var elevation_frequency: float = 2.5
+## The same units, for the field `_classify` splits grassland/forest with.
+## Scaled by map width for the same reason: biome patches that grew with
+## the map would leave a Huge map with the same handful of forests.
 @export var moisture_frequency: float = 4.0
+
+## The map width every shipped frequency is calibrated against (D-101).
+##
+## 84 is the Standard lobby size (`MapSettings.sizes()`), chosen so every
+## preset's tuned numbers keep exactly the meaning they were authored
+## with — `continents` at Standard is bit-identical before and after
+## D-101, which is what let the change land without re-tuning /terrain.
+const REFERENCE_WIDTH := 84.0
 
 ## How many times the field repeats along each axis (D-036).
 ##
@@ -164,9 +185,20 @@ func _sample_at(noise: FastNoiseLite, space: TorusSpace, point: Vector2,
 	var y := ring * sin(u)
 	var z := minor * sin(v)
 
-	# `frequency` reads as "features across the map's long axis". One full
-	# lap of u covers TAU units of embedding space, so dividing by TAU
-	# converts that intent into noise-space units.
+	# `frequency` reads as "features across a REFERENCE_WIDTH-cell map".
+	# One full lap of u covers TAU units of embedding space, so dividing by
+	# TAU converts that intent into noise-space units.
+	#
+	# Multiplied by the map's width in reference widths (D-101), which is
+	# what makes a feature a size in CELLS rather than a fraction of the
+	# map. Without it the noise is parameterised over the unit torus and
+	# every map, at every size, is the same world at a different
+	# resolution — measured on `continents`/1337: two landmasses covering
+	# 39% and 78% of the map at Standard, Large and Huge alike.
+	#
+	# Periodicity survives it exactly. u and v are ANGLES, so scaling the
+	# embedded torus uniformly in noise space cannot move where the field
+	# meets itself; D-008's wrap guarantees hold for any real frequency.
 	#
 	# Getting this wrong is not subtle but IS silent: too large and every
 	# cell samples an independent point, producing per-cell static that
@@ -179,10 +211,30 @@ func _sample_at(noise: FastNoiseLite, space: TorusSpace, point: Vector2,
 	# quietly mean something different depending on symmetry. With it, the
 	# two settings are independent: symmetry changes how often the field
 	# repeats, frequency changes how big its features are.
-	var scale := frequency / (TAU * float(repeats))
+	var scale := effective_frequency(space, frequency) / (TAU * float(repeats))
 
 	# get_noise_3d returns roughly [-1,1]; normalise to [0,1].
 	return clampf(noise.get_noise_3d(x * scale, y * scale, z * scale) * 0.5 + 0.5, 0.0, 1.0)
+
+
+## `frequency` as the noise field actually uses it on THIS map (D-101).
+##
+## The ONE place map size enters feature scale, so elevation, moisture and
+## the blend warp are all treated alike by construction — a size term
+## applied per-field would have left biome patches map-sized while
+## landmasses became cell-sized, which is half a fix.
+static func effective_frequency(space: TorusSpace, frequency: float) -> float:
+	return frequency * float(space.width) / REFERENCE_WIDTH
+
+
+## How wide, in CELLS, a feature at `frequency` comes out — at ANY map size.
+##
+## The inverse of the above, and the number worth showing a human: the
+## lobby's slider is labelled in these units (D-101), because "landmass
+## count" stopped being a property of the parameter the moment the
+## parameter stopped depending on the map.
+static func feature_cells(frequency: float) -> float:
+	return REFERENCE_WIDTH / maxf(frequency, 0.0001)
 
 
 func elevation_at(space: TorusSpace, cell: Vector2i) -> float:
@@ -357,11 +409,18 @@ func surface_field(space: TorusSpace) -> PackedFloat32Array:
 ## there was never a problem — 0.45 was chosen by looking at both.
 @export var centre_bleed: float = 0.45
 
-## Feature size of the warp field, in the same "features across the map" units
-## as `elevation_frequency`. High enough that the boundary wanders every few
-## cells rather than bulging once across a whole coastline, low enough that it
-## does not become per-cell static, which would read as a noisy shoreline rather
-## than a natural one.
+## Feature size of the warp field, in the same units as
+## `elevation_frequency` — features across a `REFERENCE_WIDTH`-cell map.
+## High enough that the boundary wanders every few cells rather than bulging
+## once across a whole coastline, low enough that it does not become per-cell
+## static, which would read as a noisy shoreline rather than a natural one.
+##
+## "Every few cells" is a CELL-relative intent, and before D-101 it was
+## expressed in map-relative units — so at Huge the warp wandered every ~7.6
+## cells where Standard got ~3.8, and the shoreline it was written to
+## de-scallop came out scalloped again at exactly the sizes nobody looked at.
+## Scaling by map width inside `_sample_at` makes 22.0 mean ~3.8 cells at
+## every size, which is what this number was chosen against.
 @export var blend_warp_frequency: float = 22.0
 
 ## How fast an owner's weight falls off as the warped point moves away from its

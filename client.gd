@@ -6164,7 +6164,14 @@ const MAP_OPTIONS := [
 		"min": 0, "max": MapSettings.SEED_MAX, "reroll": true},
 	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
 	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
-	{"key": "elevation_frequency", "label": "Landmass count", "kind": "slider", "min": 0.5, "max": 8.0},
+	# Reads in CELLS, not as the raw parameter (D-101). "Landmass count"
+	# was the bug stated out loud: it sat at 2.50 on every map size
+	# because the terrain was defined in fractions of the map, so picking
+	# a bigger map bought a higher-resolution drawing of the same world.
+	# Now the parameter is a density and the readout is the size it
+	# produces — the same at every size, which is the fix made visible.
+	{"key": "elevation_frequency", "label": "Landmass size", "kind": "slider",
+		"min": 0.5, "max": 8.0, "readout": "cells"},
 	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 20.0},
 ]
 
@@ -7525,13 +7532,27 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 			row.add_child(slider)
 
 			var value := Label.new()
-			value.text = "%.2f" % float(settings.get(key, 0.0))
+			value.text = _slider_readout(option, settings)
 			value.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
-			value.custom_minimum_size = Vector2(52.0, 0.0)
+			value.custom_minimum_size = Vector2(66.0, 0.0)
 			value.modulate = HudTheme.TEXT_MUTED
 			row.add_child(value)
 
 	return row
+
+
+## What a map slider's number reads as.
+##
+## Most are the raw parameter, which is what a sea level or a relief
+## multiplier already means to a human. Landmass size is not: since D-101
+## `elevation_frequency` is a density against `TerrainGen.REFERENCE_WIDTH`,
+## and the number a player can act on is how wide a landmass comes out —
+## which is now the same at every map size, and is the point.
+func _slider_readout(option: Dictionary, settings: Dictionary) -> String:
+	var raw := float(settings.get(String(option["key"]), 0.0))
+	if String(option.get("readout", "")) == "cells":
+		return "%d cells" % roundi(TerrainGen.feature_cells(raw))
+	return "%.2f" % raw
 
 
 ## Keyboard remains as a fallback for starting, so the screen is usable

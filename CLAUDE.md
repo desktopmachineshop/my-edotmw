@@ -539,6 +539,34 @@ leaves roughly **66 mountain cells and 80 land/mountain edges** on 8,064.
 Cliffs there are mostly coastal. If more rock is wanted the lever is
 `mountain_level` and the `/terrain` presets.
 
+**Map size is EXTENT now, not resolution (D-101, 2026-08-16).** Feature
+size is a number of cells, not a fraction of the map: `_sample_at`
+multiplies any frequency it is handed by `space.width / REFERENCE_WIDTH`
+(84, the Standard size) before embedding, so a landmass is ~34 cells
+across on every map and a bigger map holds proportionally more of them.
+Before it, a Huge map was **the same two landmasses as a Skirmish map,
+each 16x larger** — 39.1%/39.2%/39.1% of the map at Standard/Large/Huge,
+constant to a tenth of a percent, which is the signature of a field
+defined over the unit torus. Four things to carry forward:
+
+- **The reference width is the Standard map's, and a test pins it.** Every
+  `/terrain` preset was tuned there, so Standard is *byte-identical*
+  before and after — that is how the claim is checked, not by argument.
+- **The size term lives in ONE function** (`TerrainGen.effective_frequency`),
+  so elevation, moisture and the blend warp all get it. Applied per field
+  it would have left biomes map-sized while landmasses went cell-sized.
+- **A Skirmish map is now a corner of a world, not a whole one**, and it
+  no longer matches the field's global statistics — water fell 20.5% →
+  14.6% at seed 1337. Small-map numbers moving is this decision working.
+  Toy maps in tests are genuinely flat as a result: two D-097 cliff tests
+  correctly reported proving nothing on 16x8 and now ask for toy features
+  explicitly.
+- **Resource density stopped drifting with map size** as a side effect,
+  because stone sits at the mountain FOOT and ore therefore follows the
+  mountain PERIMETER — which used to be a fixed count of ranges whatever
+  the map size. One ore node per 101/144/219/340 cells before, 92/144/
+  152/145 after.
+
 **`just gen-terrain-shot` is the new recipe, and it exists because the
 old instruments structurally could not see any of this.**
 `gen-terrain-preview` draws a top-down biome map from `biome_color` and
@@ -901,7 +929,10 @@ terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
                         passability in one pass (D-096). `corner_cells`
                         is THE definition of which three cells meet at a
                         corner, and it returns them sorted so all three
-                        agree bit for bit.
+                        agree bit for bit. Every frequency it samples with
+                        is a DENSITY against `REFERENCE_WIDTH`, scaled by
+                        the map's own width in `effective_frequency`
+                        (D-101) — so a bigger map is bigger, not finer.
 terrain_fields.gd        What `build_fields` returns. One object, because
                         surface and colours are indexed identically and a
                         caller that paired them wrongly would just paint
@@ -1247,7 +1278,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  694 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
