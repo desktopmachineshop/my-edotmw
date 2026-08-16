@@ -597,6 +597,34 @@ run under `test-load`'s wire before — and report `nodes_felled` in the
 verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
 gating would re-set D-031's stale-timing trap).
 
+**And a forest was still a grid until D-107 (2026-08-16).** A playtest
+reported ranks and files you could count along. The blob-scale outline
+was organic — the density field above doing its job — and the interior
+was the hex lattice, because **a tree's only positional freedom was which
+cell it stood in**: one tree per node cell, drawn at the exact cell
+centre. Compounding it, canopies had been deliberately shrunk (0.60–0.92)
+*so that they could not touch*, because at one tree per centre full-size
+canopies merged into one blob — so every tree also had a hard gap around
+it. A node cell now grows a hash-chosen STAND (1–5, mean ~2.9 in forest)
+on jittered ring offsets, and the canopy shrink is reversed. **1,438 wood
+nodes now draw 4,202 trees, and 99% of them touch a neighbour's canopy.**
+
+Three things to carry forward. **The two causes interlock, so the fix is
+one change**: scale alone reproduces the blob that motivated the shrink,
+and offset alone leaves placement at hex resolution — dithered rows are
+still rows, and a wood still cannot be denser than the node grid. **The
+offset bound is what makes it safe without a passability test**: it is
+under a hex's inradius (sqrt(3)/2), so a tree cannot leave its own cell,
+drift onto water or stand nearer someone else's centre — and it stays a
+rendering-only change, D-084/D-096's split again (the node's CELL is
+still what the economy, the wire and the fog mean). And **no number could
+see any of this**: node counts, chunk counts and frame times were healthy
+throughout, `gen-terrain-preview` draws a top-down map with no trees in
+it, and `test-client` aims its camera at a spawn — open ground by
+construction, the one place a wood cannot be. `just gen-forest-preview`
+is the instrument that can, and it frames the densest wood on the map
+from a low angle for exactly that reason.
+
 **D-086 (2026-08-11): the lighting layer M7's art never had.** The
 "low poly vs cartoon vs current" style question turned out to have a
 false premise — the game was already low poly at the extreme end (two
@@ -1021,6 +1049,12 @@ cover_preview.gd         The same idea for ground cover: every prop, on
                         generated terrain, with a real squad standing in
                         it so "cover never hides a unit" is looked at
                         rather than asserted.
+forest_preview.gd        The same idea again for WOODS (D-107), framed on
+                        the densest one on the map from a low angle —
+                        because a lattice is invisible from overhead and
+                        obvious at eye height. Real Economy.generate, real
+                        trees_for, real batching; nothing it draws is its
+                        own idea of a forest.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -1285,6 +1319,15 @@ Dev loop and tests:
   milestones while the ground read as a honeycomb of flat hexes, and
   because `test-client` aims its camera at a spawn — walkable ground by
   construction, and therefore the one place a cliff cannot be.
+- `just gen-forest-preview [SECONDS]` — a RENDERED picture of a WOOD
+  (D-107), framed on the densest forest on the map from a low angle, with
+  real soldiers standing in it for scale. Real node placement
+  (`Economy.generate`), real stands (`ResourceVisuals.trees_for`), real
+  batching. Software-rasterised, no GPU. **Look at
+  `artifacts/forest-godot.png`.** It exists because forests read as ranks
+  and files for a milestone with every number healthy, and neither
+  existing instrument could show it: `gen-terrain-preview`'s PNG is
+  top-down with no trees in it, and `test-client` points at a spawn.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running
