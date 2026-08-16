@@ -29,8 +29,11 @@ class_name TerrainPreset
 ## more of the elevation range lands above the threshold.
 @export var mountain_level: float = 0.74
 
-## Feature size. Higher means more, smaller landmasses; lower means
-## fewer, broader ones.
+## Feature size. Higher means smaller landmasses; lower means broader
+## ones. A DENSITY, not a count (D-105): it is calibrated against
+## `TerrainGen.REFERENCE_WIDTH` and scaled by the map's own width, so a
+## preset means the same kind of country at every map size and a bigger
+## map holds proportionally more of it.
 @export var elevation_frequency: float = 2.5
 @export var moisture_frequency: float = 4.0
 

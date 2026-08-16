@@ -543,9 +543,23 @@ func test_trees_are_abundant_and_ore_stays_scarce() -> void:
 			"%s: one tree per %.0f cells — a solid lawn leaves nowhere to walk or build" % [
 				size["name"], per_tree])
 		var per_ore := float(cells) / maxf(float(ore), 1.0)
-		assert_gt(per_ore, 100.0,
+		# 80 rather than 100 since D-105. Stone sits at the mountain FOOT, so
+		# how much of it a map holds follows the LENGTH of its mountain
+		# perimeter — which used to be a fixed count of ranges however big the
+		# map was, and is now proportional to area like everything else.
+		# Measured across the four sizes, one ore node per: 101/144/219/340
+		# cells before, 92/144/152/145 after. The bound moves because the
+		# smallest map now sits at 92 and the other three stopped drifting;
+		# ore is more consistent across sizes than it has ever been, not
+		# scarcer.
+		assert_gt(per_ore, 80.0,
 			"%s: one ore node per %.0f cells — gold and stone are supposed to be places worth fighting over" % [
 				size["name"], per_ore])
+		# The SPLIT is the design and the bounds above are tuning, so state it
+		# outright rather than leaving it implicit in two independent numbers.
+		assert_gt(per_ore / per_tree, 15.0,
+			"%s: ore is only %.1fx scarcer than trees — dense woods and scarce ore have collapsed into one distribution" % [
+				size["name"], per_ore / per_tree])
 
 
 func test_forests_are_dense_and_open_ground_is_not() -> void:
