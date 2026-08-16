@@ -95,6 +95,15 @@ var _economy: Economy
 var _depleted_nodes := {}
 var _passable := PackedByteArray()
 
+## The generator this match's world came from, kept so a refusal can say
+## WHICH kind of impassable ground it hit. `_passable` collapses water and
+## mountain into one zero and cannot tell them apart, and "water, mountain,
+## or already occupied" — one message covering every reason — is exactly
+## the lie #55 reported. Null on a server whose map was never built (the
+## tests that drive `_is_buildable` directly), which simply costs the
+## distinction, never the rule.
+var _terrain: TerrainGen = null
+
 ## Sampled once at map load and never recomputed — see the note where it
 ## is filled in.
 var _spawn_points: Array[Vector2i] = []
@@ -353,6 +362,7 @@ func _build_world() -> void:
 	# field derived from the same biomes (D-037). Two instances would be
 	# two sources of truth about the same ground.
 	var terrain := _settings.to_terrain()
+	_terrain = terrain
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
 
@@ -1494,8 +1504,9 @@ func _do_order_build(peer, data: PackedByteArray, replace: bool) -> void:
 		return
 
 	var cell := _sim.space.from_index(int(order["cell"]))
-	if not _is_buildable(cell, def, _sim.owner_of(squad)):
-		_notify(peer, "Cannot build there — water, mountain, or already occupied")
+	var refusal := _build_refusal(cell, def, _sim.owner_of(squad))
+	if refusal != "":
+		_notify(peer, refusal)
 		return
 
 	# Somebody else's ground (D-062). Refused up front as well as on
@@ -1585,8 +1596,9 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# _upgrade_target_at) — an upgrade target might have been destroyed
 	# (or captured) out from under the order while the builder walked, the
 	# same "recheck on arrival" reasoning as every rule below it.
-	if not _is_buildable(cell, def, owner):
-		_notify(peer, "Cannot build there — water, mountain, or already occupied")
+	var refusal := _build_refusal(cell, def, owner)
+	if refusal != "":
+		_notify(peer, refusal)
 		return
 
 	# Re-checked on ARRIVAL too: a builder ordered from out of reach walks
@@ -1824,8 +1836,12 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 		return
 
 	var cell := _sim.space.from_index(int(order["cell"]))
-	if not _is_buildable(cell):
-		_notify(peer, "Cannot spawn there — water, mountain, or already occupied")
+	var refusal := _build_refusal(cell)
+	if refusal != "":
+		# Same named reason as an ordinary build, with the verb changed —
+		# a cheat that refuses without saying why is the same puzzle for a
+		# developer that #55 was for a player.
+		_notify(peer, refusal.replace("Cannot build there", "Cannot spawn there"))
 		return
 
 	var player := int(record["player"])
@@ -1842,21 +1858,55 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 ## nothing already standing on it — UNLESS `def`/`owner` name a compatible
 ## in-place upgrade (playtest fix, D.upgrade_from) for whatever is already
 ## there, which is the one deliberate exception.
+##
+## A thin wrapper over `_build_refusal`, which is the one definition of the
+## rule. Two functions that each decided buildability would be two rules
+## that can drift, and the drift is exactly what #55 reported at the
+## message level.
 func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> bool:
+	return _build_refusal(cell, def, owner).is_empty()
+
+
+## WHY a build at `cell` is refused, as a sentence for the player, or ""
+## when the ground takes a foundation.
+##
+## The reason is returned rather than a bool because the message that used
+## to accompany the bool enumerated three of the FOUR conditions this
+## checks (issue #55): the resource-node rule was added later as a playtest
+## fix and the message was never updated, so a player on the shipped
+## `highlands` map was told to look for water or a mountain on ordinary
+## flat ground — 29.6% of the walkable cells on that map refuse a build
+## because a forest stands on them (D-087 put ~1,920 nodes on the standard
+## map, and a tree's model is roughly cell-sized, so the visual footprint
+## and the blocked cell do not obviously coincide).
+##
+## It also settles #55's second defect without a second mechanism: the
+## client's ghost mirrors this check against FOG-GATED nodes, so a node it
+## has not been shown draws green and is then refused. Naming the reason
+## makes the unrevealed node explain itself on the first click, which is
+## cheaper and more honest than leaking where the nodes are.
+func _build_refusal(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> String:
 	var index := _sim.space.index(cell)
 	if index < _passable.size() and _passable[index] == 0:
-		return false
+		# Water and mountain are one zero in `_passable`; `_terrain` is what
+		# tells them apart, and a server whose map was never built (the
+		# tests that drive this directly) simply says neither.
+		if _terrain != null:
+			return "Cannot build there — that ground is under water" \
+				if _terrain.is_water(_sim.space, cell) \
+				else "Cannot build there — that is a mountain"
+		return "Cannot build there — water or mountain"
 	# Resource nodes are ground you cannot build on (playtest fix). Nothing
 	# checked this before, so a town centre could be founded straight on top
 	# of a forest — the node stayed gatherable underneath and the building
 	# stood in the middle of it, which looks broken and quietly denies the
 	# node to the gatherers who need to stand there.
 	#
-	# Guarded on null because `_is_buildable` is exercised directly by tests
-	# that stand up a server with only `_sim`/`_buildings`/`_passable` set;
-	# an economy-less server simply has no nodes to collide with.
+	# Guarded on null because this is exercised directly by tests that stand
+	# up a server with only `_sim`/`_buildings`/`_passable` set; an
+	# economy-less server simply has no nodes to collide with.
 	if _economy != null and _economy.has_node(index):
-		return false
+		return "Cannot build there — %s is in the way" % _node_description(index)
 
 	var upgrade_target := _upgrade_target_at(cell, def, owner) if def != null else -1
 	for i in range(_buildings.building_count()):
@@ -1877,8 +1927,27 @@ func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> 
 				and def.footprint_radius == 0 and not def.is_access_tower \
 				and other_def.footprint_radius == 0 and not other_def.is_access_tower:
 			continue
-		return false
-	return true
+		return "Cannot build there — a %s already stands there" % \
+			(other_def.display_name if other_def != null else "building")
+	return ""
+
+
+## What the node at `index` is, in the words a player would use for it —
+## "a forest", not "a WOOD node". Kind rather than model, because the
+## refusal is about the CELL being taken and the player is looking at the
+## ground, not at the economy.
+func _node_description(index: int) -> String:
+	match _economy.kind_at(index):
+		Economy.ResourceKind.WOOD:
+			return "a forest"
+		Economy.ResourceKind.FOOD:
+			return "a food source"
+		Economy.ResourceKind.GOLD:
+			return "a gold deposit"
+		Economy.ResourceKind.STONE:
+			return "a stone deposit"
+		_:
+			return "a resource node"
 
 
 ## The living building at `cell` that `def` would upgrade in place
@@ -2394,6 +2463,7 @@ func _return_to_lobby() -> void:
 	_buildings = null
 	_economy = null
 	_passable = PackedByteArray()
+	_terrain = null
 	_spawn_points = []
 	_pending_events.clear()
 	_pending_builds.clear()
