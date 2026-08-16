@@ -830,6 +830,20 @@ quote it with the count, as ever). The pieces:
   into a real match; **leave-to-lobby and no-humans-means-no-server
   (D-075)**; the in-game UI reworked to the reference design; authored
   models for resource nodes and the wall family; tower upgrades.
+- **An in-match scoreboard (D-102)**, from the #29 playtest, where the
+  absence of one blocked a pass criterion outright: per-player colours
+  were fully built, tested for distinctness and drawn consistently, and
+  a player could not tell which colour was whose once the lobby closed.
+  **That is the "mechanism correct, feature absent" family applied to
+  legibility** — nothing failed, and the feature was half-delivered.
+  Everything the board needed for IDENTITY was already on the client;
+  the half that did not exist was **standing**: elimination has been a
+  server-side `print` since D-033 and the wire carried none of it, which
+  the client's own defeat screen had recorded correctly for two
+  milestones. **The board is also the fog line applied to a menu** —
+  army size is derived from what the server already sent (own and ally
+  only, D-050), never asked for, so an enemy's total is a dash and there
+  is no packet a future caller could leak one from.
 
 **M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
 2026-08-14 and produced **D-087 through D-094**, closing every question
@@ -1069,6 +1083,17 @@ hud_layout.gd            Where the HUD's pieces go, for a window of any
                         Also owns the HUD's non-obvious arithmetic: the
                         match clock, the n/cap readout, and the compass
                         dial's geometry (D-063).
+scoreboard.gd            Who is in this match, and what this player is
+                        ENTITLED to see about them (D-102). All-static and
+                        pure. Identity (colour, civ, team) is public and
+                        needs no plumbing — it was already on the client.
+                        Army size is DERIVED from what the server chose to
+                        send, never asked for, so an enemy's total cannot
+                        be leaked by a future caller: own and ally counts
+                        only, everyone else a dash. Standing (playing/
+                        eliminated/victor) is the one thing here that had
+                        to go on the wire, because fog makes it
+                        underivable.
 selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
@@ -1391,6 +1416,7 @@ Dev loop and tests:
   699 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
   701 tests across 47 scripts, measured 2026-08-16)*. FILTER selects
   694 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  704 tests across 47 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario

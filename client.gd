@@ -347,6 +347,7 @@ func _process(delta: float) -> void:
 	_refresh_lobby()
 	_refresh_debug_panel()
 	_refresh_defeat()
+	_refresh_scoreboard()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
@@ -1245,6 +1246,10 @@ var _menu_button: Button = null
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
 var _settings_panel: Control = null
+## The player scoreboard (D-102), a sibling of the settings pane inside
+## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
+var _scoreboard_panel: Control = null
+var _scoreboard_rows: VBoxContainer = null
 ## The defeat screen (see `_build_defeat_screen`/`_refresh_defeat`).
 var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
@@ -6348,6 +6353,15 @@ func _build_game_menu() -> void:
 	resume.pressed.connect(_toggle_game_menu)
 	column.add_child(resume)
 
+	# The one place a player can find out who they are playing against
+	# (D-102). Beside Settings rather than on a hotkey of its own because
+	# ESC is the menu every player already knows, and a board nobody can
+	# find is the same non-delivery as no board at all.
+	var players := _styled_button("Players", HudTheme.NEUTRAL)
+	players.tooltip_text = "Colour, civ, team and standing for every player in this match."
+	players.pressed.connect(_toggle_scoreboard)
+	column.add_child(players)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -6372,8 +6386,172 @@ func _build_game_menu() -> void:
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
 
+	_scoreboard_panel = _build_scoreboard_panel(row)
+	_scoreboard_panel.visible = false
+
 	_settings_panel = _build_settings_panel(row)
 	_settings_panel.visible = false
+
+
+## The player scoreboard (D-102) — every player in the match, their
+## colour, civ, team and standing.
+##
+## Built once and refilled, rather than rebuilt on every open: the rows
+## change while it is up (a player is eliminated, an ally loses squads),
+## so it needs a refresh path either way, and one path is fewer than two.
+##
+## Everything drawn here comes from `Scoreboard.rows`, including which
+## columns this player may see at all — see that file on why an enemy's
+## army size is a dash rather than a number.
+func _build_scoreboard_panel(parent: Control) -> Control:
+	var frame := VBoxContainer.new()
+	parent.add_child(frame)
+	var column := _lobby_panel("PLAYERS", frame)
+	column.custom_minimum_size = Vector2(430.0, 0.0)
+
+	var heading := HBoxContainer.new()
+	heading.add_theme_constant_override("separation", 10)
+	column.add_child(heading)
+	# Column captions, in the same widths the rows use below. Spelled out
+	# rather than a grid because the swatch is not a label and a
+	# GridContainer would have to be told that in three places.
+	for caption in [
+			{"text": "", "width": 18.0},
+			{"text": "PLAYER", "width": 128.0},
+			{"text": "CIV", "width": 96.0},
+			{"text": "TEAM", "width": 58.0},
+			{"text": "SQUADS", "width": 54.0},
+			{"text": "MEN", "width": 46.0}]:
+		var label := Label.new()
+		label.text = String(caption["text"])
+		label.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+		label.modulate = HudTheme.TEXT_GHOST
+		label.custom_minimum_size = Vector2(float(caption["width"]), 0.0)
+		heading.add_child(label)
+
+	_scoreboard_rows = VBoxContainer.new()
+	_scoreboard_rows.add_theme_constant_override("separation", 4)
+	column.add_child(_scoreboard_rows)
+
+	# Says why the dashes are there. A blank column reads as a bug; this
+	# reads as the rule it is (D-004/D-025).
+	var note := Label.new()
+	note.text = "Army size is shown for you and your allies only — fog of war hides the rest."
+	note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	note.modulate = HudTheme.TEXT_FAINT
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size = Vector2(410.0, 0.0)
+	column.add_child(note)
+
+	var close := _styled_button("Back", HudTheme.NEUTRAL)
+	close.pressed.connect(_toggle_scoreboard)
+	column.add_child(close)
+	return frame
+
+
+## One scoreboard row. Deliberately shaped like `_seat_row`, because it
+## answers the same question the lobby's seat list answers — the whole
+## complaint was that the answer disappeared when the lobby did.
+func _scoreboard_row(row: Dictionary) -> Control:
+	var mine: bool = bool(row["is_you"])
+	var out: bool = int(row["standing"]) == MatchState.Standing.ELIMINATED
+
+	var frame := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = HudTheme.BG_ROW if mine else HudTheme.BG_ROW_DIM
+	style.set_corner_radius_all(HudTheme.RADIUS_LG)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	style.border_color = HudTheme.accent_border(1.0) if mine else HudTheme.BORDER
+	style.set_border_width_all(1)
+	if mine:
+		style.border_width_left = 3
+	frame.add_theme_stylebox_override("panel", style)
+	# Eliminated players stay listed and are dimmed rather than removed —
+	# a board that quietly shortened would lose the one mapping it exists
+	# to provide, and "who knocked whom out" is most of what a player
+	# wants from it (D-033).
+	if out:
+		frame.modulate = Color(1.0, 1.0, 1.0, 0.55)
+
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 10)
+	frame.add_child(line)
+
+	# The same colour the army wears on the field, from the same one
+	# definition every other surface reads (D-052).
+	line.add_child(_swatch(row["colour"], Vector2(18.0, 18.0)))
+
+	var name_label := Label.new()
+	name_label.text = "%s%s" % [String(row["name"]),
+		"  (you)" if mine else ("  (ai)" if String(row["kind"]) == "ai" else "")]
+	name_label.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	name_label.modulate = HudTheme.TEXT_BRIGHT if mine else HudTheme.TEXT
+	name_label.custom_minimum_size = Vector2(128.0, 0.0)
+	line.add_child(name_label)
+
+	# What a Random seat actually RESOLVED to — the lobby's own label
+	# function, so "Random" can only appear here if the server really did
+	# leave it unresolved.
+	var civ := Label.new()
+	civ.text = _civ_label(String(row["civ"]))
+	civ.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	civ.modulate = HudTheme.TEXT
+	civ.custom_minimum_size = Vector2(96.0, 0.0)
+	line.add_child(civ)
+
+	var team := Label.new()
+	team.text = "—" if int(row["team"]) == 0 else "Team %d" % int(row["team"])
+	team.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	team.modulate = HudTheme.ACCENT_BRIGHT if bool(row["is_ally"]) else HudTheme.TEXT_DIM
+	team.custom_minimum_size = Vector2(58.0, 0.0)
+	line.add_child(team)
+
+	for column_key in ["squads", "soldiers"]:
+		var value := Label.new()
+		value.text = Scoreboard.column_text(int(row[column_key]))
+		value.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		value.modulate = HudTheme.TEXT if int(row[column_key]) != Scoreboard.UNKNOWN \
+			else HudTheme.TEXT_GHOST
+		value.custom_minimum_size = Vector2(54.0 if column_key == "squads" else 46.0, 0.0)
+		line.add_child(value)
+
+	var standing := Label.new()
+	standing.text = Scoreboard.standing_text(int(row["standing"]))
+	standing.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	standing.modulate = HudTheme.TEXT_FAINT
+	if int(row["standing"]) == MatchState.Standing.VICTOR:
+		standing.modulate = HudTheme.ACCENT_BRIGHT
+	line.add_child(standing)
+
+	return frame
+
+
+## How often an open board rebuilds itself. Throttled for the same reason
+## the minimap is: the numbers on it change at the simulation's 10 Hz at
+## most, and rebuilding twenty rows of Controls every frame is work with
+## no viewer-visible effect.
+const SCOREBOARD_INTERVAL := 0.25
+var _scoreboard_updated_at := -1.0
+
+
+## Refill the board from the client's current knowledge. Only while it is
+## on screen — the rows are Controls, and rebuilding them for a panel
+## nobody is looking at is work with no viewer.
+func _refresh_scoreboard(force := false) -> void:
+	if _scoreboard_panel == null or not _scoreboard_panel.visible:
+		return
+	if not force and _scoreboard_updated_at >= 0.0 \
+			and _now - _scoreboard_updated_at < SCOREBOARD_INTERVAL:
+		return
+	_scoreboard_updated_at = _now
+	for child in _scoreboard_rows.get_children():
+		child.queue_free()
+		_scoreboard_rows.remove_child(child)
+	for row in Scoreboard.rows(_state):
+		_scoreboard_rows.add_child(_scoreboard_row(row))
 
 
 ## The settings pane, opened beside the menu rather than replacing it, so
@@ -6442,13 +6620,25 @@ func _toggle_game_menu() -> void:
 	if _game_menu_layer == null:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
-	if not _game_menu_layer.visible and _settings_panel != null:
-		_settings_panel.visible = false
+	if not _game_menu_layer.visible:
+		if _settings_panel != null:
+			_settings_panel.visible = false
+		if _scoreboard_panel != null:
+			_scoreboard_panel.visible = false
 
 
 func _toggle_settings() -> void:
 	if _settings_panel != null:
 		_settings_panel.visible = not _settings_panel.visible
+
+
+func _toggle_scoreboard() -> void:
+	if _scoreboard_panel == null:
+		return
+	_scoreboard_panel.visible = not _scoreboard_panel.visible
+	# Filled on the way open rather than waiting out the throttle, so it
+	# is never briefly empty.
+	_refresh_scoreboard(true)
 
 
 func _on_fullscreen_toggled(on: bool) -> void:
