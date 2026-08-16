@@ -539,7 +539,7 @@ leaves roughly **66 mountain cells and 80 land/mountain edges** on 8,064.
 Cliffs there are mostly coastal. If more rock is wanted the lever is
 `mountain_level` and the `/terrain` presets.
 
-**Map size is EXTENT now, not resolution (D-101, 2026-08-16).** Feature
+**Map size is EXTENT now, not resolution (D-105, 2026-08-16).** Feature
 size is a number of cells, not a fraction of the map: `_sample_at`
 multiplies any frequency it is handed by `space.width / REFERENCE_WIDTH`
 (84, the Standard size) before embedding, so a landmass is ~34 cells
@@ -932,7 +932,7 @@ terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
                         agree bit for bit. Every frequency it samples with
                         is a DENSITY against `REFERENCE_WIDTH`, scaled by
                         the map's own width in `effective_frequency`
-                        (D-101) — so a bigger map is bigger, not finer.
+                        (D-105) — so a bigger map is bigger, not finer.
 terrain_fields.gd        What `build_fields` returns. One object, because
                         surface and colours are indexed identically and a
                         caller that paired them wrongly would just paint

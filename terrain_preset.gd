@@ -30,7 +30,7 @@ class_name TerrainPreset
 @export var mountain_level: float = 0.74
 
 ## Feature size. Higher means smaller landmasses; lower means broader
-## ones. A DENSITY, not a count (D-101): it is calibrated against
+## ones. A DENSITY, not a count (D-105): it is calibrated against
 ## `TerrainGen.REFERENCE_WIDTH` and scaled by the map's own width, so a
 ## preset means the same kind of country at every map size and a bigger
 ## map holds proportionally more of it.

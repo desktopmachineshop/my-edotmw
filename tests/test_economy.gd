@@ -543,7 +543,7 @@ func test_trees_are_abundant_and_ore_stays_scarce() -> void:
 			"%s: one tree per %.0f cells — a solid lawn leaves nowhere to walk or build" % [
 				size["name"], per_tree])
 		var per_ore := float(cells) / maxf(float(ore), 1.0)
-		# 80 rather than 100 since D-101. Stone sits at the mountain FOOT, so
+		# 80 rather than 100 since D-105. Stone sits at the mountain FOOT, so
 		# how much of it a map holds follows the LENGTH of its mountain
 		# perimeter — which used to be a fixed count of ranges however big the
 		# map was, and is now proportional to area like everything else.

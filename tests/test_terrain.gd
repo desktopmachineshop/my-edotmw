@@ -1,7 +1,7 @@
 extends GutTest
 
 ## Guards D-008's "periodic noise sampling" tax, D-017's chunking, and
-## D-101's "a bigger map is bigger, not finer".
+## D-105's "a bigger map is bigger, not finer".
 ##
 ## The seam tests here are the ones that matter. Non-periodic noise over a
 ## wrapped grid produces terrain that looks completely fine in isolation
@@ -198,7 +198,7 @@ func test_flow_field_routes_around_terrain() -> void:
 				"Impassable cell %d should not be routable through" % i)
 
 
-# --- map size is extent, not resolution (D-101) -----------------------
+# --- map size is extent, not resolution (D-105) -----------------------
 
 ## Mean absolute elevation change between cells `step` apart, over the
 ## whole map.
@@ -303,7 +303,7 @@ func test_a_bigger_map_holds_more_features_rather_than_bigger_ones() -> void:
 func test_the_reference_width_leaves_shipped_presets_meaning_what_they_did() -> void:
 	# Every /terrain preset was tuned at the Standard size, so the size
 	# term must be exactly 1 there or all four need re-tuning. This is the
-	# clause that let D-101 land without touching a .tres.
+	# clause that let D-105 land without touching a .tres.
 	var standard: Dictionary = MapSettings.sizes()[1]
 	assert_eq(int(standard["width"]), int(TerrainGen.REFERENCE_WIDTH),
 		"REFERENCE_WIDTH must be the Standard map's width, or presets silently change meaning")

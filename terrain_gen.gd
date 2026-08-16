@@ -23,12 +23,12 @@ class_name TerrainGen
 
 @export var noise_seed: int = 1337
 ## Feature size, expressed as "how many features fit across a map of
-## `REFERENCE_WIDTH` cells" (D-101). Higher means smaller landmasses.
+## `REFERENCE_WIDTH` cells" (D-105). Higher means smaller landmasses.
 ##
 ## Read that as a DENSITY, not as a count: `_sample_at` scales it by the
 ## map's own width, so a landmass comes out the same size IN CELLS at
 ## every map size and a bigger map holds proportionally more of them.
-## Before D-101 this was a count per map, which made map size a
+## Before D-105 this was a count per map, which made map size a
 ## resolution control — a Huge map was the same two continents as a
 ## Skirmish map, each 16x larger.
 ##
@@ -41,12 +41,12 @@ class_name TerrainGen
 ## the map would leave a Huge map with the same handful of forests.
 @export var moisture_frequency: float = 4.0
 
-## The map width every shipped frequency is calibrated against (D-101).
+## The map width every shipped frequency is calibrated against (D-105).
 ##
 ## 84 is the Standard lobby size (`MapSettings.sizes()`), chosen so every
 ## preset's tuned numbers keep exactly the meaning they were authored
 ## with — `continents` at Standard is bit-identical before and after
-## D-101, which is what let the change land without re-tuning /terrain.
+## D-105, which is what let the change land without re-tuning /terrain.
 const REFERENCE_WIDTH := 84.0
 
 ## How many times the field repeats along each axis (D-036).
@@ -189,7 +189,7 @@ func _sample_at(noise: FastNoiseLite, space: TorusSpace, point: Vector2,
 	# One full lap of u covers TAU units of embedding space, so dividing by
 	# TAU converts that intent into noise-space units.
 	#
-	# Multiplied by the map's width in reference widths (D-101), which is
+	# Multiplied by the map's width in reference widths (D-105), which is
 	# what makes a feature a size in CELLS rather than a fraction of the
 	# map. Without it the noise is parameterised over the unit torus and
 	# every map, at every size, is the same world at a different
@@ -217,7 +217,7 @@ func _sample_at(noise: FastNoiseLite, space: TorusSpace, point: Vector2,
 	return clampf(noise.get_noise_3d(x * scale, y * scale, z * scale) * 0.5 + 0.5, 0.0, 1.0)
 
 
-## `frequency` as the noise field actually uses it on THIS map (D-101).
+## `frequency` as the noise field actually uses it on THIS map (D-105).
 ##
 ## The ONE place map size enters feature scale, so elevation, moisture and
 ## the blend warp are all treated alike by construction — a size term
@@ -230,7 +230,7 @@ static func effective_frequency(space: TorusSpace, frequency: float) -> float:
 ## How wide, in CELLS, a feature at `frequency` comes out — at ANY map size.
 ##
 ## The inverse of the above, and the number worth showing a human: the
-## lobby's slider is labelled in these units (D-101), because "landmass
+## lobby's slider is labelled in these units (D-105), because "landmass
 ## count" stopped being a property of the parameter the moment the
 ## parameter stopped depending on the map.
 static func feature_cells(frequency: float) -> float:
@@ -415,7 +415,7 @@ func surface_field(space: TorusSpace) -> PackedFloat32Array:
 ## once across a whole coastline, low enough that it does not become per-cell
 ## static, which would read as a noisy shoreline rather than a natural one.
 ##
-## "Every few cells" is a CELL-relative intent, and before D-101 it was
+## "Every few cells" is a CELL-relative intent, and before D-105 it was
 ## expressed in map-relative units — so at Huge the warp wandered every ~7.6
 ## cells where Standard got ~3.8, and the shoreline it was written to
 ## de-scallop came out scalloped again at exactly the sizes nobody looked at.

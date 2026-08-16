@@ -20,7 +20,7 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-101 · 2026-08-16 · Accepted — map size is extent, not resolution
+### D-105 · 2026-08-16 · Accepted — map size is extent, not resolution
 
 **Decision:** terrain feature size is a number of **cells**, not a
 fraction of the map. `TerrainGen._sample_at` multiplies whatever

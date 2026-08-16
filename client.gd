@@ -6164,7 +6164,7 @@ const MAP_OPTIONS := [
 		"min": 0, "max": MapSettings.SEED_MAX, "reroll": true},
 	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
 	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
-	# Reads in CELLS, not as the raw parameter (D-101). "Landmass count"
+	# Reads in CELLS, not as the raw parameter (D-105). "Landmass count"
 	# was the bug stated out loud: it sat at 2.50 on every map size
 	# because the terrain was defined in fractions of the map, so picking
 	# a bigger map bought a higher-resolution drawing of the same world.
@@ -7544,7 +7544,7 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 ## What a map slider's number reads as.
 ##
 ## Most are the raw parameter, which is what a sea level or a relief
-## multiplier already means to a human. Landmass size is not: since D-101
+## multiplier already means to a human. Landmass size is not: since D-105
 ## `elevation_frequency` is a density against `TerrainGen.REFERENCE_WIDTH`,
 ## and the number a player can act on is how wide a landmass comes out —
 ## which is now the same at every map size, and is the point.

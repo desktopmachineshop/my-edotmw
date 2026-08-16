@@ -21,7 +21,7 @@ func _shipped_space() -> TorusSpace:
 	return config.to_space()
 
 
-## A generator whose features fit a toy map (D-101).
+## A generator whose features fit a toy map (D-105).
 ##
 ## Feature size is a number of CELLS now, not a fraction of the map, so a
 ## 16-cell-wide map at shipped tuning holds half of one landmass and has no
@@ -322,7 +322,7 @@ func test_the_cliff_tunables_change_the_surface() -> void:
 	# The SMALLEST SHIPPED map (Skirmish), at shipped tuning, rather than a toy
 	# one. `cliff_rise` only has anything to add where the natural step at a
 	# passability boundary falls BELOW `cliff_min_step`, and that is a property
-	# of the gradient — which since D-101 is a property of feature size in cells
+	# of the gradient — which since D-105 is a property of feature size in cells
 	# and nothing else. Toy features are steep enough that every boundary already
 	# clears the threshold on its own, so the rise measurably does nothing and
 	# this test would report the defect it exists to catch.
