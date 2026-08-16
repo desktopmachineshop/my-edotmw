@@ -719,7 +719,7 @@ appearing on the minimap (that would be a wire-gating bug, D-004, not a
 paint bug); the minimap gains a third fog state (#59) and buildings need
 to distinguish remembered from visible; or minimap resolution changes
 enough that cell-count footprints stop being the right unit.
-### D-107 · 2026-08-16 · Accepted — a node cell is a STAND of trees, not one tree on the lattice point
+### D-108 · 2026-08-16 · Accepted — a node cell is a STAND of trees, not one tree on the lattice point
 
 **Decision:** a resource node is drawn as several trees on their own
 offsets inside its cell, and the canopy shrink D-087 introduced to stop
@@ -855,13 +855,20 @@ meaning at all — sight blocking, cover, movement cost — at which point
 where a tree is drawn stops being cosmetic and clause 6 has to be
 reopened rather than extended.
 
-**Numbering note:** written as D-101 and renumbered to **D-107** at the
-rebase onto main, which is exactly the merge step D-098's amendment says
-is the right moment to fix a number. Main's D-100 records a coordinator
+**Numbering note:** written as D-101, renumbered to **D-107** at the
+rebase onto main, and renumbered again to **D-108** when the merge train
+landed — which is exactly the merge step D-098's amendment says is the
+right moment to fix a number. Main's D-100 records a coordinator
 assigning numbers across seven parallel branches — #68=D-099, #70=D-100,
 **#66=D-101**, #76=D-102, #71=D-103, #73=D-104, #75=D-105, #78=D-106 —
 and this work (PR #72) is not in that list, so D-101 belongs to somebody
 else and the first number clear of the whole assigned block is D-107.
+**Reasoning identically, PR #77 also took D-107, and it merged first**,
+so this entry moved once more. That is the third instance of the same
+trap in one afternoon: picking "the first free number" is safe only
+against numbers you can SEE, and a branch you cannot see is exactly what
+parallel work consists of. The durable fix is a coordinator assignment
+that covers every open branch, not a smarter derivation.
 Taking a number *inside* the block and letting the coordinator sort it
 out later is the failure D-100's own note is still paying for: two
 entries meaning different things under one ID, with code citing both.
@@ -2482,9 +2489,9 @@ in a frame profile, promote placement to a bulk pass. If forests ever
 gain gameplay meaning (concealment, passability), that is a new decision
 — this one is explicitly cosmetic-plus-economy.
 
-**Amendment, 2026-08-16 (D-107):** clause 6's last sentence — one tree
+**Amendment, 2026-08-16 (D-108):** clause 6's last sentence — one tree
 per cell at 0.60–0.92 of authored size so canopies could not touch — is
-**superseded by D-107**. A playtest found that a wood read as ranks and
+**superseded by D-108**. A playtest found that a wood read as ranks and
 files: the region-scale outline this decision's density field produces
 was organic, and its interior was the hex lattice, because the only
 positional freedom a tree had was which cell it stood in. A cell now

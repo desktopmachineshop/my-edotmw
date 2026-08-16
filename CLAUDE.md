@@ -769,7 +769,7 @@ run under `test-load`'s wire before — and report `nodes_felled` in the
 verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
 gating would re-set D-031's stale-timing trap).
 
-**And a forest was still a grid until D-107 (2026-08-16).** A playtest
+**And a forest was still a grid until D-108 (2026-08-16).** A playtest
 reported ranks and files you could count along. The blob-scale outline
 was organic — the density field above doing its job — and the interior
 was the hex lattice, because **a tree's only positional freedom was which
@@ -1273,7 +1273,7 @@ cover_preview.gd         The same idea for ground cover: every prop, on
                         generated terrain, with a real squad standing in
                         it so "cover never hides a unit" is looked at
                         rather than asserted.
-forest_preview.gd        The same idea again for WOODS (D-107), framed on
+forest_preview.gd        The same idea again for WOODS (D-108), framed on
                         the densest one on the map from a low angle —
                         because a lattice is invisible from overhead and
                         obvious at eye height. Real Economy.generate, real
@@ -1518,12 +1518,8 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  699 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
-  701 tests across 47 scripts, measured 2026-08-16)*. FILTER selects
-  694 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
-  704 tests across 47 scripts, measured 2026-08-16)*. FILTER selects
-  678 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
-  692 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  768 tests across 51 scripts, measured 2026-08-16 on the nine-PR merge
+  train, not on any one branch)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
@@ -1555,7 +1551,7 @@ Dev loop and tests:
   because `test-client` aims its camera at a spawn — walkable ground by
   construction, and therefore the one place a cliff cannot be.
 - `just gen-forest-preview [SECONDS]` — a RENDERED picture of a WOOD
-  (D-107), framed on the densest forest on the map from a low angle, with
+  (D-108), framed on the densest forest on the map from a low angle, with
   real soldiers standing in it for scale. Real node placement
   (`Economy.generate`), real stands (`ResourceVisuals.trees_for`), real
   batching. Software-rasterised, no GPU. **Look at
