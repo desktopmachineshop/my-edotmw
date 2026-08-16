@@ -823,7 +823,15 @@ build-assets ONLY="":
     args=""
     [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
     "{{blender_python}}" art/build.py $args
-    {{just_executable()}} _import
+    # QUOTED, unlike every other `{{just_executable()}}` call in this file,
+    # because this one is reached on Windows where the path is absolute and
+    # backslash-separated: unquoted, the shell eats the separators and the
+    # line dies as `C:UsersdmasoDocuments...toolsjust.exe: command not
+    # found`. The build itself had already succeeded, so the only casualty
+    # was the import — which is the step CLAUDE.md warns about, since a
+    # rebuild Godot has not re-imported is invisible and gives confident
+    # wrong answers about a mesh that did change.
+    "{{just_executable()}}" _import
 
 # Rebuild the resource-node markers (D-028's food/wood/gold/stone props)
 # from the hand-authored source under art/resources/source/.

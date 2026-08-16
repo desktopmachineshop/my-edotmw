@@ -47,6 +47,38 @@ ATLAS_PARAMS = {
     "detect_3d/compress_to": "0",
 }
 
+# Meshes, for the same reason as the VAT above and found the same way: a
+# channel carrying DATA rather than what the channel is named for, silently
+# mangled by an import default nobody set.
+#
+# A gate's UV2 is not texture coordinates. It carries (is_door_leaf, hinge_x)
+# per vertex — see art/lib/bake.py's `door_hinge_uv` — which the building
+# shader reads to swing the door leaf about its hinge. Two Godot defaults
+# destroy that:
+#
+# - `meshes/generate_lods` simplifies and WELDS vertices. Welding a leaf
+#   vertex (UV2.x = 1) to an adjacent frame vertex (UV2.x = 0) averages the
+#   tag, so parts of the door stop being the door.
+# - vertex compression QUANTISES UVs into a normalised range. `hinge_x` is a
+#   model-space coordinate, not a 0..1 texture coordinate, so quantising it
+#   moves the hinge — and a leaf rotating about the wrong pivot swings into
+#   the wall instead of out of the opening, which looks exactly like an
+#   animation that is not running at all.
+#
+# Reported from play twice as "the gate doesn't show as open". A previous
+# pass smoothed the boolean into a continuous value and reported it fixed,
+# which was a real bug but not this one — the leaf was moving the whole time,
+# about the wrong axis, out of sight inside the gatehouse.
+#
+# Applied to EVERY generated model rather than just the gates: nothing here
+# is dense enough for LODs to matter (the whole roster is 150-300 triangles a
+# piece), and a future model that smuggles data through a vertex channel
+# should not have to rediscover this.
+MODEL_PARAMS = {
+    "meshes/generate_lods": "false",
+    "meshes/force_disable_compression": "true",
+}
+
 _STUB = """[remap]
 
 importer="texture"
