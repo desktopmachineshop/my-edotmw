@@ -1142,6 +1142,15 @@ static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
 	buf.put_u32(int(settings["player_slots"]))
 	buf.put_32(int(settings["seed"]))
 	_put_string(buf, String(settings["preset"]))
+	# Where people start is part of the world, not a detail of it (D-104):
+	# a client that has to guess these guesses wrong, and the last one that
+	# did drew twenty spawn markers of which none were real. Note the LOBBY
+	# packet carries the same dictionary as JSON and so gained them for
+	# free — this one is field by field, and a field-by-field encoder is
+	# exactly where a "replicated" value quietly is not.
+	buf.put_32(int(settings["spawn_seed"]))
+	buf.put_u32(int(settings["min_spawn_spacing"]))
+	buf.put_u32(int(settings["min_spawn_landmass"]))
 	for key in ["sea_level", "beach_level", "mountain_level",
 			"elevation_frequency", "moisture_frequency", "height_scale"]:
 		buf.put_float(float(settings[key]))
@@ -1158,6 +1167,9 @@ static func decode_map_settings(data: PackedByteArray) -> Dictionary:
 		"player_slots": int(buf.get_u32()),
 		"seed": int(buf.get_32()),
 		"preset": _get_string(buf),
+		"spawn_seed": int(buf.get_32()),
+		"min_spawn_spacing": int(buf.get_u32()),
+		"min_spawn_landmass": int(buf.get_u32()),
 	}
 	for key in ["sea_level", "beach_level", "mountain_level",
 			"elevation_frequency", "moisture_frequency", "height_scale"]:

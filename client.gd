@@ -7394,14 +7394,12 @@ func _rebuild_map_preview(settings: Dictionary) -> void:
 			image.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
 
 	# Where people start, the way a lobby preview shows player positions.
-	# MapConfig.spawn_points is the SHARED implementation the server uses
-	# (D-039), so this is the same answer rather than a second guess at it.
-	var spawn_config := MapConfig.new()
-	spawn_config.width = space.width
-	spawn_config.height = space.height
-	spawn_config.player_slots = map.player_slots
-	spawn_config.spawn_seed = map.seed
-	for cell in spawn_config.spawn_points(terrain.passability(space)):
+	# `MapSettings.to_spawn_config` is the shared DERIVATION, not merely
+	# the shared implementation (D-104) — this used to build its own
+	# MapConfig and seed it with the match seed where the server seeds it
+	# with the map's base plus the match seed, so every marker it drew was
+	# somewhere nobody starts, under a comment asserting the opposite.
+	for cell in map.to_spawn_config().spawn_points(terrain.passability(space)):
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				image.set_pixel(

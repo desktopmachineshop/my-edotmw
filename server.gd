@@ -242,15 +242,19 @@ func _ready() -> void:
 		return
 
 	# What the world WILL be. Seeded from the map file, then edited in the
-	# lobby (D-049).
-	_settings = MapSettings.new()
-	_settings.width = _config.width
-	_settings.height = _config.height
-	_settings.player_slots = _config.player_slots
+	# lobby (D-049) — including what the spawn sampler reads, which travels
+	# with the rest so the lobby preview can reproduce the server's starts
+	# exactly rather than guessing at them (D-104).
+	_settings = MapSettings.from_map(_config)
 	# --seed PINS the world; without it the default stands here and a
 	# lobby rolls over it a few lines below (D-100). Every seedless
 	# headless flow — bots, scenarios, test-load, test-client — takes this
 	# branch and keeps the one reproducible map it has always run on.
+	#
+	# A rolled seed moves the STARTS as well as the ground, because
+	# `to_spawn_config` mixes the map's base spawn seed with this one —
+	# which is what D-100 means by a seed reproducing the whole match
+	# setup rather than only the terrain.
 	if args.has("seed"):
 		_settings.pin_seed(int(args["seed"]))
 	# Overridable from the command line for a no-lobby quick start (D-049
@@ -405,12 +409,10 @@ func _build_world() -> void:
 	# Spawn placement follows the LOBBY's chosen slot count and map size
 	# (D-049), not the map file's — the file is only the starting point
 	# those settings were seeded from.
-	var spawn_config := MapConfig.new()
-	spawn_config.width = _settings.width
-	spawn_config.height = _settings.height
-	spawn_config.player_slots = _settings.player_slots
-	spawn_config.min_spawn_spacing = _config.min_spawn_spacing
-	spawn_config.spawn_seed = _config.spawn_seed + _settings.seed
+	# Derived by MapSettings, not here (D-104): the lobby's map preview
+	# draws these too, and the last time each side built its own sampler
+	# the preview marked twenty starts of which none were real.
+	var spawn_config := _settings.to_spawn_config()
 	_spawn_points = spawn_config.spawn_points(_passable)
 
 	var seating := spawn_config.validate_spawns(_passable)
