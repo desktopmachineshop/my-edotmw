@@ -83,6 +83,14 @@ func _initialize() -> void:
 	print("gen-terrain-preview: %.1f verts/chunk — vary --chunk-size to compare (D-017 is decided by this measurement, not by guessing)" % [
 		float(stats["vertices"]) / float(maxi(stats["chunks"], 1))])
 
+	# The cliff faces (D-097), reported next to the passability count they
+	# are a drawing of. A skirt count of zero on the shipped map would mean
+	# the mechanism is built and the ground still has no visible edge —
+	# which is the "mechanism right, shipped numbers do nothing" failure,
+	# and it looks identical to success in every other line here.
+	print("gen-terrain-preview: %d cliff faces drawn at passability boundaries" % [
+		stats["cliff_quads"]])
+
 	# --- passability, which is what pathfinding actually consumes -----
 	var passable := terrain.passability(space)
 	var blocked := 0

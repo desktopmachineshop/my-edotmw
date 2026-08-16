@@ -78,7 +78,11 @@ func _parse_arguments() -> void:
 func _build_terrain() -> void:
 	_space = TorusSpace.new(PATCH_WIDTH, PATCH_HEIGHT)
 	_terrain = TerrainGen.new()
-	_surface = _terrain.surface_field(_space)
+	# One `build_fields` pass rather than a `surface_field` call (D-096): the
+	# mesher needs the colours and tile slots from the SAME build, and the two
+	# cannot be paired wrongly if they arrive together.
+	var fields := _terrain.build_fields(_space)
+	_surface = fields.surface
 	_centre = _space.to_world(_flattest_cell())
 
 	var material := TerrainChunk.make_material()
@@ -87,7 +91,7 @@ func _build_terrain() -> void:
 	for cy in range(grid.y):
 		for cx in range(grid.x):
 			var mesh := TerrainChunk.build_mesh(_space, _terrain, Vector2i(cx, cy),
-				chunk_size, _surface)
+				chunk_size, fields)
 			if mesh == null:
 				continue
 			var instance := MeshInstance3D.new()
