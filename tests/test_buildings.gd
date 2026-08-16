@@ -1122,6 +1122,99 @@ func test_a_resource_node_is_ground_you_cannot_build_on() -> void:
 	server.free()
 
 
+## Issue #55: the refusal must name the reason that actually fired.
+##
+## `_is_buildable` rejects on FOUR conditions and the message enumerated
+## three of them — the resource-node rule landed later as a playtest fix
+## and the wording was never updated. On the reported `highlands` world,
+## 348 of 1,174 walkable cells (29.6%) were refused by a node while being
+## told to look for water or a mountain, and the client's ghost draws
+## GREEN over a node it has not been shown, so the named reason is also
+## the only thing that explains an unrevealed one.
+##
+## Every branch is asserted through `_build_refusal`, which is now the one
+## definition of the rule (`_is_buildable` is a wrapper over it), against a
+## world built the way the server builds its own: real terrain, real
+## passability, real nodes.
+func test_a_refused_build_names_which_of_the_four_reasons_it_was() -> void:
+	var space := TorusSpace.new(48, 32, 1.0)
+	var terrain := TerrainGen.new()
+	var passable := terrain.passability(space)
+
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+
+	var server = load("res://server.gd").new()
+	server._sim = sim
+	server._buildings = buildings
+	server._passable = passable
+	server._terrain = terrain
+
+	# Found one cell of each impassable kind rather than asserting against
+	# a hand-built `_passable`: the point of the distinction is that
+	# `_passable` CANNOT make it, so a fixture that fakes the array would
+	# be testing the wrong thing.
+	var water := Vector2i(-1, -1)
+	var mountain := Vector2i(-1, -1)
+	var open := Vector2i(-1, -1)
+	for i in range(space.cell_count()):
+		var cell := space.from_index(i)
+		if passable[i] == 1:
+			if open.x < 0:
+				open = cell
+			continue
+		if terrain.is_water(space, cell):
+			if water.x < 0:
+				water = cell
+		elif mountain.x < 0:
+			mountain = cell
+	assert_true(water.x >= 0 and mountain.x >= 0 and open.x >= 0,
+		"setup: the default generator should give this map water, mountain and open ground")
+
+	assert_eq(server._build_refusal(open), "",
+		"setup: ordinary open ground must refuse nothing")
+	assert_true(server._build_refusal(water).contains("water"),
+		"a lake must say it is water — not 'water, mountain, or already occupied'")
+	assert_true(server._build_refusal(mountain).contains("mountain"),
+		"a mountain must say it is a mountain")
+	assert_false(server._build_refusal(water).contains("mountain"),
+		"and neither may name the other, or the message is the same shrug in longer words")
+
+	# The reason the issue exists: a forest, on ground that is neither
+	# water, nor mountain, nor occupied.
+	var economy := Economy.new(space)
+	economy.nodes[space.index(open)] = {
+		"kind": Economy.ResourceKind.WOOD,
+		"remaining": Economy.stock_for(Economy.ResourceKind.WOOD),
+	}
+	server._economy = economy
+	var node_refusal: String = server._build_refusal(open)
+	assert_true(node_refusal.contains("forest"),
+		"a cell blocked by a resource node must say so — this is issue #55 itself")
+	assert_false(node_refusal.contains("water") or node_refusal.contains("mountain"),
+		"and must not send the player looking for terrain that is not there")
+	# The kind is named, so a gold seam does not report itself as a wood.
+	economy.nodes[space.index(open)]["kind"] = Economy.ResourceKind.GOLD
+	assert_true(server._build_refusal(open).contains("gold"),
+		"the node's KIND is what the player is looking at; naming the wrong one is a new lie")
+
+	# Occupied ground names what is standing there, which is also what the
+	# old message only ever managed to be right about.
+	economy.nodes.erase(space.index(open))
+	var hall_def := BuildingSim.def_by_id(&"town_centre")
+	buildings.add_building(hall_def, 1, open, true)
+	assert_true(server._build_refusal(open).contains(hall_def.display_name),
+		"occupied ground must name the building occupying it")
+
+	# The wrapper still answers exactly what it always did, so every
+	# existing caller and test is unaffected by the rule gaining a voice.
+	assert_false(server._is_buildable(water), "the bool wrapper must still refuse water")
+	assert_false(server._is_buildable(open), "and must still refuse occupied ground")
+
+	server.free()
+
+
 func test_an_open_gate_stops_blocking_but_a_closed_one_still_does() -> void:
 	var space := TorusSpace.new(32, 16, 1.0)
 	var buildings := BuildingSim.new(space)
