@@ -6158,7 +6158,7 @@ const MAP_OPTIONS := [
 	{"key": "size", "label": "Map size", "kind": "choice"},
 	{"key": "player_slots", "label": "Starting positions", "kind": "int", "min": 2, "max": 24},
 	# `max` comes from MapSettings so the spinner can always show a rolled
-	# seed (D-099), and `reroll` puts a button beside it — the server draws
+	# seed (D-100), and `reroll` puts a button beside it — the server draws
 	# the number, this only asks for one.
 	{"key": "seed", "label": "Seed", "kind": "int",
 		"min": 0, "max": MapSettings.SEED_MAX, "reroll": true},
@@ -7354,7 +7354,7 @@ func _on_map_value(value: float, key: String) -> void:
 	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])
 
 
-## Ask the SERVER to draw a new seed (D-099). The value is ignored at the
+## Ask the SERVER to draw a new seed (D-100). The value is ignored at the
 ## far end — rolling here would hand the map to whoever is host, and would
 ## pin the result, which is the opposite of what the button says.
 func _on_map_reroll() -> void:
@@ -7496,7 +7496,7 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 				spin.value_changed.connect(_on_map_value.bind(key))
 			# Typing a seed PINS it; the button beside it asks the server
 			# for a fresh one and leaves it unpinned, so the lobby keeps
-			# rolling between matches (D-099). Only the admin gets either,
+			# rolling between matches (D-100). Only the admin gets either,
 			# so a guest's row keeps the full-width spinner.
 			var rerollable := bool(option.get("reroll", false)) and admin
 			if rerollable:

@@ -20,13 +20,28 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-099 · 2026-08-16 · Accepted — a lobby rolls its map; a pinned seed reproduces the whole match
+### D-100 · 2026-08-16 · Accepted — a lobby rolls its map; a pinned seed reproduces the whole match
 
-**Numbering note.** D-099 was a GAP, not the top of the list: D-100 is in
-force (ground cover) while no entry or citation ever used 099. Filling it
-deliberately, because parallel worktrees all allocate from the highest
-number and a fifth collision after D-081's and D-098's would cost more
-than a non-monotonic date.
+**Numbering note, and an UNRESOLVED collision — read this before citing
+D-100 anywhere.** This entry was written as D-099 and renumbered to D-100
+on 2026-08-16 by the session coordinating seven parallel fix branches,
+which assigned #68=D-099, #70=D-100 (this), #66=D-101, #76=D-102,
+#71=D-103, #73=D-104, #75=D-105, #78=D-106.
+
+**D-100 was already in force when that assignment was made**, for GROUND
+COVER: merged as PR #25 (commit da23dc8), cited four times in `CLAUDE.md`
+and roughly twenty times across `ground_cover.gd`, `cover_preview.gd`,
+`art/build.py`, `art/lib/bake.py`, `art/scatter/*` and
+`tests/test_ground_cover.gd`. It has no heading in this file — its entry
+sits in `docs/plans/D-100-ground-cover.md` — which is exactly why a scan
+of `### D-NNN` headings tops out at D-098 and misses it. That is the trap
+the D-068 block records verbatim: **the highest heading has never been
+the highest number in force.** The conflict was raised with the
+coordinator, with this evidence, and the assignment was reaffirmed; it is
+recorded here rather than silently absorbed, because the two D-100s mean
+different things and a reader following a code citation needs to know
+which. **Resolving it is still owed** — the cheaper side to move is
+ground cover's, which has citations but no heading here.
 
 **Decision:** the map seed is **rolled when a LOBBY opens, and again on
 the way back to one**, unless somebody pinned it. Everything else keeps

@@ -1,6 +1,6 @@
 extends GutTest
 
-## Guards D-099 — the map seed is rolled for a lobby, pinnable, and the
+## Guards D-100 — the map seed is rolled for a lobby, pinnable, and the
 ## civ draw follows it.
 ##
 ## Every rule here is about something that LOOKS completely normal when it

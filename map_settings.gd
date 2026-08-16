@@ -39,7 +39,7 @@ const DEFAULT_SEED := 1337
 const SEED_MAX := 999_999
 
 ## Terrain noise seed. Rolled per match unless someone pins it, so two
-## matches on the same settings are still different places (D-099) — the
+## matches on the same settings are still different places (D-100) — the
 ## rolling is `roll_seed`, and the server does it when a LOBBY opens.
 ##
 ## The default is what every seedless headless flow runs on: bots, GUT
@@ -50,7 +50,7 @@ var seed: int = DEFAULT_SEED
 ## Whether somebody CHOSE this seed — `--seed` on the command line, or the
 ## admin typing one into the lobby. A pinned seed survives the re-roll a
 ## new lobby would otherwise do, which is what makes "copy the number
-## down, play that map again" work (D-099).
+## down, play that map again" work (D-100).
 ##
 ## Deliberately not on the wire: it is lobby bookkeeping, and a client has
 ## no use for it. `MapSettings.to_dict` is the packet payload, so anything
@@ -106,7 +106,7 @@ static func sizes() -> Array:
 ## is deliberately here rather than anywhere a match reads from: a seed is
 ## drawn once, before the world exists, and everything downstream — the
 ## terrain, the spawn points, the combat RNG, the civ draw — is a pure
-## function of it (D-099). A replay reproduces the match because the
+## function of it (D-100). A replay reproduces the match because the
 ## rolled number travelled on the wire and was written down, not because
 ## the roll itself was reproducible.
 ##

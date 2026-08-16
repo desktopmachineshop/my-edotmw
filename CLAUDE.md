@@ -307,7 +307,7 @@ field is replicated, open the encoder and look for it.** And when a
 feature "does nothing", suspect the wire before the UI — the button had
 been correct all along.
 
-**A fourth, and the cheapest to check for (D-099): a doc comment on a
+**A fourth, and the cheapest to check for (D-100): a doc comment on a
 field is not evidence that anything writes it.** `MapSettings.seed` said
 "Rolled per match unless someone pins it" for a whole milestone and
 nothing anywhere rolled it, so every lobby match — every match a human

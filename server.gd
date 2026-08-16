@@ -239,7 +239,7 @@ func _ready() -> void:
 	_settings.height = _config.height
 	_settings.player_slots = _config.player_slots
 	# --seed PINS the world; without it the default stands here and a
-	# lobby rolls over it a few lines below (D-099). Every seedless
+	# lobby rolls over it a few lines below (D-100). Every seedless
 	# headless flow — bots, scenarios, test-load, test-client — takes this
 	# branch and keeps the one reproducible map it has always run on.
 	if args.has("seed"):
@@ -271,7 +271,7 @@ func _ready() -> void:
 	_match.squad_cap = _config.squad_cap
 	_match.map_settings = _settings
 
-	# A LOBBY match rolls its map (D-099), so two matches on the same
+	# A LOBBY match rolls its map (D-100), so two matches on the same
 	# settings are two different places — which is what MapSettings.seed
 	# has claimed since D-049 and nothing did. Only the lobby rolls: a
 	# no-lobby start is a test harness or a dev launch, and those want the
@@ -281,7 +281,7 @@ func _ready() -> void:
 		print("server: lobby rolled map seed %d" % _settings.roll_seed())
 
 	# The civ draw follows the MAP seed, so a pinned seed reproduces the
-	# whole match setup and not merely the terrain (D-099). It has to come
+	# whole match setup and not merely the terrain (D-100). It has to come
 	# after the roll above, or every lobby would draw from the same
 	# sequence regardless of where it was being played.
 	_match.civ_seed_base = hash(_config.id)
@@ -2434,7 +2434,7 @@ func _return_to_lobby() -> void:
 		_clients[peer]["visible"] = {}
 
 	# `return_to_lobby` rolls the next match's map unless the seed is
-	# pinned (D-099), so the seed is worth naming here: it is the one
+	# pinned (D-100), so the seed is worth naming here: it is the one
 	# thing about the lobby that changed without anybody touching it.
 	print("server: returned to the lobby — %d seat(s) held, next map seed %d%s" % [
 		_match.seats.size(), _match.map_settings.seed,

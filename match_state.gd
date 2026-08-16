@@ -123,7 +123,7 @@ var admin_player: int = 0
 
 ## Seeded from the MAP SEED by `reseed_civ_rng`, so a Random civ draw
 ## reproduces on replay (D-016) and a pinned seed reproduces the whole
-## match setup rather than only the terrain (D-099).
+## match setup rather than only the terrain (D-100).
 var civ_rng := RandomNumberGenerator.new()
 
 ## The map-independent half of that seed — `hash(MapConfig.id)`, set by
@@ -137,7 +137,7 @@ var civ_seed_base: int = 0
 ## Called whenever that seed can have changed: at startup, and on the way
 ## back to the lobby. The draw is a function of the map seed, which is the
 ## rule that makes "same seed, same match" true of the civs as well as the
-## ground — before D-099 this was seeded from a `--seed` argument that
+## ground — before D-100 this was seeded from a `--seed` argument that
 ## defaulted to 0 while the map's own default was 1337, so a lobby's
 ## Random seats resolved to the same civs every single match.
 func reseed_civ_rng() -> void:
@@ -294,7 +294,7 @@ func return_to_lobby() -> bool:
 		seat["civ"] = seat.get("choice", seat["civ"])
 
 	# The next match is a NEW PLACE, unless somebody pinned the seed
-	# (D-099). This is the same defect as the Random seat two lines above,
+	# (D-100). This is the same defect as the Random seat two lines above,
 	# in the terrain: without it, "play again" hands back the map just
 	# played, for as long as the server stays up, and nothing looks wrong.
 	# A pinned seed deliberately keeps its map — and re-seeding the civ
@@ -512,7 +512,7 @@ func describe() -> String:
 var map_settings := MapSettings.new()
 
 ## The option key that asks for a NEW seed rather than setting one
-## (D-099). Named here because `client.gd` sends it — two spellings of a
+## (D-100). Named here because `client.gd` sends it — two spellings of a
 ## key that only ever meet at run time is a button that silently does
 ## nothing, which is the failure mode D-065 records.
 const REROLL_OPTION := "reroll_seed"
@@ -545,7 +545,7 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		"seed":
 			map_settings.pin_seed(int(value))
 		REROLL_OPTION:
-			# The value is ignored: the SERVER draws the number (D-099).
+			# The value is ignored: the SERVER draws the number (D-100).
 			# Letting the client send one it had rolled itself would put
 			# the map in the hands of whoever is host, and would also pin
 			# the seed — a rerolled lobby that then stopped rerolling.
