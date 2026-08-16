@@ -1017,7 +1017,7 @@ const LOBBY_SET_TEAM := 5
 ## are not map generation parameters.
 ##
 ## `standing` per seat is `MatchState.Standing` — playing, eliminated or
-## victorious (D-101). It rides HERE rather than in a message of its own
+## victorious (D-102). It rides HERE rather than in a message of its own
 ## because it is the same fact the seat list already carries: who is in
 ## this match. A seat with no `standing` key encodes as PLAYING, which is
 ## what every caller that predates the scoreboard means.

@@ -1246,7 +1246,7 @@ var _menu_button: Button = null
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
 var _settings_panel: Control = null
-## The player scoreboard (D-101), a sibling of the settings pane inside
+## The player scoreboard (D-102), a sibling of the settings pane inside
 ## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
 var _scoreboard_panel: Control = null
 var _scoreboard_rows: VBoxContainer = null
@@ -6347,7 +6347,7 @@ func _build_game_menu() -> void:
 	column.add_child(resume)
 
 	# The one place a player can find out who they are playing against
-	# (D-101). Beside Settings rather than on a hotkey of its own because
+	# (D-102). Beside Settings rather than on a hotkey of its own because
 	# ESC is the menu every player already knows, and a board nobody can
 	# find is the same non-delivery as no board at all.
 	var players := _styled_button("Players", HudTheme.NEUTRAL)
@@ -6386,7 +6386,7 @@ func _build_game_menu() -> void:
 	_settings_panel.visible = false
 
 
-## The player scoreboard (D-101) — every player in the match, their
+## The player scoreboard (D-102) — every player in the match, their
 ## colour, civ, team and standing.
 ##
 ## Built once and refilled, rather than rebuilt on every open: the rows

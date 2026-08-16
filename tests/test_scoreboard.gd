@@ -1,6 +1,6 @@
 extends GutTest
 
-## Guards D-101 — the in-match player scoreboard.
+## Guards D-102 — the in-match player scoreboard.
 ##
 ## Three claims, in the order the information travels:
 ##
@@ -104,7 +104,7 @@ func test_the_scoreboard_annotates_seats_without_writing_on_them() -> void:
 ## Found by reading a `--lobby=0` server's log while verifying this
 ## change, which is the only place it could have been found.
 ##
-## D-101 makes `_broadcast_lobby` fire mid-match for the first time, and
+## D-102 makes `_broadcast_lobby` fire mid-match for the first time, and
 ## that function has always mirrored `_match.map_settings` into the
 ## server's own `_settings` on the way through. Harmless for every caller
 ## that came before it — they all ran in the lobby — and wrong the moment

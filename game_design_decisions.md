@@ -20,7 +20,7 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-101 · 2026-08-16 · Accepted — the in-match scoreboard: identity is public, strength is fog
+### D-102 · 2026-08-16 · Accepted — the in-match scoreboard: identity is public, strength is fog
 
 **Decision:** A match carries a **player scoreboard**, opened from the
 in-game menu (ESC → Players, beside Settings — D-063), listing every seat
@@ -165,13 +165,25 @@ explicitly. Also revisit if ally buildings become unconditionally visible
 (the buildings column becomes honest), or if kills/losses/razings ever
 get counted (a real score becomes possible).
 
-**Editorial note on the number.** This entry takes **D-101**, skipping
-099 and 100: `ground_cover.gd`, `cover_preview.gd` and
-`tests/test_ground_cover.gd` all cite **D-100** for ground cover, but no
-D-099 or D-100 entry exists in this file — the code landed and its
-decision entry did not survive the merges D-098's own editorial note
-describes. Reusing either number would have made a third pair of
-duplicate IDs in a document that already has two.
+**Editorial note on the number.** This entry takes **D-102**. It was
+written as D-101, which is what its first commit message still says, and
+moved twice before landing:
+
+- **099 and 100 were spent when it was written.** `ground_cover.gd`,
+  `cover_preview.gd` and `tests/test_ground_cover.gd` all cite D-100 for
+  ground cover, and no entry for either number existed in this file at
+  the time — the code landed and its entry did not survive the merges
+  D-098's own editorial note describes. (D-100 has an entry again now:
+  the map-seed roll immediately below, itself renumbered from D-099.)
+- **101 was claimed twice the same day**, by PRs #66 and #71, both
+  opened before this one.
+
+So it took the next number past the front rather than becoming the third
+D-101 — and that landed on the same number the coordinating session
+independently assigned this branch (#76 = D-102, see the numbering note
+on D-100 below). **The IDs are stable once merged, not before**, which is
+the convention here rather than a failure: several agents author entries
+in parallel against one document, and whoever lands later renumbers.
 ---
 
 ### D-100 · 2026-08-16 · Accepted — a lobby rolls its map; a pinned seed reproduces the whole match

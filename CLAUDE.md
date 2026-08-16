@@ -692,7 +692,7 @@ quote it with the count, as ever). The pieces:
   into a real match; **leave-to-lobby and no-humans-means-no-server
   (D-075)**; the in-game UI reworked to the reference design; authored
   models for resource nodes and the wall family; tower upgrades.
-- **An in-match scoreboard (D-101)**, from the #29 playtest, where the
+- **An in-match scoreboard (D-102)**, from the #29 playtest, where the
   absence of one blocked a pass criterion outright: per-player colours
   were fully built, tested for distinctness and drawn consistently, and
   a player could not tell which colour was whose once the lobby closed.
@@ -943,7 +943,7 @@ hud_layout.gd            Where the HUD's pieces go, for a window of any
                         match clock, the n/cap readout, and the compass
                         dial's geometry (D-063).
 scoreboard.gd            Who is in this match, and what this player is
-                        ENTITLED to see about them (D-101). All-static and
+                        ENTITLED to see about them (D-102). All-static and
                         pure. Identity (colour, civ, team) is public and
                         needs no plumbing — it was already on the client.
                         Army size is DERIVED from what the server chose to
@@ -1272,7 +1272,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  691 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario

@@ -2118,7 +2118,7 @@ func _advance_match() -> void:
 		_reported_match_end = true
 		print("server: MATCH_OVER winner=%d" % _match.winner)
 
-	# Tell the clients, not just the log (D-101). Elimination was a
+	# Tell the clients, not just the log (D-102). Elimination was a
 	# server-side `print` for three milestones: `MatchState` knew exactly
 	# who was out, the wire carried none of it, and the client's own
 	# comment (see `_build_defeat_screen`) correctly recorded that it
@@ -2582,7 +2582,7 @@ func _broadcast_lobby() -> void:
 	# The guard is load-bearing, and the version of this that lacked it
 	# was wrong in exactly the way this project keeps being wrong. This
 	# used to be called only from the lobby, so the assignment could be
-	# unconditional; D-101 made it fire mid-match on an elimination too,
+	# unconditional; D-102 made it fire mid-match on an elimination too,
 	# and "`set_map_option` refuses outside LOBBY, so it is a no-op" is
 	# true of a match that came FROM a lobby and false of one that never
 	# had one — see `MatchState.owns_map_settings`.

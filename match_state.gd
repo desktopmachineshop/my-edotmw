@@ -63,7 +63,7 @@ func is_eliminated(player: int) -> bool:
 	return _players.has(player) and bool(_players[player]["eliminated"])
 
 
-## How a player stands in this match, for the in-match scoreboard (D-101).
+## How a player stands in this match, for the in-match scoreboard (D-102).
 ##
 ## Public information, unlike anything about a player's ARMY: who is still
 ## in the match is a fact every player can already infer from the match
@@ -86,7 +86,7 @@ func standing_of(player: int) -> int:
 	return Standing.PLAYING
 
 
-## The seat list with each seat's standing attached (D-101).
+## The seat list with each seat's standing attached (D-102).
 ##
 ## Seats annotated rather than a second list keyed by player, so the thing
 ## that goes on the wire is the thing the client already holds — colour is
@@ -570,7 +570,7 @@ const REROLL_OPTION := "reroll_seed"
 ##
 ## A rule rather than a phase check spelled out at the call site, because
 ## the call site is `server.gd`, which no GUT test can stand up (see this
-## file's header). It exists because D-101 made `_broadcast_lobby` fire
+## file's header). It exists because D-102 made `_broadcast_lobby` fire
 ## mid-match for the first time, and the unconditional mirror it had
 ## always done — harmless for every caller before it — would have
 ## replaced a running match's map dimensions with a lobby's defaults.

@@ -2,7 +2,7 @@ class_name Scoreboard
 extends RefCounted
 
 ## Who is in this match, and what each player is entitled to know about
-## them (D-101).
+## them (D-102).
 ##
 ## All-static and pure, for the reason `selection_pick.gd` and
 ## `hud_layout.gd` are: drawing the board needs a GPU and `client.gd`
