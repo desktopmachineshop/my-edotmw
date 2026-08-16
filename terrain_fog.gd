@@ -103,6 +103,21 @@ var _shades := PackedFloat32Array()
 var _bytes := PackedByteArray()
 var _image: Image = null
 
+## Cells stamped VISIBLE since the last `forget_visible`, and the same list from
+## the refresh before it. Held so both halves of a refresh cost what is being
+## LOOKED AT rather than what the map contains: `forget_visible` demotes only
+## these, and `bake` diffs the two to find what needs re-shading.
+##
+## Duplicates are allowed — overlapping vision disks stamp a cell more than once
+## — because both readers are idempotent over them, and de-duplicating on the
+## way in would cost a dictionary insert per cell per refresh to save nothing.
+var _stamped := PackedInt32Array()
+var _previously_stamped := PackedInt32Array()
+
+## Whether `bake` has ever run. The first one has no previous state to diff
+## against and must shade the whole map.
+var _baked := false
+
 
 func _init(for_space: TorusSpace) -> void:
 	space = for_space
@@ -118,22 +133,84 @@ func _init(for_space: TorusSpace) -> void:
 			_neighbours[i * 6 + d] = space.index(coord + TorusSpace.DIRECTIONS[d])
 
 
+## Restamp the whole field from what this client can currently see — the mirror
+## of `Vision.rebuild`, and deliberately the same shape: everything visible a
+## moment ago drops back to remembered, then every seeing thing stamps its disk.
+##
+## Lives here rather than in `client.gd` because `client.gd` needs a scene tree
+## and a GPU and is therefore unreachable from GUT, while `ClientState` is
+## explicitly the headless half of the client (see its header). The first
+## version of this WAS in `client.gd`, and it shipped with allied buildings
+## excluded — a bug no test could have been written against without this move.
+func rebuild(state: ClientState, now: float) -> void:
+	forget_visible()
+	if state == null or state.space == null:
+		return
+
+	# Allies reveal ground too (D-050). Both loops below ask the same question
+	# in the same way: `friendly_squads` is already team-aware, and the
+	# buildings loop goes through `are_allied` rather than comparing owners.
+	#
+	# It did compare owners, for exactly one review cycle. The server stamps
+	# buildings into the TEAM's shared coverage (`Vision._group_of`), so an
+	# owner test made the client's fog strictly NARROWER than the vision the
+	# server gates on: an ally's town hall lit nothing, its base rendered black,
+	# and enemy squads standing in it drew fully lit on top of the dark ground.
+	for squad in state.friendly_squads():
+		if not state.curves.has(squad) or not state.composition.has(squad):
+			continue
+		if state.alive_of(squad) <= 0:
+			continue
+		var def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if def == null:
+			continue
+		reveal(state.squad_cell(squad, now), radius_in_cells(space, def.vision_range))
+
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]):
+			continue
+		if not state.are_allied(state.player, int(info["owner"])):
+			continue
+		var building_def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if building_def == null:
+			continue
+		reveal(state.space.from_index(int(info["cell"])),
+			radius_in_cells(space, building_def.vision_range))
+
+
 ## Start a refresh: everything currently VISIBLE drops back to EXPLORED, and the
 ## reveals that follow raise back whatever is still in sight.
 ##
 ## Demoted rather than cleared, which is the persistent half — ground stays
 ## remembered forever once seen, exactly as `BuildingSim`'s ever-revealed set
 ## does (D-030), and for the same reason: terrain does not move.
+##
+## Walks the cells stamped since the LAST call rather than the whole map, which
+## is what keeps a refresh proportional to how much is being looked at instead
+## of to how big the map is. `_stamped` is also what `bake` diffs to find the
+## cells whose shade needs recomputing.
 func forget_visible() -> void:
-	for i in range(levels.size()):
+	for i in _stamped:
 		if levels[i] == VISIBLE:
 			levels[i] = EXPLORED
+	_previously_stamped = _stamped
+	_stamped = PackedInt32Array()
 
 
 ## Mark the hex disk of `radius` cells around `centre` as visible now.
+##
+## A NEGATIVE radius stamps nothing at all, which is not the same as zero
+## stamping the centre cell. That distinction mirrors `Vision._stamp`, which
+## returns early on a non-positive range and otherwise floors — see
+## `radius_in_cells`.
 func reveal(centre: Vector2i, radius: int) -> void:
-	for offset in TorusSpace.disk_offsets(maxi(radius, 0)):
-		levels[space.index(centre + offset)] = VISIBLE
+	if radius < 0:
+		return
+	for offset in TorusSpace.disk_offsets(radius):
+		var i := space.index(centre + offset)
+		levels[i] = VISIBLE
+		_stamped.append(i)
 
 
 func level_at(cell_index: int) -> int:
@@ -155,10 +232,14 @@ func is_explored(cell_index: int) -> bool:
 ## The same Image is refilled and returned each time, so a caller holding an
 ## `ImageTexture` can `update()` it rather than rebuilding a texture four times a
 ## second.
+## Only the cells whose level actually changed are re-shaded — see `_rebake`.
+## The first bake has nothing to diff against and does the whole map.
 func bake() -> Image:
-	_blurred()
-	for i in range(_shades.size()):
-		_bytes[i] = int(round(clampf(_shades[i], 0.0, 1.0) * 255.0))
+	if _baked:
+		_rebake(_changed_since_last_bake())
+	else:
+		_rebake(_all_cells())
+		_baked = true
 	if _image == null:
 		_image = Image.create_from_data(space.width, space.height, false,
 			Image.FORMAT_R8, _bytes)
@@ -167,23 +248,76 @@ func bake() -> Image:
 	return _image
 
 
-## Shade per cell, each averaged with its six neighbours (see `BLUR_SELF`).
-func _blurred() -> void:
-	var total := BLUR_SELF + 6.0
+## Cells whose level differs from what the last bake saw: those stamped then and
+## not now (VISIBLE dropped to EXPLORED), and those stamped now and not then.
+## A cell in both sets was visible before and is visible still.
+##
+## This is what stops a refresh costing the map rather than the motion. The full
+## passes it replaces were fine at the Standard map's 8,064 cells and not at the
+## Huge preset's 32,592, on a frame M5 and M7 both measured as CPU-bound — and
+## the cost test could not have seen it, because it only ever loaded the
+## Standard map. Same lesson as D-040's per-tick cell budget: bound the work by
+## what changed, not by what exists.
+func _changed_since_last_bake() -> PackedInt32Array:
+	var seen := {}
+	for i in _previously_stamped:
+		seen[i] = 1
+	for i in _stamped:
+		seen[i] = int(seen.get(i, 0)) | 2
+	var out := PackedInt32Array()
+	for i in seen:
+		if int(seen[i]) != 3:
+			out.append(i)
+	return out
+
+
+func _all_cells() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	out.resize(levels.size())
 	for i in range(levels.size()):
+		out[i] = i
+	return out
+
+
+## Re-shade `changed` and every neighbour of it, then convert those to bytes.
+##
+## The neighbour ring is not optional: a cell's drawn shade is the average of
+## its own level and its six neighbours' (see `BLUR_SELF`), so a cell that
+## changed alters seven shades, not one. Leaving the ring out is the kind of
+## optimisation that looks right and leaves a one-cell halo of stale fog behind
+## a moving army — which is why `tests/test_terrain_fog.gd` asserts an
+## incremental bake is byte-identical to a from-scratch one.
+func _rebake(changed: PackedInt32Array) -> void:
+	var dirty := {}
+	for i in changed:
+		dirty[i] = true
+		for d in range(6):
+			dirty[_neighbours[i * 6 + d]] = true
+
+	var total := BLUR_SELF + 6.0
+	for i in dirty:
 		var sum := SHADES[levels[i]] * BLUR_SELF
 		for d in range(6):
-			sum += SHADES[levels[_neighbours[i * 6 + d]]]
+			sum += SHADES[levels[_neighbours[int(i) * 6 + d]]]
 		_shades[i] = sum / total
+		_bytes[i] = int(round(clampf(_shades[i], 0.0, 1.0) * 255.0))
 
 
-## World-units range to a whole number of cells, through the SAME conversion
-## `Vision._range_in_cells` uses. The client's fog has to cover the cells the
-## server's vision covers — a client that rounded differently would draw a lit
-## disk one ring wider or narrower than the one it is actually being told about,
-## and enemies would appear on ground the player is looking at as dark.
+## World-units range to a disk radius in cells, through the SAME conversion
+## `Vision._range_in_cells` uses, and with the same treatment of the edge case.
+##
+## The client's fog has to cover the cells the server's vision covers — a client
+## that rounded differently would draw a lit disk one ring wider or narrower than
+## the one it is actually being told about, and enemies would appear on ground
+## the player is looking at as dark.
+##
+## Returns -1, not 0, for a range that sees nothing: `Vision._stamp` returns
+## early on a non-positive range and stamps NOT EVEN the origin cell, while any
+## positive range under one hex still floors to a radius-0 disk — which is the
+## origin cell. Zero and nothing are different answers here, so `reveal` is told
+## which one this is rather than being handed a 0 that means both.
 static func radius_in_cells(for_space: TorusSpace, world_range: float) -> int:
-	var hex_width := for_space.hex_size * TorusSpace.SQRT_3
-	if hex_width <= 0.0:
-		return 0
-	return floori(world_range / hex_width)
+	var cells := Vision._range_in_cells(for_space, world_range)
+	if cells <= 0.0:
+		return -1
+	return floori(cells)
