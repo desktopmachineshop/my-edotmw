@@ -121,8 +121,21 @@ place every time is a worse game, while a pin costs one number typed.
   for: note the map, change the seed and see it differ, set it back and
   see it return.
 - Rolling costs one `RandomNumberGenerator` per lobby and nothing per
-  tick. Measured after: `test-load 4 120` clean, 47.71 µs/squad at 48
-  squads (quoted with the count, per the standing rule).
+  tick. `test-load 4 240` is clean after — 4/4 bots, 952 state-hash
+  checks, **0 desyncs**, 0 dropped ticks, 162 casualties, 40 nodes
+  felled. **Its per-squad figure, 184 µs/squad at 35 squads, is not
+  usable and is recorded only so nobody mistakes it for one**: eight
+  other worktrees were running load tests on the same host, the worst
+  tick was 1,423 ms, and the docker CLI itself was returning "Resource
+  temporarily unavailable". Same lesson as M6's worst-tick figures and
+  D-096's 1,000-squad absolutes. Nothing in this change runs per tick.
+- **`test-load 4 120` failed on `reveal_events=0` twice before that**,
+  and the gate was right to fire: at 240 s the same build reported
+  `reveal_events=1`. Reveal is the scarcest thing that verdict asks for
+  on the standard map, so a contended host is enough to lose it. This is
+  the standing "quote a ladder result with its cap" rule wearing another
+  hat — **when the host is loaded, lengthen the run rather than reading
+  the failure as a regression.**
 
 **Revisit trigger:** if a ranked or matchmade mode arrives (D-091 gates
 ranked on dedicated servers), map selection stops being the host's to
