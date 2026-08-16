@@ -269,9 +269,6 @@ func _ready() -> void:
 	_world_environment.environment = WorldLook.make_environment()
 	add_child(_world_environment)
 
-	_terrain_root = Node3D.new()
-	add_child(_terrain_root)
-
 	# Not in capture mode: a headless render is given its resolution on the
 	# command line (see `_run_seconds`'s own doc comment above), and a
 	# minimum that fought a smaller requested size would make screenshots
@@ -483,10 +480,24 @@ func _service_network() -> void:
 ## cell. The client generates it locally from the map dimensions rather
 ## than receiving it, which is why terrain generation has to be
 ## deterministic for a seed.
+##
+## Once PER MATCH, though, not once per session: `_teardown_match()` frees
+## the mesh on the way back to the lobby, for the reason its own comment
+## gives. So this owns the root as well as its contents — everything the
+## ground needs is built here and nothing is inherited from a startup that
+## ran an unknown number of matches ago. It used to be constructed in
+## `_ready()` alone, and every match after the first one parented its
+## chunks to a freed node: the meshes were built, discarded, and the world
+## rendered squads and forests standing on nothing while every number
+## (chunk counts, soldiers, desyncs) stayed green.
 func _build_terrain() -> void:
 	var space := _state.space
 	if space == null:
 		return
+
+	if _terrain_root == null:
+		_terrain_root = Node3D.new()
+		add_child(_terrain_root)
 	# From the SERVER's settings, not local defaults (D-049). The two
 	# sides agreeing about where the water is used to rest on both
 	# constructing a default TerrainGen — an implicit contract that could
@@ -6525,6 +6536,9 @@ func _teardown_match() -> void:
 	_free_nodes(_progress_anchor)
 	_free_nodes(_queue_anchor)
 
+	# The root goes with its chunks, and `_build_terrain()` mints a new one
+	# for the next match — freeing it here while only the CHUNKS were
+	# rebuilt is exactly how the second match came up with no ground.
 	if _terrain_root != null:
 		_terrain_root.queue_free()
 		_terrain_root = null

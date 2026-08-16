@@ -680,6 +680,22 @@ quote it with the count, as ever). The pieces:
   (D-075)**; the in-game UI reworked to the reference design; authored
   models for resource nodes and the wall family; tower upgrades.
 
+**"`client.gd` is unreachable from GUT" is only true of what it DRAWS**
+(D-075's 2026-08-16 amendment). Its node LIFETIME needs neither a GPU nor
+a window, and reading the claim as covering all of it is how the second
+match after a return to the lobby came up with **no terrain at all** for
+a whole milestone: `_terrain_root` was built once in `_ready()`, freed by
+`_teardown_match()`, and never rebuilt, so every later match parented its
+chunk meshes to a null instance. Squads and forests rendered perfectly on
+top of nothing, and every number stayed green — the capture verdict's
+`terrain=true` is set by the *caller* of `_build_terrain()`, so it says
+nothing about whether the function got past its first `add_child`.
+`tests/test_return_to_lobby.gd` now instantiates the real script (never
+adding it to the tree, so `_ready()` does not run) and plays
+match → lobby → match against it. **When a client-side thing is
+lifetime rather than pixels, it is testable — try before assuming
+otherwise.**
+
 **M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
 2026-08-14 and produced **D-087 through D-094**, closing every question
 in the old "Blocking M7 / product-level" block (Q3, Q5, Q10, Q11, Q13,
@@ -1234,7 +1250,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  676 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
+  678 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
