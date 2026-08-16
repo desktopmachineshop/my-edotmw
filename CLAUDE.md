@@ -307,7 +307,20 @@ field is replicated, open the encoder and look for it.** And when a
 feature "does nothing", suspect the wire before the UI — the button had
 been correct all along.
 
-The second half of the same bug is worth its own rule: **a per-tick
+**A fourth, and the cheapest to check for (D-099): a doc comment on a
+field is not evidence that anything writes it.** `MapSettings.seed` said
+"Rolled per match unless someone pins it" for a whole milestone and
+nothing anywhere rolled it, so every lobby match — every match a human
+plays — generated the identical world from seed 1337. One line away,
+`civ_rng` was seeded from the same absent `--seed` argument defaulted to
+**0** where the map defaulted it to **1337**, so a seat set to Random
+resolved to a real civ (the visible half working) and to the SAME civ
+every match. Neither can fail a test, and the only instrument that sees
+them is somebody playing twice and recognising the coastline. **When a
+comment describes behaviour in the passive voice — "is rolled", "is
+sent", "is resolved" — grep for the writer before believing it.**
+
+The second half of D-065's bug is worth its own rule: **a per-tick
 assertion silently outranks a player's order.** The economy re-asserted a
 gathering crew's shape every tick, so a player's choice survived 100 ms.
 Anything the simulation sets every tick now goes through
@@ -1234,7 +1247,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  676 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
+  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario

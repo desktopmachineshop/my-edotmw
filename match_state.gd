@@ -121,9 +121,27 @@ var seats: Array = []
 ## a replay could not reconstruct which of them was in charge.
 var admin_player: int = 0
 
-## Seeded at construction by the caller, so a Random civ draw reproduces
-## on replay (D-016).
+## Seeded from the MAP SEED by `reseed_civ_rng`, so a Random civ draw
+## reproduces on replay (D-016) and a pinned seed reproduces the whole
+## match setup rather than only the terrain (D-099).
 var civ_rng := RandomNumberGenerator.new()
+
+## The map-independent half of that seed — `hash(MapConfig.id)`, set by
+## the server. Kept separate from the map seed so two maps of the same
+## seed still draw differently, and so this class needs no MapConfig.
+var civ_seed_base: int = 0
+
+
+## Point `civ_rng` at the seed currently chosen.
+##
+## Called whenever that seed can have changed: at startup, and on the way
+## back to the lobby. The draw is a function of the map seed, which is the
+## rule that makes "same seed, same match" true of the civs as well as the
+## ground — before D-099 this was seeded from a `--seed` argument that
+## defaulted to 0 while the map's own default was 1337, so a lobby's
+## Random seats resolved to the same civs every single match.
+func reseed_civ_rng() -> void:
+	civ_rng.seed = civ_seed_base + map_settings.seed
 
 
 func _seat_human(player: int) -> void:
@@ -274,6 +292,17 @@ func return_to_lobby() -> bool:
 	_players.clear()
 	for seat in seats:
 		seat["civ"] = seat.get("choice", seat["civ"])
+
+	# The next match is a NEW PLACE, unless somebody pinned the seed
+	# (D-099). This is the same defect as the Random seat two lines above,
+	# in the terrain: without it, "play again" hands back the map just
+	# played, for as long as the server stays up, and nothing looks wrong.
+	# A pinned seed deliberately keeps its map — and re-seeding the civ
+	# draw unconditionally is what makes that pin reproduce the whole
+	# setup, civs included, rather than only the ground.
+	if not map_settings.seed_pinned:
+		map_settings.roll_seed()
+	reseed_civ_rng()
 	return true
 
 
@@ -482,6 +511,12 @@ func describe() -> String:
 ## meaningless once the match has started.
 var map_settings := MapSettings.new()
 
+## The option key that asks for a NEW seed rather than setting one
+## (D-099). Named here because `client.gd` sends it — two spellings of a
+## key that only ever meet at run time is a button that silently does
+## nothing, which is the failure mode D-065 records.
+const REROLL_OPTION := "reroll_seed"
+
 
 ## Adjust one setting. Returns true if anything actually changed.
 ##
@@ -495,6 +530,10 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		return false
 
 	var before := map_settings.to_dict()
+	# `to_dict` is the wire payload and carries no pin flag (see
+	# MapSettings.seed_pinned), so the rollback below would quietly
+	# unpin a seed the admin had chosen.
+	var pinned_before := map_settings.seed_pinned
 	match key:
 		"size":
 			var sizes := MapSettings.sizes()
@@ -504,7 +543,13 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		"player_slots":
 			map_settings.player_slots = clampi(int(value), 2, 24)
 		"seed":
-			map_settings.seed = int(value)
+			map_settings.pin_seed(int(value))
+		REROLL_OPTION:
+			# The value is ignored: the SERVER draws the number (D-099).
+			# Letting the client send one it had rolled itself would put
+			# the map in the hands of whoever is host, and would also pin
+			# the seed — a rerolled lobby that then stopped rerolling.
+			map_settings.roll_seed()
 		"preset":
 			var ids := TerrainPresetRoster.ids()
 			if ids.is_empty():
@@ -530,6 +575,7 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 	# pressing start.
 	if not map_settings.is_valid():
 		map_settings = MapSettings.from_dict(before)
+		map_settings.seed_pinned = pinned_before
 		return false
 	return map_settings.to_dict() != before
 
