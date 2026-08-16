@@ -14,8 +14,8 @@
 # are no longer any "NOT IMPLEMENTED UNTIL M1" stubs.
 #
 # Headless (docker or native): doctor, bootstrap, up, down, nuke, status,
-# run-server, run-bots, test-unit, test-load, gen-terrain-preview,
-# replay-info.
+# run-server, run-bots, test-unit, test-load, test-scenario, scenarios,
+# gen-terrain-preview, replay-info.
 # Docker only: test-client — renders the real GUI client via Mesa's
 # software rasteriser and checks the frame. No GPU involved.
 # Native only: run-client — for a human to actually look at on real
@@ -99,12 +99,53 @@ default:
 _import:
     #!/usr/bin/env bash
     set -euo pipefail
+
+    # Skipped when nothing an import cares about has changed (D-098). It
+    # is ~10 s and it ran on EVERY recipe, which was half the cost of a
+    # filtered unit-test run.
+    #
+    # Handled with more care than a normal cache, because the failure mode
+    # here is not slowness: verifying against a stale .godot cache gives a
+    # confident WRONG answer, which this project has already paid for once
+    # during M7's asset work. So:
+    #
+    #   - the stamp is taken BEFORE the import and written only on
+    #     success, so a file edited while the import runs still looks
+    #     newer than the stamp and forces another one;
+    #   - the comparison covers everything Godot imports, not just .gd;
+    #   - a skip is PRINTED, never silent;
+    #   - EDOTMW_FORCE_IMPORT=1 overrides it.
+    #
+    # The stamp lives beside the import cache it describes, so the two
+    # cannot be separated — `just nuke` removing one removes the other.
+    cache_dir=".godot-container"
+    [ "{{runtime}}" = "docker" ] || cache_dir=".godot"
+    stamp="$cache_dir/.edotmw-import-stamp"
+    if [ "${EDOTMW_FORCE_IMPORT:-0}" != "1" ] && [ -f "$stamp" ]; then
+        changed="$(find . -newer "$stamp" \
+            \( -name '*.gd' -o -name '*.tres' -o -name '*.tscn' \
+               -o -name '*.gdshader' -o -name '*.gdshaderinc' \
+               -o -name '*.glb' -o -name '*.exr' -o -name '*.png' \
+               -o -name 'project.godot' \) \
+            -not -path './.godot*' -not -path './tools/*' \
+            -print -quit 2>/dev/null || true)"
+        if [ -z "$changed" ]; then
+            echo "import: skipped — nothing changed since $(date -r "$stamp" '+%H:%M:%S')"
+            exit 0
+        fi
+    fi
+
+    pending="$cache_dir/.edotmw-import-pending"
+    mkdir -p "$cache_dir"
+    : > "$pending"
     if [ "{{runtime}}" = "docker" ]; then
         docker compose -p {{compose_project}} run --rm --no-deps test --path . --import
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --path . --import
     fi
+    # Only now, and dated to BEFORE the import started.
+    mv "$pending" "$stamp"
 
 # Preflight: verify the current runtime's prerequisites are actually met.
 doctor:
@@ -478,15 +519,24 @@ run-bots N DURATION="-1": _import
 # class_names (UnitDef, PrimitiveUnit, GUT's own classes) are registered
 # — Godot's headless import cache is required before gut_cmdln.gd can
 # resolve them, and is otherwise a confusing first-run failure.
-[doc("Run the GUT test suite headless")]
-test-unit: _import
+#
+# FILTER selects test FILES by substring, TEST selects one test by name
+# (D-098) — the full suite is minutes, and iterating on one behaviour
+# should not cost that.
+[doc("Run the GUT suite headless. FILTER selects files, TEST selects one test")]
+test-unit FILTER="" TEST="": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    args=(-s res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit)
+    [ -n "{{FILTER}}" ] && args+=("-gselect={{FILTER}}")
+    [ -n "{{TEST}}" ] && args+=("-gunit_test_name={{TEST}}")
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p {{compose_project}} run --rm --no-deps test
+        # The service's default command is the unfiltered run; passing
+        # args replaces it, so they are restated in full.
+        docker compose -p {{compose_project}} run --rm --no-deps test "${args[@]}"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless -s res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
+        "$godot" --headless "${args[@]}"
     fi
 
 # Full load test: server + N bots for DURATION seconds, then check the
@@ -638,6 +688,109 @@ test-load N DURATION:
     # identifiable components (D-026 criterion 10), so surface it here
     # rather than making a human dig through server_log for it.
     grep -E "server: final" "$server_log" || true
+
+# The fast integration loop: a REAL server and REAL bots, but starting
+# mid-match from a scenario instead of playing the opening (D-098).
+#
+# `test-load` needs ~120 s and that is not waste — a town hall takes 40 s
+# and consumes the founding party (D-031), production runs after it, and
+# spawns are scattered far apart (D-039). None of that is under test when
+# you are working on combat, fog, buildings or the wire, and paying two
+# minutes for it every iteration is what makes people stop running it.
+#
+# This is NOT a replacement for `test-load`, and must never become one. A
+# scenario hands out finished buildings and adjacent armies, so it cannot
+# see a bug in founding, in production, or in spawn placement — the very
+# things it skips. `just test-load 4 120` stays the gate a change passes
+# before it is called done; this is the loop you iterate in.
+#
+# The checks follow test-load's shape, plus one this recipe needs and
+# test-load does not: the server must confirm IN ITS LOG that it actually
+# played the scenario. A --scenario typo, or a stray server without the
+# flag, would otherwise produce a fast, clean, entirely ordinary run — a
+# pass that means nothing, which is the exact shape D-022's audit exists
+# to catch.
+[doc("Fast integration loop: server + bots from a mid-game scenario (~31s at DURATION=15)")]
+test-scenario SCENARIO="siege" N="4" DURATION="30":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    "{{just_executable()}}" _import
+
+    bots_log="{{artifacts_dir}}/test-scenario-bots.log"
+    server_log="{{artifacts_dir}}/test-scenario-server.log"
+
+    # Through `up`, not a bare `compose run`: `run` does not give the
+    # container the `server` network alias, so the bots — which resolve
+    # `server:4433` and always have — connected to nothing and reported a
+    # clean 0/4. The scenario travels as an environment variable for
+    # exactly that reason.
+    export EDOTMW_SCENARIO="{{SCENARIO}}"
+    "{{just_executable()}}" up
+
+    bots_status=0
+    "{{just_executable()}}" run-bots {{N}} {{DURATION}} > "$bots_log" 2>&1 || bots_status=$?
+
+    docker compose -p {{compose_project}} stop server >/dev/null 2>&1 || true
+    docker compose -p {{compose_project}} logs server > "$server_log" 2>&1 || true
+
+    # 1. Did the server actually play the scenario? Structured marker, not
+    #    prose — the standing rule after a log grep for a word no code
+    #    path printed passed vacuously for a whole milestone.
+    if ! grep -q "SCENARIO id={{SCENARIO}} " "$server_log"; then
+        echo "test-scenario: the server never reported playing scenario '{{SCENARIO}}'" >&2
+        echo "               (no 'SCENARIO id={{SCENARIO}}' marker in $server_log)" >&2
+        grep -E "SCENARIO|listening" "$server_log" >&2 | head -5 || true
+        exit 1
+    fi
+
+    # 2. Did placement quietly drop anything? A scenario that failed to
+    #    place half an army would otherwise read as a simulation losing it.
+    if grep -q "SCENARIO_SKIPPED" "$server_log"; then
+        echo "test-scenario: the scenario could not place everything it describes:" >&2
+        grep "SCENARIO_SKIPPED" "$server_log" >&2 | head -10
+        exit 1
+    fi
+
+    # 3. The bots' own verdict, exactly as test-load treats it.
+    if [ "$bots_status" -ne 0 ]; then
+        echo "test-scenario: bots exited with status $bots_status (see $bots_log)" >&2
+        grep -E "VERDICT" "$bots_log" >&2 | tail -2 || true
+        exit 1
+    fi
+    if ! grep -q "VERDICT ok" "$bots_log"; then
+        echo "test-scenario: bots did not report a successful verdict (see $bots_log)" >&2
+        grep -E "VERDICT" "$bots_log" >&2 || echo "test-scenario: no VERDICT line at all" >&2
+        exit 1
+    fi
+
+    # 4. Engine diagnostics, by line PREFIX rather than by scary word.
+    if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' \
+            "$bots_log" "$server_log"; then
+        echo "test-scenario: engine errors or warnings found" >&2
+        grep -EIn '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' \
+            "$bots_log" "$server_log" >&2 | head -20
+        exit 1
+    fi
+
+    echo "test-scenario: clean — scenario '{{SCENARIO}}', {{N}} bots, {{DURATION}}s"
+    grep -E "server: SCENARIO id=" "$server_log"
+    grep -E "VERDICT" "$bots_log"
+    grep -E "server: final" "$server_log" || true
+
+# Every shipped scenario and what it is for (D-098).
+[doc("List the mid-game scenarios test-scenario and --scenario can name")]
+scenarios: _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps test \
+            --headless --script scenario_list.gd
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script scenario_list.gd
+    fi
 
 # Render the REAL GUI client against a real server and check the frame.
 #

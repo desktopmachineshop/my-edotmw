@@ -1,0 +1,55 @@
+[gd_resource type="Resource" script_class="ScenarioDef" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scenario_def.gd" id="1"]
+[ext_resource type="Script" path="res://scenario_squad.gd" id="2"]
+[ext_resource type="Script" path="res://scenario_building.gd" id="3"]
+
+[sub_resource type="Resource" id="town_centre"]
+script = ExtResource("3")
+building = &"town_centre"
+offset = Vector2i(0, 0)
+complete = true
+health_fraction = 1.0
+
+[sub_resource type="Resource" id="barracks"]
+script = ExtResource("3")
+building = &"barracks"
+offset = Vector2i(2, -1)
+complete = true
+health_fraction = 1.0
+
+[sub_resource type="Resource" id="storehouse"]
+script = ExtResource("3")
+building = &"storehouse"
+offset = Vector2i(-2, 1)
+complete = true
+health_fraction = 1.0
+
+[sub_resource type="Resource" id="gatherers"]
+script = ExtResource("2")
+archetype = &"gatherers"
+count = 2
+offset = Vector2i(-1, 2)
+alive = -1
+shape = ""
+
+[sub_resource type="Resource" id="militia"]
+script = ExtResource("2")
+archetype = &"militia"
+count = 2
+offset = Vector2i(1, 2)
+alive = -1
+shape = ""
+
+[resource]
+script = ExtResource("1")
+id = &"developed"
+description = "A working base per player: town centre, barracks, storehouse, gatherers, a garrison and a full wallet. The default 'I just want to test my feature' start."
+buildings = Array[Resource]([SubResource("town_centre"), SubResource("barracks"), SubResource("storehouse")])
+squads = Array[Resource]([SubResource("gatherers"), SubResource("militia")])
+food = 1200
+wood = 1200
+gold = 600
+stone = 600
+separation = 0
+placement_slack = 8

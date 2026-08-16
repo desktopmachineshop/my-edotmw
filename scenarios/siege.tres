@@ -1,0 +1,40 @@
+[gd_resource type="Resource" script_class="ScenarioDef" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scenario_def.gd" id="1"]
+[ext_resource type="Script" path="res://scenario_squad.gd" id="2"]
+[ext_resource type="Script" path="res://scenario_building.gd" id="3"]
+
+[sub_resource type="Resource" id="town_centre"]
+script = ExtResource("3")
+building = &"town_centre"
+offset = Vector2i(0, 0)
+complete = true
+health_fraction = 1.0
+
+[sub_resource type="Resource" id="tower"]
+script = ExtResource("3")
+building = &"tower"
+offset = Vector2i(2, 0)
+complete = true
+health_fraction = 1.0
+
+[sub_resource type="Resource" id="militia"]
+script = ExtResource("2")
+archetype = &"militia"
+count = 2
+offset = Vector2i(0, 3)
+alive = -1
+shape = ""
+
+[resource]
+script = ExtResource("1")
+id = &"siege"
+description = "A defended base and an army beside it. For building damage, razing and D-067's one-squad/two-squad rule."
+buildings = Array[Resource]([SubResource("town_centre"), SubResource("tower")])
+squads = Array[Resource]([SubResource("militia")])
+food = 0
+wood = 0
+gold = 0
+stone = 0
+separation = 10
+placement_slack = 6

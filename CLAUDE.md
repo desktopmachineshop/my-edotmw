@@ -354,15 +354,16 @@ not a weaker AI. **A stronger defence lengthens matches, so quote a
 ladder result with its cap** — the same rule as quoting µs/squad with a
 squad count.
 
-**Check for a stray server before believing a load-test failure.** Two
-runs failed with `buildings_known=0` and identical numbers, and it looked
-exactly like the change under test. A second container held port 4433 and
-the bots were reaching that one — the tell was **server-side
+**Check which instance you are on before believing a load-test failure.**
+Two runs failed with `buildings_known=0` and identical numbers, and it
+looked exactly like the change under test. A second container held port
+4433 and the bots were reaching that one — the tell was **server-side
 instrumentation printing nothing at all**, which no code-level bug can
 do. `docker ps` first. That incident is why D-095 exists: every checkout
 now derives its own compose project and host port (see the isolation
 section below), so `just down` is scoped to THIS worktree's containers
-and cannot remove anybody else's.
+and cannot remove anybody else's. `just instance` prints what this
+worktree resolved — read that line before believing a failure.
 
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
@@ -1005,6 +1006,19 @@ instance-id.sh           THE definition of this checkout's dev-instance
                         derives its per-worktree compose project, ports
                         and container names from this — nothing may
                         re-derive it. See "Multi-agent isolation" below.
+scenario.gd              Applies a mid-game world (D-098). ALL-STATIC,
+                        like formation.gd: a scenario is an opening
+                        position, not a participant. Goes through the
+                        game's own add_squad/add_building/credit, and is
+                        the SAME applier the live server uses.
+scenario_def.gd          The scenario schema; scenario_squad.gd and
+                        scenario_building.gd are its entries. Offsets are
+                        relative to a player's home, so one loadout drops
+                        onto any map.
+scenario_world.gd        A complete headless world for a GUT test, in one
+                        call. Exposes the sim's OWN Vision, never a
+                        second one.
+/scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         needs a real GPU, and prints which one.
 terrain_preview.gd       Headless terrain preview + chunk profiling. The
@@ -1152,10 +1166,52 @@ reason; a bare `just` inside a recipe will not resolve.
 PowerShell, `just` resolves `sh` to WSL's bash and dies with
 `execvpe(/bin/bash) failed` before any recipe body runs.
 
+**Every command belongs to an INSTANCE, and a worktree is isolated
+automatically** — see "Multi-agent isolation (D-095)" above for the rules.
+Isolation is the default: there is no argument to remember, several
+agents can run `test-load` at once without touching each other, and
+`just instance` prints what this checkout resolved.
+
+**Start mid-game when the opening is not what you are testing** (D-098).
+The real opening costs ~150 s before anything downstream of it exists —
+one founding party, a 40 s town hall that consumes it, production, then
+armies walking across a 128×64 map. A **scenario** skips to a mid-game
+world: bases standing, armies in reach, wallets full.
+
+```
+just scenarios                     # what exists and what each is for
+just test-scenario siege 4 30      # real server + real bots, ~31 s
+just test-unit scenarios           # one test file, ~11 s
+just test-unit "" within_reach     # one test by name
+```
+
+In a GUT test the whole setup is two lines:
+
+```gdscript
+var w := ScenarioWorld.build("clash")   # two armies, already in reach
+w.tick(2.0)                             # two seconds at the real 10 Hz
+```
+
+Three rules come with it:
+
+- **A scenario is applied through the game's own calls** —
+  `SquadSim.add_squad`, `BuildingSim.add_building`, `Economy.credit` —
+  and `Scenario.apply_player` is the SAME function the live server uses.
+  Never add a faster path that builds the world its own way; that is the
+  `profile`-sweep blind spot with a new name.
+- **A scenario cannot see founding, production or spawn placement**,
+  because it skips them. `just test-load 4 120` still plays the real
+  opening and is still the gate a change passes before it is called done.
+- **`_import` is now skipped when nothing changed.** It prints when it
+  skips; `EDOTMW_FORCE_IMPORT=1` forces it. If you ever suspect a stale
+  cache, that flag is the first thing to try.
+
 Lifecycle:
 
 - `just doctor` — preflight: runtime prerequisites actually met?
-- `just up` / `just down` / `just status`
+- `just up` / `just down` / `just status` — all scoped to this instance
+- `just instance` — this checkout's instance name, udp port and compose
+  project (D-095). Read it before believing a failure is yours.
 - `just nuke` — full teardown back to pure source. **Deletes `tools/`,
   including the `just` you ran it with** — that's intentional; re-run
   `./bootstrap.ps1` to come back.
@@ -1177,8 +1233,15 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
-- `just test-unit` — GUT unit tests, headless *(green: 637 tests across
-  42 scripts, measured 2026-08-15)*
+- `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
+  676 tests across 45 scripts, measured 2026-08-16)*. FILTER selects
+  files by substring, TEST selects one test by name (D-098).
+- `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
+  loop: a real server and real bots starting mid-match from a scenario
+  (~31 s at DURATION=15, ~50 s at the default 30, against `test-load`'s
+  ~150 s). Fails unless the server's log confirms it actually played the
+  scenario.
+- `just scenarios` — the shipped mid-game scenarios and what each is for
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

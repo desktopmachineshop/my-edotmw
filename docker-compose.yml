@@ -15,7 +15,14 @@ services:
     build:
       context: .
       target: base
-    command: ["--path", ".", "server.tscn"]
+    # EDOTMW_SCENARIO starts the match mid-game from res://scenarios
+    # (D-098). Empty — the default — means the real opening, because
+    # `--scenario=` parses to an empty id and the server treats that as
+    # "no scenario". Passed here rather than by `compose run` so the
+    # server keeps the `server` network alias that `compose up` gives it
+    # and `compose run` does not: bots resolve `server:4433`, and a
+    # scenario run must not quietly change how they reach it.
+    command: ["--path", ".", "server.tscn", "--", "--scenario=${EDOTMW_SCENARIO:-}"]
     volumes:
       - .:/work
       - ./.godot-container:/work/.godot

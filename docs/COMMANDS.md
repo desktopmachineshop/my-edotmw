@@ -74,7 +74,9 @@ through docker compose or the native binary if you need a combination
 
 | Command | What it does |
 |---|---|
-| `just test-unit` | The GUT unit test suite, headless. |
+| `just test-unit [FILTER] [TEST]` | The GUT unit test suite, headless. `FILTER` selects test **files** by substring (`just test-unit scenarios`), `TEST` selects a single test by name (`just test-unit "" within_reach`) — the full suite is minutes, and iterating on one behaviour shouldn't cost that. |
+| `just test-scenario [SCENARIO] [N] [DURATION]` | The fast integration loop: a **real** server and **real** bots, but starting mid-match from a scenario instead of playing the ~150 s opening (~31 s at `DURATION=15`, ~50 s at the default 30). Fails unless the server's own log confirms it actually played the scenario, and unless every entry the scenario describes was placed. **Not a replacement for `test-load`** — a scenario hands out finished buildings and adjacent armies, so it structurally cannot see a bug in founding, production, or spawn placement. |
+| `just scenarios` | Lists the shipped mid-game scenarios and what each is for — the ids `test-scenario` and `--scenario` accept. |
 | `just test-client [SECONDS] [BOTS]` | Renders the **real** GUI client headlessly (Mesa's software rasterizer, no GPU needed) with load-test bots as a live opponent, and checks the frame: exit status, VERDICT line, more than one flat color in the screenshot, and that casualties/conceals/reveals actually happened this run. Writes `artifacts/client-frame.png` — look at it, that's the point. Docker only. |
 
 ## Content pipeline (art)
@@ -99,3 +101,5 @@ through docker compose or the native binary if you need a combination
 | Variable | Effect |
 |---|---|
 | `EDOTMW_RUNTIME` | `docker` (default) or `native`. Recipes marked docker-only or native-only above ignore this and always use the runtime they need. |
+| `EDOTMW_SCENARIO` | Starts the server mid-game from `res://scenarios/<id>.tres` instead of playing the opening. Set by `just test-scenario`; empty (the default) means the real opening. |
+| `EDOTMW_FORCE_IMPORT` | `1` forces the Godot import step even when nothing has changed since the last one. `_import` normally skips (and says so) when no source file is newer than the stamp — reach for this first if you ever suspect a stale cache. |
