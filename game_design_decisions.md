@@ -147,10 +147,19 @@ finished", which is the same rule `_check_victory` already uses.
   so client and server must ship together — true today, and precisely
   what D-094's protocol version handshake is for once Steam makes mixed
   versions routine.
-- `server.gd` broadcasts the seat list on elimination and on match end.
-  `_broadcast_lobby` mirrors `_match.map_settings` into `_settings` on
-  the way through; that is a no-op mid-match, since `set_map_option`
-  refuses outside LOBBY.
+- `server.gd` broadcasts the seat list on elimination and on match end —
+  which is the first time `_broadcast_lobby` has ever run outside the
+  LOBBY phase. It mirrors `_match.map_settings` into `_settings` on the
+  way through, and that is safe **because the two are the same object**:
+  `_match.map_settings = _settings` at construction, whether or not this
+  server has a lobby. The only thing that ever breaks the aliasing is
+  `set_map_option`'s rollback, which is lobby-only and which this very
+  assignment exists to repair. Worth writing down because it was got
+  WRONG here first: this entry briefly shipped a phase guard against a
+  bug that could not happen, argued from `set_map_option` being
+  lobby-gated rather than from the aliasing that actually makes it a
+  no-op — and the guard would itself have suppressed the repair on the
+  broadcast that follows a lobby start.
 - The board is refreshed on a 0.25 s throttle while open, for the same
   reason the minimap is: its numbers change at 10 Hz at most.
 - **This is the first thing that shows a player their own live army size

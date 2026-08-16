@@ -2576,18 +2576,19 @@ func _seat_summary() -> String:
 
 
 func _broadcast_lobby() -> void:
-	# The lobby is the authority on settings WHILE IT IS UP, so the server
-	# mirrors its choices before describing them — and only then.
+	# The lobby is the authority on settings while it is up, so the
+	# server mirrors its choices before describing them.
 	#
-	# The guard is load-bearing, and the version of this that lacked it
-	# was wrong in exactly the way this project keeps being wrong. This
-	# used to be called only from the lobby, so the assignment could be
-	# unconditional; D-102 made it fire mid-match on an elimination too,
-	# and "`set_map_option` refuses outside LOBBY, so it is a no-op" is
-	# true of a match that came FROM a lobby and false of one that never
-	# had one — see `MatchState.owns_map_settings`.
-	if _match.owns_map_settings():
-		_settings = _match.map_settings
+	# D-102 made this fire mid-match (on an elimination) for the first
+	# time, so it is worth saying why that is safe: the two are THE SAME
+	# OBJECT — `_match.map_settings = _settings` at construction, lobby or
+	# no lobby — and the one thing that ever breaks the aliasing is
+	# `set_map_option`'s rollback, which is lobby-only and which this
+	# assignment exists to repair. Guarding it on the phase looks
+	# defensive and is not: it would skip that repair on the broadcast
+	# that follows a lobby start, which runs with the match already
+	# RUNNING.
+	_settings = _match.map_settings
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only)

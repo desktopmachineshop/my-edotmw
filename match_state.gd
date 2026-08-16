@@ -560,23 +560,6 @@ var map_settings := MapSettings.new()
 const REROLL_OPTION := "reroll_seed"
 
 
-## Whether `map_settings` is the authority on the world right now.
-##
-## Only in the LOBBY. Once a match is running the world has been BUILT,
-## from whatever settings the server actually held — and on a `--lobby=0`
-## server (every `test-load`, `test-client` and quick-test) those came
-## from the command line and this field was never touched at all, so it
-## still holds untouched defaults describing a different map entirely.
-##
-## A rule rather than a phase check spelled out at the call site, because
-## the call site is `server.gd`, which no GUT test can stand up (see this
-## file's header). It exists because D-102 made `_broadcast_lobby` fire
-## mid-match for the first time, and the unconditional mirror it had
-## always done — harmless for every caller before it — would have
-## replaced a running match's map dimensions with a lobby's defaults.
-func owns_map_settings() -> bool:
-	return phase == Phase.LOBBY
-
 
 ## Adjust one setting. Returns true if anything actually changed.
 ##

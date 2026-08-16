@@ -101,31 +101,6 @@ func test_the_scoreboard_annotates_seats_without_writing_on_them() -> void:
 		"Annotating the board must not write match state onto the lobby's seats")
 
 
-## Found by reading a `--lobby=0` server's log while verifying this
-## change, which is the only place it could have been found.
-##
-## D-102 makes `_broadcast_lobby` fire mid-match for the first time, and
-## that function has always mirrored `_match.map_settings` into the
-## server's own `_settings` on the way through. Harmless for every caller
-## that came before it — they all ran in the lobby — and wrong the moment
-## it runs mid-match on a server that never HAD a lobby: the world was
-## built from command-line arguments, this field is untouched defaults,
-## and the running match's dimensions would have been quietly replaced
-## with a different map's.
-func test_a_running_match_is_not_the_authority_on_map_settings() -> void:
-	var m := MatchState.new()
-	m.require_admin_start = true
-	m.add_player(1)
-	assert_true(m.owns_map_settings(), "A lobby is choosing the world")
-
-	m.add_player(2)
-	m.start_match()
-	assert_false(m.owns_map_settings(),
-		"The world is built; these settings describe a map that may not be it")
-
-	m.return_to_lobby()
-	assert_true(m.owns_map_settings(), "Choosing starts again with the next lobby")
-
 
 # --- the wire ---------------------------------------------------------
 
