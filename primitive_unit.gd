@@ -20,7 +20,6 @@ var _multimesh_instance: MultiMeshInstance3D
 var _authored := false
 var _model_id: StringName = &""
 var _owner_colour := Color(0, 0, 0, 0)
-var _is_ghost := false
 
 ## The last animation state written into custom data. Custom data is rewritten
 ## on CHANGE, not per frame: D-045 measured the client frame at 97% CPU in
@@ -91,18 +90,18 @@ func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 	_apply_material(def)
 
 
-## Attach the right material for the current model, owner and ghost state.
+## Attach the right material for the current model and owner.
 ##
-## Split out of `rebuild` because the ghost toggle needs it too, and because the
-## authored path swaps the whole material (the opaque and ghost shaders are
-## different programs — see unit_vat.gdshaderinc) rather than mutating a
-## property on one.
+## Split out of `rebuild` because the two render paths answer it differently:
+## an authored model gets a whole ShaderMaterial built around its VAT, a
+## primitive a StandardMaterial3D, and the caller should not have to know
+## which one a squad is using.
 func _apply_material(def: UnitDef) -> void:
 	if _authored:
 		var colour := _owner_colour
 		if colour.a <= 0.0:
 			colour = def.mesh_color
-		var material := UnitMesh.material_for(_model_id, colour, _is_ghost)
+		var material := UnitMesh.material_for(_model_id, colour)
 		if material != null:
 			_multimesh_instance.material_override = material
 			return
@@ -119,23 +118,10 @@ func _apply_material(def: UnitDef) -> void:
 		standard.albedo_color = def.mesh_color
 	else:
 		standard.albedo_color = _owner_colour.lerp(def.mesh_color, 0.25)
-	if _is_ghost:
-		standard.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		standard.albedo_color.a = 0.35
+	# Opaque, always. There used to be a fog-ghost branch here fading a
+	# concealed squad; D-099 draws one not at all, so a squad this file
+	# renders is a squad someone can see.
 	_multimesh_instance.material_override = standard
-
-
-## Show this squad as a fog ghost, or stop (D-025, D-026 criterion 11).
-##
-## Lives here rather than in the client because the two rendering paths need
-## opposite mechanisms — the primitive path mutates a StandardMaterial3D's alpha
-## blending, the authored path swaps to a different shader program — and the
-## caller should not have to know which one a squad is using.
-func set_ghost(is_ghost: bool) -> void:
-	if _is_ghost == is_ghost or unit_def == null:
-		return
-	_is_ghost = is_ghost
-	_apply_material(unit_def)
 
 
 ## Per-soldier animation state (D-065).

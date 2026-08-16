@@ -27,7 +27,6 @@ const MODEL_DIR := "res://generated/models"
 const VAT_DIR := "res://generated/vat"
 
 const OPAQUE_SHADER := "res://shaders/unit_anim.gdshader"
-const GHOST_SHADER := "res://shaders/unit_anim_ghost.gdshader"
 const STATIC_SHADER := "res://shaders/building_static.gdshader"
 
 static var _manifest := {}
@@ -134,14 +133,17 @@ static func vat_for(model_id: StringName) -> Texture2D:
 ## A material for one squad. Per squad rather than shared, because the owner's
 ## colour is a uniform on it (D-052) and two players' squads of the same type
 ## must not share one.
-static func material_for(model_id: StringName, team_colour: Color,
-		ghost: bool = false) -> ShaderMaterial:
+##
+## One shader, always opaque: a squad is drawn or it is not (D-099). The
+## transparent variant this used to select for fog ghosts is gone with the
+## ghost rendering it existed for.
+static func material_for(model_id: StringName, team_colour: Color) -> ShaderMaterial:
 	var vat := vat_for(model_id)
 	if vat == null:
 		return null
 
 	var material := ShaderMaterial.new()
-	material.shader = _shader(ghost)
+	material.shader = _shader()
 
 	var layout := layout_for(model_id)
 	material.set_shader_parameter("vat", vat)
@@ -171,11 +173,10 @@ static func static_material_for(team_colour: Color) -> ShaderMaterial:
 	return material
 
 
-static func _shader(ghost: bool) -> Shader:
-	var path := GHOST_SHADER if ghost else OPAQUE_SHADER
-	if not _shaders.has(path):
-		_shaders[path] = load(path) as Shader
-	return _shaders[path]
+static func _shader() -> Shader:
+	if not _shaders.has(OPAQUE_SHADER):
+		_shaders[OPAQUE_SHADER] = load(OPAQUE_SHADER) as Shader
+	return _shaders[OPAQUE_SHADER]
 
 
 static func _first_mesh(node: Node) -> MeshInstance3D:
