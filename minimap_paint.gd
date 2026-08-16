@@ -66,6 +66,27 @@ const SETTLEMENT_CELLS := 3
 ## walls and gates 0.
 const SETTLEMENT_CLAIM := 4
 
+## How far an EXPLORED minimap pixel is pulled back toward
+## `HudTheme.BG_VOID` (see `fogged`).
+##
+## Chosen against the darkest and the brightest biome rather than by eye on
+## one of them: at 0.55 the deepest water goes from roughly (20, 51, 107)
+## to (20, 33, 56) — still plainly water, still plainly above the
+## unexplored (10, 9, 7) — while snow drops far enough that a remembered
+## peak cannot be mistaken for one a scout is standing on. Below about 0.35
+## the step stops reading at all, which was the original report.
+##
+## Deliberately its own number rather than `TerrainFog.SHADES[EXPLORED]`
+## (0.45): that one multiplies ALBEDO on lit 3D ground, this one blends a
+## flat pixel toward a UI colour. Tying them together would make either
+## view's tuning silently retune the other.
+const EXPLORED_DIM := 0.55
+
+## How far UNEXPLORED sits below `HudTheme.BG_VOID` itself. The value the
+## minimap has always drawn unexplored ground at; named here so all three
+## tones are stated in one place.
+const UNEXPLORED_DIM := 0.5
+
 
 ## def id -> cells across. Memoised from ONE `BuildingSim.all_defs()` walk
 ## rather than a `def_by_id` per building per repaint: the minimap redraws
@@ -135,3 +156,47 @@ static func footprint(cell: Vector2i, size: int, width: int, height: int) -> Arr
 				posmod(cell.x + origin + dx, width),
 				posmod(cell.y + origin + dy, height)))
 	return out
+
+
+## What fog does to a minimap pixel that would otherwise be `colour`
+## (D-20260817), given that cell's `TerrainFog` level.
+##
+## The minimap drew TWO states while the ground drew three. `TerrainFog`
+## already computes all three per client (D-106) — this file only decides
+## what they LOOK like on a 1px-per-cell image, which is a different
+## question from what they look like on lit 3D ground and needs its own
+## answer: `TerrainFog.SHADES` multiplies albedo and bottoms out at pure
+## black, which is right under a sky but wrong for a widget that has
+## always drawn unexplored as `BG_VOID`.
+##
+## Three rules, and each is the point:
+##
+## **VISIBLE is the colour UNTOUCHED**, so fog only ever subtracts.
+## `TerrainGen.biome_color` is the single source of truth for what this map
+## looks like (D-083) and the minimap, the preview PNG and the 3D ground
+## all read it. Brightening live cells would put a colour on the minimap
+## that no other view of the same map has.
+##
+## **EXPLORED lerps toward `HudTheme.BG_VOID`** rather than multiplying
+## down. A multiply puts the darkest biome — `DEEP_WATER`, (0.08, 0.20,
+## 0.42) — close enough to the unexplored tone that deep ocean a player HAS
+## scouted reads as ocean they have not. The lerp lands it near (20, 33,
+## 56) against (10, 9, 7), and makes "remembered" literally partway back to
+## "never seen", so the three tones sit on one line.
+##
+## **UNEXPLORED ignores `colour` entirely.** Ground nobody has scouted must
+## not leak its biome through the fog.
+##
+## Takes a colour rather than a cell so the ground and a remembered
+## resource node shade identically: a node a scout walked past three
+## minutes ago should be exactly as faded as the ground it stands on, or
+## the dot reads as live intelligence. Buildings are the deliberate
+## exception and are painted unfogged — see `building_marks`.
+static func fogged(colour: Color, level: int) -> Color:
+	match level:
+		TerrainFog.VISIBLE:
+			return colour
+		TerrainFog.EXPLORED:
+			return colour.lerp(HudTheme.BG_VOID, EXPLORED_DIM)
+		_:
+			return HudTheme.BG_VOID.darkened(UNEXPLORED_DIM)
