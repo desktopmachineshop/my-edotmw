@@ -32,6 +32,24 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 
 uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 
+// Fog of war on the GROUND (D-106). One texel per cell, addressed by UV2, which
+// `TerrainChunk.fog_uv` derives from the CELL — never from world position, so
+// all nine torus copies (D-035) agree by construction, exactly as the atlas UVs
+// above do.
+//
+// `repeat_enable` is what carries the seam: a chunk at the far edge of the map
+// carries UV2 slightly outside [0,1], and the wrap lands it on the cell the
+// torus says is there. `filter_linear` blends between cells, which — together
+// with `TerrainFog.BLUR_SELF` — is what keeps the edge of a vision disk from
+// reading as a ring of hexes.
+//
+// `hint_default_white` is load-bearing, not tidiness. Nothing but the game
+// client binds this: `bench-render`, `gen-terrain-shot`, `gen-model-preview` and
+// `gen-cover-preview` all build the same material through
+// `TerrainChunk.make_material` and have no player whose knowledge could be
+// asked about. White means fully lit, so they keep rendering the whole map.
+uniform sampler2D fog : hint_default_white, filter_linear, repeat_enable;
+
 // The atlas layout, from TerrainChunk.ATLAS_COLUMNS/ATLAS_ROWS, which a test
 // pins to art/terrain/atlas.py. Passed in rather than hardcoded so there is one
 // place it can be wrong.
@@ -80,7 +98,15 @@ void fragment() {
 		+ tile_sample(tile_index.y, uv, ddx, ddy) * tile_weight.y
 		+ tile_sample(tile_index.z, uv, ddx, ddy) * tile_weight.z;
 
-	ALBEDO = COLOR.rgb * detail;
+	// How much of this ground the player knows about (D-106). Multiplying
+	// ALBEDO is what makes unexplored ground genuinely black rather than merely
+	// dark: D-086's rig lights the world with sky ambient as well as a sun, and
+	// an unlit surface with albedo still takes the ambient. Specular goes with
+	// it for the same reason — a black but still shiny sea would read as a
+	// rendering fault rather than as unknown ground.
+	float known = texture(fog, UV2).r;
+
+	ALBEDO = COLOR.rgb * detail * known;
 	ROUGHNESS = TERRAIN_ROUGHNESS;
-	SPECULAR = 0.5;
+	SPECULAR = 0.5 * known;
 }

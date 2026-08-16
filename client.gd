@@ -142,14 +142,37 @@ var _camera_max_height := CAMERA_MAX_HEIGHT
 ## Standard-map default baked into the Environment built at startup.
 var _world_environment: WorldEnvironment = null
 
-## Cells this player has ever seen. Fog of war on the client side: the map
-## starts black and is revealed by line of sight, and once revealed stays
-## revealed (terrain does not move). Derived locally from our own squads'
-## vision_range rather than replicated — the client already knows where
-## its squads are and what they are, so the server would be sending
-## something the client can compute (D-006's derivation principle applied
-## to vision rather than to soldiers).
-var _explored := {}
+## What this player knows about each cell of the map: never seen, seen
+## once, or in sight right now (D-106). Fog of war on the client side —
+## the map starts black and is revealed by line of sight, and once
+## revealed stays revealed (terrain does not move).
+##
+## Derived locally from our own squads' vision_range rather than
+## replicated — the client already knows where its squads are and what
+## they are, so the server would be sending something the client can
+## compute (D-006's derivation principle applied to vision rather than to
+## soldiers).
+##
+## Read by BOTH the minimap and the 3D ground. It used to be a set of
+## explored cells read only by the minimap, and the terrain was drawn
+## fully lit from the first frame with every test green — see D-106 and
+## issue #58.
+var _fog: TerrainFog = null
+
+## The one terrain material (`TerrainChunk.make_material`), kept so the
+## fog field above can be pushed into it, and the texture it is pushed
+## through — updated in place four times a second rather than rebuilt, so
+## this costs one small upload rather than a new texture resource.
+var _terrain_material: Material = null
+var _fog_texture: ImageTexture = null
+var _fog_updated_at := -1.0
+
+## How often the fog field is restamped and re-uploaded. The same 4 Hz the
+## minimap redraws at and for the same reason: the simulation advances at
+## 10 Hz (D-020) and nothing on the map can walk far enough in a quarter
+## second for a player to notice the lag. Costs a pass over every cell,
+## so it is not free enough to do per frame.
+const FOG_INTERVAL := 0.25
 
 ## Render LOD tiers (D-045): distance from the camera in world units, and
 ## the most soldiers a squad past that distance is drawn with.
@@ -320,6 +343,7 @@ func _process(delta: float) -> void:
 		_build_terrain()
 		_terrain_built = true
 
+	_home_camera_once()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -329,6 +353,8 @@ func _process(delta: float) -> void:
 	_refresh_build_markers()
 	_update_placement_ghost()
 	_update_hud()
+	# Before the minimap, which reads the field this stamps.
+	_update_fog()
 	_update_minimap()
 	# Every frame, NOT throttled with the rest of the minimap (see
 	# `_update_minimap`'s own MINIMAP_INTERVAL comment — fog and squad dots
@@ -350,6 +376,34 @@ func _process(delta: float) -> void:
 		_drive_m2_scenario()
 		if _now >= _run_seconds:
 			_finish_capture()
+
+
+## Whether the camera has been put over this player's own opening position
+## yet. Once per match, and reset with the rest of the match state.
+var _camera_homed := false
+
+
+## Point the camera at where this player starts, the first time there is a
+## where to point it at.
+##
+## `_build_terrain` leaves it at the middle of the map, which was a
+## reasonable default for as long as the whole map was drawn lit. Now that
+## the ground is fogged (D-106) the middle of a 128x64 map is unexplored
+## black, so a match would open on an empty screen with the founding party
+## somewhere off in the dark. Capture mode has centred on the player's own
+## ground since M3 for exactly this reason (`_found_home_town`); a human
+## deserves it more than a screenshot does.
+func _home_camera_once() -> void:
+	if _camera_homed or not _terrain_built or _state.space == null:
+		return
+	var home := _state.spawn_cell_of(_state.player)
+	if home.x < 0:
+		if _state.squads.is_empty():
+			return
+		home = _state.squad_cell(_state.squads[0], _now)
+	_camera_homed = true
+	_camera_target = _state.space.to_world(home)
+	_update_camera()
 
 
 ## Screenshot, self-assess, report, exit. Mirrors bot_client's verdict
@@ -543,6 +597,17 @@ func _build_terrain() -> void:
 	# renders. Textured when generated/ has been built, vertex colour alone
 	# when it has not.
 	var material := TerrainChunk.make_material()
+	# Kept, because the ground is fogged by a texture this client updates as
+	# it explores (D-106) and there is nowhere else to reach the material
+	# from once the chunks are built.
+	_terrain_material = material
+	_fog = TerrainFog.new(space)
+	_fog_texture = null
+	_fog_updated_at = -1.0
+	# Bound before the first frame is drawn rather than at the first
+	# throttled update: the shader's default is fully lit, so a material
+	# with no fog yet would flash the whole unexplored map for a frame.
+	_push_fog_to_terrain()
 
 	var meshes := []
 	for cy in range(grid.y):
@@ -636,7 +701,16 @@ func _build_terrain() -> void:
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
-	print("client: built %d terrain chunks" % _terrain_root.get_child_count())
+	# Reported, not assumed. Both of these fail SILENTLY and identically —
+	# ground that is drawn but wrong — and the fog one is the whole of #58:
+	# a material that never received the field renders the entire map lit,
+	# which is exactly what a healthy frame looks like to every number the
+	# client prints.
+	var shaded := _terrain_material as ShaderMaterial
+	var fogged := shaded != null \
+		and shaded.get_shader_parameter(TerrainFog.SHADER_PARAM) != null
+	print("client: built %d terrain chunks — textured=%s fogged=%s" % [
+		_terrain_root.get_child_count(), TerrainChunk.has_atlas(), fogged])
 
 
 ## The D-006 payoff, once per frame: for every squad the client knows
@@ -4395,7 +4469,8 @@ func _update_minimap() -> void:
 		return
 	_minimap_updated_at = _now
 
-	_update_explored()
+	if _fog == null:
+		return
 
 	var image: Image = _minimap_base.duplicate()
 
@@ -4405,7 +4480,7 @@ func _update_minimap() -> void:
 	# should look it, rather than showing terrain nobody has scouted.
 	for y in range(image.get_height()):
 		for x in range(image.get_width()):
-			if not _explored.has(_state.space.index(Vector2i(x, y))):
+			if not _fog.is_explored(_state.space.index(Vector2i(x, y))):
 				image.set_pixel(x, y, HudTheme.BG_VOID.darkened(0.5))
 	for squad in _state.curves:
 		# Ghosted squads are not drawn at all here either — the same
@@ -4421,7 +4496,7 @@ func _update_minimap() -> void:
 	# Resource nodes, but only where this player has actually been. Fog
 	# governs what you know about the map, and that includes what is on it.
 	for cell in _state.nodes:
-		if not _explored.has(cell):
+		if not _fog.is_explored(int(cell)):
 			continue
 		var coord := _state.space.from_index(int(cell))
 		image.set_pixel(coord.x, coord.y, _node_colour(int(_state.nodes[cell])))
@@ -4466,7 +4541,7 @@ func _centre_minimap_crop_on_camera() -> void:
 	_minimap_crop_material.set_shader_parameter("focus_uv", focus)
 
 
-## Extend the explored set from what this player can currently see.
+## Restamp what this player can see, and push it to the ground (D-106).
 ##
 ## Computed locally rather than replicated. The client knows where its own
 ## squads are and what kind they are, so it can derive its own vision the
@@ -4476,13 +4551,22 @@ func _centre_minimap_crop_on_camera() -> void:
 ##
 ## Buildings see too, and a town hall sees a long way, so a base lights up
 ## a useful area around itself.
-func _update_explored() -> void:
-	if _state.space == null:
+##
+## Throttled here rather than by the minimap, which is where this used to
+## live: the minimap gives up early when the HUD has not been laid out yet
+## (`_update_minimap`'s own first two lines), and the 3D world must not go
+## unfogged because a Control was missing.
+func _update_fog() -> void:
+	if _fog == null or _state.space == null:
 		return
+	if _fog_updated_at >= 0.0 and _now - _fog_updated_at < FOG_INTERVAL:
+		return
+	_fog_updated_at = _now
 
-	var hex_width := _state.space.hex_size * TorusSpace.SQRT_3
-	if hex_width <= 0.0:
-		return
+	# Everything in sight a moment ago drops back to remembered, and the
+	# reveals below raise back whatever is still in sight. Ground already
+	# explored stays explored.
+	_fog.forget_visible()
 
 	# Allied squads reveal ground too (D-050). Without this the server
 	# would gate on the team's shared sight while the client painted fog
@@ -4496,7 +4580,8 @@ func _update_explored() -> void:
 		var def := UnitRoster.by_id(StringName(_state.composition[squad]["def_id"]))
 		if def == null:
 			continue
-		_reveal_around(_state.squad_cell(squad, _now), floori(def.vision_range / hex_width))
+		_fog.reveal(_state.squad_cell(squad, _now),
+			TerrainFog.radius_in_cells(_state.space, def.vision_range))
 
 	for wire_id in _state.buildings:
 		var info: Dictionary = _state.buildings[wire_id]
@@ -4505,13 +4590,24 @@ func _update_explored() -> void:
 		var building_def := BuildingSim.def_by_id(StringName(info["def_id"]))
 		if building_def == null:
 			continue
-		_reveal_around(_state.space.from_index(int(info["cell"])),
-			floori(building_def.vision_range / hex_width))
+		_fog.reveal(_state.space.from_index(int(info["cell"])),
+			TerrainFog.radius_in_cells(_state.space, building_def.vision_range))
+
+	_push_fog_to_terrain()
 
 
-func _reveal_around(centre: Vector2i, radius: int) -> void:
-	for offset in TorusSpace.disk_offsets(maxi(radius, 0)):
-		_explored[_state.space.index(centre + offset)] = true
+## Hand the field to the terrain material. The half of this feature that
+## was missing entirely: `_explored` was correct, documented and read by
+## nothing but the minimap for six milestones (#58).
+func _push_fog_to_terrain() -> void:
+	if _fog == null or _terrain_material == null:
+		return
+	var image := _fog.bake()
+	if _fog_texture == null:
+		_fog_texture = ImageTexture.create_from_image(image)
+		TerrainChunk.set_fog(_terrain_material, _fog_texture)
+	else:
+		_fog_texture.update(image)
 
 
 ## Minimap colour per resource, picked to read against the terrain
@@ -6745,7 +6841,14 @@ func _teardown_match() -> void:
 		_terrain_root = null
 	_terrain_built = false
 
-	_explored.clear()
+	# The next match may be a different map entirely (D-049), so the field is
+	# dropped rather than cleared — its size and its neighbour table both
+	# belong to the space it was built for.
+	_fog = null
+	_fog_texture = null
+	_terrain_material = null
+	_fog_updated_at = -1.0
+	_camera_homed = false
 	_scout_home.clear()
 	_control_groups.clear()
 	_building_defs.clear()
