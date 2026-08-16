@@ -29,9 +29,33 @@ var height: int = 96
 ## How many starting positions the map offers (D-039).
 var player_slots: int = 8
 
+## The seed used when nobody has rolled or pinned one.
+const DEFAULT_SEED := 1337
+
+## The largest seed a roll may produce. Also the lobby spinner's ceiling
+## (`client.gd`'s MAP_OPTIONS reads it from here), so a rolled seed is
+## always a number the admin can read off the screen and type back in —
+## a roll the UI could not represent would be unpinnable.
+const SEED_MAX := 999_999
+
 ## Terrain noise seed. Rolled per match unless someone pins it, so two
-## matches on the same settings are still different places.
-var seed: int = 1337
+## matches on the same settings are still different places (D-100) — the
+## rolling is `roll_seed`, and the server does it when a LOBBY opens.
+##
+## The default is what every seedless headless flow runs on: bots, GUT
+## tests, scenarios and `run-server` without `--seed`. Those want one
+## reproducible world, not a surprise, so nothing rolls for them.
+var seed: int = DEFAULT_SEED
+
+## Whether somebody CHOSE this seed — `--seed` on the command line, or the
+## admin typing one into the lobby. A pinned seed survives the re-roll a
+## new lobby would otherwise do, which is what makes "copy the number
+## down, play that map again" work (D-100).
+##
+## Deliberately not on the wire: it is lobby bookkeeping, and a client has
+## no use for it. `MapSettings.to_dict` is the packet payload, so anything
+## added there would have to be encoded or silently dropped.
+var seed_pinned: bool = false
 
 ## Which preset was last applied. Carried for DISPLAY only — the numbers
 ## below are the authority, and a slider nudge leaves this pointing at
@@ -74,6 +98,45 @@ static func sizes() -> Array:
 		{"width": 126, "height": 146, "name": "Large"},
 		{"width": 168, "height": 194, "name": "Huge"},
 	]
+
+
+## Roll a new world, and stop calling it pinned. Returns the new seed.
+##
+## The ONE non-deterministic line in this project's map pipeline, and it
+## is deliberately here rather than anywhere a match reads from: a seed is
+## drawn once, before the world exists, and everything downstream — the
+## terrain, the spawn points, the combat RNG, the civ draw — is a pure
+## function of it (D-100). A replay reproduces the match because the
+## rolled number travelled on the wire and was written down, not because
+## the roll itself was reproducible.
+##
+## Its own RandomNumberGenerator rather than the global `randi()`, because
+## the global one is shared state a test could have seeded for something
+## else, and "the map is the same every time" is exactly the bug this
+## exists to fix.
+func roll_seed() -> int:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	seed = rng.randi_range(0, SEED_MAX)
+	seed_pinned = false
+	return seed
+
+
+## Choose a seed on purpose — `--seed`, or the lobby's spinner.
+##
+## Brought into the range a roll can produce and the spinner can show, for
+## the reason SEED_MAX gives: a value the lobby cannot display is one
+## nobody can copy down and play again. Normalised HERE rather than in the
+## UI because a spinner is a suggestion from an untrusted client (D-002).
+##
+## WRAPPED rather than clamped, unlike every other setting here. A sea
+## level is a magnitude and clamps sensibly; a seed is an IDENTIFIER, and
+## clamping identifiers collapses every out-of-range value onto one map —
+## `--seed=2000000` and `--seed=3000000` would silently be the same place
+## instead of two that merely share a remainder.
+func pin_seed(value: int) -> void:
+	seed = posmod(value, SEED_MAX + 1)
+	seed_pinned = true
 
 
 func apply_preset(preset_def: TerrainPreset) -> void:

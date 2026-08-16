@@ -238,7 +238,12 @@ func _ready() -> void:
 	_settings.width = _config.width
 	_settings.height = _config.height
 	_settings.player_slots = _config.player_slots
-	_settings.seed = int(args.get("seed", 1337))
+	# --seed PINS the world; without it the default stands here and a
+	# lobby rolls over it a few lines below (D-100). Every seedless
+	# headless flow — bots, scenarios, test-load, test-client — takes this
+	# branch and keeps the one reproducible map it has always run on.
+	if args.has("seed"):
+		_settings.pin_seed(int(args["seed"]))
 	# Overridable from the command line for a no-lobby quick start (D-049
 	# normally only reaches these through the lobby UI's sliders). Mirrors
 	# --ai/--map/--seed above.
@@ -263,9 +268,24 @@ func _ready() -> void:
 	_match = MatchState.new()
 	_match.players_expected = maxi(1, int(args.get("players", 1))) + ai_wanted
 	_match.require_admin_start = int(args.get("lobby", 0)) != 0
-	_match.civ_rng.seed = hash(_config.id) + int(args.get("seed", 0))
 	_match.squad_cap = _config.squad_cap
 	_match.map_settings = _settings
+
+	# A LOBBY match rolls its map (D-100), so two matches on the same
+	# settings are two different places — which is what MapSettings.seed
+	# has claimed since D-049 and nothing did. Only the lobby rolls: a
+	# no-lobby start is a test harness or a dev launch, and those want the
+	# same world every run. The admin can pin any seed from the spinner,
+	# which is how a good map is played twice on purpose.
+	if _match.require_admin_start and not _settings.seed_pinned:
+		print("server: lobby rolled map seed %d" % _settings.roll_seed())
+
+	# The civ draw follows the MAP seed, so a pinned seed reproduces the
+	# whole match setup and not merely the terrain (D-100). It has to come
+	# after the roll above, or every lobby would draw from the same
+	# sequence regardless of where it was being played.
+	_match.civ_seed_base = hash(_config.id)
+	_match.reseed_civ_rng()
 	# Dev-testing cheats (C2S_CHEAT_*) are refused unless this is set, either
 	# here or later by the lobby admin toggling it live — see MatchState.
 	# sandbox's own doc for why that stays legal mid-match.
@@ -2413,7 +2433,12 @@ func _return_to_lobby() -> void:
 	for peer in _clients:
 		_clients[peer]["visible"] = {}
 
-	print("server: returned to the lobby — %d seat(s) held" % _match.seats.size())
+	# `return_to_lobby` rolls the next match's map unless the seed is
+	# pinned (D-100), so the seed is worth naming here: it is the one
+	# thing about the lobby that changed without anybody touching it.
+	print("server: returned to the lobby — %d seat(s) held, next map seed %d%s" % [
+		_match.seats.size(), _match.map_settings.seed,
+		" (pinned)" if _match.map_settings.seed_pinned else ""])
 	_broadcast_lobby()
 
 
