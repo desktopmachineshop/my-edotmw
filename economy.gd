@@ -48,6 +48,15 @@ const RETARGET_RADIUS := 8
 
 var space: TorusSpace
 
+## The ground the nodes were derived from, remembered by `generate()`.
+##
+## Kept so the fairness post-pass can tell whether the cell it is about to
+## drop a node on is ground that grows the thing (D-101). Not a second
+## TerrainGen: the server builds exactly one and hands it here, for the
+## reason server.gd states about passability — two instances would be two
+## sources of truth about the same ground.
+var terrain: TerrainGen
+
 # cell index -> { "kind": Resource, "remaining": int }
 var nodes := {}
 
@@ -98,8 +107,9 @@ func _init(p_space: TorusSpace = null) -> void:
 ## terrain is not enough on its own, and deriving the roll from the local
 ## position makes the field inherit the map's symmetry by construction
 ## (D-036).
-func generate(terrain: TerrainGen, symmetry_order: int = 1) -> void:
+func generate(p_terrain: TerrainGen, symmetry_order: int = 1) -> void:
 	nodes.clear()
+	terrain = p_terrain
 
 	var repeats := maxi(1, symmetry_order)
 	var quadrant_width := maxi(1, space.width / repeats)
@@ -110,26 +120,46 @@ func generate(terrain: TerrainGen, symmetry_order: int = 1) -> void:
 		var local := (coord.x % quadrant_width) + (coord.y % quadrant_height) * quadrant_width
 		var roll := _roll(terrain.noise_seed, local)
 
-		var kind := _roll_kind(terrain, coord, roll)
+		var kind := _roll_kind(coord, roll)
 		if kind < 0:
 			continue
 		nodes[index] = {"kind": kind, "remaining": stock_for(kind)}
 
 
 ## What (if anything) grows on this cell, given one deterministic roll in
-## [0, 1). Densities are cumulative within a branch: a cell that misses its
-## first chance falls through to the next band of the same roll, so one
-## roll decides everything and the bands cannot overlap.
-func _roll_kind(terrain: TerrainGen, coord: Vector2i, roll: float) -> int:
+## [0, 1). The first band the roll falls under wins.
+func _roll_kind(coord: Vector2i, roll: float) -> int:
+	for band in _bands(coord):
+		if roll < float(band["below"]):
+			return int(band["kind"])
+	return -1
+
+
+## What this cell CAN grow, in the order the roll tests them: an ordered
+## list of {kind, below}, where a roll under `below` yields that kind.
+##
+## THE definition of biome-derived placement (D-087), and it is one table
+## rather than two because the fairness post-pass reads it as well
+## (D-101): a top-up needs to know whether the ground it is about to land
+## on grows the thing at all. Two spellings of the same table would drift,
+## and the symptom would be stone outcrops on sand with every number
+## green.
+##
+## Note the thresholds are ABSOLUTE cut points tested in order, not
+## cumulative widths — the biome's own table is tested from zero even
+## when the mountain-foot band above it missed, so a forest cell at the
+## rock face is still a forest.
+func _bands(coord: Vector2i) -> Array:
 	var biome := terrain.biome_at(space, coord)
+	var out := []
 
 	# Mountain-foot stone first: it outranks the ground biome's own table,
 	# because a foot cell IS a grassland/dry/forest cell — that is what
 	# makes it walkable — and stone has nowhere else to live.
 	if biome != TerrainGen.Biome.MOUNTAIN and biome != TerrainGen.Biome.PEAK \
 			and biome != TerrainGen.Biome.WATER and biome != TerrainGen.Biome.DEEP_WATER:
-		if _touches_mountain(terrain, coord) and roll < 0.25:
-			return ResourceKind.STONE
+		if _touches_mountain(coord):
+			out.append({"kind": ResourceKind.STONE, "below": 0.25})
 
 	match biome:
 		TerrainGen.Biome.FOREST:
@@ -137,8 +167,7 @@ func _roll_kind(terrain: TerrainGen, coord: Vector2i, roll: float) -> int:
 			# same moisture that classified the cell as forest at all.
 			var f := clampf((terrain.moisture_at(space, coord) - TerrainGen.MOISTURE_FOREST)
 				/ (1.0 - TerrainGen.MOISTURE_FOREST), 0.0, 1.0)
-			if roll < lerpf(0.65, 0.98, f):
-				return ResourceKind.WOOD
+			out.append({"kind": ResourceKind.WOOD, "below": lerpf(0.65, 0.98, f)})
 		TerrainGen.Biome.GRASSLAND:
 			# Groves thicken toward the forest line (m -> MOISTURE_FOREST),
 			# orchards sit in the mid-moisture band where neither extreme
@@ -147,25 +176,20 @@ func _roll_kind(terrain: TerrainGen, coord: Vector2i, roll: float) -> int:
 				/ (TerrainGen.MOISTURE_FOREST - TerrainGen.MOISTURE_DRY), 0.0, 1.0)
 			var wood := 0.05 + 0.22 * g * g
 			var food := 0.05 + 0.16 * (1.0 - absf(g - 0.5) * 2.0)
-			if roll < wood:
-				return ResourceKind.WOOD
-			if roll < wood + food:
-				return ResourceKind.FOOD
+			out.append({"kind": ResourceKind.WOOD, "below": wood})
+			out.append({"kind": ResourceKind.FOOD, "below": wood + food})
 		TerrainGen.Biome.DRY_GRASSLAND:
-			if roll < 0.10:
-				return ResourceKind.WOOD
-			if roll < 0.10 + 0.017:
-				return ResourceKind.GOLD
+			out.append({"kind": ResourceKind.WOOD, "below": 0.10})
+			out.append({"kind": ResourceKind.GOLD, "below": 0.10 + 0.017})
 		TerrainGen.Biome.BEACH:
-			if roll < 0.10:
-				return ResourceKind.WOOD
-	return -1
+			out.append({"kind": ResourceKind.WOOD, "below": 0.10})
+	return out
 
 
 ## Does this cell border the mountains? Neighbours only — stone reads as
 ## sitting AT the rock face, and one ring keeps it as rare as the terrain's
 ## mountain perimeter.
-func _touches_mountain(terrain: TerrainGen, coord: Vector2i) -> bool:
+func _touches_mountain(coord: Vector2i) -> bool:
 	for neighbour in space.neighbors(coord):
 		var b := terrain.biome_at(space, neighbour)
 		if b == TerrainGen.Biome.MOUNTAIN or b == TerrainGen.Biome.PEAK:
@@ -202,14 +226,36 @@ static func _roll(seed_value: int, cell_local: int) -> float:
 ## course: generate freely, then guarantee every spawn a minimum quota of
 ## each resource within reach.
 ##
-## Where a quota is short, a node is placed on the nearest passable cell
-## regardless of biome. That deliberately overrides biome derivation — a
-## player with no forest in reach still needs wood, and "fair" beats
-## "geologically tidy" when the alternative is losing at map-generation
-## time. Deterministic: it walks cells in index order, so replays and both
-## sides of the wire agree.
+## Where a quota is short, a node is placed on the nearest ground the
+## spawn can walk to that would GROW the thing (D-101), falling back to
+## any walkable cell only when the quota cannot otherwise be met — and
+## saying so when it does, per CLAUDE.md's no-silent-caps rule.
+##
+## The fallback is still the right call in the end: a player with no
+## forest in reach still needs wood, and "fair" beats "geologically tidy"
+## when the alternative is losing at map-generation time. But it used to
+## be the FIRST call, biome-blind, which put stone outcrops on grass and
+## sand within sight of a start — 38 top-ups on a 20-player islands map,
+## none of them on ground that grows what they hold. That flatly
+## contradicts D-087, which moved stone to the mountain foot precisely so
+## a node reads as belonging to the ground it sits on.
+##
+## Beach is ranked BELOW other walkable ground rather than merely
+## unpreferred: a beach cell borders water by definition, and the authored
+## node models span ~2.3-2.6 world units against a ~1.73-unit cell, so a
+## rock dropped there visibly overhangs the sea. That is what the P01
+## screenshot was actually showing.
+##
+## Deterministic: it walks cells in index order within each rank, so
+## replays and both sides of the wire agree.
 func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 		radius: int, quota: int) -> void:
+	# Counted rather than warned per node: one line saying how much of the
+	# guarantee had to be forced onto unsuitable ground is information; one
+	# line per node on a 20-player island map is noise.
+	var compromised := 0
+	var placed := 0
+
 	for spawn in spawns:
 		# REACHABLE cells, not merely nearby ones.
 		#
@@ -234,17 +280,73 @@ func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 				continue
 
 			# Short: top up on the nearest free ground the spawn can WALK
-			# to. `walkable` is already in flood-fill order, which is
-			# nearest-first, and already excludes water and the far bank.
-			for index in walkable:
+			# to, best ground first. `walkable` is already in flood-fill
+			# order, which is nearest-first, and already excludes water and
+			# the far bank; the rank pass over it is what keeps a stone
+			# outcrop off the beach while there is a mountain foot two
+			# cells further out.
+			#
+			# The rank of a cell is recomputed on each pass rather than
+			# cached, which reads as the obvious thing to optimise and is
+			# not: a dictionary of per-cell ranks measured SLOWER than the
+			# repeated `_bands` calls it replaced, because it ranks every
+			# reachable cell while this ranks only free ones. The whole
+			# pass costs ~0.45 s on a 20-player 168x194 map against ~0.12 s
+			# biome-blind, once, at world build — not a tick cost.
+			for rank in range(GROUND_RANKS):
 				if found >= quota:
 					break
-				if nodes.has(index):
-					continue
-				if space.distance(spawn, space.from_index(index)) < 2:
-					continue  # leave room for the town hall itself
-				nodes[index] = {"kind": kind, "remaining": stock_for(kind)}
-				found += 1
+				for index in walkable:
+					if found >= quota:
+						break
+					if nodes.has(index):
+						continue
+					var coord := space.from_index(index)
+					if space.distance(spawn, coord) < 2:
+						continue  # leave room for the town hall itself
+					if int(_ground_ranks(coord)[kind]) != rank:
+						continue
+					nodes[index] = {"kind": kind, "remaining": stock_for(kind)}
+					found += 1
+					placed += 1
+					if rank > GROUND_NATURAL:
+						compromised += 1
+
+	if compromised > 0:
+		print("economy: %d of %d fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach" % [
+			compromised, placed])
+
+
+## How well a cell suits a fairness top-up, best first (D-101). The pass
+## places every cell of one rank before it looks at the next.
+enum { GROUND_NATURAL, GROUND_PLAUSIBLE, GROUND_SHORELINE }
+const GROUND_RANKS := 3
+
+
+## This cell's rank for each resource kind, indexed by ResourceKind.
+##
+## All four at once because `_bands` reads eight biome samples and the
+## caller wants every kind's answer about the same cell — asking per kind,
+## per rank pass, put the same question to the same ground twelve times.
+func _ground_ranks(coord: Vector2i) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(RESOURCE_COUNT)
+
+	# No terrain means nothing to prefer with, and "natural" everywhere
+	# degrades exactly to the biome-blind pass this replaced. Only a caller
+	# that skipped `generate()` gets here — every shipped one goes through
+	# it.
+	if terrain == null:
+		return out
+
+	var fallback := GROUND_SHORELINE if terrain.biome_at(space, coord) == TerrainGen.Biome.BEACH \
+		else GROUND_PLAUSIBLE
+	for kind in range(RESOURCE_COUNT):
+		out[kind] = fallback
+	for band in _bands(coord):
+		if float(band["below"]) > 0.0:
+			out[int(band["kind"])] = GROUND_NATURAL
+	return out
 
 
 ## Cells within `radius` of `from` that a squad can actually WALK to,

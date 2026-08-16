@@ -67,6 +67,27 @@ class_name MapConfig
 ## (D-016), and so does a client being told where players start.
 @export var spawn_seed: int = 20260801
 
+## Smallest connected patch of walkable ground a start may sit on, in
+## cells (D-101).
+##
+## A spawn used to be accepted on the strength of its OWN cell being
+## passable, which says nothing about what surrounds it. On `islands`,
+## where ~70% of the map is water, that seated one player in twenty on a
+## SIX-CELL rock: legal ground, and a dead player — six cells cannot hold
+## a town hall and the resources to work, and D-031 means the founding
+## party is the entire opening. It was visible from orbit and invisible to
+## every check, because `validate_spawns` compares COUNTS and twenty of
+## twenty points were found.
+##
+## Measured across four presets x four sizes x three seeds: 96 rejects
+## every stranded start the sweep found while still seating 20 players on
+## `islands` at Standard and above. Smaller maps are bounded by
+## `min_spawn_spacing` long before they are bounded by this.
+##
+## Zero disables the check, which is what a caller with no terrain gets
+## anyway — the flood fill needs `passable` to mean anything.
+@export var min_spawn_landmass: int = 96
+
 ## How far from a spawn resources must be topped up, and how many of each
 ## kind a start is guaranteed (D-036 revised). This is what replaces
 ## quadrant symmetry as the fairness mechanism: generate freely, then make
@@ -118,6 +139,10 @@ func player_capacity() -> int:
 ## a live failure mode rather than a hypothetical one, and the caller
 ## that has the terrain is the one that must supply it.
 ##
+## Passable is necessary and NOT sufficient (D-101): a candidate must
+## also stand on a landmass of at least `min_spawn_landmass` cells, or a
+## start can be legal ground and still be a six-cell rock in the sea.
+##
 ## Deterministic: same `spawn_seed` and same terrain give the same
 ## points, every run. Replays (D-016) depend on that.
 func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
@@ -153,10 +178,58 @@ func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 			if space.distance(existing, cell) < min_spawn_spacing:
 				far_enough = false
 				break
-		if far_enough:
-			out.append(cell)
+		if not far_enough:
+			continue
+
+		# Landmass LAST, though it is a property of the candidate alone:
+		# it is the only test here that is not O(1)-ish, and the two above
+		# reject the overwhelming majority of candidates on exactly the
+		# maps where it matters. The three are an AND, so the order
+		# changes nothing but the cost — and the cost is real. Sampling 20
+		# starts on the over-packed Skirmish maps (20 slots on 2,016 cells,
+		# where the sampler burns its whole attempt ceiling) measured
+		# 1.0-3.5 s with the fill first and 0.2-0.4 s with it last.
+		if not passable.is_empty() and _landmass_at(space, cell, passable) < min_spawn_landmass:
+			continue
+
+		out.append(cell)
 
 	return out
+
+
+## How much walkable ground `cell` is connected to, counting no further
+## than `min_spawn_landmass` (D-101).
+##
+## Capped rather than exhaustive, which is the whole reason this is cheap
+## enough to run per candidate: a real landmass stops the fill at the cap
+## after visiting that many cells, and an islet stops it by running out
+## of island. Nothing here needs the true size — only whether it clears
+## the bar.
+##
+## A flood fill, not a disk, for `Economy._reachable_from`'s reason:
+## passability is not reachability, and a start with plenty of dry land
+## across a channel is still a start on a rock.
+func _landmass_at(space: TorusSpace, cell: Vector2i, passable: PackedByteArray) -> int:
+	if min_spawn_landmass <= 1:
+		return min_spawn_landmass
+
+	var seen := {space.index(cell): true}
+	var queue := [cell]
+	var head := 0
+	while head < queue.size() and seen.size() < min_spawn_landmass:
+		var at: Vector2i = queue[head]
+		head += 1
+		for neighbour in space.neighbors(at):
+			var index := space.index(neighbour)
+			if seen.has(index):
+				continue
+			if index < passable.size() and passable[index] == 0:
+				continue
+			seen[index] = true
+			queue.append(neighbour)
+			if seen.size() >= min_spawn_landmass:
+				break
+	return seen.size()
 
 
 ## Returns "" if the map can actually seat everyone it claims to.
@@ -204,6 +277,8 @@ func validate() -> String:
 		return "player_slots must be at least 1 (got %d)" % player_slots
 	if min_spawn_spacing < 1:
 		return "min_spawn_spacing must be at least 1 (got %d)" % min_spawn_spacing
+	if min_spawn_landmass < 0:
+		return "min_spawn_landmass must be non-negative (got %d)" % min_spawn_landmass
 
 	# Whether random placement can *actually* satisfy the spacing is a
 	# packing question, and rejection sampling answers it by failing to

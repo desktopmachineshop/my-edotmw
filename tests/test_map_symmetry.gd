@@ -196,6 +196,111 @@ func test_spawns_never_land_on_impassable_ground() -> void:
 			"Spawn %s sits on impassable terrain" % point)
 
 
+func test_spawns_never_land_on_an_islet_in_open_water() -> void:
+	# Passable is necessary and not sufficient (D-101). The reported case:
+	# a founding party on a SIX-CELL rock, every cell of it legal ground,
+	# and the player dead on arrival because a town hall and the resources
+	# to work it do not fit — D-031 makes that opening the whole match.
+	#
+	# Authored rather than generated so the failure is unambiguous: one
+	# continent, and a scatter of rocks that a single-cell test cannot
+	# tell apart from it.
+	var config := _config()
+	config.min_spawn_landmass = 96
+	var space := config.to_space()
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(config.height):
+		for x in range(config.width):
+			# A continent across the top of the map, sea below it —
+			# deliberately too small to seat all twenty, so the sampler
+			# keeps looking and the rocks below get their chance.
+			passable[space.index(Vector2i(x, y))] = 1 if y < 10 else 0
+	# ... and eleven three-cell rocks in that sea, well spaced, which is
+	# exactly the ground the sampler used to accept.
+	for i in range(11):
+		var rock := Vector2i(4 + i * 11, 40)
+		for cell in [rock, rock + Vector2i(1, 0), rock + Vector2i(0, 2)]:
+			passable[space.index(cell)] = 1
+
+	var points := config.spawn_points(passable)
+	assert_gt(points.size(), 0, "Nothing was placed at all, so the check below proves nothing")
+	for point in points:
+		assert_lt(point.y, 10,
+			"Spawn %s stands on a three-cell rock in open sea — legal ground, and a lost player" % point)
+
+
+func test_a_landmass_minimum_of_zero_accepts_what_it_used_to() -> void:
+	# The other half of the check above: without it the sampler cannot see
+	# the difference, which is the defect stated as a passing assertion.
+	var config := _config()
+	config.min_spawn_landmass = 0
+	var space := config.to_space()
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(config.height):
+		for x in range(config.width):
+			passable[space.index(Vector2i(x, y))] = 1 if y < 10 else 0
+	for i in range(11):
+		var rock := Vector2i(4 + i * 11, 40)
+		for cell in [rock, rock + Vector2i(1, 0), rock + Vector2i(0, 2)]:
+			passable[space.index(cell)] = 1
+
+	var on_rocks := 0
+	for point in config.spawn_points(passable):
+		if point.y >= 10:
+			on_rocks += 1
+	assert_gt(on_rocks, 0,
+		"With the landmass minimum off, rocks should still be accepted — if they are not, the test above passes for some other reason")
+
+
+func test_the_shipped_islands_preset_seats_nobody_on_a_rock() -> void:
+	# The world from the P01 playtest report, generated exactly as the
+	# server generates it. Authored terrain proves the rule; this proves
+	# the rule fires on ground nobody chose, which is where it mattered —
+	# `islands` is ~71% water at these settings and put one start in
+	# twenty on six cells.
+	var settings := MapSettings.new()
+	settings.width = 168
+	settings.height = 194
+	settings.player_slots = 20
+	settings.seed = 1337
+	settings.apply_preset(TerrainPresetRoster.by_id(&"islands"))
+
+	var space := settings.to_space()
+	var passable := settings.to_terrain().passability(space)
+	var points := settings.to_spawn_config().spawn_points(passable)
+
+	assert_eq(points.size(), 20,
+		"The reported world seated 20 before the landmass rule and must still seat 20 after it")
+	for point in points:
+		assert_gte(_landmass(space, passable, point, 96), 96,
+			"Spawn %s sits on a %d-cell island" % [
+				point, _landmass(space, passable, point, 96)])
+
+
+## How much walkable ground `from` connects to, counted no further than
+## `cap`. Deliberately a second implementation rather than a call to
+## MapConfig's: a test that asks the code under test for its own answer
+## cannot see it being wrong (D-022's audit).
+func _landmass(space: TorusSpace, passable: PackedByteArray, from: Vector2i, cap: int) -> int:
+	var seen := {space.index(from): true}
+	var queue := [from]
+	var head := 0
+	while head < queue.size() and seen.size() < cap:
+		var at: Vector2i = queue[head]
+		head += 1
+		for neighbour in space.neighbors(at):
+			var index := space.index(neighbour)
+			if seen.has(index) or passable[index] == 0:
+				continue
+			seen[index] = true
+			queue.append(neighbour)
+	return seen.size()
+
+
 func test_short_seating_is_reported_rather_than_silently_shared() -> void:
 	# The failure this whole change came out of: twenty players wrapped
 	# onto four grid seats and stood five-deep, and nothing said so.

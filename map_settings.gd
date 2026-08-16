@@ -62,6 +62,20 @@ var seed_pinned: bool = false
 ## the preset it started from.
 var preset: StringName = &"continents"
 
+## What the spawn sampler needs that terrain does not give it (D-101).
+##
+## These start life in the map file (`MapConfig`) and travel with the rest
+## of the settings for the reason at the top of this file: the lobby's map
+## preview draws where players will start, and it can only draw the
+## SERVER's answer if it is handed the server's inputs. It was not, and
+## every marker on the preview was fiction — the preview seeded the
+## sampler with the match seed alone while the server seeded it with the
+## map's base plus the match seed, so the two agreed about the algorithm
+## and disagreed about every point it produced.
+var spawn_seed: int = 20260801
+var min_spawn_spacing: int = 12
+var min_spawn_landmass: int = 96
+
 var sea_level: float = 0.38
 var beach_level: float = 0.44
 var mountain_level: float = 0.74
@@ -172,10 +186,55 @@ func to_space() -> TorusSpace:
 	return TorusSpace.new(width, height, 1.0)
 
 
+## The settings a map file opens the lobby with (D-049).
+##
+## Here rather than in `server.gd` so that everything the spawn sampler
+## reads makes ONE trip — map file to settings to sampler (D-101). A
+## caller copying four of the six fields by hand is how the lobby preview
+## came to sample by rules the server was not using.
+static func from_map(config: MapConfig) -> MapSettings:
+	var out := MapSettings.new()
+	out.width = config.width
+	out.height = config.height
+	out.player_slots = config.player_slots
+	out.spawn_seed = config.spawn_seed
+	out.min_spawn_spacing = config.min_spawn_spacing
+	out.min_spawn_landmass = config.min_spawn_landmass
+	return out
+
+
+## Build the spawn sampler these settings describe.
+##
+## The ONE place a MapSettings becomes a spawn-sampling MapConfig, for the
+## same reason `to_terrain` is the one place it becomes a TerrainGen: two
+## conversions are two chances to forget a field. Sharing
+## `MapConfig.spawn_points` was never enough — the server and the lobby
+## preview both called it and fed it different inputs, which is a shared
+## implementation with unshared arguments and produces two different
+## answers with a comment above each claiming they are the same one
+## (D-101).
+##
+## The seed is the map's base PLUS the match seed, so re-rolling the seed
+## in the lobby moves the starts as well as the ground. Deterministic, and
+## replays depend on it (D-016).
+func to_spawn_config() -> MapConfig:
+	var out := MapConfig.new()
+	out.width = width
+	out.height = height
+	out.player_slots = player_slots
+	out.min_spawn_spacing = min_spawn_spacing
+	out.min_spawn_landmass = min_spawn_landmass
+	out.spawn_seed = spawn_seed + seed
+	return out
+
+
 func to_dict() -> Dictionary:
 	return {
 		"width": width, "height": height, "player_slots": player_slots,
 		"seed": seed, "preset": String(preset),
+		"spawn_seed": spawn_seed,
+		"min_spawn_spacing": min_spawn_spacing,
+		"min_spawn_landmass": min_spawn_landmass,
 		"sea_level": sea_level, "beach_level": beach_level,
 		"mountain_level": mountain_level,
 		"elevation_frequency": elevation_frequency,
@@ -191,6 +250,9 @@ static func from_dict(data: Dictionary) -> MapSettings:
 	out.player_slots = int(data.get("player_slots", out.player_slots))
 	out.seed = int(data.get("seed", out.seed))
 	out.preset = StringName(data.get("preset", out.preset))
+	out.spawn_seed = int(data.get("spawn_seed", out.spawn_seed))
+	out.min_spawn_spacing = int(data.get("min_spawn_spacing", out.min_spawn_spacing))
+	out.min_spawn_landmass = int(data.get("min_spawn_landmass", out.min_spawn_landmass))
 	out.sea_level = float(data.get("sea_level", out.sea_level))
 	out.beach_level = float(data.get("beach_level", out.beach_level))
 	out.mountain_level = float(data.get("mountain_level", out.mountain_level))
