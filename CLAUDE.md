@@ -1294,7 +1294,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  701 tests across 47 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario

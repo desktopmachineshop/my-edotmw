@@ -233,10 +233,9 @@ func _ready() -> void:
 		return
 
 	# What the world WILL be. Seeded from the map file, then edited in the
-	# lobby (D-049).
-	# Including what the spawn sampler reads, which travels with the rest
-	# so the lobby preview can reproduce the server's starts exactly rather
-	# than guessing at them (D-104).
+	# lobby (D-049) — including what the spawn sampler reads, which travels
+	# with the rest so the lobby preview can reproduce the server's starts
+	# exactly rather than guessing at them (D-104).
 	_settings = MapSettings.from_map(_config)
 	# --seed PINS the world; without it the default stands here and a
 	# lobby rolls over it a few lines below (D-100). Every seedless
