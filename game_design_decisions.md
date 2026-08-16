@@ -2847,6 +2847,41 @@ seat forever and the admin role never passed on.
 **Revisit trigger:** the first match with two humans in it. At that point
 "leave" has to become per-player and this entry is reopened, not patched.
 
+**Amendment, 2026-08-16 — the second match had no ground** (issue #57,
+found in the #29 lobby playtest). Everything above about what a match
+writes on the lobby was about *state*; this was about a *node*.
+`_teardown_match()` freed `_terrain_root` — correctly, for the reason
+given there: the lobby can change size, seed and preset between matches
+(D-049), so a kept mesh is only correct until somebody moves a slider.
+But the root was constructed exactly once, in `client.gd`'s `_ready()`,
+and nothing rebuilt it. Every match after a return to the lobby parented
+its chunk meshes to a null instance and drew squads and forests standing
+on nothing.
+
+Two things worth carrying:
+
+- **It was invisible to every number**, in the way D-096 and M7 both
+  were. The meshes really were built; the capture verdict's
+  `terrain=true` is set by the *caller* of `_build_terrain()` and stays
+  true whether or not the function got past its first `add_child`. Only a
+  picture of a SECOND match shows it.
+- **The fix is ownership, not a null check placed anywhere.**
+  `_build_terrain()` now mints the root as well as the chunks, and
+  `_ready()` no longer touches it, so the builder is self-sufficient
+  rather than depending on an initialisation that ran an unknown number
+  of matches ago. That is the same shape as the teardown's own rule:
+  whoever frees a thing and whoever builds it have to agree about what
+  "a thing" is.
+
+`client.gd` is native-only (D-014) and this file and CLAUDE.md both say
+the client is unreachable from GUT — which was read as "all of it" and is
+only true of what it DRAWS. Its node LIFETIME needs neither a GPU nor a
+window: `_build_terrain()` and `_teardown_match()` null-guard every node
+they touch, so `tests/test_return_to_lobby.gd` now instantiates the real
+script (never adding it to the tree, so `_ready()` does not run) and
+plays match → lobby → match against it. Both new tests were observed to
+fail before the fix.
+
 ---
 
 ### D-063 · 2026-08-06 · Accepted — the HUD a player actually reads, and a view that turns

@@ -181,3 +181,88 @@ func test_a_client_stays_in_its_seat_when_it_leaves_a_match() -> void:
 	assert_true(state.in_lobby(), "The client should be showing the lobby again")
 	assert_eq(state.lobby.get("seats", []).size(), 2, "The seat list belongs to the lobby, not the match")
 	assert_eq(state.player, 1, "The server does not reissue player ids")
+
+
+# --- the ground the SECOND match stands on ----------------------------
+#
+# `client.gd` is native-only (D-014) and this file's header says so: what
+# is testable headless lives in ClientState. That is true of everything
+# the client DRAWS — and it left the client's node LIFETIME untested, so
+# `_teardown_match()` freed `_terrain_root` and nothing ever built it
+# again. Every match after a return to the lobby rendered squads and
+# forests standing on nothing, with every number green: the chunk meshes
+# really were built, they were just parented to a null instance.
+#
+# The lifetime half needs no GPU and no window. `_build_terrain()` and
+# `_teardown_match()` null-guard every node they touch (`_camera`,
+# `_minimap_rect`, `_world_environment`), so the real script can be
+# instantiated and driven directly. Instantiated, never added to the
+# tree — `_ready()` opens a socket, and not running it is also the point
+# of the first test below.
+
+
+## The real `client.gd`, one match's worth of world already known to it.
+## Freed by GUT rather than by hand: the terrain roots below are its
+## children and go with it.
+func _client_with_a_map() -> Node3D:
+	var settings := MapSettings.new()
+	settings.width = 16
+	settings.height = 8
+	settings.seed = 7
+	var state := _client_in_a_match()
+	state.handle_packet(NetProtocol.encode_map_settings(settings.to_dict()))
+	assert_true(state.has_map(), "Setup: the client should have the map settings (D-049)")
+
+	var client: Node3D = autofree(load("res://client.gd").new())
+	client._state = state
+	return client
+
+
+## Nine, because the world is a torus and the chunk set is drawn at every
+## lattice offset (D-035) — one Node3D per copy, under the terrain root.
+func _terrain_tiles(client: Node3D) -> int:
+	if client._terrain_root == null:
+		return -1
+	return client._terrain_root.get_child_count()
+
+
+func test_building_terrain_does_not_depend_on_having_started_up() -> void:
+	# `_build_terrain()` has to be self-sufficient rather than rely on an
+	# initialisation that ran an unknown number of matches ago — which is
+	# what made this fail: the root was constructed once in `_ready()`.
+	var client := _client_with_a_map()
+	client._build_terrain()
+	assert_eq(_terrain_tiles(client), 9,
+		"_build_terrain() must construct its own root, not inherit one from _ready()")
+
+
+func test_a_second_match_draws_terrain_again() -> void:
+	# The reported bug, in sequence: play a match, return to the lobby,
+	# start another. Set up exactly as startup used to leave it, so this
+	# fails for the reason the playtest saw rather than for the one above.
+	var client := _client_with_a_map()
+	var startup_root := Node3D.new()
+	client._terrain_root = startup_root
+	client.add_child(startup_root)
+
+	client._build_terrain()
+	assert_eq(_terrain_tiles(client), 9, "Setup: the first match should draw its ground")
+
+	client._teardown_match()
+	assert_null(client._terrain_root,
+		"The mesh must go: the lobby can change size, seed and preset before the next match (D-049)")
+
+	# The second match. `_terrain_built` is false again, so the client
+	# rebuilds — and the ground has to come back with it.
+	client._state.handle_packet(NetProtocol.encode_welcome(
+		1, 16, 8, PackedInt32Array([0, 1]), [], 40, 0))
+	var settings := MapSettings.new()
+	settings.width = 16
+	settings.height = 8
+	settings.seed = 9
+	client._state.handle_packet(NetProtocol.encode_map_settings(settings.to_dict()))
+
+	assert_false(client._terrain_built, "Setup: the client should know it owes itself a terrain")
+	client._build_terrain()
+	assert_eq(_terrain_tiles(client), 9,
+		"The second match renders squads and forests standing on nothing without this")
