@@ -1156,6 +1156,14 @@ selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
                         ranking that was wrong does not.
+minimap_paint.gd         What the minimap paints over the terrain, and how
+                        big (D-101). Buildings are drawn from KNOWLEDGE,
+                        not from sight — that is the only representation
+                        persistent-explored fog (D-030) has anywhere, and
+                        the minimap had no buildings pass at all until
+                        this file existed. Footprints wrap; sizes come
+                        from BuildingDef.no_build_radius, never a list of
+                        ids.
 ground_cover.gd          Which decorative props dress a cell (D-100).
                         Same shape as resource_visuals.gd and the exact
                         OPPOSITE of what it dresses: cover is client-
