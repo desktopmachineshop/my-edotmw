@@ -51,7 +51,7 @@ var space: TorusSpace
 ## The ground the nodes were derived from, remembered by `generate()`.
 ##
 ## Kept so the fairness post-pass can tell whether the cell it is about to
-## drop a node on is ground that grows the thing (D-101). Not a second
+## drop a node on is ground that grows the thing (D-104). Not a second
 ## TerrainGen: the server builds exactly one and hands it here, for the
 ## reason server.gd states about passability — two instances would be two
 ## sources of truth about the same ground.
@@ -140,7 +140,7 @@ func _roll_kind(coord: Vector2i, roll: float) -> int:
 ##
 ## THE definition of biome-derived placement (D-087), and it is one table
 ## rather than two because the fairness post-pass reads it as well
-## (D-101): a top-up needs to know whether the ground it is about to land
+## (D-104): a top-up needs to know whether the ground it is about to land
 ## on grows the thing at all. Two spellings of the same table would drift,
 ## and the symptom would be stone outcrops on sand with every number
 ## green.
@@ -227,7 +227,7 @@ static func _roll(seed_value: int, cell_local: int) -> float:
 ## each resource within reach.
 ##
 ## Where a quota is short, a node is placed on the nearest ground the
-## spawn can walk to that would GROW the thing (D-101), falling back to
+## spawn can walk to that would GROW the thing (D-104), falling back to
 ## any walkable cell only when the quota cannot otherwise be met — and
 ## saying so when it does, per CLAUDE.md's no-silent-caps rule.
 ##
@@ -317,7 +317,7 @@ func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 			compromised, placed])
 
 
-## How well a cell suits a fairness top-up, best first (D-101). The pass
+## How well a cell suits a fairness top-up, best first (D-104). The pass
 ## places every cell of one rank before it looks at the next.
 enum { GROUND_NATURAL, GROUND_PLAUSIBLE, GROUND_SHORELINE }
 const GROUND_RANKS := 3

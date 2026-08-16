@@ -68,7 +68,7 @@ class_name MapConfig
 @export var spawn_seed: int = 20260801
 
 ## Smallest connected patch of walkable ground a start may sit on, in
-## cells (D-101).
+## cells (D-104).
 ##
 ## A spawn used to be accepted on the strength of its OWN cell being
 ## passable, which says nothing about what surrounds it. On `islands`,
@@ -139,7 +139,7 @@ func player_capacity() -> int:
 ## a live failure mode rather than a hypothetical one, and the caller
 ## that has the terrain is the one that must supply it.
 ##
-## Passable is necessary and NOT sufficient (D-101): a candidate must
+## Passable is necessary and NOT sufficient (D-104): a candidate must
 ## also stand on a landmass of at least `min_spawn_landmass` cells, or a
 ## start can be legal ground and still be a six-cell rock in the sea.
 ##
@@ -198,7 +198,7 @@ func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 
 
 ## How much walkable ground `cell` is connected to, counting no further
-## than `min_spawn_landmass` (D-101).
+## than `min_spawn_landmass` (D-104).
 ##
 ## Capped rather than exhaustive, which is the whole reason this is cheap
 ## enough to run per candidate: a real landmass stops the fill at the cap

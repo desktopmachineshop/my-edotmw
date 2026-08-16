@@ -573,7 +573,7 @@ interleaving is for — but any absolute quoted from a long benchmarking
 session should be checked against a fresh one. This is the same lesson as
 M6's worst-tick figures taken while the host was building containers.
 
-**A start is a PLACE, not a legal cell (D-101, 2026-08-16).** From a
+**A start is a PLACE, not a legal cell (D-104, 2026-08-16).** From a
 playtest of the `islands` preset: a founding party apparently standing in
 open sea. Nothing was placed in water — `spawn_points` returned 20 of 20,
 none impassable, and no node sat on an impassable cell. Three defects

@@ -197,7 +197,7 @@ func test_spawns_never_land_on_impassable_ground() -> void:
 
 
 func test_spawns_never_land_on_an_islet_in_open_water() -> void:
-	# Passable is necessary and not sufficient (D-101). The reported case:
+	# Passable is necessary and not sufficient (D-104). The reported case:
 	# a founding party on a SIX-CELL rock, every cell of it legal ground,
 	# and the player dead on arrival because a town hall and the resources
 	# to work it do not fit — D-031 makes that opening the whole match.

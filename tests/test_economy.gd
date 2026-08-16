@@ -919,7 +919,7 @@ func test_a_guaranteed_resource_is_one_the_spawn_can_walk_to() -> void:
 		+ "would starve the spawn just as surely")
 
 
-# --- fairness top-ups land on ground that grows them (D-101) -----------
+# --- fairness top-ups land on ground that grows them (D-104) -----------
 
 func test_a_stone_top_up_goes_to_the_mountain_foot_when_there_is_one() -> void:
 	# D-087 moved stone to the mountain FOOT so a node reads as belonging

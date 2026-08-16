@@ -62,7 +62,7 @@ var seed_pinned: bool = false
 ## the preset it started from.
 var preset: StringName = &"continents"
 
-## What the spawn sampler needs that terrain does not give it (D-101).
+## What the spawn sampler needs that terrain does not give it (D-104).
 ##
 ## These start life in the map file (`MapConfig`) and travel with the rest
 ## of the settings for the reason at the top of this file: the lobby's map
@@ -189,7 +189,7 @@ func to_space() -> TorusSpace:
 ## The settings a map file opens the lobby with (D-049).
 ##
 ## Here rather than in `server.gd` so that everything the spawn sampler
-## reads makes ONE trip — map file to settings to sampler (D-101). A
+## reads makes ONE trip — map file to settings to sampler (D-104). A
 ## caller copying four of the six fields by hand is how the lobby preview
 ## came to sample by rules the server was not using.
 static func from_map(config: MapConfig) -> MapSettings:
@@ -212,7 +212,7 @@ static func from_map(config: MapConfig) -> MapSettings:
 ## preview both called it and fed it different inputs, which is a shared
 ## implementation with unshared arguments and produces two different
 ## answers with a comment above each claiming they are the same one
-## (D-101).
+## (D-104).
 ##
 ## The seed is the map's base PLUS the match seed, so re-rolling the seed
 ## in the lobby moves the starts as well as the ground. Deterministic, and

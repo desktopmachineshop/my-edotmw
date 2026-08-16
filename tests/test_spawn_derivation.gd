@@ -1,6 +1,6 @@
 extends GutTest
 
-## Guards D-101: `MapSettings.to_spawn_config` is the ONE derivation of
+## Guards D-104: `MapSettings.to_spawn_config` is the ONE derivation of
 ## where players start, and what it needs travels on the wire.
 ##
 ## The defect this exists for: `client.gd` drew spawn markers on the lobby
@@ -174,4 +174,4 @@ func test_no_script_seeds_its_own_spawn_sampler() -> void:
 			offences.append("%s seeds a spawn sampler of its own — call MapSettings.to_spawn_config()" % path_str)
 
 	assert_eq(offences, [],
-		"Only MapSettings may decide what the spawn sampler is fed (D-101)")
+		"Only MapSettings may decide what the spawn sampler is fed (D-104)")

@@ -236,7 +236,7 @@ func _ready() -> void:
 	# lobby (D-049).
 	# Including what the spawn sampler reads, which travels with the rest
 	# so the lobby preview can reproduce the server's starts exactly rather
-	# than guessing at them (D-101).
+	# than guessing at them (D-104).
 	_settings = MapSettings.from_map(_config)
 	# --seed PINS the world; without it the default stands here and a
 	# lobby rolls over it a few lines below (D-100). Every seedless
@@ -391,7 +391,7 @@ func _build_world() -> void:
 	# Spawn placement follows the LOBBY's chosen slot count and map size
 	# (D-049), not the map file's — the file is only the starting point
 	# those settings were seeded from.
-	# Derived by MapSettings, not here (D-101): the lobby's map preview
+	# Derived by MapSettings, not here (D-104): the lobby's map preview
 	# draws these too, and the last time each side built its own sampler
 	# the preview marked twenty starts of which none were real.
 	var spawn_config := _settings.to_spawn_config()

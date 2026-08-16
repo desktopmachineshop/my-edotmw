@@ -7395,7 +7395,7 @@ func _rebuild_map_preview(settings: Dictionary) -> void:
 
 	# Where people start, the way a lobby preview shows player positions.
 	# `MapSettings.to_spawn_config` is the shared DERIVATION, not merely
-	# the shared implementation (D-101) — this used to build its own
+	# the shared implementation (D-104) — this used to build its own
 	# MapConfig and seed it with the match seed where the server seeds it
 	# with the map's base plus the match seed, so every marker it drew was
 	# somewhere nobody starts, under a comment asserting the opposite.

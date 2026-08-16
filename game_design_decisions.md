@@ -20,11 +20,16 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-101 · 2026-08-16 · Accepted — a start is a PLACE, not a legal cell: spawns need land, top-ups need ground, and one derivation feeds both sides
+### D-104 · 2026-08-16 · Accepted — a start is a PLACE, not a legal cell: spawns need land, top-ups need ground, and one derivation feeds both sides
 
-*(Numbered 101 as the next free id in this worktree: D-099 and D-100 are
-claimed by the ground-cover work `CLAUDE.md` already records. If a merge
-finds a collision, renumber this one — the D-081/D-098 precedent.)*
+*(Editorial, 2026-08-16: first written as D-101 and renumbered to D-104
+before merge. Several fix sessions were working in parallel off a `main`
+that tops out at D-098, and each independently picked "the next free
+id" — four of them chose 101. The ids were assigned centrally afterwards:
+#68=D-099, #70=D-100, #66=D-101, #76=D-102, #71=D-103, this one=D-104,
+#75=D-105. Same failure as D-081's collision and the same fix; the
+lesson, now paid for twice, is that "the next free id" is not a local
+question when the log has more than one author at a time.)*
 
 **Decision:** Three rules, all from one playtest report (#53, the P01
 `islands` session), all of the same shape — a check that tested the

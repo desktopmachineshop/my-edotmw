@@ -1142,7 +1142,7 @@ static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
 	buf.put_u32(int(settings["player_slots"]))
 	buf.put_32(int(settings["seed"]))
 	_put_string(buf, String(settings["preset"]))
-	# Where people start is part of the world, not a detail of it (D-101):
+	# Where people start is part of the world, not a detail of it (D-104):
 	# a client that has to guess these guesses wrong, and the last one that
 	# did drew twenty spawn markers of which none were real. Note the LOBBY
 	# packet carries the same dictionary as JSON and so gained them for
