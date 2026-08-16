@@ -192,7 +192,13 @@ func test_an_authored_squad_is_still_one_multimesh() -> void:
 		"one MultiMesh per squad (D-009), authored models included")
 
 
-func test_toggling_ghost_keeps_the_node_layout() -> void:
+## What used to be here toggled a squad between the opaque and fog-ghost
+## shaders and asserted the material changed. D-099 draws a concealed squad
+## not at all, so there is no ghost material to swap to and the whole path is
+## deleted — see tests/test_ghost_squads_are_not_drawn.gd, which guards that
+## it stays deleted. This is what remains of the question: an authored squad
+## gets exactly one material, opaque, and rebuilding does not multiply nodes.
+func test_an_authored_squad_gets_one_opaque_material() -> void:
 	var model_id := _first_model()
 	if model_id == &"":
 		pass_test("generated/ not built")
@@ -205,14 +211,9 @@ func test_toggling_ghost_keeps_the_node_layout() -> void:
 	var unit := PrimitiveUnit.new()
 	add_child_autofree(unit)
 	unit.rebuild(def, Color.GREEN)
-	var lit := (unit.get_child(0) as MultiMeshInstance3D).material_override
-
-	unit.set_ghost(true)
-	var ghosted := (unit.get_child(0) as MultiMeshInstance3D).material_override
+	var material := (unit.get_child(0) as MultiMeshInstance3D).material_override
 	assert_eq(unit.get_child_count(), 1)
-	assert_true(lit != ghosted,
-		"the ghost variant is a different shader program, because whether a "
-		+ "material is transparent is fixed at shader compile time (D-025)")
-
-	unit.set_ghost(false)
-	assert_eq(unit.get_child_count(), 1)
+	assert_not_null(material, "an authored model renders through its VAT shader")
+	assert_eq((material as ShaderMaterial).shader,
+		load(UnitMesh.OPAQUE_SHADER),
+		"soldiers render opaque and through one shader (D-099)")

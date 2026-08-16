@@ -479,13 +479,17 @@ func _finish_capture() -> void:
 		and _state.conceal_events > 0
 	)
 
-	# live_squads/ghosts/soldiers make D-026 criterion 11's visual half
-	# checkable from the log, not only by eye: soldiers should visibly fall
-	# as casualties land (this same number is what a human looking at
-	# client-frame.png should be able to count), and ghosts should be
-	# rendered distinctly rather than as though still live (see
-	# _set_ghost_look) — neither of which the pre-M2 verdict could say
+	# live_squads/ghosts/soldiers make M2's fog and combat checkable from the
+	# log, not only by eye: soldiers should visibly fall as casualties land
+	# (this same number is what a human looking at client-frame.png should be
+	# able to count), and `ghosts` says how many squads this client has been
+	# told to stop seeing — neither of which the pre-M2 verdict could say
 	# anything about at all.
+	#
+	# `ghosts` counts DATA, not pixels: a concealed squad is not drawn at all
+	# (D-099), so it is deliberately not a claim about the frame. It is still
+	# worth printing — a run in which nothing was ever hidden proves nothing
+	# about fog, which is why `conceal_events` gates the verdict below.
 	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
 		"ok" if ok else "failed",
 		str(_terrain_built), str(_state.welcomed), squads_drawn, live_squads, ghosts, soldiers,
@@ -723,8 +727,8 @@ func _build_terrain() -> void:
 ## `composition` it hit the `continue` below and kept whatever transforms
 ## it had at the instant of conceal, forever, with no visual difference
 ## from a squad that is still live and simply idle. That is exactly "drawn
-## as though it were live", which D-026 criterion 11 rules out: a ghost is
-## last-known information, not a soldier still standing there.
+## as though it were live", which D-099 rules out: a concealed squad is
+## not drawn, and "stop updating it" is not the same thing as gone.
 func _refresh_squads() -> void:
 	if _state.space == null:
 		return
@@ -741,7 +745,6 @@ func _refresh_squads() -> void:
 			continue
 
 		var unit := _squad_node(squad_id, String(_state.composition[squad_id]["def_id"]))
-		_set_ghost_look(unit, false)
 
 		# Cull BEFORE deriving, not after (D-045). Deriving a squad the
 		# camera cannot see costs the same as deriving one it can, and at
@@ -849,21 +852,22 @@ func _refresh_squads() -> void:
 		# approximate a line, a wedge and a loose scatter with one circle.
 		_stamp_selection_discs(squad_id, decorated)
 
-	# Squad ghosts are hidden rather than drawn — a deliberate visual choice
-	# (units ghost only as a rendering concept; buildings' persistent-
-	# explored fog already never un-knows a building without any fade at
-	# all, and that stays exactly as it is). This is a display decision
-	# only: `_state.ghost_squad_ids()`/`ghost_info()` are untouched, so the
-	# protocol, the composition hash and D-025's conceal/reveal wire events
-	# still work precisely as documented — nothing here is skipped, only
-	# what happens on screen with a squad once it has one.
+	# Squad ghosts are hidden rather than drawn (D-099). Buildings' own
+	# persistent-explored fog never un-knows a building and never fades one,
+	# and that asymmetry is deliberate: a building that was there is still
+	# there, while a squad that was there has moved.
+	#
+	# A display decision only: `_state.ghost_squad_ids()`/`ghost_info()` are
+	# untouched, so the protocol, the composition hash and D-025's
+	# conceal/reveal wire events still work precisely as documented —
+	# nothing here is skipped, only what happens on screen with a squad once
+	# it has one.
 	#
 	# Explicitly hidden rather than merely left unwritten: doing nothing
 	# would leave the node showing whatever transforms the LIVE pass above
-	# last gave it, frozen but still fully opaque — exactly the "drawn as
-	# though it were live" state D-026 criterion 11 was written to rule
-	# out, just reached by a different route (never touching it again,
-	# rather than rendering it wrong).
+	# last gave it, frozen but still fully opaque — which is worse than
+	# either drawing it or not, just reached by a different route (never
+	# touching it again, rather than rendering it wrong).
 	for squad_id in _state.ghost_squad_ids():
 		var unit: PrimitiveUnit = _squad_nodes.get(squad_id, null)
 		if unit != null:
@@ -882,38 +886,6 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 		unit.rebuild(def if def != null else _unit_def, _owner_colour_of(squad_id))
 		_squad_nodes[squad_id] = unit
 	return unit
-
-
-## Visually distinguish a ghost from a live squad (D-026 criterion 11).
-## Looked up by type rather than an index PrimitiveUnit doesn't publish, so
-## this keeps working even if PrimitiveUnit's own child layout changes.
-##
-## GeometryInstance3D.transparency (tried first, and left as the doc
-## comment's cautionary tale) is per-instance and does not touch
-## PrimitiveUnit's own material — which sounded like exactly the right
-## layering, since PrimitiveUnit is combat/vision's file to rebuild from
-## UnitDef, not this one's to change. It also does not render as
-## translucent at all under the `gl_compatibility` rendering method,
-## which is the ONLY renderer `just test-client` can use (Mesa ships
-## software OpenGL, not software Vulkan — see D-014's 2026-07-29
-## amendment). Confirmed by turning it up to 0.95 and finding the frame
-## from `just test-client` pixel-identical to 0.6: a property this test's
-## own renderer silently ignores is worse than no ghost styling at all,
-## since it would look correct on a native `run-client` GPU and invisible
-## in the one place D-026 criterion 11 requires it to actually be checked.
-##
-## So this instead toggles the MATERIAL's own alpha blending. Alpha blending
-## is a baseline feature of every rendering method this project uses, so
-## unlike the instance shortcut this actually shows up in a screenshot.
-##
-## Since M7 the mechanism differs by which path a squad renders on — a
-## primitive mutates its StandardMaterial3D's alpha, an authored model swaps
-## to a different shader program, because whether a material is transparent is
-## decided at shader COMPILE time (see unit_vat.gdshaderinc). PrimitiveUnit
-## owns that choice; this function exists only so the call site above reads the
-## same as it did before.
-func _set_ghost_look(unit: PrimitiveUnit, is_ghost: bool) -> void:
-	unit.set_ghost(is_ghost)
 
 
 ## Capture-mode-only scripted maneuver (see the constants above this file).
@@ -4531,9 +4503,9 @@ func _update_minimap() -> void:
 
 	for squad in _state.curves:
 		# Ghosted squads are not drawn at all here either — the same
-		# decision `_refresh_squads` makes for the 3D view (see its own
-		# comment): units ghost as a display concept only for buildings
-		# now, not squads. The underlying ghost data/hash mechanism (D-025)
+		# decision `_refresh_squads` makes for the 3D view (D-099), and the
+		# two must agree or a squad missing from the world would still be a
+		# dot on the map. The underlying ghost data/hash mechanism (D-025)
 		# is untouched; this just stops painting a dot for it.
 		if _state.is_ghost(squad):
 			continue

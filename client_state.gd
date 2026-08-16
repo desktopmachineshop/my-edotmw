@@ -415,8 +415,11 @@ func _handle_squad_conceal(data: PackedByteArray) -> void:
 
 ## True if `squad` is a stale ghost right now — concealed, showing its
 ## last-known composition and curve rather than live state. Exists so a
-## renderer can draw a ghost differently later (D-025 part 3); nothing in
-## this file's own live accounting (composition_hash, alive_of,
+## renderer can tell a ghost from a live squad (D-025 part 3); the shipped
+## answer is that it draws neither the squad nor its minimap dot (D-099),
+## but that is the client's decision to make and not this file's.
+##
+## Nothing in this file's own live accounting (composition_hash, alive_of,
 ## squads_awaiting_composition, derive_all) ever consults this — they
 ## exclude ghosts by construction because `composition` simply doesn't
 ## contain them.
