@@ -111,13 +111,47 @@ fight better than line infantry, and only they can build a town hall —
 expressed in `BuildingDef.built_by`, which is also how they are barred
 from building anything else. Everything else is produced.
 
-**Use `just test-load 4 120`.** Two separate reasons, both learned the
-hard way:
+**Use `just test-load 4 150`** — and know before you run it that **the
+verdict's `reveal_events` gate is currently failing on `main` itself, and
+no duration fixes it.** Measured 2026-08-16 on `main` at f5142fc, and on
+a branch off it, in an isolated worktree per D-095:
+
+| tree | duration | conceal | reveal | verdict |
+|---|---|---|---|---|
+| `main` alone | 150 s | 16 | **1** | clean, by one event |
+| `main` alone | 210 s | 15 | **0** | FAIL |
+| branch | 150 s | 15 | **0** | FAIL |
+| branch | 150 s (repeat) | 15 | **0** | FAIL |
+| branch | 210 s | 15 | **0** | FAIL |
+
+Four of five fail, on BOTH trees, with `main`'s 210 s run numerically
+identical to the branch's. **So a `reveal_events=0` failure right now is
+not yours** — that is **issue #69**, which reports the same thing on the
+previous base too. Check against `main` in its own worktree before
+spending an hour on your diff. Squads are still being CONCEALED 15 times
+a run and `ghosts_peak` is 15; it is the return leg that has stopped
+happening, and `bot_client.gd`'s scripted phases are the suspect rather
+than fog itself (the same counter reaches 11 in a `test-client` scenario
+run).
+
+**A single green run is not a measurement, and this file has just been
+caught by that.** It said "`4 150` is clean" on the strength of one run
+that reported `reveal_events=10`; four subsequent runs across two trees
+report 0. If you are about to write a duration into this file, run it
+more than once.
+
+`4 120` is stale regardless: three runs there reported `conceal_events=2`,
+which is the fog half barely running at all.
 
 - Spawns are far apart on a 128×64 map, so four armies cannot reach each
   other quickly. A short run fails with `casualties_applied=0
   conceal_events=0 reveal_events=0` — the verdict correctly reporting
   that combat and fog never happened rather than passing vacuously.
+- **A reveal needs a conceal AND a return.** `reveal_events` counts a
+  squad re-entering vision after leaving it, so it is the LAST of the fog
+  criteria to be satisfied and the first to fail. It is also the one
+  currently failing on `main` — see the table above before reading a zero
+  there as a fault in your own change.
 - **A town hall takes 40 seconds and the founding party is spent on it
   (D-031), so a player owns no soldiers until production finishes.** Any
   run shorter than ~90 s reports `soldiers=0` and fails, and that is the
@@ -359,13 +393,42 @@ actually do with it.** Measured after: `test-load 4 120` clean,
 **59.60 µs/squad at 52 squads** against 60.72 before, so the per-radius
 sort costs nothing.
 
-**The ladder still decides at these values:** `just ai-ladder 3 600` gives
-**2 of 3 decided, 1 draw**, one win each civ, first attack ~195 s — the
-same 2-of-3 D-055 measured before the buff. Read at **420 s** the same
-build reported 3 of 3 drawn, which was the CAP truncating longer matches,
-not a weaker AI. **A stronger defence lengthens matches, so quote a
-ladder result with its cap** — the same rule as quoting µs/squad with a
-squad count.
+**Every ladder number recorded before 2026-08-16 is void, and so is
+anything derived from one** (D-107). They were measured against an AI
+that had never played: an AI seat spent its one founding order on the
+first tick, before the match was running, into a server guard that
+dropped it silently — and latched `_founded` on the SEND. **So every
+match against AI opponents, on every map, since AI seats existed, was
+against opponents that did literally nothing.** The ladder was the one
+harness that would have noticed and could not start a match itself
+(`--players=1 --ai=2`, no human ever launched), so ten minutes of nothing
+was reported as `draws (time cap)` and read as an AI weakness through
+several rounds of AI work.
+
+The void numbers, for the record, were "2 of 3 decided, 1 draw, first
+attack ~195 s at a 600 s cap". **Two rules from them survive and still
+apply:** a stronger defence lengthens matches, so **quote a ladder result
+with its cap** (the same rule as quoting µs/squad with a squad count) —
+the same build read 3 of 3 drawn at 420 s purely from truncation; and the
+ladder now **fails** rather than reporting a draw if any match never left
+the lobby.
+
+**The first ladder number taken from an AI that actually plays**
+(2026-08-16, `just ai-ladder 3 600`): **2 of 3 decided, 1 draw**, one win
+each civ, first attack **~171 s (northmen) / ~179 s (legion)**,
+`squads_peak` ~19 legion / ~12.7 northmen, `buildings` ~1.7 / ~0.7.
+**That is the same headline the void figure claimed**, which is a
+coincidence and worth saying out loud: the old *conclusion* was
+accidentally right while its *evidence* was a set of matches nobody
+played. Do not read the agreement as the old numbers having been fine.
+Note also the asymmetry — legion out-economies northmen roughly 3:2 here
+— which is the first thing on this ladder that is actually about the
+civs.
+
+**The lesson worth carrying, which is not about the AI:** a latch that
+records an INTENT will eventually be read as a record of an OUTCOME.
+`_founded = true` sat one line above `send.call(order)`. Latch on the
+effect — something the actor can SEE — or do not latch.
 
 **Check which instance you are on before believing a load-test failure.**
 Two runs failed with `buildings_known=0` and identical numbers, and it
@@ -1247,7 +1310,7 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  699 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
@@ -1261,6 +1324,12 @@ Dev loop and tests:
   success, failure, and Ctrl-C. Prints the per-squad update cost — the
   number to watch — plus how many client/server state-hash comparisons
   ran and how many desynced.
+- `just ai-ladder [MATCHES] [SECONDS] [AI]` — headless AI-vs-AI matches on
+  `maps/ladder.tres`, to make "smarter" a measurement (D-054). Runs a
+  genuinely all-AI server (`--players=0`); **fails** unless every match is
+  observed to leave the lobby, which for three milestones it did not
+  (D-107). Quote a result WITH its cap — a stronger defence lengthens
+  matches, and a truncated one reads as a draw.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost, and the count of cliff faces the shipped map draws.
   Vary CHUNK_SIZE to settle D-017 with data. The PNG is **top-down biome

@@ -1301,16 +1301,23 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
+        # --players=0: nobody human is coming. This said --players=1 for
+        # three milestones, so the server waited for a third participant
+        # that the recipe never launches and EVERY ladder match sat in
+        # Phase.LOBBY for its whole cap — reported below as a draw, and
+        # read as an AI weakness through several rounds of AI work. The
+        # "match actually started" assertion after the loop is what makes
+        # that unrepeatable; this is only the fix.
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         fi
@@ -1331,10 +1338,31 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
         exit 1
     fi
 
+    # ASSERT THE MATCH HAPPENED, before reading a single statistic off it.
+    #
+    # This is CLAUDE.md's standing rule — "assert the thing did happen, not
+    # merely that nothing complained" — arriving in the one harness that
+    # most needed it. The ladder spent three milestones reporting
+    # `draws (time cap): N` for matches that never left the lobby: a
+    # harness describing a game that was never played, in the exact
+    # vocabulary of an AI that would not fight. Every number below is
+    # meaningless without this line.
+    started=$(grep -c '^server: match started' "$log" || true)
+    if [ "$started" -lt "{{MATCHES}}" ]; then
+        echo "ai-ladder: FAILED — only $started of {{MATCHES}} matches ever left the lobby." >&2
+        echo "  A match that never started is not a draw. Check --players/--ai against" >&2
+        echo "  the server's players_expected, and see $log." >&2
+        exit 1
+    fi
+
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
     awk '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
+            match($0, /phase=([0-9]+)/, ph)
+            # phase 0 is LOBBY. A summary printed while still in the lobby
+            # is a match that never ran, whatever its winner field says.
+            if (ph[1] == "0") { unstarted++ }
             if (w[1] == "-1") { draws++ } else { wins[w[1]]++ }
             matches++
         }
@@ -1351,6 +1379,10 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
         }
         END {
             if (matches == 0) { print "  no matches completed — see the log"; exit 1 }
+            if (unstarted > 0) {
+                printf "  FAILED: %d of %d matches ended still in the lobby — nothing was measured\n", unstarted, matches
+                exit 1
+            }
             printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
             for (k in n) {
                 printf "  player %-5s civ=%-10s wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f",

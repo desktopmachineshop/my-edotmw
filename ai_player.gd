@@ -95,7 +95,7 @@ var economy_only: bool = false
 var send: Callable = Callable()
 
 var _next_think := 0.0
-var _founded := false
+var _found_at := 0.0
 var _attack_at := 0.0
 var _train_at := 0.0
 
@@ -112,6 +112,24 @@ func update(now: float) -> void:
 		return
 	_next_think = now + THINK_INTERVAL
 
+	# Nothing at all until the match is actually running.
+	#
+	# The server ticks AI seats from the moment they are created, which in a
+	# no-lobby match (`--ai=n`) is before anybody has connected and while the
+	# match is still in Phase.LOBBY. `_found_town` therefore fired on the
+	# FIRST tick, `server._validated_squad` dropped the order on its
+	# not-running guard without a word, and the AI — which latched on the
+	# SEND — spent its one founding attempt into a closed door and sat on its
+	# founding party for the rest of the game. Every match against AI
+	# opponents, on every map, was against opponents that did nothing.
+	#
+	# Read from this AI's own ClientState rather than from the server, which
+	# is the whole of D-051: an AI knows what a client in its seat knows, and
+	# a client is told the phase (S2C_LOBBY, D-048). Nothing here reaches for
+	# a fact a human player could not have.
+	if not match_running():
+		return
+
 	_record_stats()
 	_report_refusals()
 	_forget_dead_assignments()
@@ -123,6 +141,17 @@ func update(now: float) -> void:
 	_put_gatherers_to_work()
 	if not economy_only:
 		_fight(now)
+
+
+## Whether this AI's own client believes the match has begun.
+##
+## `welcomed` alone is not enough: a client in a lobby is welcomed too
+## (server.gd sends one with no squads so the HUD has a map size), so the
+## phase has to come from the lobby message. `in_lobby()` answers false
+## when no seat list has arrived at all, which is the right default — a
+## seatless AI is a test fixture, not a lobby.
+func match_running() -> bool:
+	return state.welcomed and not state.in_lobby()
 
 
 ## Put up the buildings the AI needs to exist as an opponent (D-053).
@@ -252,21 +281,64 @@ var _builder_squad := -1
 var _builder_busy_until := 0.0
 
 
+## How long to wait before trying to found again. An order can be refused
+## for reasons a client cannot see (D-034's notices say why, but only after
+## the fact), and the fix for "the one attempt was lost" must not become
+## "attempt every second forever".
+const FOUND_RETRY := 5.0
+
+
 ## The opening every player makes: plant the town hall (D-031). The
 ## founding party is spent doing it, so this happens once and the AI owns
 ## nothing until production starts.
+##
+## ## Latched on the TOWN, not on the send
+##
+## This used to set `_founded = true` on the line before `send.call(order)`
+## — an attempt counted as a success. An order the server dropped was
+## therefore indistinguishable from one it accepted, and the AI never tried
+## again: with the seat thinking before the match was running (see
+## `update`), every AI in every match sat on its founding party forever.
+##
+## Removing the latch outright is the other wrong answer, and was measured
+## as such: with no latch the AI re-sends forever and the log fills with
+## "gatherers cannot build a Town Centre" once the founders are gone. Two
+## conditions bound it instead, and both are things the AI can SEE — it
+## stops when the town centre exists, and it cannot start when it holds no
+## squad allowed to found one. Between them there is nothing to spam.
 func _found_town() -> void:
-	if _founded or state.squads.is_empty():
+	if _owned_building_count(&"town_centre") > 0:
 		return
-	var squad := int(state.squads[0])
+	if state_time() < _found_at:
+		return
+	var squad := _founder()
+	if squad < 0:
+		return
 	var home := state.spawn_cell_of(player)
 	if home.x < 0:
 		home = state.squad_cell(squad, state_time())
 	var order := state.encode_build(squad, "town_centre", home)
 	if order.is_empty():
 		return
-	_founded = true
+	_found_at = state_time() + FOUND_RETRY
 	send.call(order)
+
+
+## A squad of this AI's that may actually found a town centre, or -1.
+##
+## Asked of the shipped BuildingDef's `built_by` rather than named here, so
+## this file still names no unit and no civ (D-047) — and so it answers
+## "the founders are spent" correctly the moment they are, which is what
+## stops the retry above from ever becoming a spin.
+func _founder() -> int:
+	var def := BuildingSim.def_by_id(&"town_centre")
+	if def == null:
+		return -1
+	for squad in _own_squads():
+		var unit := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if unit != null and BuildingSim.can_build(def, unit.archetype):
+			return squad
+	return -1
 
 
 ## Train from anything finished. Asks by ARCHETYPE, so this file names no
