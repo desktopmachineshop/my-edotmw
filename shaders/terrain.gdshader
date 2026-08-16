@@ -32,7 +32,7 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 
 uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 
-// Fog of war on the GROUND (D-102). One texel per cell, addressed by UV2, which
+// Fog of war on the GROUND (D-106). One texel per cell, addressed by UV2, which
 // `TerrainChunk.fog_uv` derives from the CELL — never from world position, so
 // all nine torus copies (D-035) agree by construction, exactly as the atlas UVs
 // above do.
@@ -98,7 +98,7 @@ void fragment() {
 		+ tile_sample(tile_index.y, uv, ddx, ddy) * tile_weight.y
 		+ tile_sample(tile_index.z, uv, ddx, ddy) * tile_weight.z;
 
-	// How much of this ground the player knows about (D-102). Multiplying
+	// How much of this ground the player knows about (D-106). Multiplying
 	// ALBEDO is what makes unexplored ground genuinely black rather than merely
 	// dark: D-086's rig lights the world with sky ambient as well as a sun, and
 	// an unlit surface with albedo still takes the ambient. Specular goes with

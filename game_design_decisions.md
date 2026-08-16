@@ -20,12 +20,16 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-102 · 2026-08-16 · Accepted — the ground has fog of war, in three states
+### D-106 · 2026-08-16 · Accepted — the ground has fog of war, in three states
 
-*(Numbered 102 rather than 99: D-100 is a ground-cover entry drafted in
-`docs/plans/` and not yet merged here, and 099 and 101 are both spoken for by
-work in flight in other worktrees. This project has already paid for two ID
-collisions — see D-081's editorial note — and a gap is cheaper than a clash.)*
+*(Numbered 106 by assignment, not by counting. `main` tops out at D-098 and
+several fix sessions were running off it in parallel, each independently
+picking "the next free ID" — this entry was drafted as 101, renumbered to 102
+on noticing another worktree's draft, and collided again. IDs for the open set
+were then handed out centrally: 099, 100, 101, 102, 103, 104, 105 belong to
+other PRs and 106 to this one. Third time this project has paid for an ID
+collision — see D-081's editorial note — and the first time the fix was to stop
+letting each author choose.)*
 
 **Decision:** unscouted **terrain** is drawn black, terrain the player has seen
 but cannot currently see is drawn dim, and terrain in sight is drawn fully.

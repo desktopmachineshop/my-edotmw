@@ -167,7 +167,7 @@ static func vertex_uv(scale: Vector2, cell: Vector2i, corner: int) -> Vector2:
 		scale.y * float(v_numerator) / 3.0)
 
 
-## Where one vertex of one cell reads the fog-of-war field (D-102), as a UV into
+## Where one vertex of one cell reads the fog-of-war field (D-106), as a UV into
 ## a one-texel-per-cell texture laid out like `TorusSpace.index`.
 ##
 ## Cell-derived, like `vertex_uv` and for the same reason (D-035): the mesh is
@@ -497,7 +497,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var uvs := PackedVector2Array()
-	# Where each vertex reads the client's fog-of-war field (D-102). A second UV
+	# Where each vertex reads the client's fog-of-war field (D-106). A second UV
 	# channel rather than a custom one: it is a texture coordinate, and both of
 	# the custom channels are already spoken for by the atlas tiling.
 	var fog_uvs := PackedVector2Array()
@@ -817,11 +817,11 @@ static func make_material() -> Material:
 		Vector2(float(ATLAS_COLUMNS), float(ATLAS_ROWS)))
 	# Fog is NOT set here: this material is shared by four headless tools that
 	# have no player, and the shader's `hint_default_white` leaves them looking
-	# at the whole map. Only a client in a match calls `set_fog` (D-102).
+	# at the whole map. Only a client in a match calls `set_fog` (D-106).
 	return material
 
 
-## Bind one client's fog-of-war field to the terrain material (D-102).
+## Bind one client's fog-of-war field to the terrain material (D-106).
 ##
 ## Separated from the client so the binding is reachable from a headless test:
 ## the defect this closes was not a wrong fog field, it was a right one that

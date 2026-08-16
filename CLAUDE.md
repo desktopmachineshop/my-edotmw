@@ -560,7 +560,7 @@ interleaving is for — but any absolute quoted from a long benchmarking
 session should be checked against a fresh one. This is the same lesson as
 M6's worst-tick figures taken while the host was building containers.
 
-**The ground has fog of war now, and did not for six milestones (D-102,
+**The ground has fog of war now, and did not for six milestones (D-106,
 2026-08-16).** The 3D world drew the whole map lit from the first frame:
 unscouted ground looked exactly like ground you were standing on, and the
 minimap was the only surface in the game that drew any fog at all. Found by
@@ -932,9 +932,9 @@ terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
                         Owns the continuous cell-derived UVs (D-096), the
                         per-cell atlas tile slots the shader blends, the
                         cliff skirts (D-097) and the cell-derived fog UVs
-                        (D-102).
+                        (D-106).
 terrain_fog.gd           What ONE CLIENT knows about each cell of the
-                        ground (D-102): never seen, seen once, in sight
+                        ground (D-106): never seen, seen once, in sight
                         now. vision.gd's sibling on the other side of the
                         wire — the same disk stamp, but it decides how the
                         map is DRAWN rather than what is sent. Purely

@@ -1,7 +1,7 @@
 extends RefCounted
 class_name TerrainFog
 
-## What the GROUND knows, per cell, for one client (D-102).
+## What the GROUND knows, per cell, for one client (D-106).
 ##
 ## The sibling of `vision.gd` on the other side of the wire, and deliberately
 ## shaped like it: a field stamped once per refresh from whatever this player
@@ -15,7 +15,7 @@ class_name TerrainFog
 ## settings (D-049), identical for every player, and there is nothing about it to
 ## withhold. So the ground fell outside the fog mechanism entirely and was drawn
 ## fully lit from the first frame, with every test and number green, for six
-## milestones. See D-102 for the decision, and issue #58 for the playtest that
+## milestones. See D-106 for the decision, and issue #58 for the playtest that
 ## found it.
 ##
 ## Three states, not two, which is the part a boolean `_explored` set could not

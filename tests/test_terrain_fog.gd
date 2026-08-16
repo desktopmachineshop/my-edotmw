@@ -1,6 +1,6 @@
 extends GutTest
 
-## Guards D-102: the GROUND has fog of war, in three states, and it reaches
+## Guards D-106: the GROUND has fog of war, in three states, and it reaches
 ## the renderer.
 ##
 ## The defect these were written against (#58) was not a wrong fog field. It
@@ -354,7 +354,7 @@ func test_something_outside_terrain_chunk_actually_binds_the_fog() -> void:
 
 	assert_true(callers.has("res://client.gd"),
 		"client.gd must hand its fog field to the terrain material — a fog set "
-		+ "nothing draws is exactly the defect D-102 closes")
+		+ "nothing draws is exactly the defect D-106 closes")
 
 
 ## A surface's fog channel, reported as MISSING rather than as an engine error.

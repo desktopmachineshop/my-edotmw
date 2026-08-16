@@ -143,7 +143,7 @@ var _camera_max_height := CAMERA_MAX_HEIGHT
 var _world_environment: WorldEnvironment = null
 
 ## What this player knows about each cell of the map: never seen, seen
-## once, or in sight right now (D-102). Fog of war on the client side —
+## once, or in sight right now (D-106). Fog of war on the client side —
 ## the map starts black and is revealed by line of sight, and once
 ## revealed stays revealed (terrain does not move).
 ##
@@ -155,7 +155,7 @@ var _world_environment: WorldEnvironment = null
 ##
 ## Read by BOTH the minimap and the 3D ground. It used to be a set of
 ## explored cells read only by the minimap, and the terrain was drawn
-## fully lit from the first frame with every test green — see D-102 and
+## fully lit from the first frame with every test green — see D-106 and
 ## issue #58.
 var _fog: TerrainFog = null
 
@@ -390,7 +390,7 @@ var _camera_homed := false
 ##
 ## `_build_terrain` leaves it at the middle of the map, which was a
 ## reasonable default for as long as the whole map was drawn lit. Now that
-## the ground is fogged (D-102) the middle of a 128x64 map is unexplored
+## the ground is fogged (D-106) the middle of a 128x64 map is unexplored
 ## black, so a match would open on an empty screen with the founding party
 ## somewhere off in the dark. Capture mode has centred on the player's own
 ## ground since M3 for exactly this reason (`_found_home_town`); a human
@@ -586,7 +586,7 @@ func _build_terrain() -> void:
 	# when it has not.
 	var material := TerrainChunk.make_material()
 	# Kept, because the ground is fogged by a texture this client updates as
-	# it explores (D-102) and there is nowhere else to reach the material
+	# it explores (D-106) and there is nowhere else to reach the material
 	# from once the chunks are built.
 	_terrain_material = material
 	_fog = TerrainFog.new(space)
@@ -4525,7 +4525,7 @@ func _centre_minimap_crop_on_camera() -> void:
 	_minimap_crop_material.set_shader_parameter("focus_uv", focus)
 
 
-## Restamp what this player can see, and push it to the ground (D-102).
+## Restamp what this player can see, and push it to the ground (D-106).
 ##
 ## Computed locally rather than replicated. The client knows where its own
 ## squads are and what kind they are, so it can derive its own vision the
