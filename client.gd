@@ -4391,6 +4391,20 @@ func _update_minimap() -> void:
 		for x in range(image.get_width()):
 			if not _explored.has(_state.space.index(Vector2i(x, y))):
 				image.set_pixel(x, y, HudTheme.BG_VOID.darkened(0.5))
+
+	# Buildings, in their owner's colour (D-052) and NOT gated on current
+	# vision (D-101). This is the pass that was missing entirely: nothing
+	# here ever drew a town centre, so persistent-explored building fog
+	# (D-030) — the one piece of knowledge the minimap is uniquely able to
+	# show, and the thing a player scouts FOR — had no representation at
+	# all, and neither did "where is my own base".
+	#
+	# Painted before squads so an army defending a base is drawn on top of
+	# it: what is happening outranks what is standing there.
+	for mark in MinimapPaint.building_marks(_state.buildings):
+		_plot_minimap(image, _state.space.from_index(int(mark["cell"])),
+			_state.colour_of(int(mark["owner"])), int(mark["size"]))
+
 	for squad in _state.curves:
 		# Ghosted squads are not drawn at all here either — the same
 		# decision `_refresh_squads` makes for the 3D view (see its own
@@ -4513,16 +4527,15 @@ func _node_colour(kind: int) -> Color:
 			return HudTheme.RESOURCE_STONE
 
 
-## A 2x2 blob rather than a single pixel, so a squad is visible at one
-## pixel per cell. Wrapped with posmod because a blob on the right edge
-## belongs on the left one — the torus tax, cheap for once.
-func _plot_minimap(image: Image, cell: Vector2i, colour: Color) -> void:
-	for dy in range(2):
-		for dx in range(2):
-			image.set_pixel(
-				posmod(cell.x + dx, image.get_width()),
-				posmod(cell.y + dy, image.get_height()),
-				colour)
+## A blob rather than a single pixel, so a mark is visible at one pixel
+## per cell. How many cells it spans, and the wrapping (a blob on the
+## right edge belongs on the left one too — the torus tax, cheap for
+## once), are `MinimapPaint`'s: this is the image work and nothing else.
+func _plot_minimap(image: Image, cell: Vector2i, colour: Color,
+		size: int = MinimapPaint.SQUAD_CELLS) -> void:
+	for pixel in MinimapPaint.footprint(cell, size,
+			image.get_width(), image.get_height()):
+		image.set_pixel(pixel.x, pixel.y, colour)
 
 
 func _unhandled_input(event: InputEvent) -> void:
