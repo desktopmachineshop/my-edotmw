@@ -5,6 +5,21 @@
       "triangles": 72,
       "vertices": 216
     },
+    "garrison_gate": {
+      "model": "generated/models/garrison_gate.glb",
+      "triangles": 168,
+      "vertices": 504
+    },
+    "garrison_wall": {
+      "model": "generated/models/garrison_wall.glb",
+      "triangles": 120,
+      "vertices": 360
+    },
+    "gate": {
+      "model": "generated/models/gate.glb",
+      "triangles": 120,
+      "vertices": 360
+    },
     "storehouse": {
       "model": "generated/models/storehouse.glb",
       "triangles": 84,
@@ -19,9 +34,19 @@
       "model": "generated/models/town_centre.glb",
       "triangles": 96,
       "vertices": 288
+    },
+    "wall": {
+      "model": "generated/models/wall.glb",
+      "triangles": 108,
+      "vertices": 324
+    },
+    "wall_tower": {
+      "model": "generated/models/wall_tower.glb",
+      "triangles": 168,
+      "vertices": 504
     }
   },
-  "source_hash": "ee46a610d8d34e76fd19e07c2659c698aa5ca093e3ba2677989d9e430c5507b0",
+  "source_hash": "b9616930d4e06ec33021027746a6cafb56dbf1ac83d8c9d33199e7bd2cafd7ac",
   "terrain": {
     "biomes": [
       "deep_water",

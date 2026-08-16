@@ -53,9 +53,27 @@ var wallet_updates: int = 0
 var last_notice := ""
 var notices_received: int = 0
 
-## Resource nodes: cell index -> ResourceKind. Sent once at join; the
-## client draws where resources are, never how much is left.
+## Resource nodes: cell index -> ResourceKind. Fog-gated by the server as
+## vision reaches them; the client draws where resources are, never how
+## much is left.
 var nodes := {}
+
+## Nodes the server reported worked out, in arrival order, not yet shown
+## falling. Removal from `nodes` happens immediately on receipt — that is
+## what stops the AI ordering crews at a stump and takes the dot off the
+## minimap — while this queue lets the GUI fell the tree it drew there.
+## Drain with `take_felled()`; a felled cell carries its last known kind,
+## because `nodes` no longer does.
+var felled := []
+
+
+## Fellings not yet animated. Draining hands ownership to the caller; the
+## headless consumers (bots, AI seats) never call this, and the queue is
+## bounded by the map's node count, so it cannot grow without limit.
+func take_felled() -> Array:
+	var out := felled
+	felled = []
+	return out
 
 var buildings := {}
 var buildings_revealed: int = 0
@@ -170,6 +188,11 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+		NetProtocol.S2C_NODES_DEPLETED:
+			for cell in NetProtocol.decode_nodes_depleted(data):
+				if nodes.has(int(cell)):
+					felled.append({"cell": int(cell), "kind": int(nodes[int(cell)])})
+					nodes.erase(int(cell))
 		NetProtocol.S2C_CHAT:
 			_handle_chat(data)
 		NetProtocol.S2C_MAP_SETTINGS:
@@ -290,6 +313,11 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			# builds its own entry list from named fields — adding a key
 			# here cannot drift into what the desync check compares.
 			"owner": int(entry.get("owner", 0)),
+			# D-076: which tier the squad occupies. Also not part of
+			# composition_hash, for the same reason owner is not — it is a
+			# fact the client is TOLD explicitly (never inferred), so a
+			# lagging hash comparison has nothing to disagree about.
+			"tier": int(entry.get("tier", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -510,10 +538,18 @@ func encode_gather(squad: int, cell: Vector2i) -> PackedByteArray:
 ## Build order for the server (D-031). The server re-checks everything —
 ## ownership, who may build what, whether the ground is buildable — so
 ## this only avoids sending obvious nonsense.
-func encode_build(squad: int, def_id: String, cell: Vector2i) -> PackedByteArray:
+func encode_build(squad: int, def_id: String, cell: Vector2i, facing: int = 0) -> PackedByteArray:
 	if space == null or not owns(squad):
 		return PackedByteArray()
-	return NetProtocol.encode_order_build(squad, def_id, space.index(cell))
+	return NetProtocol.encode_order_build(squad, def_id, space.index(cell), facing)
+
+
+## As above, but APPENDS to the squad's build queue instead of replacing
+## it (D-076's drag-to-build-a-line tool) — see `NetProtocol.C2S_ORDER_BUILD_QUEUE`.
+func encode_build_queue(squad: int, def_id: String, cell: Vector2i, facing: int = 0) -> PackedByteArray:
+	if space == null or not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_build_queue(squad, def_id, space.index(cell), facing)
 
 
 func owns(squad: int) -> bool:
@@ -588,6 +624,45 @@ func routed_of(squad: int) -> bool:
 	return bool(composition[squad].get("routed", false)) if composition.has(squad) else false
 
 
+func tier_of(squad: int) -> int:
+	return int(composition[squad].get("tier", 0)) if composition.has(squad) else 0
+
+
+## The world-unit height added on top of ground for a squad standing at
+## tier 1 (D-076): the `top_height` of whichever `walkable_top` building
+## currently occupies its cell, or 0 if it is not actually standing on one
+## (should not happen once tier is correct, but degrades to ground height
+## rather than guessing at a number).
+##
+## Linear over `buildings`, same shape and justification as
+## `BuildingSim.building_at`: orders of magnitude fewer buildings than
+## cells, and this only runs at all for the rare tier-1 squad — every
+## ordinary ground squad skips it entirely.
+func walkway_height_of(squad: int, now: float) -> float:
+	if tier_of(squad) != 1 or space == null or not curves.has(squad):
+		return 0.0
+	var cell := space.index(curves[squad].sample_cell(now, space))
+	for info in buildings.values():
+		if bool(info.get("destroyed", false)) or int(info["cell"]) != cell:
+			continue
+		var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if def != null and def.walkable_top:
+			return def.top_height
+	return 0.0
+
+
+## Wraps `terrain_sampler` with the wall-top bump for a tier-1 squad, or
+## returns it unchanged for a ground one (D-076). `Formation` itself never
+## learns a tier exists — this is the "call site passes the right height
+## in" half of D-006 compliance, not a new branch inside the pure function.
+func _sampler_for(squad: int, now: float) -> Callable:
+	if not terrain_sampler.is_valid() or tier_of(squad) != 1:
+		return terrain_sampler
+	var bump := walkway_height_of(squad, now)
+	var base := terrain_sampler
+	return func(x, z): return base.call(x, z) + bump
+
+
 ## Hash of the composition this client will derive from, in the format
 ## SquadSim produces for the server side. Compared on every STATE_HASH.
 ##
@@ -621,7 +696,7 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 		return empty
 	return Formation.soldier_transforms(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		terrain_sampler)
+		_sampler_for(squad, now))
 
 
 ## As above, but drawing at most `max_soldiers` of them — the render LOD
@@ -639,7 +714,7 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 		return empty
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		terrain_sampler, max_soldiers)
+		_sampler_for(squad, now), max_soldiers)
 
 
 ## Total soldiers this client would be drawing — the number that makes
@@ -736,6 +811,48 @@ func in_lobby() -> bool:
 	if lobby.get("seats", []).is_empty():
 		return false
 	return int(lobby.get("phase", 0)) == 0
+
+
+## Forget the match, keep the session (D-075).
+##
+## Called when the server puts everyone back in the lobby. Everything
+## here is state ABOUT A WORLD that no longer exists — squads, curves,
+## ghosts, buildings, resource nodes, the map itself — and carrying any of
+## it into the next match would draw the last one's armies on the new
+## one's terrain. The ids are reused, too: both sims mint entities from an
+## array length, so match two's squad 0 is a different squad 0.
+##
+## Three things deliberately SURVIVE:
+##
+## - the seat list and chat, which belong to the lobby and not to a match;
+## - every diagnostic counter (desyncs, casualties, reveals), because they
+##   describe this CLIENT's whole session. `test-load` and `test-client`
+##   read them as run totals, and zeroing them mid-run would make a
+##   verdict report a quiet client rather than a client that had been
+##   busy;
+## - `player`, which the server does not reissue.
+##
+## `terrain_sampler` goes because it closes over terrain chunks the client
+## is about to free — left in place it would sample freed nodes, and the
+## symptom would be soldiers at wrong heights rather than a crash.
+func leave_match() -> void:
+	welcomed = false
+	space = null
+	map_settings = {}
+	terrain_sampler = Callable()
+
+	squads = PackedInt32Array()
+	spawn_cells = PackedInt32Array()
+	curves.clear()
+	composition.clear()
+	_ghosts.clear()
+	buildings.clear()
+	nodes.clear()
+	felled.clear()
+	wallet = PackedInt32Array()
+
+	server_tick = 0
+	server_tick_at = 0.0
 
 
 ## A player's civ as the lobby last described it, or "" if unknown.

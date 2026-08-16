@@ -359,20 +359,11 @@ Two runs failed with `buildings_known=0` and identical numbers, and it
 looked exactly like the change under test. A second container held port
 4433 and the bots were reaching that one — the tell was **server-side
 instrumentation printing nothing at all**, which no code-level bug can
-do.
-
-**D-075 removed that failure mode**, so the advice has changed with it:
-every checkout now gets its own compose project and its own port, and
-every recipe prints `instance=… project=… port=…` before doing anything.
-Read that line first; `just instances` shows every instance on the
-machine, which checkout owns it, and whether it has containers up. A
-cross-checkout collision is now a loud port-bind error rather than a
-silent wrong server — but a *stale* claim or a pre-D-075 leftover project
-is still possible, and `just instances` flags both.
-
-The old warning that `just down` removes containers "somebody else
-started" no longer applies: teardown is scoped to the instance that
-invoked it and cannot reach another checkout's containers.
+do. `docker ps` first. That incident is why D-095 exists: every checkout
+now derives its own compose project and host port (see the isolation
+section below), so `just down` is scoped to THIS worktree's containers
+and cannot remove anybody else's. `just instance` prints what this
+worktree resolved — read that line before believing a failure.
 
 **Target match length is 1–2 hours, and the game is nowhere near it**
 (D-056). Matches decided at ~200–230 s. Measured cause: with no modifier,
@@ -406,11 +397,14 @@ run with strictly *less* work reported 146 ms where a fuller run reported
 52 ms, because the host was building containers throughout. Zero dropped
 ticks in both.
 
-**M7 (real models and textures) — in progress.** The ladder gained a
-rung: art is M7 and Steam becomes M8. Exit criteria are **D-063**;
-the work is **D-064** (art direction and pipeline, superseding D-011 and
-closing Q12), **D-065** (animation) and **D-066** (terrain texturing).
-`just test-unit` is green at **424 tests** across 29 scripts.
+**M7 (real models and textures) — complete, as of 2026-08-14.** The
+ladder gained a rung: art is M7 and Steam becomes M8. Exit criteria are
+**D-085**; the work is **D-081** (art direction and pipeline, superseding
+D-011 and closing Q12), **D-082** (animation) and **D-083** (terrain
+texturing). (These were first recorded here as D-063/D-064/D-065/D-066 —
+IDs that collided with unrelated, already-real entries. Corrected
+2026-08-11; see D-081's editorial note in `game_design_decisions.md` for
+why.)
 
 Landed: eight authored unit archetypes and four buildings, animated,
 on textured terrain, all generated from committed Python and rendering
@@ -426,14 +420,71 @@ inside-out, which cost nothing but lighting until a building got big
 enough to look inside. Neither would have failed a test that counted
 things.
 
-**Still open in M7:** `just bench-render` has NOT been re-run on a
-discrete GPU since authored models landed, so the cost of animated
-vertices at D-018's full scale is unmeasured — that is D-063 criterion 11
-and it also discharges Q15's re-armed trigger. Nobody has played a match
-with the new art (criterion 14). Until both happen, M7 is landed, not
-complete — the same distinction M2 and M6 both had to learn.
+**D-085 criterion 11 is now discharged, with a caveat (D-086,
+2026-08-11).** `just bench-render` was re-run on Intel Iris Xe integrated
+graphics — the same hardware M5 used, no discrete GPU was available — and
+the cost of animated vertices at D-018's full scale is measured, not
+extrapolated: **53.93 ms mean / 18.5 fps at 1,000 squads (27,300
+soldiers)**, against M5's pre-authored-model 35.66 ms / 28 fps on the
+same hardware. Authored VAT models cost **51% more** at full scale than
+the primitive capsules M5 measured. This also discharges Q15's re-armed
+trigger. **Criterion 14 (a human plays a match with the new art) is
+discharged, 2026-08-14** — closed by the live human playtests of
+2026-08-12/13 (see D-076's amendments and D-085's own), confirmed by the
+owner as real matches with the authored models and D-086's lighting on.
+That closes the last open criterion and is what moved M7 from *landed* to
+*complete* — the landed-vs-complete distinction M2 and M6 both had to
+learn, honoured this time. The one caveat that survives: criterion 11's
+numbers are all from integrated graphics, and the discrete-GPU re-run
+trigger in D-085 stays armed.
 
-**The gaps between hexes are fixed (D-067).** They were pre-existing
+**Resource nodes are forests now (D-087, 2026-08-14).** Placement is a
+per-biome density field riding the same moisture noise `biome_at`
+classifies with — dense forest hearts, groves thickening toward the
+treeline, orchards mid-moisture, arid trees and palms on dry ground and
+beaches, stone at the mountain FOOT (its old MOUNTAIN-cell placement was
+unreachable scenery; the AI's give-up mechanism existed because of it).
+Standard map: **1,920 natural nodes vs ~134 before (~14x)**. Trees
+(wood/food) carry `TREE_STOCK` 105 — one shipped gatherer crew works one
+out in **~60 s**, pinned by a test against the shipped def — while
+gold/stone keep 2400. A worked-out tree auto-retargets its crew to the
+nearest surviving node of the SAME kind within 8 cells (never
+substituting kinds). Depletion is a fog-gated wire event
+(`S2C_NODES_DEPLETED`): told when the knower can SEE the cell, stale
+ghost-tree otherwise; the client fells it with a tip-and-sink animation.
+Rendering is 50 authored variants (10 species × 5, split from
+`tree-variants.glb` by `split_markers.gd`) picked per cell by
+`resource_visuals.gd` (pure/static — species by biome+moisture, 35%
+boundary borrowing so treelines fray, hash yaw/scale), batched into one
+MultiMesh per (16-cell chunk, model) with the torus tax paid per chunk.
+Bots finally ORDER the gatherers they produce — the haul cycle had never
+run under `test-load`'s wire before — and report `nodes_felled` in the
+verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
+gating would re-set D-031's stale-timing trap).
+
+**D-086 (2026-08-11): the lighting layer M7's art never had.** The
+"low poly vs cartoon vs current" style question turned out to have a
+false premise — the game was already low poly at the extreme end (two
+primitives, 72-256 tris/soldier against a 300 budget); what actually
+separated the three options was lighting, and the project had almost
+none (one `DirectionalLight3D`, a flat navy `BG_COLOR`, no shadows, no
+sky, no tonemap, no fog, duplicated by hand across three files). Chose
+**polished low poly**: `world_look.gd` is now the one definition of the
+rig (guarded by a test that scans every other script for a stray
+`DirectionalLight3D`/`Environment` construction); sky, sky-sourced
+ambient, ACES tonemap and depth fog replaced the flat void at a measured
+cost of essentially zero (54.26 ms vs 53.93 ms mean at 1,000 squads); the
+8-colour terrain palette was re-tuned for the new tonemap. **Shadows were
+evaluated against the bench-render number above and explicitly deferred**
+— at 1,000 squads the frame was already 3.2x a 60 fps budget before
+spending anything on a shadow pass; 250 squads (76.6 fps) has headroom
+for a future squad-count-gated version. Cartoon/toon shading was rejected
+for the same reason: its outline pass would double the per-soldier vertex
+shader (including the VAT's three `texelFetch`es) and cannot be verified
+by `test-client`'s software rasteriser at all (Forward+-only
+`CompositorEffect`).
+
+**The gaps between hexes are fixed (D-084).** They were pre-existing
 rather than M7's, but textured ground made them the most obvious thing on
 screen. Each hex corner now takes the mean of the three cells meeting
 there, so neighbours agree and the surface is watertight; the centre
@@ -476,6 +527,84 @@ resolution of Q7 (D-024) satisfies this trivially rather than delicately:
 `alive` is the only formation input a death changes, so casualty
 reassignment needs no per-soldier identity anywhere, and `Formation`
 gained no instance state to support combat.
+
+**Between M7 and M9, three days of playtest-driven work landed (2026-08-11
+to 08-14) that belongs to no numbered milestone.** `just test-unit` is
+green at **563 tests** across 37 scripts (measured 2026-08-14);
+`test-load` clean at **57.88 µs/squad** (4 bots, the usual ~52 squads —
+quote it with the count, as ever). The pieces:
+
+- **Walls, gates, and a walkable wall-top tier (D-076)** — the feature
+  D-069 explicitly fenced out of M9 and said needed its own decision.
+  Chained single-cell buildings, not edges; the wall-top is a second
+  `FlowField` layer with its OWN cell budget (sharing D-040's counter
+  would halve ground-pathing throughput on any tick both run); climbing
+  is one explicit teleport hop through an access tower's door, which is
+  what keeps a squad's tier legal under D-006 (nowhere for a
+  partial-climb value to live). Tier-1 squads fight with their own stats
+  plus a range bonus and can only be hit by tier-1 or ranged attackers.
+  Two standing gaps: **no AI builds or uses walls, so `just ai-ladder`
+  cannot exercise any of this feature**, and the geometry/placement UX
+  is only proven by playing (it lives in `client.gd`, unreachable from
+  GUT).
+- **The playtests that closed M7's criterion 14 also earned their keep in
+  bugs.** The best one: `_finish_build` consumed ANY builder on
+  completion, not just founders — so every gatherer that finished a
+  barracks, tower or wall had been silently vanishing since D-031. The
+  declared-and-unread defect family, in its over-READ variant; nothing
+  fails, the game just quietly loses a rule. Found only by playing.
+- **Sandbox mode (D-077)** for dev testing, structurally unable to leak
+  into a real match; **leave-to-lobby and no-humans-means-no-server
+  (D-075)**; the in-game UI reworked to the reference design; authored
+  models for resource nodes and the wall family; tower upgrades.
+
+**M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
+2026-08-14 and produced **D-087 through D-094**, closing every question
+in the old "Blocking M7 / product-level" block (Q3, Q5, Q10, Q11, Q13,
+Q14). Everything in them is design; no code, no export preset, no
+Steamworks anything exists in the repo. The shape:
+
+- **M8 is Steam-ready, not launched** (D-087). Its output is a private
+  depot branch and a repeatable playtest loop; the public launch waits
+  on M9's content. "Seamless" closed by inspection: one contiguous
+  wrapped map, true by construction since D-008.
+- **Player-hosted first, official dedicated later** (D-088, owner's
+  call). The host runs the authoritative sim **in-process** — the
+  loopback peer D-051's AI clients already use connects the host's own
+  client; remote players arrive over Steam relay. D-042's
+  reliable-ordered contract is a hard requirement on the Steam path.
+  ENet stays for LAN, docker, bots and the whole test estate.
+  Host-quit kills the match and the host is trusted — both accepted
+  with eyes open, both fixed by dedicated-later.
+- **20 players is a design target** (D-089, owner's call): Steam lobby
+  browser + invites, AI seat-fill, drop-in/drop-out. No matchmaking
+  service.
+- **Reconnection is repossession** (D-090): disconnect hands the seat
+  to an AI immediately (no grace-period limbo, no timeout — the AI is
+  the grace mechanism); rejoin reclaims by **SteamID, not connection**
+  (the D-038 ownership-cache lesson); desync recovery is
+  drop-and-rejoin, cheap because D-025's reveal semantics make every
+  join cheap. Supersedes D-033's wipe-on-disconnect for humans.
+- **The server IS the anti-cheat** (D-091): no kernel AC; fog gating
+  means the maphack's memory isn't there. Ranked play is explicitly
+  gated on dedicated servers.
+- **No saves** (D-092): reconnection + replays cover the real need;
+  revisit triggers named.
+- **GodotSteam behind one script** (D-093): D-021 amended by exactly
+  one category (platform integration). One boundary script names
+  Steam, a grep-test enforces it (the D-046-criterion-3 pattern), and
+  absent Steam costs Steam features, never the game — docker and every
+  test recipe stay Steam-less by construction. Still no C#.
+- **Exit criteria are D-094** — ten of them, written before the code.
+  The load-bearing early ones: a protocol **version handshake** (none
+  exists today, and Steam's rolling updates make mixed versions
+  routine) carrying SteamID seat identity, and the export→depot→install
+  loop, since the headline criterion (a 20-seat match with ≥3 real
+  remote humans over the real internet) needs playtesters on installed
+  builds. Criterion 9 finally takes the discrete-GPU `bench-render`
+  number Q15 has been waiting on. Criterion 10 is a human playing
+  end-to-end through the Steam build — the D-085-criterion-14 lesson,
+  applied from day one.
 
 **M9 (epochs, six civs) is PLANNED but NOT BUILT** — the planning
 milestone Q15 reserved ran on 2026-08-04 and produced **D-068 through
@@ -617,7 +746,7 @@ curve_replicator.gd      Per-client gating, horizon clipping and the
 formation.gd             Derived soldier positions (D-006). All-static
                         and pure — no instance state, by construction.
 animation_state.gd       Which clip a soldier plays and at what phase
-                        (D-065). All-static, so there is nowhere for the
+                        (D-082). All-static, so there is nowhere for the
                         phase accumulator D-006 forbids to live.
 cosmetic_offset.gd       Client-only visual jitter. One-way: simulation
                         must never read it back (D-006 clause 2).
@@ -638,6 +767,14 @@ render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
                         of a squad to draw — is testable without a GPU.
+world_look.gd            The one definition of the lighting rig — sun,
+                        sky, ambient, tonemap, fog (D-086). All-static,
+                        guarded by a test that fails if any other script
+                        constructs a DirectionalLight3D or Environment
+                        directly. client.gd, bench_render.gd and
+                        model_preview.gd all build off this now, so the
+                        shipping rig and the benchmark rig cannot drift
+                        apart the way three hand-copies did before.
 hud_layout.gd            Where the HUD's pieces go, for a window of any
                         size (D-061). Scale AND anchoring — either alone
                         looks sufficient and is not. All-static, pure.
@@ -691,10 +828,10 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         materials. CACHED — a .glb is a scene, and
                         loading one per squad is the M4 `by_id` defect
                         with a bigger constant.
-/shaders/*.gdshader     The project's first shaders (D-065). Unit opaque,
+/shaders/*.gdshader     The project's first shaders (D-082). Unit opaque,
                         unit ghost, building static; VAT sampling shared
                         via a .gdshaderinc.
-/art/**.py              Committed asset GENERATORS (D-064) — the source
+/art/**.py              Committed asset GENERATORS (D-081) — the source
                         of truth for every model and texture. Plain
                         Python; `bpy` is imported only by art/lib/bake.py.
 /generated/             Committed build output: .glb, VAT .exr, the
@@ -707,11 +844,13 @@ model_preview.gd         Renders every authored model, animated, and
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
-scripts/instance.sh      THE instance derivation (D-075) — which compose
-                        project and which host port a command belongs to.
-                        Sourced by every recipe that touches docker, so
-                        two checkouts cannot fight over either.
-scenario.gd              Applies a mid-game world (D-076). ALL-STATIC,
+instance-id.sh           THE definition of this checkout's dev-instance
+                        identity (D-095): instance name from the git
+                        branch, udp port hashed from it. The justfile
+                        derives its per-worktree compose project, ports
+                        and container names from this — nothing may
+                        re-derive it. See "Multi-agent isolation" below.
+scenario.gd              Applies a mid-game world (D-096). ALL-STATIC,
                         like formation.gd: a scenario is an opening
                         position, not a participant. Goes through the
                         game's own add_squad/add_building/credit, and is
@@ -751,7 +890,7 @@ docker-compose.yml       server / bots / test services. Teardown-scoped:
 
 ## Mesh pipeline — the tiers, as they now stand
 
-D-011's three tiers are **superseded by D-064**. Tier 1 (primitives) is
+D-011's three tiers are **superseded by D-081**. Tier 1 (primitives) is
 still there as the fallback, tier 2 (parametric composition) turned out to
 be *how* tier 3 is written rather than a stop on the way, and tier 3 is
 built:
@@ -765,14 +904,14 @@ built:
   and a clone that has never run `build-assets` all still work — a failed
   art build costs fidelity, not the game.
 
-**Both the generators and their output are committed** (D-064). The
+**Both the generators and their output are committed** (D-081). The
 generators are the source of truth; `generated/` is committed anyway so a
 fresh clone plays without installing anything. Two runs of
 `build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
 no timestamps — and a test fails if `generated/` is stale with respect to
 `art/`.
 
-**Soldiers are animated by a vertex animation texture (D-065), and the
+**Soldiers are animated by a vertex animation texture (D-082), and the
 phase is DERIVED, never accumulated.** `phase = fract(t*rate + hash(slot))`,
 computed in the shader from `TIME`. That is the whole reason animation is
 legal under D-006 clause 1: there is nowhere for per-soldier state to
@@ -782,7 +921,7 @@ delta time, or a blend weight carried between frames, breaks it** — those
 are integration state in a cosmetic disguise.
 
 Terrain is textured by a **per-biome atlas that MODULATES the vertex
-colour** (D-066) — `TerrainGen.biome_color()` is still the single source
+colour** (D-083) — `TerrainGen.biome_color()` is still the single source
 of truth, which is what keeps the minimap and the preview PNG from
 drifting from the 3D view without either of them being touched. Terrain
 UVs come from the **cell**, never from world position, so all nine torus
@@ -804,6 +943,42 @@ Three things bought the hard way, all in one milestone:
   visible once a *building* was big enough to see through. **The check
   that catches this class is a picture of something large.**
 
+## Multi-agent isolation (D-095) — HARD RULES
+
+Several agents develop this repo in parallel, each in its own worktree,
+each launching servers and clients for the owner to look at. Every
+checkout is its own **dev instance**: `instance-id.sh` derives an
+instance name from the git branch and a udp port from its hash
+(20000–29999), and the justfile threads them through every compose
+project name, container name, teardown sweep and client `--port`.
+`just instance` prints this worktree's identity.
+
+The rules, none of which need remembering because the recipes enforce
+them — but which must not be undone:
+
+- **Start and stop instances only through the just recipes, from your
+  own worktree.** They are scoped so you structurally cannot touch
+  another agent's containers. Never `docker rm`/`docker stop` by hand
+  against anything outside your own `edotmw-<instance>` project, and
+  never kill a GUI client process you did not start.
+- **Never hardcode the shared literals back in** — `-p edotmw`, a fixed
+  container `--name`, a `4433` host port or `--port=4433` in a recipe.
+  `tests/test_multi_agent_isolation.gd` fails if they reappear. The
+  in-container port is still 4433 by design; only the HOST side is
+  per-instance.
+- **Crossing instances is the owner's explicit call, never a default.**
+  `EDOTMW_INSTANCE`/`EDOTMW_PORT` override the derivation when two
+  checkouts should deliberately share; do not set them on your own
+  initiative.
+- **The client's title bar names its instance** (`eDotMW —
+  claude-<session>  [host:port]`), which is how the owner tells several
+  test windows apart. Launch clients only through the recipes so the
+  `--instance` flag is always passed.
+- **An agent's quick launch is the dev build:** `just quick-test`
+  resolves `SANDBOX=auto` to on for `claude-*` instances (D-077's
+  sandbox mode, cheats panel included) and off for the owner's own
+  checkout. Pass `SANDBOX=0/1` to override either way.
+
 ## Testing — use the justfile, and use it before claiming something works
 
 `just` lives in `tools/` and is **not on PATH** — invoke it as
@@ -816,26 +991,12 @@ PowerShell, `just` resolves `sh` to WSL's bash and dies with
 `execvpe(/bin/bash) failed` before any recipe body runs.
 
 **Every command belongs to an INSTANCE, and a worktree is isolated
-automatically** (D-075). The instance is derived from the checkout —
-`.claude/worktrees/foo-123` → `test-foo-123`, the main checkout → `dev` —
-and gives that checkout its own compose project and its own port. Several
-agents can run `test-load` at once without touching each other. The rules
-that follow from it:
+automatically** — see "Multi-agent isolation (D-095)" above for the rules.
+Isolation is the default: there is no argument to remember, several
+agents can run `test-load` at once without touching each other, and
+`just instance` prints what this checkout resolved.
 
-- **Pass nothing.** Isolation is the default in a worktree; there is no
-  argument to remember and no slot to claim. `scripts/instance.sh` is the
-  one definition, and it prints what it resolved before anything runs.
-- **`dev` is the human's game — never start it and never stop it.**
-  `just lobby` is theirs. Do not set `EDOTMW_INSTANCE=dev`, which is the
-  one way to defeat the guard that protects it, and do not run
-  `just dev-down`. A bare `just down` from the main checkout is refused
-  precisely so this cannot happen by accident.
-- **`just instances`** answers "is this failure mine?" — every instance
-  on the machine, its port, its checkout, and whether it has containers
-  up. See the amended stray-server paragraph above for the session this
-  is standing in for.
-
-**Start mid-game when the opening is not what you are testing** (D-076).
+**Start mid-game when the opening is not what you are testing** (D-096).
 The real opening costs ~150 s before anything downstream of it exists —
 one founding party, a 40 s town hall that consumes it, production, then
 armies walking across a 128×64 map. A **scenario** skips to a mid-game
@@ -873,8 +1034,8 @@ Lifecycle:
 
 - `just doctor` — preflight: runtime prerequisites actually met?
 - `just up` / `just down` / `just status` — all scoped to this instance
-- `just instances` — every instance on the machine; `just instance-free
-  <name>` releases a port claim left by a deleted checkout
+- `just instance` — this checkout's instance name, udp port and compose
+  project (D-095). Read it before believing a failure is yours.
 - `just nuke` — full teardown back to pure source. **Deletes `tools/`,
   including the `just` you ran it with** — that's intentional; re-run
   `./bootstrap.ps1` to come back.
@@ -897,12 +1058,13 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  502 tests across 33 scripts, measured 2026-08-11)*. FILTER selects
-  files by substring, TEST selects one test by name (D-076).
+  599 tests across 40 scripts, measured 2026-08-16)*. FILTER selects
+  files by substring, TEST selects one test by name (D-096).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
-  (~31 s at DURATION=15, ~50 s at the default 30, against `test-load`'s ~150 s). Fails unless the server's log
-  confirms it actually played the scenario.
+  (~31 s at DURATION=15, ~50 s at the default 30, against `test-load`'s
+  ~150 s). Fails unless the server's log confirms it actually played the
+  scenario.
 - `just scenarios` — the shipped mid-game scenarios and what each is for
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT

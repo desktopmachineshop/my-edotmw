@@ -82,6 +82,14 @@ var player: int = 0
 var civ: StringName = &""
 var state := ClientState.new()
 
+## Sandbox mode's "economy only" toggle (dev testing), set by server.gd
+## from MatchState.ai_economy_only at seating and updated live on every
+## later toggle. Town-founding, building, training and gathering are
+## unaffected; only `_fight` is skipped, and `_train` is held to
+## "gatherers" so an economy-only AI never quietly stockpiles an idle
+## army it will never use either.
+var economy_only: bool = false
+
 ## Where this AI's orders go. Set by the server to its own dispatcher, so
 ## a packet from here takes the identical path to one off the wire.
 var send: Callable = Callable()
@@ -113,7 +121,8 @@ func update(now: float) -> void:
 	_raise_buildings()
 	_train()
 	_put_gatherers_to_work()
-	_fight(now)
+	if not economy_only:
+		_fight(now)
 
 
 ## Put up the buildings the AI needs to exist as an opponent (D-053).
@@ -295,7 +304,11 @@ func _train() -> void:
 	elif worker_soldiers < GATHERER_SOLDIERS_WANTED * 0.6:
 		_economy_staffed = false
 
-	var wanted := &"gatherers" if not _economy_staffed \
+	# economy_only (sandbox mode, dev testing) holds this at "gatherers"
+	# regardless of staffing — an AI that never fights has no use for a
+	# standing army, and one is not just wasted, it is an idle squad cap
+	# entry a real test scenario might want spent on more workers instead.
+	var wanted := &"gatherers" if economy_only or not _economy_staffed \
 		else _military_archetype()
 	if wanted == &"":
 		return

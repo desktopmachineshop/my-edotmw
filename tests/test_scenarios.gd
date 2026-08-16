@@ -1,6 +1,6 @@
 extends GutTest
 
-## Guards the scenario framework itself (D-076).
+## Guards the scenario framework itself (D-096).
 ##
 ## A fixture that silently builds the wrong world is worse than no
 ## fixture: every test written on top of it passes while testing

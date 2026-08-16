@@ -410,6 +410,42 @@ func test_a_walled_off_destination_is_still_given_up_on() -> void:
 		"The squad is still re-pathing every tick — the give-up rule stopped firing")
 
 
+func test_a_gate_opening_lets_a_given_up_order_resume() -> void:
+	# The playtest bug this guards: a squad ordered through a closed gate
+	# hit the SAME give-up path test_a_walled_off_destination_is_still_
+	# given_up_on exercises, and — before this fix — that was permanent.
+	# A gate is passability that changes at runtime, unlike the wall
+	# above, so "unreachable when I asked" must not mean "unreachable
+	# forever": set_passable (what a gate opening actually calls) has to
+	# give the order a real second chance.
+	var sim := _sim()
+	var passable := PackedByteArray()
+	passable.resize(sim.space.cell_count())
+	passable.fill(1)
+	var dest := Vector2i(10, 6)
+	var dest_index := sim.space.index(dest)
+	for dir in range(6):
+		passable[sim.space.neighbor_index(dest_index, dir)] = 0
+	sim.set_passable(passable)
+
+	var squad := sim.add_squad(_def(), 1, Vector2i(0, 0))
+	sim.order_move(squad, dest)
+	_tick_for(sim, 3.0)
+	assert_ne(sim.cell_of(squad), dest, "setup: the destination starts walled off")
+
+	# The gate opens: passability changes so the destination is reachable
+	# again, exactly like blocking_cells() no longer reporting an open
+	# gate's cell.
+	for dir in range(6):
+		passable[sim.space.neighbor_index(dest_index, dir)] = 1
+	sim.set_passable(passable)
+	_tick_for(sim, 20.0)
+
+	assert_eq(sim.cell_of(squad), dest,
+		"the squad should have resumed its original order once the way opened, "
+		+ "not stayed abandoned where it gave up")
+
+
 # --- squads take up room (D-060) ---------------------------------------
 
 func test_squads_ordered_to_one_point_do_not_end_up_stacked() -> void:

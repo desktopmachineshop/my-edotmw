@@ -145,8 +145,37 @@ def bake_frames(model: Model, flat: dict) -> tuple[list[list[Vec3]], list[list[V
 # --- Blender-side output ------------------------------------------------
 
 
-def write_glb(model: Model, flat: dict, path: str) -> None:
-    """Build a Blender mesh from the flattened arrays and export glTF binary."""
+def door_hinge_uv(model: Model, flat: dict) -> list[tuple[float, float]]:
+    """Per-vertex (is_door_leaf, hinge_x) for a building with a hinged gate
+    leaf (D-076 playtest amendment).
+
+    Buildings carry no VAT (D-064's "a town hall does not walk"), so UV1 —
+    everywhere else the VAT column index — is otherwise unused on them.
+    `building_static.gdshader` reads it to swing exactly the tagged part
+    open about its own hinge edge, driven by the `gate_open` uniform rather
+    than TIME the way a soldier's phase is. Every part but a gate's own
+    "gate_leaf" (see `art/buildings/_add_gate_leaf`) gets (0.0, 0.0), which
+    the shader treats as "not a door" and leaves untouched.
+    """
+    out: list[tuple[float, float]] = []
+    for pi in flat["part_index"]:
+        part = model.parts[pi]
+        if part.name == "gate_leaf":
+            out.append((1.0, part.pivot[0]))
+        else:
+            out.append((0.0, 0.0))
+    return out
+
+
+def write_glb(model: Model, flat: dict, path: str,
+              uv1_override: list[tuple[float, float]] | None = None) -> None:
+    """Build a Blender mesh from the flattened arrays and export glTF binary.
+
+    `uv1_override`, when given, replaces the VATIndex UV1 layer below with
+    a caller-supplied per-vertex value instead — see `door_hinge_uv`, the
+    only current user. Units never pass this; a building's UV1 would
+    otherwise sit unused end to end.
+    """
     import bpy
 
     _reset_scene(bpy)
@@ -172,8 +201,12 @@ def write_glb(model: Model, flat: dict, path: str) -> None:
     width = len(flat["positions"])
     for i, loop in enumerate(mesh.loops):
         uv0.data[i].uv = (0.0, 0.0)
-        # Texel CENTRE, so nearest filtering lands unambiguously in column i.
-        uv1.data[i].uv = ((loop.vertex_index + 0.5) / width, 0.5)
+        if uv1_override is not None:
+            uv1.data[i].uv = uv1_override[loop.vertex_index]
+        else:
+            # Texel CENTRE, so nearest filtering lands unambiguously in
+            # column i.
+            uv1.data[i].uv = ((loop.vertex_index + 0.5) / width, 0.5)
 
     mesh.shade_flat()
 

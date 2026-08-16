@@ -28,26 +28,23 @@ const RESOURCE_COUNT := 4
 ## Phases of the haul cycle (D-028's round trip).
 enum Phase { TO_NODE, GATHERING, TO_DROP_OFF }
 
-## One cell in this many becomes a node.
-##
-## This said "sparse on purpose" at 11 and was not sparse: measured on the
-## shipped 84x96 map it produced 467 nodes across 8,064 cells — one per
-## seventeen — which is the lawn the comment claimed to be avoiding.
-##
-## At 45 the same map gets about a hundred. Nodes become places you go to
-## and hold rather than scenery you happen to be standing on, which is
-## also what makes a hotspot worth fighting over (the same reasoning as
-## D-039's scattered spawns).
-const NODE_EVERY := 60
+## Stock in one TREE (a wood or food node). Sized so a single shipped
+## gatherer squad (5 alive x 0.35/s = 1.75/s) works a tree out in about a
+## minute — trees are many and individually small now, so a forest is
+## consumed tree by tree, visibly, rather than one marker quietly ticking
+## down for half an hour. Change the shipped gatherer numbers and this
+## must move with them; test_economy pins the relationship.
+const TREE_STOCK := 105
 
-## Starting stock in a node, before `alive`-scaled gathering eats it.
-##
-## Raised in step with NODE_EVERY so the map's TOTAL resource is roughly
-## unchanged — about 420k either way. Fewer, richer nodes is a different
-## map, not a poorer one: the economy still supports the same army, it
-## just concentrates where that army has to walk to get it. Cutting the
-## count without this would have quietly starved every match.
-const NODE_STOCK := 2400
+## Stock in a gold or stone node. These stay few and rich — an ore seam is
+## a place you go to and hold (the D-039 reasoning), not scenery, and a
+## one-minute gold node would trivialise the map's contested spots.
+const RICH_STOCK := 2400
+
+## How far a crew looks for the next tree of the same kind when the one it
+## was working runs out. Covers a forest's internal gaps without silently
+## marching workers across the map to ground the player never chose.
+const RETARGET_RADIUS := 8
 
 var space: TorusSpace
 
@@ -61,6 +58,12 @@ var wallets := {}
 #               "kind": Resource }
 var _hauls := {}
 
+## Cells whose node ran dry since the last drain — the server turns these
+## into wire events so clients can fell the tree they drew there. Appended
+## the moment `remaining` hits zero, drained with `take_depleted()`;
+## nothing in the simulation reads it back.
+var _depleted := []
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -69,21 +72,35 @@ func _init(p_space: TorusSpace = null) -> void:
 ## Build the node field from terrain (D-037).
 ##
 ## Placement is derived, not authored, and deterministic: the same seed
-## gives the same nodes, so replays reproduce an economy exactly. Because
-## terrain is quadrant-symmetric (D-036), the node field inherits that
-## symmetry for free — all four players get identical resources without
-## anything here knowing about fairness.
-func generate(terrain: TerrainGen, symmetry_order: int = 2) -> void:
+## gives the same nodes, so replays reproduce an economy exactly.
+##
+## ## Trees are a density field now, not a stride
+##
+## The old version sampled every Nth cell and let biome pick the kind,
+## which made resources a uniform sprinkle — a forest held exactly as many
+## wood nodes per acre as a prairie held food. Now each biome rolls its
+## own densities, shaped by the SAME moisture field the biome
+## classification reads: a forest's wet heart is near-solid trees, its dry
+## edge thins out, grassland carries scattered groves that thicken toward
+## the forest line, dry country keeps a few hardy trees, and a beach gets
+## the odd palm. The result is dense woods, ragged treelines and lone
+## trees, all from one noise field nothing here had to invent.
+##
+## Gold stays a rare find in dry country. Stone moves to the mountain FOOT
+## — the old version put it on MOUNTAIN/PEAK cells, which passability()
+## marks unwalkable, so every naturally placed stone node was scenery a
+## crew would march at and stall against forever (the AI grew a whole
+## give-up mechanism against exactly these). A foot cell is walkable by
+## construction.
+##
+## The per-cell roll hashes the QUADRANT-LOCAL position, not the absolute
+## index, for the reason the stride version learned the hard way: symmetric
+## terrain is not enough on its own, and deriving the roll from the local
+## position makes the field inherit the map's symmetry by construction
+## (D-036).
+func generate(terrain: TerrainGen, symmetry_order: int = 1) -> void:
 	nodes.clear()
 
-	# Which cells are candidates is decided from the QUADRANT-LOCAL
-	# position, not the absolute cell index. Symmetric terrain is not
-	# enough on its own: sampling every Nth absolute index picks a
-	# different pattern in each quadrant unless N happens to divide the
-	# quadrant stride, and the first version of this shipped 149
-	# asymmetric nodes on a perfectly symmetric map. Deriving the sample
-	# from the local position makes the field inherit the map's symmetry
-	# by construction, the same way the map inherits its own (D-036).
 	var repeats := maxi(1, symmetry_order)
 	var quadrant_width := maxi(1, space.width / repeats)
 	var quadrant_height := maxi(1, space.height / repeats)
@@ -91,12 +108,92 @@ func generate(terrain: TerrainGen, symmetry_order: int = 2) -> void:
 	for index in range(space.cell_count()):
 		var coord := space.from_index(index)
 		var local := (coord.x % quadrant_width) + (coord.y % quadrant_height) * quadrant_width
-		if local % NODE_EVERY != 0:
-			continue
-		var kind := _kind_for(terrain.biome_at(space, coord))
+		var roll := _roll(terrain.noise_seed, local)
+
+		var kind := _roll_kind(terrain, coord, roll)
 		if kind < 0:
 			continue
-		nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
+		nodes[index] = {"kind": kind, "remaining": stock_for(kind)}
+
+
+## What (if anything) grows on this cell, given one deterministic roll in
+## [0, 1). Densities are cumulative within a branch: a cell that misses its
+## first chance falls through to the next band of the same roll, so one
+## roll decides everything and the bands cannot overlap.
+func _roll_kind(terrain: TerrainGen, coord: Vector2i, roll: float) -> int:
+	var biome := terrain.biome_at(space, coord)
+
+	# Mountain-foot stone first: it outranks the ground biome's own table,
+	# because a foot cell IS a grassland/dry/forest cell — that is what
+	# makes it walkable — and stone has nowhere else to live.
+	if biome != TerrainGen.Biome.MOUNTAIN and biome != TerrainGen.Biome.PEAK \
+			and biome != TerrainGen.Biome.WATER and biome != TerrainGen.Biome.DEEP_WATER:
+		if _touches_mountain(terrain, coord) and roll < 0.25:
+			return ResourceKind.STONE
+
+	match biome:
+		TerrainGen.Biome.FOREST:
+			# Wet heart near-solid, dry edge thinned: density rides the
+			# same moisture that classified the cell as forest at all.
+			var f := clampf((terrain.moisture_at(space, coord) - TerrainGen.MOISTURE_FOREST)
+				/ (1.0 - TerrainGen.MOISTURE_FOREST), 0.0, 1.0)
+			if roll < lerpf(0.65, 0.98, f):
+				return ResourceKind.WOOD
+		TerrainGen.Biome.GRASSLAND:
+			# Groves thicken toward the forest line (m -> MOISTURE_FOREST),
+			# orchards sit in the mid-moisture band where neither extreme
+			# claims the ground.
+			var g := clampf((terrain.moisture_at(space, coord) - TerrainGen.MOISTURE_DRY)
+				/ (TerrainGen.MOISTURE_FOREST - TerrainGen.MOISTURE_DRY), 0.0, 1.0)
+			var wood := 0.05 + 0.22 * g * g
+			var food := 0.05 + 0.16 * (1.0 - absf(g - 0.5) * 2.0)
+			if roll < wood:
+				return ResourceKind.WOOD
+			if roll < wood + food:
+				return ResourceKind.FOOD
+		TerrainGen.Biome.DRY_GRASSLAND:
+			if roll < 0.10:
+				return ResourceKind.WOOD
+			if roll < 0.10 + 0.017:
+				return ResourceKind.GOLD
+		TerrainGen.Biome.BEACH:
+			if roll < 0.10:
+				return ResourceKind.WOOD
+	return -1
+
+
+## Does this cell border the mountains? Neighbours only — stone reads as
+## sitting AT the rock face, and one ring keeps it as rare as the terrain's
+## mountain perimeter.
+func _touches_mountain(terrain: TerrainGen, coord: Vector2i) -> bool:
+	for neighbour in space.neighbors(coord):
+		var b := terrain.biome_at(space, neighbour)
+		if b == TerrainGen.Biome.MOUNTAIN or b == TerrainGen.Biome.PEAK:
+			return true
+	return false
+
+
+## Starting stock by kind: trees small and quick, ore rich and held.
+static func stock_for(kind: int) -> int:
+	if kind == ResourceKind.WOOD or kind == ResourceKind.FOOD:
+		return TREE_STOCK
+	return RICH_STOCK
+
+
+## Deterministic roll in [0, 1) from (seed, cell). Combat._roll_unit's
+## FNV-style mixing, and for the same reason: integer ops only, so it is
+## bit-identical on every machine, and no single multiply can overflow a
+## 64-bit int (D-024's determinism argument).
+const _FNV_OFFSET_BASIS := 0x811C9DC5
+const _FNV_PRIME := 0x01000193
+
+
+static func _roll(seed_value: int, cell_local: int) -> float:
+	var h := _FNV_OFFSET_BASIS
+	h = ((h ^ (seed_value & 0xFFFFFFFF)) * _FNV_PRIME) & 0xFFFFFFFF
+	h = ((h ^ (cell_local & 0xFFFFFFFF)) * _FNV_PRIME) & 0xFFFFFFFF
+	h = ((h ^ (h >> 15)) * _FNV_PRIME) & 0xFFFFFFFF
+	return float(h & 0xFFFFFF) / float(0x1000000)
 
 
 ## Make the starts approximately fair on an ASYMMETRIC map (D-036,
@@ -146,7 +243,7 @@ func balance_for_spawns(spawns: Array, passable: PackedByteArray,
 					continue
 				if space.distance(spawn, space.from_index(index)) < 2:
 					continue  # leave room for the town hall itself
-				nodes[index] = {"kind": kind, "remaining": NODE_STOCK}
+				nodes[index] = {"kind": kind, "remaining": stock_for(kind)}
 				found += 1
 
 
@@ -184,23 +281,6 @@ func _reachable_from(from: Vector2i, passable: PackedByteArray, radius: int) -> 
 			queue.append(neighbour)
 			out.append(index)
 	return out
-
-
-## Biome to resource. Water and beach yield nothing — you cannot chop a
-## lake — which is also what keeps nodes off the cells squads cannot walk
-## to (terrain passability, D-007).
-static func _kind_for(biome: int) -> int:
-	match biome:
-		TerrainGen.Biome.FOREST:
-			return ResourceKind.WOOD
-		TerrainGen.Biome.MOUNTAIN, TerrainGen.Biome.PEAK:
-			return ResourceKind.STONE
-		TerrainGen.Biome.GRASSLAND:
-			return ResourceKind.FOOD
-		TerrainGen.Biome.DRY_GRASSLAND:
-			return ResourceKind.GOLD
-		_:
-			return -1
 
 
 ## Node positions and kinds for the wire, without their stock.
@@ -335,7 +415,14 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 
 		match int(haul["phase"]):
 			Phase.TO_NODE:
-				if sim.cell_index_of(squad) == int(haul["node"]):
+				# Another crew may have finished the tree while this one was
+				# still walking to it — retarget en route rather than letting
+				# the crew arrive at a stump and stand there.
+				if not has_node(int(haul["node"])):
+					if not _retarget(sim, squad, haul):
+						_hauls.erase(squad)
+						continue
+				elif sim.cell_index_of(squad) == int(haul["node"]):
 					haul["phase"] = Phase.GATHERING
 			Phase.GATHERING:
 				_gather(sim, squad, haul, def, dt, buildings)
@@ -371,9 +458,16 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 		dt: float, buildings: BuildingSim) -> void:
 	var cell := int(haul["node"])
 	if not has_node(cell):
-		# Worked out. The squad stops rather than standing on an empty
-		# patch forever; the player picks somewhere new.
-		_hauls.erase(squad)
+		# Worked out. With trees a minute deep a crew retires one every
+		# haul cycle or so, and making the player re-issue the same order
+		# per tree would be pure micro tax — so the crew walks itself to
+		# the nearest still-standing node of the SAME kind nearby. Same
+		# kind, because "chop wood" silently becoming "pick apples" is the
+		# substitution bug the AI already had to have fixed
+		# (_nearest_node_of_kind's header). Nothing nearby releases the
+		# crew, exactly as before; the player picks somewhere new.
+		if not _retarget(sim, squad, haul):
+			_hauls.erase(squad)
 		return
 
 	# Output scales with the crew that is actually left (D-028). This is
@@ -397,6 +491,11 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 
 	nodes[cell]["remaining"] = remaining_at(cell) - taken
 	haul["carrying"] = int(haul["carrying"]) + taken
+	if remaining_at(cell) <= 0:
+		# The tree comes down. The entry stays in `nodes` (a depleted cell
+		# is still not a place to start another node) — this list is how
+		# the server learns to tell clients about the felling.
+		_depleted.append(cell)
 
 	if int(haul["carrying"]) >= def.carry_capacity:
 		var drop_off := _nearest_drop_off(sim, buildings, sim.owner_of(squad),
@@ -421,12 +520,44 @@ func _try_unload(sim: SquadSim, squad: int, haul: Dictionary,
 	changed[player] = true
 	haul["carrying"] = 0
 
-	# Straight back out to the node, if there is anything left in it.
+	# Straight back out to the node, if there is anything left in it —
+	# or to the nearest surviving tree of the same kind if not.
 	if has_node(int(haul["node"])):
 		haul["phase"] = Phase.TO_NODE
 		sim.force_move(squad, space.from_index(int(haul["node"])))
-	else:
+	elif not _retarget(sim, squad, haul):
 		_hauls.erase(squad)
+
+
+## Point a crew whose tree ran out at the nearest surviving node of the
+## same kind within RETARGET_RADIUS. Returns false if none stands.
+##
+## Searches outward from the WORKED NODE, not from the squad — the crew
+## may be at the drop-off when the decision is made, and "nearest to the
+## depot" would slowly walk the whole operation home. `disk_offsets` is
+## sorted nearest-first (D-067 made that true for exactly this walk-
+## outward pattern), and the search is deterministic, so server and
+## replay agree on where every crew goes next.
+func _retarget(sim: SquadSim, squad: int, haul: Dictionary) -> bool:
+	var from := space.from_index(int(haul["node"]))
+	var kind := int(haul["kind"])
+	for offset in TorusSpace.disk_offsets(RETARGET_RADIUS):
+		var cell := space.index(from + offset)
+		if has_node(cell) and kind_at(cell) == kind:
+			haul["node"] = cell
+			haul["phase"] = Phase.TO_NODE
+			sim.force_move(squad, space.from_index(cell))
+			return true
+	return false
+
+
+## Nodes that ran dry since the last call, for the wire. Draining hands
+## ownership to the caller — the server encodes them once and the list
+## must not replay next tick.
+func take_depleted() -> Array:
+	var out := _depleted
+	_depleted = []
+	return out
 
 
 ## Nearest completed drop-off building this player owns, or (-1, -1).

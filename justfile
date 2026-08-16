@@ -10,30 +10,12 @@
 # Recipes are the stable interface either way; only the backend
 # invocation differs.
 #
-# Instances (D-075):
-#   Every recipe belongs to exactly one INSTANCE, which resolves to a
-#   compose project name and a published host port. You never name one:
-#   it comes from the directory you are in.
-#
-#     the main checkout          -> dev        port 4433
-#     .claude/worktrees/foo-123  -> test-foo-123, first free port >= 4434
-#
-#   So two checkouts cannot fight: separate containers, separate port,
-#   separate teardown. `EDOTMW_INSTANCE=<name>` overrides, and whether it
-#   was set EXPLICITLY is load-bearing — `down` and `nuke` refuse to tear
-#   down `dev` unless it was named, so a bare `just down` cannot kill a
-#   human's running game. Use `just dev-down` for that.
-#
-#   scripts/instance.sh is the single definition; every recipe below
-#   sources it and prints what it resolved before doing anything.
-#   `just instances` shows every instance on this machine.
-#
 # STATUS (M1 complete): every recipe here is real and verified. There
 # are no longer any "NOT IMPLEMENTED UNTIL M1" stubs.
 #
 # Headless (docker or native): doctor, bootstrap, up, down, nuke, status,
-# run-server, run-bots, test-unit, test-load, gen-terrain-preview,
-# replay-info.
+# run-server, run-bots, test-unit, test-load, test-scenario, scenarios,
+# gen-terrain-preview, replay-info.
 # Docker only: test-client — renders the real GUI client via Mesa's
 # software rasteriser and checks the frame. No GPU involved.
 # Native only: run-client — for a human to actually look at on real
@@ -59,15 +41,43 @@ godot_version := `cat .godot-version`
 runtime := env_var_or_default("EDOTMW_RUNTIME", "docker")
 tools_dir := justfile_directory() + "/tools"
 artifacts_dir := justfile_directory() + "/artifacts"
+
+# --- Multi-agent isolation (D-095) — HARD RULES ------------------------
+# Several agents develop this repo in parallel, each in its own worktree,
+# each launching its own server and clients. Everything that could let
+# them touch each other's instances derives from ONE identity, computed
+# by instance-id.sh (the single definition — nothing may re-derive it):
+#
+#   instance         from the git branch (agents: claude-<session>)
+#   port             stable hash of instance into 20000-29999 (udp)
+#   compose_project  edotmw-<instance>
+#
+# So `just down` here can only ever remove THIS worktree's containers,
+# two agents' servers bind two different host ports, and a client shows
+# which instance it belongs to in its title bar. The in-container port
+# stays 4433 (compose maps it), so bots and the in-network client-test
+# service are untouched.
+#
+# Breaking the isolation is an explicit, human-requested act only:
+# EDOTMW_INSTANCE / EDOTMW_PORT override the derivation (see
+# instance-id.sh). Never hardcode the shared project name or a literal
+# host port back into a recipe — tests/test_multi_agent_isolation.gd
+# fails if the old shared literals reappear.
+instance := `bash instance-id.sh name`
+port := `bash instance-id.sh port`
+compose_project := "edotmw-" + instance
+# docker-compose.yml publishes "${EDOTMW_HOST_PORT}:4433/udp". Exported
+# here so every compose invocation below publishes THIS instance's port.
+export EDOTMW_HOST_PORT := port
 native_godot := tools_dir + "/godot"
 blender_version := `cat .blender-version`
 blender_venv := tools_dir + "/blender-venv"
-blender_python := blender_venv + "/bin/python"
-
-# THE instance derivation (D-075). Sourced by every recipe that talks to
-# docker or binds a port, so which project and which port a command uses
-# is decided in exactly one place.
-instance_sh := justfile_directory() + "/scripts/instance.sh"
+# `python -m venv` lays out Scripts/ on Windows and bin/ everywhere else —
+# both are reached through this same bash-shelled justfile (Git Bash on
+# Windows per CLAUDE.md), so the venv's own layout must be branched on,
+# not assumed.
+blender_python := if os_family() == "windows" { blender_venv + "/Scripts/python.exe" } else { blender_venv + "/bin/python" }
+blender_pip := if os_family() == "windows" { blender_venv + "/Scripts/pip.exe" } else { blender_venv + "/bin/pip" }
 
 # Single source of truth for the M1 server entry scene, so the recipes
 # that depend on it agree about when it exists.
@@ -89,9 +99,8 @@ default:
 _import:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
 
-    # Skipped when nothing an import cares about has changed (D-076). It
+    # Skipped when nothing an import cares about has changed (D-096). It
     # is ~10 s and it ran on EVERY recipe, which was half the cost of a
     # filtered unit-test run.
     #
@@ -130,7 +139,7 @@ _import:
     mkdir -p "$cache_dir"
     : > "$pending"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test --path . --import
+        docker compose -p {{compose_project}} run --rm --no-deps test --path . --import
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --path . --import
@@ -142,7 +151,6 @@ _import:
 doctor:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     echo "Runtime: {{runtime}}"
     echo "Pinned Godot version: {{godot_version}}"
     if [ "{{runtime}}" = "docker" ]; then
@@ -206,51 +214,39 @@ bootstrap:
 
 # Start the server detached (docker runtime only — native has no
 # persistent 'up' state, use run-server directly).
-[doc("Start this instance's server detached (docker runtime)")]
+[doc("Start the server detached (docker runtime)")]
 up: _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ ! -f "{{server_scene}}" ]; then
         echo "NOT IMPLEMENTED UNTIL M1: {{server_scene}} doesn't exist yet, so there is no server to bring up." >&2
         exit 1
     fi
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" up -d --build server
+        docker compose -p {{compose_project}} up -d --build server
+        echo "up: instance {{instance}} — server published on udp {{port}} (host)"
     else
         echo "native runtime: nothing to bring up persistently — use 'just run-server'"
     fi
 
-# Stop everything THIS INSTANCE started. Never leaves a stray process or
+# Stop everything this project started. Never leaves a stray process or
 # container behind (D-014's whole point). Safe to run when nothing is up.
-#
-# Refuses to tear down `dev` unless `dev` was named explicitly (D-075).
-# In the main checkout the instance resolves to `dev` — the human's
-# running game — and a bare `just down` typed by an agent would otherwise
-# kill it. Inside a worktree the instance is `test-*` and this works
-# bare, exactly as it always did.
-[doc("Stop this instance's containers (refuses to stop 'dev' implicitly)")]
+[doc("Stop containers / tracked processes this project started")]
 down:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
-    if [ "$EDOTMW_INSTANCE" = "dev" ] && [ "$EDOTMW_INSTANCE_EXPLICIT" != "1" ]; then
-        echo "down: refusing to tear down the 'dev' instance implicitly." >&2
-        echo "      That is the human dev session. Run: just dev-down" >&2
-        exit 1
-    fi
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" down --remove-orphans
+        docker compose -p {{compose_project}} down --remove-orphans
         # `compose down` removes what `compose up` created. It does NOT
         # reliably remove a still-RUNNING one-off `compose run` container,
         # and `--remove-orphans` does not either — a client-test container
         # that hung at startup survived a full `just nuke` and was found
         # still running half an hour later. That is precisely the stray
         # container D-014 exists to prevent, so sweep by project label as
-        # well. The label filter is this INSTANCE's project (D-075), so it
-        # can never touch another checkout's containers — which the old
-        # pinned `edotmw` label could and did.
-        strays="$(docker ps -aq --filter "label=com.docker.compose.project=$EDOTMW_PROJECT" || true)"
+        # well. The label filter is scoped to THIS INSTANCE's compose
+        # project (D-095), exact-match, so it can never touch anything
+        # else — including another agent's edotmw-* project.
+        strays="$(docker ps -aq --filter 'label=com.docker.compose.project={{compose_project}}' || true)"
         if [ -n "$strays" ]; then
             echo "down: removing $(echo "$strays" | wc -l | tr -d ' ') stray one-off container(s)"
             echo "$strays" | xargs -r docker rm -f >/dev/null
@@ -269,34 +265,31 @@ down:
 # This deletes tools/ — including the `just` binary you are running it
 # with. That is intentional (D-014: teardown must leave nothing behind);
 # re-run ./bootstrap.ps1 to come back.
-[doc("Full teardown: this instance's containers, images, tools/, artifacts, caches")]
+[doc("Full teardown: containers, images, tools/, artifacts, caches")]
 nuke: down
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" down --rmi all --volumes --remove-orphans || true
-    fi
-    # Give the port back. A claim outliving the checkout it belonged to
-    # would slowly eat the range and is exactly the stale state D-014
-    # says teardown must not leave behind. `dev` holds a fixed port
-    # rather than a claim, so there is nothing to release.
-    if [ "$EDOTMW_INSTANCE" != "dev" ]; then
-        edotmw_release_port "$EDOTMW_INSTANCE"
+        docker compose -p {{compose_project}} down --rmi all --volumes --remove-orphans || true
     fi
     rm -rf "{{tools_dir}}" "{{artifacts_dir}}" .godot .godot-container
     echo "nuked: repo is back to pure source"
     echo "note: tools/ (including just) is gone — run ./bootstrap.ps1 to set up again."
 
-# Running containers (docker) or tracked native processes, for THIS
-# instance only. For every instance on the machine, use `just instances`.
-[doc("This instance's running containers (all of them: `just instances`)")]
+# This worktree's derived identity (D-095). Run it in ANOTHER worktree to
+# learn the port to pass `run-client` when deliberately crossing instances.
+[doc("Print this worktree's instance name, udp port, compose project")]
+instance:
+    @echo "instance:        {{instance}}"
+    @echo "udp port (host): {{port}}"
+    @echo "compose project: {{compose_project}}"
+
+# Running containers (docker) or tracked native processes.
 status:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" ps
+        docker compose -p {{compose_project}} ps
     else
         if [ -f "{{artifacts_dir}}/server.pid" ]; then
             echo "server pid: $(cat {{artifacts_dir}}/server.pid)"
@@ -304,96 +297,6 @@ status:
             echo "no tracked native server process"
         fi
     fi
-
-# Every instance on this machine: its port, its checkout, and whether it
-# has containers running right now (D-075).
-#
-# This is CLAUDE.md's "docker ps first" rule turned into a recipe. The
-# session that rule came from was spent believing a load-test failure was
-# caused by the change under test, when a second checkout held the port
-# and the bots were reaching ITS server. One line per instance answers
-# that question directly.
-[doc("List every instance on this machine, its port and its containers")]
-instances:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    EDOTMW_QUIET=1
-    source "{{instance_sh}}"
-    printf '%-28s %-34s %-6s %-10s %s\n' INSTANCE PROJECT PORT CONTAINERS CHECKOUT
-
-    row() {
-        local name="$1" port="$2" path="$3" project="edotmw-$1" running note=""
-        running="$(docker ps -q --filter "label=com.docker.compose.project=$project" 2>/dev/null | wc -l | tr -d ' ')"
-        # A claim whose checkout is gone is dead weight holding a port.
-        # Reported, never auto-removed: deleting state on someone's behalf
-        # is how you lose a worktree somebody was still using.
-        [ -n "$path" ] && [ ! -d "$path" ] && note=" STALE (checkout gone — just instance-free $name)"
-        [ "$name" = "$EDOTMW_INSTANCE" ] && note="$note <- you are here"
-        printf '%-28s %-34s %-6s %-10s %s%s\n' "$name" "$project" "$port" "$running" "${path:-—}" "$note"
-    }
-
-    dev_path=""
-    [ -f "$EDOTMW_REGISTRY/by-port/4433" ] && dev_path="$(cut -f2 "$EDOTMW_REGISTRY/by-port/4433")"
-    row dev 4433 "$dev_path"
-
-    if [ -d "$EDOTMW_REGISTRY/by-name" ]; then
-        for f in "$EDOTMW_REGISTRY/by-name"/*; do
-            [ -e "$f" ] || continue
-            name="$(basename "$f")"
-            port="$(cat "$f")"
-            path=""
-            [ -f "$EDOTMW_REGISTRY/by-port/$port" ] && path="$(cut -f2 "$EDOTMW_REGISTRY/by-port/$port")"
-            row "$name" "$port" "$path"
-        done
-    fi
-
-    # Compose projects with NO registry entry — the shape a leftover from
-    # before D-075, or from a hand-typed `docker compose`, would take.
-    # Absence of news is not good news (CLAUDE.md), so look rather than
-    # assume the registry is the whole truth.
-    for p in $(docker compose ls --all 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -E '^edotmw' || true); do
-        name="${p#edotmw-}"
-        if [ "$p" = "edotmw" ]; then
-            echo "note: project 'edotmw' exists — a pre-D-075 leftover, owned by no instance"
-        elif [ "$name" != "dev" ] && [ ! -f "$EDOTMW_REGISTRY/by-name/$name" ]; then
-            echo "note: project '$p' exists with no registry claim"
-        fi
-    done
-
-# Drop an instance's port claim. For a worktree that has been deleted —
-# `just nuke` releases its own claim, but a worktree removed with `rm -rf`
-# never got the chance.
-[doc("Release an instance's port claim (for a checkout that is gone)")]
-instance-free NAME:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    EDOTMW_QUIET=1
-    source "{{instance_sh}}"
-    if [ "{{NAME}}" = "dev" ]; then
-        echo "instance-free: 'dev' holds a fixed port, not a claim — nothing to release." >&2
-        exit 1
-    fi
-    port="$(edotmw_port_of "{{NAME}}")"
-    if [ -z "$port" ]; then
-        echo "instance-free: '{{NAME}}' holds no port claim."
-        exit 0
-    fi
-    running="$(docker ps -q --filter "label=com.docker.compose.project=edotmw-{{NAME}}" | wc -l | tr -d ' ')"
-    if [ "$running" != "0" ]; then
-        echo "instance-free: refusing — '{{NAME}}' still has $running container(s) running." >&2
-        echo "               Stop them first from that checkout: just down" >&2
-        exit 1
-    fi
-    edotmw_release_port "{{NAME}}"
-    echo "instance-free: released port $port from '{{NAME}}'"
-
-# Stop the human dev session — the EXPLICIT form of `down`, which refuses
-# to touch `dev` on its own (D-075).
-[doc("Stop the human 'dev' instance (the explicit form of `down`)")]
-dev-down:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    EDOTMW_INSTANCE=dev "{{just_executable()}}" down
 
 # Manual dev loop: run the server in the foreground.
 # AI is how many computer opponents to seat (D-051). They take ordinary
@@ -407,7 +310,6 @@ dev-down:
 run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ ! -f "{{server_scene}}" ]; then
         echo "NOT IMPLEMENTED UNTIL M1: {{server_scene}} doesn't exist yet." >&2
         exit 1
@@ -415,20 +317,15 @@ run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     if [ "{{runtime}}" = "docker" ]; then
         # Replaces the service's default command, so it has to restate it
         # in full. The image ENTRYPOINT already supplies --headless.
-        #
-        # No --port here on purpose: inside the container the server is
-        # always on 4433 and compose publishes it on this instance's host
-        # port (D-075). Passing the host port through would break the
-        # bots, which reach `server:4433` over the project's own network.
-        docker compose -p "$EDOTMW_PROJECT" run --rm --service-ports server \
+        # In-container the server still listens on 4433; compose maps it
+        # to this instance's host port (D-095).
+        echo "run-server: instance {{instance}} — reachable on udp {{port}} (host)"
+        docker compose -p {{compose_project}} run --rm --service-ports server \
             --path . "{{server_scene}}" -- --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     else
-        # Native has no container to hide behind, so the instance port IS
-        # the bind port — otherwise a native server and a docker one would
-        # collide on 4433.
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --path . "{{server_scene}}" -- \
-            --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}} --port="$EDOTMW_PORT"
+            --port={{port}} --ai={{AI}} --map={{MAP}} --lobby={{LOBBY}}
     fi
 
 # Start a lobby server AND the GUI client, which is what "play a game"
@@ -445,19 +342,10 @@ run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
 # The world is NOT generated until the admin presses start (D-049): its
 # size, seed and shape are all still being chosen, so there is genuinely
 # nothing behind the lobby.
-#
-# ALWAYS the `dev` instance (D-075), whichever checkout it is invoked
-# from: this is the human's game, and the human's game has one home. That
-# is also what keeps it out of the way of agents — every test run lives in
-# a `test-*` instance with its own project and port, so nothing an agent
-# does can reach the containers this recipe starts, and `just down` from
-# an agent cannot stop them.
-[doc("Play: lobby server + GUI client on the 'dev' instance (port 4433)")]
+[doc("Play: lobby server + GUI client. You are admin; add AI seats, then Start")]
 lobby PLAYERS="1":
     #!/usr/bin/env bash
     set -euo pipefail
-    export EDOTMW_INSTANCE=dev
-    source "{{instance_sh}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
@@ -465,55 +353,120 @@ lobby PLAYERS="1":
         exit 1
     fi
 
-    # Whatever happens next, do not leave a server holding the dev port.
-    # EDOTMW_INSTANCE is exported, so `down`'s guard sees dev named
-    # explicitly and allows it: a session tearing down the server it
-    # started IS the explicit request the guard asks for.
+    # Whatever happens next, do not leave a server holding this
+    # instance's port ({{port}} — D-095; other instances are untouched).
     trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
     "{{just_executable()}}" down > /dev/null 2>&1 || true
 
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/lobby-server.log"
-    container="$EDOTMW_PROJECT-lobby"
     "{{just_executable()}}" _import
-    docker compose -p "$EDOTMW_PROJECT" run --rm --service-ports -d --name "$container" \
+    # Deliberately NOT --rm. Since D-075 the server exits by itself when
+    # the last human disconnects, and --rm would delete the container the
+    # moment it did — taking the log this recipe collects below with it.
+    # The trap's `just down` still removes it, by project label.
+    docker compose -p {{compose_project}} run --service-ports -d --name {{compose_project}}-lobby \
         server --path . "{{server_scene}}" -- \
         --lobby=1 --players={{PLAYERS}} > /dev/null
 
     # Wait for the port rather than sleeping a guessed number of seconds.
     for _i in $(seq 1 60); do
-        if docker logs "$container" 2>&1 | grep -q "listening"; then break; fi
+        if docker logs {{compose_project}}-lobby 2>&1 | grep -q "listening"; then break; fi
         sleep 1
     done
-    if ! docker logs "$container" 2>&1 | grep -q "(lobby)"; then
+    if ! docker logs {{compose_project}}-lobby 2>&1 | grep -q "(lobby)"; then
         echo "FAIL: the server did not come up in LOBBY mode:" >&2
-        docker logs "$container" 2>&1 | tail -20 >&2
+        docker logs {{compose_project}}-lobby 2>&1 | tail -20 >&2
         exit 1
     fi
-    docker logs "$container" 2>&1 | grep "listening"
+    docker logs {{compose_project}}-lobby 2>&1 | grep "listening"
 
     echo "lobby: you are the admin. Add AI seats, pick civs, then press Start."
     "$godot" --headless --path . --import
-    "$godot" --path . client.tscn -- --address=127.0.0.1 --port="$EDOTMW_PORT"
-    docker logs "$container" > "$log" 2>&1 || true
+    "$godot" --path . client.tscn -- --address=127.0.0.1 --port={{port}} --instance={{instance}}
+    docker logs {{compose_project}}-lobby > "$log" 2>&1 || true
+
+# Quick test match: you + 3 AI, no lobby to click through, every seat
+# (yours included) drawn from CivRoster.resolve(RANDOM, ...) instead of the
+# round-robin `run-server`/`lobby` default — so you don't know your own civ
+# going in, same as an AI seat would draw. SEED reruns the same draw
+# (civ_rng is seeded from it, same as everywhere else civs are randomised).
+#
+# Its own recipe rather than `run-server AI=3` flags typed by hand, for the
+# same reason `lobby` is its own recipe: server and client have to agree on
+# port and mode, and skipping the lobby means there is no admin screen to
+# fall back on if you get that wrong.
+#
+# SANDBOX defaults to "auto": ON when this checkout is an agent worktree
+# (instance claude-*), OFF for the human's own checkout. An agent going
+# straight into quick launch is always dev-testing, so it gets the dev
+# build — sandbox mode (D-077) with its cheats panel — without having to
+# remember to ask for it. Pass SANDBOX=0/1 to override either way.
+[doc("Quick test: you + 3 AI, all random civs, no lobby (agents get sandbox)")]
+quick-test SEED="1337" SANDBOX="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sandbox="{{SANDBOX}}"
+    if [ "$sandbox" = "auto" ]; then
+        case "{{instance}}" in
+            claude-*) sandbox=1 ;;
+            *)        sandbox=0 ;;
+        esac
+    fi
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
+        echo "      Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+
+    # Whatever happens next, do not leave a server holding this
+    # instance's port ({{port}} — D-095; other instances are untouched).
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    "{{just_executable()}}" down > /dev/null 2>&1 || true
+
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/quick-test-server.log"
+    "{{just_executable()}}" _import
+    # Not --rm, for the same reason as `lobby`: the server now exits on the
+    # last human disconnect (D-075) and would take its own log with it.
+    docker compose -p {{compose_project}} run --service-ports -d --name {{compose_project}}-quick-test \
+        server --path . "{{server_scene}}" -- \
+        --ai=3 --players=1 --lobby=0 --seed={{SEED}} --random-civs=1 \
+        --sandbox=$sandbox > /dev/null
+
+    # Wait for the port rather than sleeping a guessed number of seconds.
+    for _i in $(seq 1 60); do
+        if docker logs {{compose_project}}-quick-test 2>&1 | grep -q "listening"; then break; fi
+        sleep 1
+    done
+    if ! docker logs {{compose_project}}-quick-test 2>&1 | grep -q "listening"; then
+        echo "FAIL: the server did not come up:" >&2
+        docker logs {{compose_project}}-quick-test 2>&1 | tail -20 >&2
+        exit 1
+    fi
+    docker logs {{compose_project}}-quick-test 2>&1 | grep -E "listening|AI seated"
+
+    "$godot" --headless --path . --import
+    "$godot" --path . client.tscn -- --address=127.0.0.1 --port={{port}} --instance={{instance}}
+    docker logs {{compose_project}}-quick-test > "$log" 2>&1 || true
 
 # Manual dev loop: run a client. Always native — needs a GPU (D-014), so
 # this recipe ignores EDOTMW_RUNTIME and refuses to pretend otherwise.
 #
 # ADDRESS defaults to localhost; pass the server's host when connecting to
-# one running elsewhere. PORT defaults to THIS instance's port (D-075),
-# so a client started from a worktree reaches that worktree's server and
-# not whatever happens to be on 4433.
+# one running elsewhere. Controls: WASD pans, wheel zooms, Q/E and
+# Ctrl+wheel turn the view (D-063), ESC opens the game menu, right-click
+# orders every owned squad to the clicked cell.
 #
-# Controls: WASD pans, wheel zooms, Q/E and Ctrl+wheel turn the view
-# (D-063), ESC opens the game menu, right-click orders every owned squad
-# to the clicked cell.
-[doc("Run the GUI client natively against this instance (WASD pan, wheel zoom)")]
-run-client ADDRESS="127.0.0.1" PORT="":
+# PORT defaults to THIS instance's derived port (D-095), so `just
+# run-client` from a worktree connects to that worktree's server and no
+# other. To look at a different instance's server, pass its port
+# explicitly (`just instance` in that worktree prints it).
+[doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
+run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
-    port="{{PORT}}"; [ -n "$port" ] || port="$EDOTMW_PORT"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014: it cannot be containerized)." >&2
@@ -536,7 +489,7 @@ run-client ADDRESS="127.0.0.1" PORT="":
     # really about global class_name resolution, which is not a headless
     # concern at all.
     "$godot" --headless --path . --import
-    "$godot" --path . client.tscn -- --address={{ADDRESS}} --port="$port"
+    "$godot" --path . client.tscn -- --address={{ADDRESS}} --port={{PORT}} --instance={{instance}}
 
 # Spawn N virtual load-test bots in a SINGLE process (D-018 sizing note)
 # against a running server.
@@ -553,44 +506,34 @@ run-client ADDRESS="127.0.0.1" PORT="":
 run-bots N DURATION="-1": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        # Reaches `server:4433` over this instance's own compose network,
-        # so it needs no port: the only thing that varies per instance is
-        # the HOST publish (D-075).
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}}
+        # In-network: the bots reach this project's server as "server:4433",
+        # so no host port is involved (D-095).
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port="$EDOTMW_PORT"
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}}
     fi
 
 # GUT unit tests, headless. Imports the project first so global
 # class_names (UnitDef, PrimitiveUnit, GUT's own classes) are registered
 # — Godot's headless import cache is required before gut_cmdln.gd can
 # resolve them, and is otherwise a confusing first-run failure.
-## FILTER narrows the run, which is what makes the inner loop usable
-## (D-076). Without it every change costs the whole suite; with it a
-## single file is a fraction of a second of actual testing.
-##
-##   just test-unit                  every test
-##   just test-unit scenarios        every file whose name contains it
-##   just test-unit "" within_reach  one test by name, any file
-##
-## FILTER maps to GUT's -gselect (filename substring) and TEST to
-## -gunit_test_name. Both are GUT's own options, not a re-implementation
-## of test selection here.
+#
+# FILTER selects test FILES by substring, TEST selects one test by name
+# (D-096) — the full suite is minutes, and iterating on one behaviour
+# should not cost that.
 [doc("Run the GUT suite headless. FILTER selects files, TEST selects one test")]
 test-unit FILTER="" TEST="": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     args=(-s res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit)
     [ -n "{{FILTER}}" ] && args+=("-gselect={{FILTER}}")
     [ -n "{{TEST}}" ] && args+=("-gunit_test_name={{TEST}}")
     if [ "{{runtime}}" = "docker" ]; then
         # The service's default command is the unfiltered run; passing
         # args replaces it, so they are restated in full.
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test "${args[@]}"
+        docker compose -p {{compose_project}} run --rm --no-deps test "${args[@]}"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless "${args[@]}"
@@ -631,7 +574,6 @@ test-unit FILTER="" TEST="": _import
 test-load N DURATION:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     mkdir -p "{{artifacts_dir}}"
     trap '"{{just_executable()}}" down' EXIT INT TERM
     "{{just_executable()}}" up
@@ -649,8 +591,8 @@ test-load N DURATION:
         # flushed into the log we are about to collect. Collecting before
         # stopping loses the one line that reports the run's totals; the
         # trap still removes the container afterwards.
-        docker compose -p "$EDOTMW_PROJECT" stop server >/dev/null 2>&1 || true
-        docker compose -p "$EDOTMW_PROJECT" logs server > "$server_log" 2>&1 || true
+        docker compose -p {{compose_project}} stop server >/dev/null 2>&1 || true
+        docker compose -p {{compose_project}} logs server > "$server_log" 2>&1 || true
     fi
 
     if [ "$bots_status" -ne 0 ]; then
@@ -748,7 +690,7 @@ test-load N DURATION:
     grep -E "server: final" "$server_log" || true
 
 # The fast integration loop: a REAL server and REAL bots, but starting
-# mid-match from a scenario instead of playing the opening (D-076).
+# mid-match from a scenario instead of playing the opening (D-096).
 #
 # `test-load` needs ~120 s and that is not waste — a town hall takes 40 s
 # and consumes the founding party (D-031), production runs after it, and
@@ -772,7 +714,6 @@ test-load N DURATION:
 test-scenario SCENARIO="siege" N="4" DURATION="30":
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     mkdir -p "{{artifacts_dir}}"
     trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
     "{{just_executable()}}" _import
@@ -791,8 +732,8 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     bots_status=0
     "{{just_executable()}}" run-bots {{N}} {{DURATION}} > "$bots_log" 2>&1 || bots_status=$?
 
-    docker compose -p "$EDOTMW_PROJECT" stop server >/dev/null 2>&1 || true
-    docker compose -p "$EDOTMW_PROJECT" logs server > "$server_log" 2>&1 || true
+    docker compose -p {{compose_project}} stop server >/dev/null 2>&1 || true
+    docker compose -p {{compose_project}} logs server > "$server_log" 2>&1 || true
 
     # 1. Did the server actually play the scenario? Structured marker, not
     #    prose — the standing rule after a log grep for a word no code
@@ -838,14 +779,13 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     grep -E "VERDICT" "$bots_log"
     grep -E "server: final" "$server_log" || true
 
-# Every shipped scenario and what it is for (D-076).
+# Every shipped scenario and what it is for (D-096).
 [doc("List the mid-game scenarios test-scenario and --scenario can name")]
 scenarios: _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test \
+        docker compose -p {{compose_project}} run --rm --no-deps test \
             --headless --script scenario_list.gd
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
@@ -886,7 +826,6 @@ scenarios: _import
 test-client SECONDS="60" BOTS="3": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" != "docker" ]; then
         echo "test-client requires the docker runtime (it needs the software-GL image)." >&2
         echo "For the native GUI client use: {{just_executable()}} run-client" >&2
@@ -905,7 +844,7 @@ test-client SECONDS="60" BOTS="3": _import
     # `--rm`-raced against the client): its own container is still labelled
     # for this compose project, so `just down`'s stray sweep (D-014) cleans
     # it up even if it somehow outlives this recipe.
-    docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps bots --headless --script bot_client.gd \
+    docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd \
         -- --clients={{BOTS}} --duration=$(({{SECONDS}} + 10)) \
         > "$bots_log" 2>&1 &
     bots_pid=$!
@@ -916,7 +855,7 @@ test-client SECONDS="60" BOTS="3": _import
     # Dummy audio because the container has no sound card and ALSA's
     # failure is a dozen lines of noise in the log.
     status=0
-    docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps client-test \
+    docker compose -p {{compose_project}} run --rm --no-deps client-test \
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
@@ -990,9 +929,8 @@ test-client SECONDS="60" BOTS="3": _import
 replay-info FILE="res://artifacts/replay-4433.edmw": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test --headless --script replay_info.gd -- --file={{FILE}}
+        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script replay_info.gd -- --file={{FILE}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script replay_info.gd -- --file={{FILE}}
@@ -1007,10 +945,9 @@ replay-info FILE="res://artifacts/replay-4433.edmw": _import
 gen-terrain-preview CHUNK_SIZE="16": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     mkdir -p "{{artifacts_dir}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
+        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
@@ -1041,6 +978,29 @@ build-assets ONLY="":
     "{{blender_python}}" art/build.py $args
     {{just_executable()}} _import
 
+# Rebuild the resource-node markers (D-028's food/wood/gold/stone props)
+# from the hand-authored source under art/resources/source/.
+#
+# UNLIKE build-assets, this needs no bpy: the source is already a glTF
+# binary and Godot's own GLTFDocument can read and write that format, so
+# this runs on the plain headless image. It is a deliberate exception to
+# the parametric art/ pipeline (CLAUDE.md: "any forced binary-only or
+# GUI-only step ... should be flagged explicitly as an exception"), not a
+# second generator pattern to imitate — see art/resources/split_markers.gd's
+# header for why merging into one mesh per kind matters, not just splitting.
+[doc("Rebuild resource-node marker models from art/resources/source/")]
+build-resource-models:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps test \
+            --path . --script res://art/resources/split_markers.gd
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --path . --script res://art/resources/split_markers.gd
+    fi
+    {{just_executable()}} _import
+
 # Fetch the pinned bpy into a gitignored venv under tools/.
 #
 # Separate from `bootstrap` because it is ~1 GB and only asset work needs
@@ -1051,8 +1011,10 @@ bootstrap-art:
     #!/usr/bin/env bash
     set -euo pipefail
     python3 -m venv "{{blender_venv}}"
-    "{{blender_venv}}/bin/pip" install --quiet --upgrade pip
-    "{{blender_venv}}/bin/pip" install "bpy=={{blender_version}}"
+    # `python -m pip` rather than the pip.exe shim: pip cannot overwrite its
+    # own running executable on Windows and exits 1 telling you to do this.
+    "{{blender_python}}" -m pip install --quiet --upgrade pip
+    "{{blender_pip}}" install "bpy=={{blender_version}}"
     # Godot scans every directory under the project. Without this it walks
     # ~1 GB of Blender's own bundled textures and imports them.
     : > "{{tools_dir}}/.gdignore"
@@ -1112,9 +1074,8 @@ gen-model-preview SECONDS="1.2": _import
 profile: _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps test --headless --script profile_sweep.gd
+        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
         "$godot" --headless --script profile_sweep.gd
@@ -1161,7 +1122,6 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
 lobby-shot SECONDS="8" AI="2" PRESET="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     if [ "{{runtime}}" != "docker" ]; then
         echo "lobby-shot requires the docker runtime (it needs the software-GL image)." >&2
         exit 1
@@ -1172,29 +1132,23 @@ lobby-shot SECONDS="8" AI="2" PRESET="0": _import
     rm -f "$shot"
     trap '"{{just_executable()}}" down' EXIT INT TERM
 
-    # Container name carries the instance (D-075): a fixed name is a
-    # global, and two checkouts running this at once would collide on it
-    # long before they collided on anything interesting. The client
-    # reaches the server BY this name over the compose network, so both
-    # sites have to move together.
-    lobby_server="$EDOTMW_PROJECT-lobby-server"
-    docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps -d --name "$lobby_server" \
+    docker compose -p {{compose_project}} run --rm --no-deps -d --name {{compose_project}}-lobby-server \
         server --headless --path . server.tscn -- --lobby=1 --players=8 > /dev/null
     sleep 3
 
     status=0
-    timeout 180 docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps client-test \
+    timeout 180 docker compose -p {{compose_project}} run --rm --no-deps client-test \
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
         --resolution 1280x720 \
-        -- --address="$lobby_server" --run-seconds={{SECONDS}} \
+        -- --address={{compose_project}}-lobby-server --run-seconds={{SECONDS}} \
         --lobby-ai={{AI}} \
         --lobby-preset-steps={{PRESET}} \
         --screenshot=res://artifacts/lobby.png \
         > "$log" 2>&1 || status=$?
 
-    docker rm -f "$lobby_server" > /dev/null 2>&1 || true
+    docker rm -f {{compose_project}}-lobby-server > /dev/null 2>&1 || true
     if [ ! -f "$shot" ]; then
         echo "lobby-shot: no screenshot written (see $log)" >&2
         exit 1
@@ -1233,7 +1187,6 @@ lobby-shot SECONDS="8" AI="2" PRESET="0": _import
 ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{instance_sh}}"
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/ai-ladder.log"
     : > "$log"
@@ -1243,7 +1196,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
         if [ "{{runtime}}" = "docker" ]; then
-            docker compose -p "$EDOTMW_PROJECT" run --rm --no-deps server \
+            docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=1 \
                 --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \

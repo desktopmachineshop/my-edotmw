@@ -1,7 +1,7 @@
 class_name Scenario
 extends RefCounted
 
-## Applies a ScenarioDef to a world (D-076).
+## Applies a ScenarioDef to a world (D-096).
 ##
 ## ALL-STATIC, for the same structural reason `Formation` is: there is
 ## nowhere to put state, so "the scenario is applied once and then the

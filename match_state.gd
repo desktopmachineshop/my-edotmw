@@ -236,8 +236,44 @@ func start_match() -> bool:
 	if phase != Phase.LOBBY:
 		return false
 	for seat in seats:
+		# Remember the CHOICE before the draw overwrites it, so returning
+		# to the lobby can put it back (see return_to_lobby, D-075).
+		seat["choice"] = seat["civ"]
 		seat["civ"] = CivRoster.resolve(StringName(seat["civ"]), civ_rng)
 	phase = Phase.RUNNING
+	return true
+
+
+## Take a match back to the lobby (D-075). The one backwards edge in this
+## phase machine.
+##
+## It exists because "leave match" has to land somewhere. Leaving used to
+## be a disconnect, and a disconnect cannot come back — the seat was torn
+## down and there was nothing to return TO.
+##
+## Seats SURVIVE, which is what makes the next match one click away
+## instead of a relaunch. Everything a match WROTE on them does not:
+##
+## - A seat that chose Random gets its choice back. `start_match`
+##   overwrites `civ` with the draw, so without this the second match
+##   would silently re-field the first one's civs and "Random" would mean
+##   "random once, ever".
+## - Registration is cleared, because it is per-match. Carrying the
+##   dictionary over would bring an `eliminated` flag into a match its
+##   player has not played yet, and whoever lost the first match would
+##   begin the second already defeated. `server.gd` re-registers every
+##   seat from `_on_match_started`, humans and AI alike.
+##
+## Returns true only if this actually left a match, so a caller can tell
+## a real return from a no-op on a lobby that never started.
+func return_to_lobby() -> bool:
+	if phase == Phase.LOBBY:
+		return false
+	phase = Phase.LOBBY
+	winner = -1
+	_players.clear()
+	for seat in seats:
+		seat["civ"] = seat.get("choice", seat["civ"])
 	return true
 
 
@@ -482,7 +518,10 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		"elevation_frequency":
 			map_settings.elevation_frequency = clampf(value, 0.5, 8.0)
 		"height_scale":
-			map_settings.height_scale = clampf(value, 0.5, 6.0)
+			# Ceiling raised from 6.0 to 20.0 alongside the new 15.0 default
+			# (was 2.0) — a slider that could not reach the default would
+			# clamp it right back down on the first nudge.
+			map_settings.height_scale = clampf(value, 0.5, 20.0)
 		_:
 			return false
 
@@ -493,3 +532,46 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 		map_settings = MapSettings.from_dict(before)
 		return false
 	return map_settings.to_dict() != before
+
+
+# --- sandbox mode, for dev testing ---------------------------------------
+
+## Whether cheat commands (C2S_CHEAT_*) are accepted at all this match.
+## Set from the server's own --sandbox=1 launch flag, or toggled by the
+## admin from the lobby — or LIVE, mid-match, unlike map settings: this is
+## deliberately not locked to the lobby phase, since the whole point is
+## iterating on a running match without restarting the server.
+var sandbox := false
+
+## While true, every NEW construction/production order completes
+## instantly rather than over its ordinary build_time. Read by
+## server.gd's `_finish_build`/`_handle_order_produce` at the moment of
+## creation, not by the sim's tick loop — costs nothing while off, and
+## never rewrites anything already in progress when flipped on.
+var instant_build := false
+
+## While true, every AI player skips combat entirely
+## (`AiPlayer.economy_only`) — town-founding, building, training and
+## gathering continue unaffected. Applied directly to the live AiPlayer
+## instances by server.gd the moment this is toggled.
+var ai_economy_only := false
+
+
+## Admin-only toggle for one of the three sandbox flags above. `key` is
+## "sandbox", "instant_build", or "ai_economy_only" — a tiny generic
+## message in the same spirit as `set_map_option`'s key/value pairing,
+## rather than three near-identical opcodes. Not phase-gated on purpose —
+## see `sandbox`'s own doc.
+func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
+	if not is_admin(by_player):
+		return false
+	match key:
+		"sandbox":
+			sandbox = enabled
+		"instant_build":
+			instant_build = enabled
+		"ai_economy_only":
+			ai_economy_only = enabled
+		_:
+			return false
+	return true

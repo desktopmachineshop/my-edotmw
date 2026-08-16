@@ -20,7 +20,7 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
-### D-076 · 2026-08-11 · Accepted — tests start mid-game, from a scenario
+### D-096 · 2026-08-11 (renumbered 2026-08-16) · Accepted — tests start mid-game, from a scenario
 **Decision:** A **scenario** is a mid-game world described as data
 (`/scenarios/*.tres`), applied through the game's own calls, and usable
 two ways: in-process by a GUT test, and by the real server via
@@ -114,90 +114,1511 @@ all-static applier is what to re-examine first; or `test-scenario`
 becomes the thing people quote instead of `test-load`, which is clause 8
 failing in practice rather than in principle.
 
-### D-075 · 2026-08-11 · Accepted — one instance per checkout
-**Decision:** Every command belongs to an **instance**, which resolves to
-exactly two things: a **compose project name** and a **published host
-port**. Nothing else varies.
+**Amendment, 2026-08-16 (merge):** this entry was written as D-076 and is
+renumbered to D-096 here. It was authored in parallel with the work that
+became main's D-075 (lobby return) and D-076 (walls and gates), on a
+branch that had forked before either existed, so both numbers were spent
+by the time it merged. **Two agents working the same log will collide on
+the next free number, and neither can see the other** — so a number is
+only really claimed once it is on main, and reconciling that is a merge
+step, not a mistake. Nothing but the heading changed.
 
-1. **Identity is derived from the checkout directory, not declared.**
-   `.claude/worktrees/<name>` → `test-<name>`; anywhere else → `dev`.
-   `EDOTMW_INSTANCE=<name>` overrides.
-2. **`dev` is the human's, and is pinned to port 4433.** `just lobby`
-   always starts it, whichever directory it is invoked from. Every other
-   instance takes the first free port from 4434.
-3. **`down` and `nuke` refuse to act on `dev` unless `dev` was named
-   EXPLICITLY.** A bare `just down` in the main checkout is an error
-   naming `just dev-down`; in a worktree it resolves to that worktree's
-   own instance and works bare, as before.
-4. **Ports are claimed in a registry under `$HOME/.edotmw/ports`**, not in
-   the repo, and claimed atomically by creating a file under
-   `set -o noclobber`.
-5. **The container-internal port stays 4433 for everyone.** Only the host
-   publish varies.
-6. **`scripts/instance.sh` is the one definition**, sourced by every
-   recipe that touches docker, and it prints
-   `instance=… project=… port=…` before anything runs.
-7. **One checkout runs one instance.** The override exists for naming, not
-   for running two instances from one tree — two would share the import
-   cache and `artifacts/`.
+The same fork produced a **second, independent implementation of instance
+isolation** — checkout-derived names, a `$HOME` port registry with atomic
+claims, `dev` pinned to 4433 and protected from an implicit `just down`,
+and a `just instances` listing. D-095 landed first and is the one in
+force; that implementation was dropped whole at merge rather than
+half-merged, because two derivations of one identity is precisely the
+failure D-095 exists to prevent. **What it had and D-095 does not is
+recorded here so it can be reconsidered on its own merits, not
+rediscovered a third time:** a registry makes a port collision impossible
+rather than merely unlikely (D-095 hashes into 10,000 ports and does not
+check), and refusing an implicit teardown of the human's instance is a
+guard D-095 has no equivalent of.
 
-**Rationale:** Every recipe used to pin `-p edotmw` and port 4433. That
-scoped teardown away from unrelated software (D-014's requirement) but
-NOT away from a second checkout of this project, and there are now seven
-worktrees. The consequences were all real and all observed: `just down`
-in one worktree removed another's containers, a second `just up` could
-not bind the port, and — the expensive one — a run in one checkout
-silently reached a server started by another. CLAUDE.md already carried a
-paragraph about a session lost to exactly that, whose tell was
-"server-side instrumentation printing nothing at all".
+### D-095 · 2026-08-14 · Accepted — parallel dev instances are isolated by construction
 
-Deriving identity from the path rather than having agents claim a slot is
-what makes this hold in practice. The failure being removed is *forgetting
-to isolate*, and a scheme that requires remembering an argument cannot
-remove it — it relocates it. Nothing to pass means nothing to forget.
+**Decision:** every checkout of this repo — the owner's main clone and
+each Claude Code agent worktree — is its own **dev instance**, and an
+instance can only ever start, see, and stop its own servers and
+clients. The identity has ONE definition, `instance-id.sh` at the repo
+root, which derives:
+
+- **instance name** from the git branch (agent worktrees:
+  `claude-<session>`; the main clone: `main`), sanitised into a docker
+  project fragment;
+- **UDP port** as a stable hash of that name into 20000–29999 —
+  deliberately far from the historical shared 4433, so a hardcoded 4433
+  that sneaks back in fails to connect rather than connecting to the
+  *wrong* server;
+- **compose project** `edotmw-<instance>`.
+
+The justfile evaluates the script for its `instance`/`port` variables
+and threads them everywhere the old shared literals were: every
+`docker compose -p`, every `--name`d container, the `down` recipe's
+stray-container label sweep, and every client/bot `--port`. The compose
+file publishes `${EDOTMW_HOST_PORT}:4433/udp` — **in-container the
+server still listens on 4433**, so the bots and `client-test` services
+(in-network, reaching `server:4433`) needed no change, and per-project
+compose networks keep them scoped for free. The GUI client accepts
+`--instance` and puts it in its **title bar** with the endpoint
+(`eDotMW — claude-foo  [127.0.0.1:24817]`), so several clients on one
+desktop are tellable apart before clicking anything. `just instance`
+prints a worktree's identity. `just quick-test` resolves a new
+`SANDBOX=auto` parameter to **on** for agent instances (`claude-*`) —
+an agent going straight into quick launch is always dev-testing, so it
+gets D-077's sandbox by default — and off for the main clone.
+
+**Why:** parallel agents kept killing each other's test sessions. Both
+halves were structural: `just down` (and every recipe's teardown trap)
+removed containers in the one pinned `edotmw` project regardless of who
+started them, and with one shared port a client connected to whichever
+instance's server held 4433 — CLAUDE.md already records a load-test
+failure mis-diagnosed for a session because of exactly that stray-server
+shape. Fixing it by convention ("agents, be careful") is the
+declared-but-unenforced pattern this project keeps paying for, so the
+isolation is derived, not remembered, and
+`tests/test_multi_agent_isolation.gd` fails if a shared literal
+(`-p edotmw`, a fixed `--name`, a hardcoded host port or `--port=4433`)
+reappears in the justfile or compose file.
+
+**Sharing is explicit, never accidental:** `EDOTMW_INSTANCE` /
+`EDOTMW_PORT` override the derivation when the owner deliberately wants
+two checkouts talking to one server; nothing else crosses instances.
+
+**Rejected alternatives:** a lock file or registry of running instances
+(state to leak, and D-014's teardown discipline says nothing may
+outlive its recipe); letting agents share one server with per-agent
+match ids (the server is authoritative per-process — one agent's
+restart still kills everyone); random free-port allocation at launch
+(a client started later could no longer find its server — the port must
+be a pure function of the identity).
+
+> **D-087 through D-094 are the M8 planning session, 2026-08-14.** Run
+> the way the M9 session (D-068–D-074) was: everything in them is design,
+> no code was written, and the owner made the four calls that shape the
+> rest in the same session (scope, hosting, whether 20 players is a
+> design target, saves). They close Q3, Q5, Q10, Q11, Q13 and Q14 — the
+> entire "Blocking M7 / product-level" block of section 2, which dates
+> from when Steam was numbered M7. IDs were checked free against `main`
+> at fd4ee6e immediately before writing, per the renumbering lesson in
+> the editorial note below.
+
+### D-087 · 2026-08-14 · Accepted — M8 is Steam-ready, not launched; and "seamless" closed by inspection
+
+**Decision:** M8's definition of done is **the game is a real Steam
+build, proven by private playtests that reach a match entirely through
+Steam** — install from a private depot branch, host, invite, play,
+disconnect, rejoin. **Public launch is not M8.** Launch (store page,
+pricing, marketing) waits on M9's content, because shipping a game whose
+matches decide in three minutes (D-056) would earn exactly the reviews it
+deserves. M8 and M9 can proceed in either order or in parallel; the
+launch gate is both complete.
+
+In scope, each with its own entry below: hosting model (D-088), what a
+20-player design target obliges (D-089), reconnection (D-090), anti-cheat
+posture (D-091), saves — out (D-092), the platform boundary (D-093), and
+the export/upload pipeline plus exit criteria (D-094).
+
+**Q14 is closed here, by inspection.** "Seamless" means one contiguous
+wrapped map with no loading screens — and that has been true by
+construction since D-008: the torus is a single simulated space, terrain
+is one meshed domain drawn nine times (M3 slice 3), and nothing streams.
+No streaming work exists in any milestone because none is needed. The
+question only stayed open because the word was never pinned down;
+recording the definition is the whole decision.
+
+**Rejected alternatives:** *Early Access on current content* — faster
+feedback, but the 3–4 minute match problem is structural (D-056 says so
+explicitly) and first impressions on Steam are not revisable. *Making M8
+the 1.0 launch* — that just reorders the ladder to M9-then-M8 and makes
+M8 unplannable until M9's content questions settle; splitting
+"Steam-ready" from "launched" keeps M8 executable now.
+
+**Consequences:** M8 produces no public artifact — its output is a
+private depot branch and a repeatable playtest loop. The discrete-GPU
+bench trigger (Q15, sharpened in section 2) finally becomes reachable
+through playtesters' hardware and is folded into D-094's criteria.
+
+**Revisit trigger:** if M9 slips badly enough that an Early Access
+launch on partial content starts looking better than silence, that is a
+new decision against this one, not an amendment.
+
+---
+
+### D-088 · 2026-08-14 · Accepted — Q3: player-hosted first, official dedicated later
+
+**Decision (the owner's call, 2026-08-14):** at first ship, matches are
+**player-hosted**: the host player's machine runs the authoritative
+simulation, and remote players connect over **Steam's networking with
+relay** (SteamNetworkingSockets / SDR via D-093's boundary), so NAT and
+port-forwarding never reach a user. **Official dedicated servers are a
+later rung**, not M8 — they are also the eventual fix for the two
+limitations this decision knowingly accepts (host-quit and host-trust,
+below).
+
+**The measured basis that makes hosting-while-playing viable.** This
+question was written when "who pays for servers" looked expensive.
+M4/M6 made it small: bandwidth is ~1 KB/s per client (D-042's 933 B/s at
+20 players) — 19 remote clients cost a host about **20 KB/s of upload**;
+the server is roughly **half a core and ~42.5 MB** at full scale
+(D-038/D-040). A machine that can run the client (the expensive half —
+D-041) hosts the simulation without noticing.
+
+**Process shape: in-process host, and `loopback_peer.gd` already built
+the seam.** The host's game runs the server *in-process* — the same
+`SquadSim`/`server.gd` machinery, ticked by D-023's accumulator — with
+the host's own client connected through the loopback peer that D-051's
+AI clients already use, and remote clients arriving through Steam
+sockets. This is not a new architecture: `bot_client.gd` proves N
+clients in one process, and `loopback_peer.gd` exists precisely because
+a peer is duck-typed to `ENetPacketPeer.send`'s shape. A Steam peer
+wrapper implements the same shape behind D-093's boundary. D-002's
+authority split (clients send input, server decides) is a protocol
+property, not a process property, and is unchanged.
+
+**D-042's contract is a hard requirement on the new transport.** Curve
+packets carry no sequence number; in-order reliable delivery is
+load-bearing. Steam sockets must run reliable-ordered, and the ordering
+test D-042 named
+(`test_curve_application_is_last_write_wins_so_order_is_load_bearing`)
+applies to the Steam path exactly as to ENet. **ENet stays** for
+LAN/direct-IP, docker, bots and the whole test estate — containers have
+no Steam and never will, so every existing recipe keeps running without
+it (see D-093's fallback rule).
+
+**Two consequences accepted with eyes open:**
+- **Host-quit kills the match** for everyone in it. No host migration —
+  authoritative-state handoff is a milestone of its own and a fresh
+  cheating surface (whoever inherits the server inherits omniscience).
+  Dedicated-later is the real fix; until then it is a documented
+  property of unranked play.
+- **The host is trusted** — they hold the whole truth and the authority.
+  D-091 owns this consequence.
+
+**Rejected alternatives:** *Official dedicated first* (recommended by
+the analysis for keeping ENet untouched, declined by the owner — player-
+hosted reaches playtesters without standing infrastructure or monthly
+cost, and the Steamworks integration it forces is needed for D-089's
+lobbies anyway). *Player-run headless server as a separate process* —
+splits the Steam context across processes (the listen socket needs the
+game's Steam session) and buys nothing the in-process shape doesn't.
+*Host migration* — see above.
+
+**Revisit trigger:** ranked/competitive play (requires dedicated — see
+D-091); playtests showing the host's 0-RTT advantage is felt in play; or
+a measured case of host upload/CPU being the binding constraint at real
+player counts.
+
+---
+
+### D-089 · 2026-08-14 · Accepted — Q5: 20 players is a design target, and what M8 owes it
+
+**Decision (the owner's call, 2026-08-14):** 20 concurrent players is a
+**design target** — the product's headline match, not merely the ceiling
+the architecture was sized against. What that obliges, scoped honestly:
+
+- **Discovery:** Steam lobby browser plus friend invites, mapped onto
+  the existing lobby (D-048/D-050 — seats, teams, civs, AI). **No
+  skill-based matchmaking service** — discovery is lobbies, not MMR
+  queues; a matchmaker is a standing service with a population
+  prerequisite this game does not have and M8 must not pretend it does.
+- **Fill:** a 20-seat match must start without 20 humans. AI players
+  (D-051) fill empty seats — already real (`just run-server AI=3`), the
+  lobby already seats them.
+- **Resilience:** drop-OUT hands the army to an AI (D-090); drop-IN is
+  D-090's repossession — a returning human reclaims their own seat, and
+  a NEW human may take over an AI-held seat mid-match through the same
+  machinery. That last is what makes a 20-player match fillable in
+  practice rather than only at the lobby screen.
+
+**Rationale:** the alternative reading (engineering ceiling, design for
+2–8) was recommended and declined. Taking 20 seriously as design means
+the fill/resilience machinery above is core product, not tooling — a
+20-human lobby that dissolves on its third disconnect is not a 20-player
+game. Note the architecture side owes nothing new: D-018/D-020's budgets
+were always sized at 20, and D-042 measured transport at 20.
+
+**Rejected alternatives:** matchmaking service (above); spectator-slot
+drop-in (observers are cheap under D-003 — a spectator is a client with
+maximum vision — but it is scope, and nothing in the 20-player claim
+needs it; noted for later, not built in M8).
+
+**Consequences:** M8's headline verification (D-094 criterion 8) is a
+20-seat match through Steam networking with real remote humans in it.
+The per-connection-ownership defect family (D-038's amendment) becomes
+seat-identity work in D-090 — binding by SteamID, not connection.
+
+**Revisit trigger:** if real playtests show the fun ceiling is well
+below 20 (coordination, readability, pacing), the design target moves
+and this entry is superseded — the engineering ceiling stays where
+D-018 put it either way.
+
+---
+
+### D-090 · 2026-08-14 · Accepted — Q10: reconnection is repossession; AI holds the seat; rejoin is also the desync repair
+
+**Decision:** a human's mid-match disconnect no longer wipes their army
+(superseding D-033's wipe-on-disconnect for humans; explicit leave via
+D-075 also hands off rather than wiping). Instead:
+
+1. **The seat passes to an AI immediately.** D-051 built exactly the
+   right object: an AI player is a client without a socket, held to
+   every rule a human is. Takeover is seating one on the abandoned
+   army's curves — no grace-period limbo where 19 players fight a
+   statue.
+2. **Reconnection is repossession.** A returning player (identified by
+   **SteamID, not connection** — the per-connection ownership cache was
+   already this project's bug once, D-038's amendment) reclaims the
+   seat from the AI at any point while the match runs. There is no
+   timeout after which return is refused: the AI holding the seat IS
+   the grace mechanism, indefinitely.
+3. **Rejoin is architecturally cheap, and that is not luck.** A
+   rejoining client is a fresh join: D-025's reveal semantics already
+   define how any client learns current state — horizon-clipped curves,
+   sent fresh, no synthetic catch-up. The one non-obvious obligation:
+   persistent-explored building fog must be replayed as the
+   **ever-revealed set** on rejoin, exactly the distinction its hash
+   rule already warns about.
+4. **Desync recovery is the same door.** Q10's second half gets the
+   same answer: the client already computes state hashes continuously;
+   on mismatch, the recovery policy is **drop and rejoin through the
+   repossession path** — fresh curves rebuild the world from truth.
+   No incremental repair protocol; rejoin *is* the repair, and it is
+   cheap for the same D-025 reasons. (Server-side, a desync report is
+   logged with the replay per D-016 — forensics first, the M1 lesson.)
+
+**Rationale:** every alternative builds new machinery; this composes
+three things that exist (AI clients, reveal semantics, state hashes)
+and one thing M8 needs anyway (SteamID identity). For D-056's eventual
+1–2 hour matches, wipe-on-disconnect would be brutal to the
+disconnected player's *team* (D-050 shared vision makes armies
+interdependent) — the AI holding the line is what keeps one dropped
+connection from deciding a team match.
+
+**Rejected alternatives:** *grace-period pause* (PA-style — freezes 19
+players for one); *wipe after a timeout* (punishes the team, and the
+timeout constant has no defensible value); *incremental desync repair*
+(a diff protocol against curve state — large, and rejoin already
+achieves the same end).
+
+**Consequences:** the join handshake carries SteamID → seat binding
+(wire change, D-094 criterion 3's version handshake is the natural
+place); `match_state.gd`'s elimination definition needs one amendment —
+a seat is abandoned only if its AI is also dead; D-051's AI must cope
+with inheriting any mid-match position, which `ai-ladder` cannot fully
+exercise (it never inherits) — a scripted takeover scenario is D-094
+criterion 6's job.
+
+**Revisit trigger:** if AI-holds-indefinitely is abused in practice
+(a losing player "AFKs behind a competent AI"), add a forfeit vote or
+an idle-seat rule — a social-rules patch, not a rewrite of this shape.
+
+---
+
+### D-091 · 2026-08-14 · Accepted — Q11: the server IS the anti-cheat, and the host is trusted, stated plainly
+
+**Decision:** no kernel anti-cheat, no third-party client-side
+anti-cheat, VAC at Steam's defaults only. The posture is the
+architecture, which was built for this from D-002 on:
+
+- **A client cannot assert state** — it sends orders; the server
+  validates every one through the shared helper (M3), and refuses what
+  the player doesn't own.
+- **A client cannot know what its player shouldn't** — fog is curve
+  *gating* (D-003/D-004/D-025): concealed state never reaches the wire.
+  A maphack reads memory that isn't there.
+- **A modified client changes only its own picture** — soldier
+  positions are client-derived cosmetics (D-006, one-way by
+  construction).
+
+The two residual surfaces, named so nobody rediscovers them: what a
+horizon-clipped curve still leaks (D-003's own note — intent within the
+horizon), and **the host under D-088** — whoever hosts holds the whole
+truth and the authority, so a modified host is omniscient and
+unaccountable. **Accepted for unranked/friends play and documented as
+such; ranked or competitive play requires official dedicated servers
+and is explicitly gated on D-088's later rung.** Replays (D-016) are
+the accountability tool that exists today: byte-identical to the wire,
+they make an accusation checkable after the fact.
+
+**Rejected alternatives:** kernel/client anti-cheat (an arms race this
+project cannot staff, aimed at the one surface — the client — the
+architecture already made low-value to cheat); trusting no host and
+shipping dedicated-only (rejected by D-088's owner call, and unranked
+friends-lobby play doesn't warrant it).
+
+**Consequences:** none in code for M8 beyond what D-088/D-090 already
+require. The word "ranked" appearing anywhere in a future milestone is
+this entry's tripwire.
+
+**Revisit trigger:** ranked play; or evidence of host cheating being a
+practical problem in unranked lobbies rather than a theoretical one.
+
+---
+
+### D-092 · 2026-08-14 · Accepted — Q13: no mid-match saves; reconnection and replays are what the need decomposes into
+
+**Decision (the owner's call, 2026-08-14):** M8 ships no save/resume.
+The realistic failure a long multiplayer match faces is *a player
+dropping* — D-090 covers that with AI takeover and repossession. The
+other thing "saves" usually means — reviewing a finished match — has
+been free since M1: replays are the curve log (D-016). What remains is
+genuinely "suspend a live multiplayer session and resurrect it later",
+which requires state serialization with versioning plus a resume
+ceremony every participant must attend, for an event (all N players
+agree to stop and all N return later) that lobby-discovered matches
+essentially never produce.
+
+**Rejected alternatives:** server-side session snapshot (feasible —
+packed arrays serialize cleanly — but the cost is the ceremony and the
+versioning, not the bytes); client-side saves (meaningless in an
+authoritative-server game).
+
+**Revisit trigger:** two named. (1) M9's real 1–2 hour matches showing
+abandonment pain that repossession doesn't cover — measured by
+playtest, not assumed. (2) A single-player or skirmish-vs-AI mode
+becoming a product surface — there the ceremony collapses (one human,
+server in-process per D-088) and saves become cheap enough to justify
+themselves.
+
+---
+
+### D-093 · 2026-08-14 · Accepted — the platform boundary: GodotSteam, and D-021 amended by exactly one category
+
+**Decision:** Steamworks reaches this project through the **GodotSteam
+GDExtension**, and D-021 gains a second sanctioned GDExtension
+category: **platform integration**. D-021's original category
+(performance kernels, on measured evidence only) is untouched and still
+has zero members. Three constraints keep the amendment from becoming a
+hole:
+
+1. **One script names Steam.** Every Steamworks call lives behind a
+   single boundary script (`steam_platform.gd` or equivalent); no other
+   `.gd` file mentions Steam at all, and **a test enforces it** — the
+   same falsifiable-by-grep pattern as D-046 criterion 3 (no script
+   names a civ) and D-086's lighting-rig guard. This is the project's
+   proven mechanism for keeping a rule true after everyone stops
+   looking.
+2. **Absent Steam costs Steam, never the game.** No Steam context —
+   docker, CI, bots, LAN, a clone that never installed the extension —
+   means the boundary reports unavailable and everything else works
+   over ENet exactly as today. The precedent is D-081's empty
+   `model_id`: a failed integration degrades fidelity (here: no
+   relay, no lobbies, no invites), not function. The entire existing
+   test estate runs Steam-less by construction, which is also why the
+   Steam path needs its own verification story (D-094).
+3. **Still no C#** (D-021's yes/no answer stands): GodotSteam's
+   GDExtension build, not the .NET binding; no `.csproj` appears.
+
+**Rationale:** D-088 (relay) and D-089 (lobbies, invites) are
+impossible without Steamworks, and Steamworks has no GDScript-native
+path. The alternative reading — that D-021 forbids this — would make
+D-021 decide product scope, which was never its job; it was a toolchain
+cost/reversibility decision, and a pinned prebuilt extension behind one
+script is toolchain-cheap and reversible.
+
+**Rejected alternatives:** shipping with no Steamworks at all (steamcmd
+upload needs none — but D-088/D-089 die with it); the C# Steamworks
+bindings (D-021); hand-rolled GDExtension against the Steamworks SDK
+(GodotSteam exists, is maintained, and is the community-standard
+binding).
+
+**Consequences:** the extension binary is a pinned dependency fetched
+by bootstrap (the `tools/` pattern), never committed; `.godot-version`
+gains a sibling pin. `just doctor` learns to report Steam availability.
+The boundary script is the natural home for the SteamID identity D-090
+needs and the lobby mapping D-089 needs.
+
+**Revisit trigger:** GodotSteam abandonment or a Godot upgrade it lags
+badly (the standing risk of any binding); at that point the fallback
+ladder is: pin harder, then hand-roll the minimal surface actually used
+(sockets, lobbies, identity — small by then, since the boundary script
+documents exactly what is used).
+
+---
+
+### D-094 · 2026-08-14 · Accepted — M8's exit criteria, written before the code
+
+**Decision:** M8 is complete when all of the following hold. Written
+before any M8 code exists, per the standing rule (D-022, D-026, D-046,
+D-074 — and D-085's reconstruction is the cautionary tale for skipping
+it). Every new check below is subject to the observed-to-fail rule.
+
+1. **Export:** `just export` produces a runnable Windows client build
+   and a Linux headless server build from a clean clone (the latter is
+   what docker already proves possible, and is the dedicated-later
+   seed). Build version is stamped from one source of truth.
+2. **Upload:** a `just` recipe pushes a build to a Steam depot via
+   steamcmd, to a **private** branch; a fresh machine installs and runs
+   it from Steam. (No store page, no public visibility — D-087.)
+3. **Version handshake:** the join flow carries a protocol version and
+   the SteamID seat identity (D-090); a mismatched client is refused
+   loudly at join with a message a player can act on. Verified by
+   connecting a deliberately version-bumped client and watching the
+   refusal — this criterion exists because Steam's rolling updates make
+   mixed versions routine, and today's protocol has no version field
+   at all.
+4. **Host flow:** a host starts a match from inside the game (server
+   in-process per D-088), a second machine joins via Steam invite and
+   via the lobby browser, and no participant touches an IP address or
+   a router. LAN/direct-IP still works with Steam absent (D-093).
+5. **Transport contract:** a real match runs over Steam sockets with
+   reliable-ordered delivery, the state-hash machinery reports zero
+   desyncs on it, and D-042's ordering test is extended to cover the
+   Steam peer wrapper. The bots/test estate continue to run entirely
+   over ENet/loopback, Steam-less.
+6. **Reconnection (D-090), each leg observed to fail first:** kill a
+   client mid-match → its AI takes over within a tick and plays on;
+   the same human rejoins → repossesses the seat, and post-rejoin
+   state hashes are clean (including the ever-revealed building-fog
+   set — the known trap); a second human takes over a different
+   AI-held seat mid-match (D-089's drop-in). A scripted takeover
+   scenario covers the part `ai-ladder` structurally cannot (an AI
+   inheriting a mid-match position it didn't build).
+7. **Platform boundary (D-093):** the no-script-names-Steam test
+   exists and has been observed to fail; the full unit suite passes in
+   docker with no Steam present (automatic, but assert it — that is
+   the fallback rule proven, not assumed).
+8. **The 20-seat match (D-089):** one match, 20 seats filled — at
+   least 3 remote humans over the real internet (not loopback, not
+   LAN), the rest AI — through Steam networking, completing with a
+   decided result or a clean cap. Bandwidth, worst tick and µs/squad
+   quoted **with their counts**, per the standing rule, against
+   D-020's budget and D-042's measured baseline.
+9. **The discrete-GPU number (Q15's armed trigger):** `just
+   bench-render` run on at least one discrete GPU — playtesters'
+   machines finally make this reachable — at ship map size and squad
+   count, adapter name in the output. This settles D-085 criterion
+   11's caveat as a side effect.
+10. **A human plays a full match end-to-end through the Steam-installed
+    build** — install, lobby, match, disconnect/rejoin, finish. The
+    criterion-14 lesson (D-085), applied from day one this time: this
+    is the criterion nothing automated substitutes for, and M8 is
+    "landed, not complete" until it is checked.
+
+**Consequences:** criteria 3, 5 and 6 are wire-protocol work and should
+land early — they are the part every other criterion sits on.
+Criterion 8 is the milestone's headline and its long pole: it needs
+real humans on real networks, which means the private-branch loop
+(criteria 1–2) is the first thing to build, not the last.
+
+**Revisit trigger:** any criterion found unverifiable as written gets
+amended here in the open, not quietly reinterpreted — the D-043
+retroactive-audit lesson.
+
+---
+
+> **Editorial note on D-081 through D-085, added 2026-08-11.** M7's art
+> work landed under decision IDs D-063 through D-067 — but by the time it
+> shipped, those IDs had already been taken by real, unrelated entries
+> (D-063 is the HUD/camera-yaw decision below; D-065 is formation shape;
+> D-066 is building damage scale; D-067 is squad shoving). `CLAUDE.md`
+> cites the art work at the collided IDs anyway, and the only trace of
+> the actual art decisions in this file was a two-line Q12 closure
+> pointing at a `D-064` that was never written. A grep for style keywords
+> (`vertex animation texture`, `VAT`, `gdshader`, `silhouette`, `low-poly`,
+> `toon`, `atlas`) across the whole file before this note returned exactly
+> two hits, both in that closure.
+>
+> D-081 through D-085 below reconstruct those decisions from the shipped
+> code and from `CLAUDE.md`'s own M7 narrative, at fresh unused IDs, so
+> this file has something to check before the next art decision is made.
+> They are dated to when the work is understood to have landed (D-081's
+> 2026-08-09 matches the Q12 closure's own date), not to today — but they
+> were **written today**, after the fact, which is the opposite of this
+> project's own rule that exit criteria (D-022, D-026) are written down
+> *before* the code. D-085 in particular is reconstructed without ever
+> having seen an original numbered list; where `CLAUDE.md` cites a
+> specific criterion number (4, 11, 14) that number is preserved, and
+> everything else is inferred from what the same section of `CLAUDE.md`
+> says landed. Treat D-085 as lower-confidence than the others for that
+> reason.
+>
+> **Renumbered again on merge, same day.** This block was first drafted
+> as D-075 through D-080. Before it merged, `main` independently gained
+> its own real D-075 — "leaving a match returns to the lobby, and no
+> humans means no server" (below) — landing the same day this block was
+> written. Rather than let a second, unrelated decision collide onto an
+> ID this block had already claimed, everything here was shifted up by
+> six (D-075→D-081 … D-080→D-086) at merge time. The lesson is the same
+> one the rest of this note describes at one remove: picking a fresh ID
+> only prevents a collision with what exists at the moment you pick it,
+> not with a decision landing on `main` from a different branch in
+> parallel. Check `main` immediately before merging, not only before
+> writing.
+
+### D-087 · 2026-08-14 · Accepted — forests are made of trees: biome-density nodes, 1-minute trees, authored variants, fellings on the wire
+
+**Decision:** Resource nodes stop being a uniform sprinkle of rich markers
+and become terrain-shaped vegetation, with everything downstream of that
+adjusted to match. Six coupled parts:
+
+1. **Placement is a density field, not a stride.** `Economy.generate`
+   rolls each cell against per-biome densities shaped by the SAME
+   moisture field `biome_at` classifies with (`TerrainGen.MOISTURE_DRY` /
+   `MOISTURE_FOREST` are constants now so the two cannot drift): forest
+   cells are 65–98% trees riding moisture, grassland carries groves that
+   thicken toward the forest line plus orchards in the mid-moisture band,
+   dry grassland gets sparse hardy trees and its old gold cadence, and
+   beaches grow the odd palm. The per-cell roll is an FNV hash of the
+   quadrant-local index and the terrain seed (Combat's `_roll_unit`
+   idiom), so placement stays deterministic and inherits map symmetry by
+   construction. Measured on the Standard 84×96 map: **1,920 natural
+   nodes vs ~134 before — 14x** (the goal said "target 15x"), one tree
+   per ~4 cells, total map stock 334k vs ~322k before.
+
+2. **Trees are small and quick; ore stays rich and held.** Per-kind
+   stock: `TREE_STOCK` 105 for wood/food — sized so one shipped gatherer
+   squad (5 × 0.35/s) works a tree out in **~60 s**, pinned against the
+   shipped def by a test (D-066's lesson) — and `RICH_STOCK` 2400 for
+   gold/stone, which keep the "place worth holding" economics (D-039).
+
+3. **Stone moved to the mountain FOOT.** The old generator put stone ON
+   mountain/peak cells, which `passability()` marks unwalkable — every
+   naturally placed stone node was unreachable scenery, and the AI's
+   whole give-up-on-unreachable-nodes mechanism (D-034's amendment) was
+   built against exactly these. A foot cell (walkable, bordering
+   mountain) is reachable by construction; a test now asserts every
+   natural stone node sits on passable ground.
+
+4. **A worked-out tree retargets its crew.** With trees a minute deep a
+   crew retires one per haul cycle; making the player re-issue the order
+   per tree would be micro tax, so `Economy._retarget` walks
+   `TorusSpace.disk_offsets(RETARGET_RADIUS=8)` (nearest-first since
+   D-067) for the closest surviving node of the SAME kind — never
+   substituting kinds, which was the AI's own old bug — and releases the
+   crew if none stands. Deterministic, server-side, replay-safe.
+
+5. **Fellings are a wire event** (`S2C_NODES_DEPLETED`), fog-gated per
+   client exactly as reveals are (D-025's shape): sent when a client that
+   KNOWS the node can SEE the cell — immediately for whoever is standing
+   there, on next sight for a player behind the fog, never for one who
+   never returns, whose client keeps drawing the tree (a building
+   ghost's staleness, D-030). The fresh-node scan skips already-dry
+   nodes, so a late scout is never told a stump is a resource. The
+   client erases the node on receipt (AI targeting and the minimap read
+   `nodes`) and queues the felling for the renderer.
+
+6. **The client draws forests, not markers.** 50 authored tree models —
+   10 species × 5 variants, split from the hand-authored
+   `tree-variants.glb` by the same `split_markers.gd` pipeline (groups
+   discovered, not listed) — are picked per cell by `ResourceVisuals`,
+   a new all-static pure class (the RenderCull/SelectionPick split):
+   species pools follow biome and moisture (wet forest swaps toward
+   willow/cypress), boundary cells borrow a neighbour's pool 35% of the
+   time so treelines fray instead of snapping along the noise threshold,
+   and yaw/scale jitter comes from per-cell hashes. Trees batch into one
+   MultiMesh per (16-cell chunk, model) — thousands of trees cannot be
+   thousands of Node3Ds — with the torus tax paid per CHUNK per frame
+   (D-035). A felled tree leaves its chunk and becomes a short-lived
+   individual instance playing `fall_pose`: an accelerating tip about
+   its base, then a sink; ore sinks without tipping. Trees stand at
+   0.60–0.92 of authored size because the source canopies (~2.5 world
+   units) are wider than a cell and full-size dense forest merged into
+   a single blob on screen.
+
+**Rationale:** The goal was visual (forests that look like forests,
+aligned to the ground, with variety and a felling animation) but the
+honest version demanded economy changes: many small nodes is a different
+resource model from few rich ones, and a felling animation needs the
+client to LEARN of depletion, which nothing on the wire carried — stock
+was deliberately never replicated (D-028). Fog-gating the new event per
+client rather than broadcasting keeps D-025's "you learn what you can
+see" intact for the map itself.
+
+**Rejected alternatives:** Replicating remaining stock per node
+(constantly changing state on the wire for a number the client only needs
+one bit of); client-side depletion inference from gather traffic (bots
+and fog make it unknowable); one MeshInstance3D per tree (the M4 `by_id`
+shape: thousands of scene nodes for things that never individually move);
+per-tree lattice-offset updates (torus tax per tree per frame — paid per
+chunk instead); trees as passability obstacles (a forest you cannot walk
+through changes flow fields and D-007's sharing claim — explicitly out of
+scope); gating the load-test verdict on `nodes_felled > 0` (a felling
+needs hall + crew + 60 s of gathering, so the gate would pin every run to
+~3 minutes — the exact stale-timing trap D-031 set for `test-load 4 40`;
+it is a printed metric instead, asserted by running long and reading it).
+
+**Consequences:** Bots now put produced gatherers to work (they had
+produced and never ORDERED them for two milestones, so the whole haul
+cycle ran under the load test for the first time) and report
+`nodes_felled` in the verdict line. Total map resource dropped ~0% on
+Standard but the map's WOOD is now ~1,438 trees × 105 rather than ~30
+nodes × 2400 — armies chew through a forest front visibly. The
+`_explored` client-side gate on node drawing was removed: the server has
+fog-gated node knowledge since D-061, and double-gating hid nodes
+revealed by an ally's shared vision (D-050). `test_economy`'s density
+guards inverted for trees only (dense woods asserted, scarce ore still
+asserted).
+
+**Revisit trigger:** If gatherer stats change, `TREE_STOCK` must move
+with them (a test pins the ~60 s relationship). If tree counts grow past
+~8k (Huge maps) and chunk rebuilds or the per-node placement pass show up
+in a frame profile, promote placement to a bulk pass. If forests ever
+gain gameplay meaning (concealment, passability), that is a new decision
+— this one is explicitly cosmetic-plus-economy.
+
+### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
+
+**Decision:** The art style question ("low poly vs cartoon vs the current
+method") had a false premise — `art/lib/geom.py` exposes exactly two
+primitives (`box`, `prism`), every shipped model runs 72-256 triangles
+against a 300/460/400 budget (D-081), and the shading is already flat
+Lambert with no specular. The game is already low poly, at the extreme
+end. Nothing about it is geometry-limited.
+
+What separated "low poly", "cartoon" and "the current method" turned out
+to be the lighting layer, and the project had almost none: one
+`DirectionalLight3D`, a flat `BG_COLOR` navy void, a constant blue-grey
+ambient, no shadows, no sky, no tonemap, no fog, no post-processing —
+duplicated by hand across `client.gd`, `bench_render.gd` and
+`model_preview.gd`. The chosen direction is **polished low poly**
+(Northgard / Bad North) over cartoon/toon, because the entire cost is in
+that lighting layer plus a palette re-tune — it needs no change to the
+asset pipeline, unlike toon's outline pass (see Rejected alternatives).
+
+**What shipped:**
+
+1. **`world_look.gd`** (`class_name WorldLook`, all-static, the same
+   convention as `render_cull.gd`/`formation.gd`/`hud_layout.gd`) — the
+   one definition of the rig, replacing three hand-copies. Guarded by
+   `tests/test_world_look_is_the_only_light.gd`, which scans every script
+   outside `world_look.gd` for a direct `DirectionalLight3D.new()` or
+   `Environment.new()`. Observed failing before trusting it, per this
+   project's standing rule: a stray construction was added to
+   `hud_layout.gd`, the test caught it, then it was removed and the test
+   passed again.
+2. **Sky, sky-sourced ambient, ACES tonemap, depth fog** — `BG_SKY` with
+   a `ProceduralSkyMaterial` replaces the navy void; ambient now samples
+   the sky (`AMBIENT_SOURCE_SKY`) instead of a constant colour, which is
+   the change that does most of the work, because flat-shaded geometry
+   lit by a single hard light plus a flat ambient term reads as
+   cardboard; `TONE_MAPPER_ACES` replaces no tonemap at all; depth fog
+   ties its colour to the sky horizon for aerial perspective at RTS zoom
+   (camera height 8-31 on the shipped map). Measured cost: negligible —
+   54.26 ms mean at 1,000 squads against 53.93 ms before, on the same
+   hardware, same run shape.
+3. **Terrain palette re-tuned** (`terrain_gen.gd:biome_color`) — ACES
+   compresses highlights and desaturates midtones, and sky ambient pushes
+   everything cooler, so the pre-existing 8 biome colours read muddier
+   than authored. The two darkest biomes (deep water, forest) were lifted
+   the most since they were closest to crushing toward black; land biomes
+   were warmed slightly to offset the sky tint. Relative ordering
+   (deep water darker than water, forest darker than grassland) was kept
+   on purpose — that hierarchy is what a player reads at a glance.
+   `biome_at()`, which actually gates passability, is untouched.
+4. **Shadows were evaluated and explicitly deferred**, not shipped — see
+   Rejected alternatives.
+
+**Measurement, taken before spending anything (Step 0 of this work):**
+`just bench-render` on Intel Iris Xe, native, Forward+, through the same
+cull+LOD path `client.gd` uses (`bench_render.gd` mirrors
+`RenderCull`/`_detail_for`):
+
+| squads | soldiers | ms mean | ms worst | fps mean | squads drawn |
+|---|---|---|---|---|---|
+| 0 | 0 | 2.09 | 3.22 | 477.8 | 0 |
+| 100 | 2,730 | 5.48 | 7.85 | 182.5 | 64 |
+| 250 | 6,825 | 13.06 | 14.29 | 76.6 | 183 |
+| 500 | 13,650 | 26.97 | 36.34 | 37.1 | 363 |
+| 1,000 | 27,300 | 53.93 | 54.55 | **18.5** | 741 |
+
+This discharges D-085 criterion 11 (partially — see Rejected
+alternatives on the discrete-GPU point) and answers M7's open question
+about the real cost of VAT-animated authored models: **M5's 35.66 ms /
+28 fps at 1,000 squads on this same Iris Xe was measured with primitive
+capsules, before authored models landed.** The authored-model number is
+53.93-54.26 ms / 18.4-18.5 fps — **51% slower at full scale**, not the
+several-fold-*under*-stated figure CLAUDE.md's M4 section warns about for
+the unrelated 0.72 µs/soldier derivation figure. The animated-vertex cost
+is real, and it was unmeasured until this decision.
+
+**Rationale:** A presentation pass is style-neutral and is a prerequisite
+for either "polished low poly" or "cartoon" to look intentional rather
+than unfinished — building it first, then judging the two options with a
+picture in hand, is cheaper than judging them in the abstract and
+possibly re-doing the judgement. Once built, the picture matched
+"polished low poly" well enough (see `artifacts/client-frame.png`,
+D-086) that committing further to toon was not worth its cost (below).
 
 **Rejected alternatives:**
-- **Require an explicit `EDOTMW_INSTANCE` everywhere, no default.**
-  Considered first and chosen against by the user. An agent that forgets
-  the prefix lands silently on the human's instance, which is precisely
-  the failure being removed, and every bare command a human already types
-  would have had to grow an argument.
-- **A lock-file slot claim (`test-1`, `test-2`, …).** Needs coordination,
-  needs releasing, and goes stale when a worktree is deleted with
-  `rm -rf`. The path already IS a unique name; minting a second one is
-  work with its own failure mode.
-- **Hash the checkout name into a port.** No registry, but a birthday
-  collision at four concurrent worktrees is ~12%, and the symptom is two
-  checkouts sharing a port — the exact bug being fixed.
-- **Scope the import cache, `artifacts/` and replay files per instance
-  too.** Each worktree already has its own copy of all three, so this
-  buys nothing and would move every documented path
-  (`artifacts/client-frame.png`, `artifacts/models-godot.png`).
-- **Vary the container-internal port.** Would force `bot_client.gd` and
-  `client-test` to learn about instances. They reach `server:4433` over
-  their own project's network, which is already isolated.
+- **Cartoon / toon shading** (`diffuse_toon` + rim light + outline).
+  Rejected for now, not permanently. The diffuse/rim half is nearly free
+  — a token change in three shaders and some parameters in
+  `SoldierParams`. The outline half is not: an inverted-hull outline
+  doubles the vertex shader over every soldier, **including the VAT's
+  three `texelFetch`es per vertex**, and a screen-space edge pass needs a
+  Forward+ `CompositorEffect` that `test-client`'s Mesa software
+  rasteriser (`gl_compatibility`) cannot run at all — the automated
+  visual check would go blind to it. Given Step 0's number, spending
+  that on top of an already over-budget frame at full scale was not
+  justified without a stronger reason to prefer it over polished low
+  poly.
+- **Shadows.** Evaluated against Step 0's own stated gate ("if the
+  current frame is already at or over budget on this hardware, shadows
+  come out of scope... decide this from the number, not in advance"). At
+  1,000 squads the frame was already 53.93-54.26 ms — 3.2x a 60 fps
+  budget and under 20 fps outright — before spending anything on a
+  second render pass per shadow cascade. Deferred, not rejected outright:
+  250 squads (76.6 fps) has real headroom, so a squad-count-gated shadow
+  pass is a reasonable future revisit, not ruled out here.
+- **Full re-author of the unit/terrain palette from scratch.** Rejected
+  in favour of re-tuning the existing 8 terrain colours and leaving
+  `SoldierParams` colours alone. A `SoldierParams` change requires
+  `just build-assets` and a re-commit of the hash-gated `generated/`
+  tree (D-081); the lighting change alone got most of the visual delta,
+  so that cost was not spent.
 
-**Consequences:**
-- **This strengthens D-014 rather than relaxing it.** Teardown was scoped
-  to one pinned project; it is now scoped to one instance, so `just down`
-  is structurally incapable of reaching another checkout's containers.
-  Verified by running it against a live foreign container: the old label
-  filter matched it, the new one does not.
-- The human's game is protected two ways — by project scoping (an agent's
-  teardown cannot name it) and by the explicit-`dev` guard (an agent's
-  bare `down` in the main checkout is refused).
-- A port claim can outlive a checkout deleted with `rm -rf`. `just
-  instances` flags it `STALE`; `just instance-free` releases it. Reported,
-  never auto-removed — deleting state on someone's behalf is how a
-  worktree somebody was still using disappears.
-- Projects created before this change (bare `edotmw`) are owned by no
-  instance and are reported as such rather than silently swept.
+**Consequences:** `client.gd`, `bench_render.gd` and `model_preview.gd`
+no longer construct their own lighting; both the shipping rig and the
+benchmark rig are now structurally guaranteed to match, closing the gap
+`bench_render.gd`'s own header warns about ("a benchmark camera that is
+merely similar measures a similar game"). `terrain_gen.gd:biome_color`
+carries a comment explaining why its 8 colours no longer match their
+pre-D-086 values. D-085 criterion 14 (a human plays a match with the new
+art) is **still open** — nothing in this decision involved a human
+playing, only automated headless-ish verification
+(`bench-render`, `test-unit`, `test-client`, `gen-terrain-preview`,
+`test-load`), consistent with the standing rule against launching the
+game unprompted.
 
-**Revisit trigger:** a third party needs the port range (4433–4499
-assumed free); or instances need to differ in more than project and port
-— at which point the "one checkout, one instance" rule in clause 7 is the
-thing to re-examine first, since scoping `artifacts/` is what makes two
-instances per tree safe.
+**Revisit trigger:** shadows, if a squad-count-gated version is ever
+built, or if a discrete GPU becomes available to re-measure Step 0's
+number and shadows fit inside it at full scale. SSAO, if it ships despite
+being invisible to the `gl_compatibility` verification path — that gap
+would need to be stated wherever SSAO is decided, the same way it is
+flagged here as a reason it was not attempted. Toon/outline, if
+playtesting after D-085 criterion 14 is finally discharged says
+readability at zoom is the binding problem polished low poly did not
+solve.
+
+---
+
+### D-085 · 2026-08-08 (reconstructed 2026-08-11) · Accepted — M7's exit criteria, written after the fact
+
+**This entry is a reconstruction — see the editorial note above.** No
+original numbered criteria list survived; `CLAUDE.md`'s M7 section cites
+criteria 4, 11 and 14 by number without ever printing the full list. The
+positions of those three are preserved below; the rest are inferred from
+what `CLAUDE.md`'s M7 section states landed or remained open in that same
+paragraph, and should be read as lower-confidence than a criteria list
+this project would normally write before the code, per D-022 and D-026's
+own precedent.
+
+**Decision:** M7 ("real models and textures") is complete when:
+
+1. At least one authored model exists per roster archetype and per
+   building, generated by committed Python (D-081), not hand-modelled.
+2. Every model is under its triangle budget (`TRIANGLE_BUDGET`,
+   `MOUNTED_TRIANGLE_BUDGET`, `BUILDING_TRIANGLE_BUDGET` — D-081).
+3. Two runs of `just build-assets` are byte-identical, and a test fails
+   if `generated/` is stale against `art/`'s source hash (D-081).
+4. **`just gen-model-preview` renders every authored model, animated, and
+   the screenshot is looked at, not just asserted about** — the actual
+   text of the criterion `model_preview.gd`'s header cites by number.
+5. Soldiers render through the shipping `MultiMesh` + VAT path, not a
+   per-soldier node (D-082), and carry the owning player's colour
+   (D-052) despite `MultiMesh` overriding vertex `COLOR`.
+6. `gen-model-preview` renders twice, 1.7s apart, and fails if the two
+   frames are byte-identical — proof the VAT is actually advancing, not
+   frozen at a plausible-looking still.
+7. Terrain is textured by a per-biome atlas that modulates vertex colour
+   (D-083), and the atlas, the minimap and the 3D mesh all agree because
+   all three read `TerrainGen.biome_color()`.
+8. Import settings for VAT and atlas textures are generated data
+   (`godot_import.py`), not hand-set in the editor — `detect_3d/compress_to`
+   in particular, since Godot's default silently corrupts a VAT with VRAM
+   block compression.
+9. The MultiMesh-overrides-`COLOR` defect (every soldier rendering
+   black) is fixed and does not regress.
+10. Every `box()` in `art/lib/geom.py` winds outward, not inside-out —
+    the defect that cost nothing visually until a building was large
+    enough to see through its far wall.
+11. **`just bench-render` is re-run on real hardware since authored
+    models landed, and the cost of animated vertices at D-018's full
+    scale is measured, not extrapolated from the pre-authored-model
+    number.** The actual text of the criterion `CLAUDE.md`'s M7 section
+    cites by number.
+12. The hex-gap and inverted-normal terrain defects (D-084) are fixed
+    once textured ground made them the most visible thing on screen.
+13. `just test-unit` is green with the art-pipeline tests included
+    (`test_art_assets.gd` and neighbours).
+14. **A human plays a match with the new art.** The actual text of the
+    criterion `CLAUDE.md`'s M7 section cites by number, and the one this
+    project's own M2/M6 history says not to skip: numbers passing is not
+    evidence the picture is right, and playing is the check nothing else
+    substitutes for.
+
+**Rationale:** Written the way D-022 and D-026 were, so "the art landed"
+and "the art meets M7's exit criteria" stay distinguishable claims — the
+same distinction M2 and M6 both had to learn the hard way before this
+project started writing exit criteria down at all.
+
+**Consequences:** As of D-086, criterion 11 is discharged **with a
+caveat**: measured on Intel Iris Xe integrated graphics, the same
+hardware M5 used, not a discrete GPU — no discrete GPU was available in
+the environment that ran it. That satisfies M5's own precedent (M5 also
+used integrated graphics throughout) and answers the real question this
+criterion exists for — the cost of VAT-animated authored models at full
+scale — but is not literally "discrete" if that word in `CLAUDE.md`'s
+phrasing was chosen deliberately rather than loosely. Criterion 14
+remains open after D-086: nothing in D-086 involved a human playing,
+only automated verification. **M7 is landed, not complete**, which is
+consistent with what `CLAUDE.md` already said before this entry existed.
+
+**Revisit trigger:** re-run criterion 11 if a discrete GPU becomes
+available, to settle the caveat above. Close criterion 14 the next time
+a human plays a match — at that point M7's completeness can be asserted
+rather than argued from a reconstructed criteria list.
+
+**Amendment, 2026-08-14 — criterion 14 discharged; M7 is complete.**
+Human playtests happened on 2026-08-12 and 2026-08-13 — the live sessions
+D-076's own 2026-08-12 amendment documents ("native client, human player"),
+plus the follow-up rounds that produced its fix lists — all with the
+authored models (D-081/D-082) and the D-086 lighting rig active. The owner
+confirmed on 2026-08-14 that these count as "a human plays a match with the
+new art", which is the criterion's actual text. So criterion 14 is closed
+by play, the way this entry's revisit trigger asked for, and **M7 moves
+from landed to complete**.
+
+Two things this amendment does NOT change. Criterion 11's caveat stands:
+every `bench-render` number is still from Intel Iris Xe integrated
+graphics, and the discrete-GPU re-run trigger above stays armed.
+And closing criterion 14 arms D-086's own toon/outline revisit trigger —
+"if playtesting after criterion 14 is discharged says readability at zoom
+is the binding problem" — which is now a live question for future
+playtests rather than a hypothetical. Worth noting the sessions that
+closed this criterion spent their findings on interface and geometry
+defects (see D-076's amendments), not on readability complaints, which is
+weak evidence in polished-low-poly's favour but was not a question anyone
+was asking at the time.
+
+---
+
+### D-084 · 2026-08-10 (reconstructed 2026-08-11) · Accepted — a watertight hex surface, and the simulation untouched
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-067`, which collides with the real
+D-067 below (squad shoving / one-squad-cannot-raze-a-base). This entry
+gives the terrain-surface work its own ID.
+
+**Decision:** Gaps between hexes — pre-existing, but invisible until
+textured ground made them the most obvious thing on screen — are closed
+by making each hex corner take the mean elevation of the three cells
+meeting there, so neighbouring hexes agree on their shared corner and the
+surface is watertight. The centre vertex keeps its own cell's elevation,
+which leaves each hex a shallow pillow rather than a flat tile. Normals
+are derived from the resulting surface instead of hardcoded
+`Vector3.UP`, so slopes finally shade instead of lighting flat regardless
+of grade.
+
+`TerrainGen.surface_field` is one array of 7 heights per cell (6 corners
++ centre), read by BOTH the mesher (`terrain_chunk.gd`) and the client's
+ground sampler (`TerrainChunk.height_at`) — deliberately the same file,
+because a sampler that only matched the mesh by being written correctly
+twice would eventually drift, and the symptom of that drift is an army
+floating with every other number green.
+
+**Rationale — the simulation must not change, and does not.**
+`TerrainGen.elevation_at` stays discrete per cell and `passability` still
+thresholds it; only the picture interpolates between corners. That split
+is what makes this a rendering-only change with no desync surface: the
+server's notion of a cell's elevation and passability is byte-identical
+before and after. It stops being free the moment elevation acquires
+tactical meaning (terrain-occluded line of sight is still an open
+question, not decided here).
+
+**Consequences:** `TerrainChunk.height_at` is a hot path — called once
+per soldier per frame by the client's ground sampler, no longer a single
+array index. Its cost on real hardware was, at the time this landed,
+unmeasured; D-086's `bench-render` numbers are the first real measurement
+of the full render path including this sampler, since `bench_render.gd`
+explicitly samples through the same `TerrainChunk.height_at` the client
+uses rather than deriving at a fixed height.
+
+**Revisit trigger:** if terrain elevation is ever given tactical meaning
+(occlusion, high ground combat bonuses), the discrete-vs-interpolated
+split this entry relies on needs to be revisited explicitly — the
+simulation's answer and the picture's answer would need to agree again,
+the same way they were kept apart on purpose here.
+
+---
+
+### D-083 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — terrain texturing: the atlas modulates, biome_color decides
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-066`, which collides with the real
+D-066 below (building damage scale). This entry gives terrain texturing
+its own ID.
+
+**Decision:** Terrain is textured by a per-biome atlas
+(`art/terrain/atlas.py`) that **modulates** vertex colour rather than
+replacing it. `TerrainGen.biome_color()` stays the single source of
+truth for what a biome looks like, read by the 3D mesh, the minimap and
+the offline preview PNG alike — the property that keeps all three from
+drifting apart without any of them being touched, and the reason
+`biome_color()` and the mesher live where they do.
+
+The atlas is `2048x1024` (4 columns x 2 rows of 512px tiles), generated
+by periodic (seam-continuous) value noise so every tile wraps exactly —
+required because the world tiles nine times (D-035) and a non-periodic
+texture would show a seam at every join. Each biome's noise recipe is
+its own RNG stream (`SEED + biome_index * 977`), so adding a ninth biome
+cannot perturb the existing eight. Every tile is normalised to average
+**`NEUTRAL_MEAN = 0.92`** — deliberately short of full white — so that
+multiplying it against `biome_color()`'s value darkens the surface only
+slightly instead of tinting it; the atlas may add texture, never colour.
+Per-cell UV rotation is hashed from the wrapped cell coordinate, so the
+hex lattice does not read as an obviously repeating tile.
+
+UVs are derived from the **cell**, never from world position — the same
+reason terrain elevation is cell-keyed (D-084) — so all nine torus
+copies of a hex agree on their texture by construction rather than by
+each copy computing its own answer and hoping they match.
+
+**Rationale:** A single source of truth for colour is what let D-086
+re-tune the palette for the new lighting rig by editing eight `Color`
+literals in one function, with the minimap and preview PNG updating for
+free. Had the atlas carried its own colour independent of
+`biome_color()`, that re-tune would have needed a `just build-assets`
+rebuild and a `generated/` re-commit on top of the code change, and the
+three views (3D, minimap, preview) could have drifted from each other in
+the process.
+
+**Rejected alternatives:** Letting the atlas tint the terrain directly
+(rejected — see above: it would make the atlas a second source of truth
+for colour, defeating the reason `biome_color()` exists as a single
+function everything reads).
+
+**Consequences:** Any future palette change touches only
+`terrain_gen.gd:biome_color` — confirmed directly by D-086, which did
+exactly that and needed no atlas rebuild.
+
+**Revisit trigger:** if a biome ever needs texture variation that
+`biome_color()`'s flat per-biome colour cannot express (e.g. patchy dead
+grass within GRASSLAND), the "atlas never carries colour" rule would need
+an explicit, deliberate exception — not a silent one.
+
+---
+
+### D-082 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — animation: a vertex animation texture, and a phase that is derived, never accumulated
+
+**This entry is a reconstruction — see the editorial note above.**
+`CLAUDE.md` cites this work at `D-065`, which collides with the real
+D-065 below (formation shape, replicated state). This entry gives VAT
+animation its own ID.
+
+**Decision:** Soldiers animate via a vertex animation texture (VAT),
+sampled per-vertex in `shaders/unit_anim.gdshader` /
+`unit_anim_ghost.gdshader` through the shared `unit_vat.gdshaderinc`.
+The VAT layout is `width = vertex count`, `height = total_frames*2 + 1`:
+rows `[0, 64)` are per-frame position OFFSETS from the rest pose, rows
+`[64, 128)` are animated normals, row 128 carries the part's `rgb` colour
+and an owner-tint `alpha` mask. Baked as half-float RGBA EXR with the
+view transform forced to `Raw` so no colour management touches the
+numeric payload.
+
+**The phase is derived from `TIME` in the shader every frame —
+`phase = fract(t*rate + hash(slot))` — never accumulated.** This is the
+clause that makes animation legal under D-006's ban on per-soldier
+integration state: there is nowhere for a phase counter to live, because
+`animation_state.gd` is all-static for the same structural reason
+`formation.gd` and `cosmetic_offset.gd` are. A phase counter advanced by
+delta time, or a blend weight carried between frames, would be
+integration state in a cosmetic disguise and would violate D-006 clause 1
+exactly as an emergent per-soldier movement system would.
+
+**Rationale — why a MultiMesh needs this instead of a normal
+`AnimationPlayer`.** Soldiers render one `MultiMeshInstance3D` per squad
+(D-009), not one node per soldier — an `AnimationPlayer` has no notion of
+"this instance is at a different phase than that one" within a single
+mesh. A VAT sampled with a per-soldier phase hash is what lets thousands
+of soldiers in one draw call each look like they are not marching in
+lockstep, at the cost of three `texelFetch`es per vertex instead of a
+skeletal skin.
+
+**Consequences — the defect this shape doesn't prevent, and did
+happen.** A `MultiMeshInstance3D` overrides the shader's `COLOR` with its
+own per-instance colour, so a mesh's vertex `COLOR_0` never reaches the
+fragment stage on this render path — the reason every soldier rendered
+black before this was diagnosed, and the reason unit colour lives in the
+VAT's own colour row (fetched with the same column index as position and
+normal) rather than in vertex colour the way building colour does
+(buildings render as individual `MeshInstance3D`s, so `COLOR` reaches
+them fine). Column index is carried in `UV2.x` rather than `VERTEX_ID`,
+so it survives glTF re-ordering and works under the GL Compatibility
+renderer `test-client` and `gen-model-preview` both depend on.
+
+**Revisit trigger:** none identified; VAT sampling cost at full scale is
+now measured by D-086's `bench-render` run, which folds this shader's
+cost into the same number that includes culling and LOD.
+
+---
+
+### D-081 · 2026-08-09 (reconstructed 2026-08-11) · Accepted — art direction and pipeline: stylised low poly, generated, not hand-modelled
+
+**This entry is a reconstruction — see the editorial note above, and
+supersedes D-011.** `CLAUDE.md` cites this work at `D-064`, an ID never
+actually written in this file — the only trace of it was a two-line Q12
+closure. This entry gives the art pipeline its real ID and content, and
+corrects that closure below.
+
+**Decision:** Closes Q12 ("art direction for mesh tiers 2 and 3, and who
+produces it"). Style: stylised low poly with strong silhouettes, ~300
+triangles per soldier. Produced by **committed Python scripts driving
+Blender headless as a library** (`bpy`, a PyPI wheel — no GUI, no system
+Blender, no GPU needed for generation), not by hand in the Godot editor
+or a DCC tool. D-011's tier 2 (parametric composition) is absorbed rather
+than skipped: parametric composition is *how* the generators are
+written, not a separate stop on the way to tier 3.
+
+**Geometry is exactly two primitives** (`art/lib/geom.py`): `box()`
+(axis-aligned, `taper`/`taper_z` for wedges and gable ridges) and
+`prism()` (N-sided about Y, for helmets/shields/spearheads/spires). No
+spheres, no bevels, no UV unwrap. Every soldier and building is composed
+from these via an ordered list of named, coloured `Part`s
+(`art/lib/soldier.py`, `art/buildings/__init__.py`).
+
+**Vertex colour carries two channels**, not one: a part's own `rgb`, and
+a `mask` (carried in alpha) for how much of that part takes the owning
+player's colour (D-052) — 1.0 on cloaks/banners, 0.9 on shields, 0.85 on
+tunics, 0.0 on skin and steel.
+
+**Triangle budgets are enforced, not advisory** — `art/build.py` raises
+`SystemExit` over `TRIANGLE_BUDGET = 300` (`MOUNTED_TRIANGLE_BUDGET =
+460`, `BUILDING_TRIANGLE_BUDGET = 400`). The heaviest shipped foot unit
+(founders, 172 tris) is still well under budget — nothing shipped is
+geometry-limited, which is the fact D-086 leans on to justify spending
+the art budget on lighting instead of more geometric detail.
+
+**Both the generators and their output are committed.** `art/` is the
+source of truth; `generated/` (`.glb`, VAT `.exr`, the terrain atlas) is
+a committed build product anyway, so a fresh clone plays without
+installing Blender. Two runs of `just build-assets` must be
+byte-identical — fixed seeds, sorted iteration, no timestamps — and a
+test fails if `generated/`'s manifest hash is stale against `art/`'s
+source. Import settings (`detect_3d/compress_to=0` above all — Godot's
+default silently VRAM-compresses a VAT, which is corruption, not
+compression, on a texture where neighbouring texels are unrelated
+vertices) are generated data via `art/lib/godot_import.py`, not
+hand-set in the editor.
+
+**Rationale:** Matches D-011's original tiering philosophy (zero art
+dependency validates the architecture before art investment) while
+finally spending the art budget D-011 deferred — the trigger D-011
+itself named ("M3 complete, and playtesting suggests visual fidelity is
+limiting engagement, or tiers 2/3 explicitly prioritized") had fired by
+the time this was written: M3 had completed three milestones earlier and
+the owner had explicitly prioritised tiers 2/3.
+
+**Rejected alternatives:** Hand-authored final meshes in a DCC tool
+(rejected — the project's whole premise, stated in `CLAUDE.md`'s "What
+this project is", is that plain-text/scriptable assets keep the project
+editable by Claude Code; a hand-sculpted `.blend` is the one thing this
+project's own rules flag as an exception rather than the default path).
+Jumping straight to tier 3 fidelity without the parametric layer
+(rejected — every archetype needing its own bespoke script would multiply
+the ~90-130 unit count D-070 already accepts for M9's roster growth).
+
+**Consequences:** Nothing shipped is geometry-limited (see triangle
+budget numbers above), which is the load-bearing fact behind D-086's
+choice to spend on lighting rather than more detailed models. Adding an
+archetype is a data change in `art/units/__init__.py`'s `ROSTER` dict,
+not a new script.
+
+**Revisit trigger:** none identified since D-011's trigger fired and
+this decision was made in response to it.
+
+---
+
+### D-077 · 2026-08-12 · Accepted — a sandbox mode for dev testing, kept structurally unable to leak into a real match
+**Decision:** `MatchState` gains three independent flags — `sandbox`,
+`instant_build`, `ai_economy_only` — settable from a `--sandbox=1` server
+launch arg or, live, by the lobby admin via the existing `LOBBY_SET_OPTION`
+channel (a "key=value" pair, the same one a map slider already uses,
+rather than three new opcodes). Unlike map settings, none of the three
+are locked to the LOBBY phase: the whole point is iterating on a running
+match without restarting the server.
+
+With `sandbox` on, three new C2S opcodes are accepted, each gated behind
+`MatchState.sandbox` at the top of its handler (`_validated_cheat`, mirroring
+`_validated_squad`'s shape): `CHEAT_ADD_RESOURCES` (a flat grant to the
+sender), `CHEAT_SPAWN_UNIT` (full-strength squads at a cell, bypassing
+cost and the squad cap), `CHEAT_SPAWN_BUILDING` (a complete building at a
+cell, bypassing cost/footprint/claim but still refusing water/mountain —
+a spawned building should never look broken even with every game-balance
+rule around it skipped). `instant_build` and `ai_economy_only` are match-
+wide settings rather than one-shot actions, so they ride the lobby channel
+instead: `instant_build` makes `_finish_build`/`_handle_order_produce`
+raise things already complete (`BuildingSim.add_building`'s existing
+`complete` param, `BuildingSim.enqueue`'s new `instant` param queuing at
+~0s remaining) rather than adding a second completion code path;
+`ai_economy_only` sets `AiPlayer.economy_only`, which skips `_fight`
+entirely and holds `_train`'s `wanted` archetype at `"gatherers"` so an
+economy-only AI doesn't quietly stockpile an unused army either.
+
+**Rationale:** three flags, not one "sandbox" bit that does everything —
+someone may want instant construction without also wanting free resources
+and unit-spawning, and a host running an AI-only economy stress test
+doesn't need the other two at all. Admin-gating and the launch-flag path
+both matter for the same reason: a client cannot turn sandbox mode on for
+itself (D-002), and a production server never started with `--sandbox=1`
+has no code path that ever sets `MatchState.sandbox` true, so the cheats
+are unreachable by construction, not merely unreachable by convention.
+
+**Rejected alternatives:**
+- *A single "cheats enabled" bool covering everything* — rejected per the
+  three-independent-flags reasoning above.
+- *New opcodes for `instant_build`/`ai_economy_only`* — rejected: they are
+  admin-gated MATCH settings, the exact shape `LOBBY_SET_OPTION` already
+  exists for, and a fourth near-identical opcode would be the copy this
+  project's own `_validated_squad` header warns eventually drifts.
+- *A debug console (type a command)* — considered; an on-screen panel was
+  chosen instead (user's explicit choice) since a discoverable button beats
+  remembering command syntax for a tool used occasionally, not daily.
+
+**Consequences:** `just test-unit` is green at **545 tests** across 35
+scripts (13 new — `test_lobby.gd` gained flag-independence/admin-gating
+cases, `test_sandbox.gd` is a new file for the cheats/instant-build/
+economy-only behaviour itself, including a paired test proving the
+economy-only scenario WOULD have attacked without the flag, not merely
+that nothing happened either way). `test-load 4 120` stays clean with
+sandbox off (the default) — 57.46 µs/squad at 52 squads, no regression.
+The in-match debug panel and cheat-arm-and-click flow are client-only UX,
+unverified by the automated suite for the same reason D-076's placement
+tools are — look at them before trusting the geometry.
+
+**Revisit trigger:** none anticipated — this is dev tooling, not a game
+mechanic with a balance surface to re-derive. If `ai_economy_only` ever
+grows per-seat granularity (some AI fighting, some not, in the same
+match) rather than the current match-wide toggle, that is a new decision,
+not an amendment to this one, since it would need seat-scoped wire state
+`encode_lobby`'s per-seat fields do not currently carry.
+
+---
+
+### D-076 · 2026-08-12 · Accepted — walls, gates, and a wall-top tier reached through one door
+**Decision:** D-069 named this exact feature and fenced it out of M9:
+*"no wall system... A real wall system is a substantial piece of
+pathfinding and rendering work and needs its own decision."* This is that
+decision. Two structures and two grades of each:
+
+- **`wall` / `gate`** — single-cell segments, chained by placing several
+  adjacent (the existing per-cell `ORDER_BUILD` path, unchanged). Pure
+  ground blockers: `damage=0`, no wall-top presence. A gate additionally
+  supports **manual open/close** and **auto-open when the owner's own
+  squads are near**, mode switchable per-building from its selection HUD
+  panel. `footprint_radius=0` on all four defs, so adjacent segments do
+  not reject each other under `server._footprint_conflict`.
+- **`garrison_wall` / `garrison_gate`** — pricier, `walkable_top=true`:
+  their cell joins a real second passable layer (tier 1). Still
+  `damage=0` — the structure itself never attacks; whatever squad is
+  standing on it does, with its own stats plus a height bonus.
+- **`wall_tower`** — the only access point. `is_access_tower=true` and a
+  **per-INSTANCE** `access_direction` (chosen at placement, stored on
+  `BuildingSim`, not on the shared `BuildingDef` — a def is one resource
+  per archetype, so a door facing can't live there without every tower
+  sharing one facing). Climbing/descending is legal **only** through the
+  ground cell on that one side. **Not ownership-gated**: the check is
+  pure geometry (which cell a squad occupies, which tower's door that
+  is), so an enemy that fights through to the door climbs exactly like
+  the owner would. A wall's tier-1 top is therefore a contestable
+  objective, not an automatically safe one.
+
+**Geometry: chained single cells, not edges.** `TorusSpace` has no edge
+primitive and none was added. A wall is however many `wall`/`garrison_wall`
+buildings a player places adjacent to each other — it reuses the entire
+existing placement/passability/combat/replication pipeline, which is what
+keeps this from being the "substantial" rewrite D-069 was worried about.
+
+**The wall-top tier is a second `FlowField` layer, the class itself
+unmodified, but NOT sharing the ground layer's cache or budget.**
+`SquadSim._fields_top`/`_pending_fields_top`/`top_field_cells_per_tick` are
+wholly separate from `_fields`/`_pending_fields`/`field_cells_per_tick`
+(D-040's shared counter). Sharing it would let a wall-top solve silently
+halve ground-pathing throughput on any tick both are active — confirmed by
+reading `_field_for`'s budget accounting before writing the second copy,
+not assumed. A squad's tier (`SquadSim._tier`, 0 or 1) is real per-squad
+state; its POSITION within a tier is still a pure function of
+`(curve, formation, slot, terrain sample)` exactly as D-006 requires —
+climbing/descending is one explicit teleporting hop
+(`SquadSim._teleport_curve`), never a curve-interpolated walk, which is
+what keeps it legal under D-006 clause 1: there is nowhere for a
+partial-climb value to live. `order_move`/`order_attack_move` infer the
+target tier from whether the destination cell is itself on the wall-top
+network (`BuildingSim.is_walkable_top_cell`) — **no wire change to
+movement orders was needed**; a cross-tier order decomposes server-side
+into "walk to the nearest reachable tower's door, hop, continue," the same
+two-leg shape `server.gd`'s `_pending_builds` already uses for
+out-of-reach construction.
+
+**Combat gains exactly one new rule.** A tier-1 squad fights with its OWN
+`UnitDef` stats — `Combat._resolve_attack` is untouched — from an
+effective range of `base_range + BuildingDef.top_range_bonus`
+(`Combat._attacker_range_cells`). Targeting eligibility
+(`Combat._can_reach_tier`): a tier-1 defender can be hit by another
+tier-1 attacker, or by anything **ranged** (`armour_class == "missile"`,
+including every building — a tower's fire already "arcs up" thematically)
+— never by a tier-0 melee squad. This is the whole reason climbing is a
+real defensive choice and not a coat of paint.
+
+**Destruction evicts, it does not kill.** `SquadSim._evict_stranded_tier1_squads`
+runs whenever `resolve_squads_vs_buildings` reports a destruction this
+tick, and drops any squad whose tier-1 cell no longer has a living
+`walkable_top` structure under it to the nearest passable ground cell,
+alive. An invisible instant-kill on top of losing the structure would be
+a second, worse punishment nobody asked for.
+
+**Rejected alternatives:**
+- *An abstract garrison-capacity slot* (an early draft of this decision):
+  a fixed-capacity "station a squad in the wall" order, protected but
+  otherwise decorative. Rejected once the user asked to literally see
+  units fighting from the wall — replaced by ordinary squad movement
+  extended to a second tier, which is simpler and delivers the visual
+  directly instead of needing a HUD counter to stand in for it.
+- *Any adjacent cell as a climb point*: the first cut of the walkable tier
+  let a squad climb from any ground cell next to any `walkable_top`
+  segment. Caught before it shipped: it makes a wall's LINE pointless,
+  since an attacker could climb up from outside anywhere along it. Access
+  is now the tower's one door, full stop.
+- *Ownership-gated climbing*: considered and explicitly rejected by the
+  user — a wall an enemy could never contest from the top would make
+  "storming the wall" impossible even after a real breakthrough.
+- *A unified multi-tier BFS graph*: rejected for cost/complexity —
+  `FlowField.expand()` is untouched; two independently-solved layers plus
+  an explicit hop is far cheaper to reason about and to budget.
+
+**Consequences:** `just test-unit` is green at **527 tests** across 34
+scripts — `test_buildings.gd` gained 13 ground-level cases and
+`test_wall_top.gd` is a new 12-case file for the tier itself.
+`just test-load 4 120` reports a clean verdict at both phases — **63.62
+µs/squad at 52 squads** after Phase A landed, **53.45 µs/squad at 52
+squads** after Phase B (the difference is ordinary run-to-run variance per
+the standing caveat, not a regression: no bot in that load test builds a
+wall, so neither run exercises the new combat/vision branches under load —
+they are only proven correct by `test_wall_top.gd`, not yet by a live
+multi-client match). Worst tick stayed inside D-020's 100 ms budget in
+both runs (22.8 ms, then 28.6 ms).
+
+One dead end recorded rather than silently fixed: the first version of
+the range-bonus tests ran 150 ticks and let `Combat.assign_idle_engagements`
+chase-and-close the gap it was trying to hold open, which also produced
+enough flow-field churn to OOM-kill the test container at its existing 1 GB
+limit. Fixed by checking on tick 1 — provably before any chase order can
+have moved anything — rather than by raising the container's memory limit,
+which would have hidden a real test design fault instead of removing it.
+
+**Revisit trigger:** the gate-toggle/flow-field-flush interaction is
+flagged, not measured — `SquadSim.set_passable`'s full-cache flush runs on
+every gate state change, and auto-mode is bounded to a check every 3 ticks
+(`server.AUTO_GATE_CHECK_TICKS`) as a precaution, not because a spike was
+observed. If a live match with several auto-mode gates shows the flow-field
+spike M4 already found once, that is this entry's own revisit, the same
+way D-040 was D-038's. Separately: no AI behavior for building or
+using walls/gates exists yet — `just ai-ladder` cannot exercise any of this
+feature until an AI player is taught to want one, which is future work.
+
+**Amendment, 2026-08-12 — a real playtest immediately found three more
+things.** The first live session (native client, human player) surfaced
+one genuine defect and two placement-UX gaps, all fixed the same day:
+
+1. **`_finish_build` consumed ANY builder unconditionally, not just
+   founders.** It is shared by every building type, and the D-031
+   consume-on-completion call had no check on who was building what — so
+   a gatherer sent to raise a barracks, a tower, or a wall segment has
+   apparently been vanishing the moment it finished for as long as this
+   function has existed. Nothing failed loudly (the building still gets
+   built), which is exactly this project's recurring declared-and-unread
+   shape, just on the OTHER side of the call: not an unread field, an
+   over-read one. Walls and gates, built in the numbers a real session
+   produces, is what finally made it something a player noticed. Fixed by
+   gating consumption on `UnitDef.archetype == &"founders"`.
+2. **Facing generalised from the access tower's door to every building.**
+   `BuildingSim._facing` (renamed from `_access_direction`) is now set on
+   every instance, not just towers; `access_direction_of` keeps its
+   original tower-only "does this door exist" contract unchanged, and a
+   new `facing_of` answers the general rendering question. The rotate key
+   works while ANY building is armed for placement, not only a
+   `wall_tower`.
+3. **Placement gained snapping and a drag-to-build-a-line tool**, both
+   scoped to `footprint_radius == 0` defs (the existing wall-family
+   signal, reused rather than adding a new one): the ghost snaps to the
+   nearest cell adjacent to an existing wall-family building and
+   auto-orients to face it; dragging computes the hex line between press
+   and release (`_hex_line`, standard cube-coordinate rounding) and
+   round-robins it across every eligible selected squad. That needed
+   `_pending_builds` to become a QUEUE per squad rather than one site —
+   `C2S_ORDER_BUILD` still replaces it (the original single-click
+   behaviour), a new `C2S_ORDER_BUILD_QUEUE` appends. One squad alone
+   still builds a whole line, just sequentially, `_advance_pending_builds`
+   starting it toward each queued site as the previous one finishes.
+
+None of the placement-UX pieces are reachable from a GUT test — they live
+in `client.gd`, which needs a GPU the same way rendering does (D-014).
+Verified by wire round-trip (`facing` on both `ORDER_BUILD` and
+`BUILDING_INFO`, the new queue opcode) and by `BuildingSim` behaviour
+(facing stored/wrapped for any building) — 532 tests green, `test-load`
+still clean at 57.88 µs/squad — but the rotation math, the snap radius,
+and the line tool itself are only proven by looking at them, the same
+category `just test-client`'s casualty gate exists for elsewhere. Play
+it before trusting the geometry.
+
+**Amendment, 2026-08-13 — authored models for all five defs (D-064's
+pipeline), plus two things the art pass exposed.** All five had been
+rendering as primitives (`mesh_size`-overridden boxes/cylinder) since
+launch; `art/buildings/__init__.py` gained a `shape` field (`block` |
+`wall` | `tower_access`) that branches `build()` entirely rather than
+stretching the existing gable/flat/spire roof cases, since a long low
+segment and a squat access tower are different silhouettes from every
+`block`-shape building that came before. `wall`/`gate` are a row of
+tapered timber stakes (the cheap tier — no walkway, pure blocker);
+`garrison_wall` is a crenellated stone rampart; `garrison_gate` is the
+same walkway/parapet silhouette built from vertical timber slats instead
+— **material marks the gate, not a gap in the wall**, since the user's
+own spec put both garrison pieces in the "stone, crenellated" family and
+only the gate in wood; `wall_tower` is a crenellated stone tower with a
+door on local +X, the same axis `client.gd` rotates by `facing` that
+`wall`/`gate` segments already used for their length — so the modelled
+door always ends up pointing at the one ground cell D-076's climb check
+actually permits, with no per-instance mesh logic. All five comfortably
+inside the 400-tri building budget (108–192 tris; the existing four run
+72–144).
+
+1. **The gate open/closed colour cue only worked for `StandardMaterial3D`
+   — the primitive path.** An authored model gets a `ShaderMaterial`
+   (`UnitMesh.static_material_for`), which has no `albedo_color` to lerp,
+   so `gate`/`garrison_gate` getting real models would have silently gone
+   back to always reading "closed" the moment they shipped — caught
+   before it shipped rather than after, this time. Fixed with a
+   `gate_open` uniform on `building_static.gdshader` (lightens ALBEDO the
+   same amount the primitive path already did) and a branch in
+   `client.gd`'s per-frame gate-colour block that sets whichever the
+   instance actually has.
+2. **`model_preview.gd`'s camera was tuned for 4 buildings and silently
+   clipped the ends of a row of 9** rather than failing — the same
+   "numbers all pass while the picture is wrong" shape this project keeps
+   finding (M1's empty first frame, M6's missing terrain, D-067's
+   inside-out winding). Widened camera distance/FOV and a new
+   `BUILDING_SPACING` constant so the whole roster fits one frame; the
+   fix is the tool, not the models — nothing about the buildings
+   themselves required it.
+
+Also found and fixed, not a modelling issue: `just bootstrap-art` assumed
+a POSIX venv layout (`bin/python`, `bin/pip`) and a pip that can
+overwrite its own running executable — both true on Linux, neither true
+on Windows, where `python -m venv` lays out `Scripts/` and pip refuses to
+self-upgrade via its own shim. `blender_python`/`blender_pip` now branch
+on `os_family()`, and the self-upgrade goes through `python -m pip`
+instead of `pip.exe` directly — this project's tooling had simply never
+been run through this recipe on native Windows before. Separately: the
+docker-backed `_import` and native-backed `gen-model-preview` write to
+two different cache directories (`.godot-container/` vs `.godot/`) —
+`gen-model-preview`'s own `_import` dependency inherits `EDOTMW_RUNTIME`'s
+docker default, so on a machine that has only ever run docker-backed
+recipes, the native render step was reading an import cache that had
+never heard of these files. Not a bug in either recipe alone, just an
+untested combination; resolved here by running with
+`EDOTMW_RUNTIME=native`, not by changing the recipes' default.
+
+`just test-unit` green at 545 tests across 35 scripts (`test_art_assets.gd`'s
+manifest-hash check among them); `just gen-model-preview` inspected
+visually — every new building distinguishable by silhouette and material,
+`wall_tower`'s crenellations and `garrison_gate`'s slats both read clearly,
+`garrison_wall` partly buried by an unlucky hill in the small preview
+terrain but its own merlons visible through the gap. No simulation code
+changed, so `test-load` was not re-run.
+
+---
+
+### D-075 · 2026-08-11 · Accepted — leaving a match returns to the lobby, and no humans means no server
+**Decision:** Two rules, both about the end of a session rather than the
+end of a match.
+
+**1. "Leave match" returns to the lobby.** It sends a new
+`C2S_LEAVE_MATCH` and stays connected. The server ends the match, drops
+the world, and re-broadcasts the seats; `MatchState` gains
+`return_to_lobby()`, the one backwards edge in a phase machine that had
+run `LOBBY → RUNNING → FINISHED` only. Seats survive so the next match is
+one click away; everything a match *wrote* on them does not.
+
+**2. No humans, no server.** When the last socket client disconnects, the
+server shuts down and exits. AI seats explicitly do not count — they have
+no socket (D-051), and a match of nothing but computers would otherwise
+hold the port forever.
+
+**Rationale:** the old "leave" was a disconnect, and its doc comment
+already claimed it went "back to the lobby screen". It could not: a
+disconnect tears the seat down, so there was nothing to return TO and the
+player sat looking at a dead match until they closed the window. This is
+D-061's shape again — a rule fully written, with a caller, whose
+destination did not exist — and again only *using it* found it.
+
+Rule 2 is not hypothetical. This session opened by clearing a server that
+had been ticking an empty world **for six hours** with `clients=0`,
+launched by `just run-server AI=1` — which `just` parses positionally
+into `--ai=AI=1`, so `int()` read 0 and it never had an opponent either.
+`_on_disconnect` already printed a summary when the last client left and
+then went right on ticking.
+
+Putting the return in `MatchState` rather than the client is what makes
+the client change almost nothing: `ClientState.in_lobby()` already reads
+the phase off the wire, so the lobby screen comes back on its own. A
+client that could end a match locally would be a client deciding for
+everybody (D-002).
+
+**What a match writes on the lobby, and must be undone.** Each of these
+is silent when wrong — a second match with the first one's civs looks
+entirely normal:
+
+- **A `Random` seat is resolved IN PLACE at start** (D-048). Without
+  restoring the choice, "Random" would mean "random once, ever".
+- **Registration carries an `eliminated` flag.** Kept, whoever lost match
+  one would begin match two already defeated, and the victory rule would
+  end it before anyone moved. It is cleared, and `_on_match_started` now
+  registers every seat — humans as well as AI, which it had not done,
+  because `_on_connect` was the only human registration path.
+- **`_build_world` guards on `_sim != null`** and would otherwise return
+  without building, leaving match two running on match one's terrain,
+  spawn points, resource nodes and combat seed.
+- **Entity ids restart.** Both sims mint from an array length, so match
+  two's squad 0 would find match one's MultiMesh under its id.
+- **The replay is the match's** (D-016), so it is closed and the next one
+  opens its own file rather than truncating it.
+
+**Rejected alternatives:**
+- *Client-side only — show a disconnected lobby* (rejected: the lobby is
+  server-driven, so seats, chat and settings would be inert and nothing
+  could start a second match).
+- *Tear down and relaunch from the `just` recipe* (rejected: a visible
+  relaunch pause, and it only works for sessions started that way, not a
+  client connected to a remote server).
+- *Ending the server the moment the match is left* (rejected: it makes
+  "return to the lobby" a dead screen in exactly the solo-versus-AI
+  session this exists to serve).
+
+**Consequences:** one human leaving returns the **whole match** to the
+lobby, evicting everyone. That is right for solo-versus-AI and wrong for
+several humans, and it is the known limit of "for now" — a per-player
+leave needs a spectator-or-seated state that does not exist.
+
+`just lobby` and `quick-test` dropped `--rm`, because a server that exits
+by itself would take its own log with it; the trap's `just down` still
+removes the container by project label.
+
+Two adjacent defects fixed in passing, both on the path being changed:
+`_on_disconnect` called `_sim.replicator` unconditionally and would have
+crashed on a lobby disconnect, which was survivable only while leaving
+always meant leaving a RUNNING match; and `remove_human_seat` had no
+caller outside its own test — the **fifth** declared-and-unread member
+after `UnitDef.cost`, `BuildingDef.cost`, `BuildingSim.damage()` and the
+three `CivDef` knobs — so a human who dropped from a lobby kept their
+seat forever and the admin role never passed on.
+
+**Revisit trigger:** the first match with two humans in it. At that point
+"leave" has to become per-player and this entry is reopened, not patched.
+
+---
 
 ### D-063 · 2026-08-06 · Accepted — the HUD a player actually reads, and a view that turns
 **Decision:** The HUD's contents are chosen for what a player can ACT on,
@@ -4484,7 +5905,7 @@ just in code):
 
 ---
 
-### D-011 · 2026-07-28 · Superseded by D-064 (2026-08-09)
+### D-011 · 2026-07-28 · Superseded by D-081 (2026-08-09)
 **Decision:** Mesh generation stays at the primitive tier (capsules,
 boxes, cylinders composed from `UnitDef` data) through M3. Modular/
 parametric (tier 2) and Blender/`bpy` final-fidelity (tier 3) are
@@ -4507,8 +5928,10 @@ explicitly prioritized.
 
 **Trigger fired 2026-08-09, on both halves** — M3 completed three
 milestones ago and the owner prioritised tiers 2/3 explicitly. Superseded
-by D-064, which sets the art direction and makes the generator, rather
-than the mesh, the thing that is committed.
+by D-081 (first recorded here as `D-064`, then briefly as `D-075` — both
+IDs collided with unrelated real entries; corrected 2026-08-11, see
+D-081's editorial note), which sets the art direction and makes the
+generator, rather than the mesh, the thing that is committed.
 
 ---
 
@@ -4989,27 +6412,53 @@ items resolved as:
   predicts a discrete GPU changes little and makes *derivation*, not
   fill rate, the thing to watch.
 
-**Blocking M7 / product-level:**
-- **Q3 — Who runs the server?** Dedicated (whose money, per-match cost?),
-  player-hosted (lower unit ceiling), or Steam relay with a host player.
-  Constrains the netcode budget and the business model.
-- **Q5 — Is 20 players a design target or an engineering ceiling?** If a
-  design target, matchmaking, drop-in/drop-out, and AI takeover for
-  disconnects are all in scope and are large.
-- **Q10 — Reconnection and desync recovery policy.**
-- **Q11 — Anti-cheat posture.** Authoritative server (D-002) helps; the
-  leak surfaces are curve horizon clipping (D-003) and client-derived
-  soldier positions (D-006).
+**Blocking M7 / product-level** *(header kept for history — "M7" here
+is the old numbering, when Steam was M7; it is M8 now. All six product
+questions in this block were closed by the M8 planning session,
+2026-08-14, D-087 through D-094)*:
+- ~~**Q3 — Who runs the server?**~~ → **D-088** (2026-08-14):
+  player-hosted first — the host's machine runs the authoritative sim
+  in-process, remote players arrive over Steam relay; official
+  dedicated servers are a later rung and the eventual fix for
+  host-quit and host-trust. The question's premise aged: hosting
+  turned out measured-cheap (~half a core, ~20 KB/s up at 20 players).
+- ~~**Q5 — Is 20 players a design target or an engineering
+  ceiling?**~~ → **D-089** (2026-08-14): a **design target**, by the
+  owner's call. What it obliges: Steam lobby browser + invites (no
+  matchmaking service), AI seat-fill, and drop-in/drop-out via D-090's
+  repossession. The engineering ceiling stays where D-018 put it.
+- ~~**Q10 — Reconnection and desync recovery policy.**~~ → **D-090**
+  (2026-08-14): disconnect hands the seat to an AI immediately (D-051
+  built the right object); reconnection is repossession by SteamID,
+  with no timeout — the AI *is* the grace mechanism; a client-detected
+  desync recovers by drop-and-rejoin through the same path, because
+  D-025's reveal semantics make a fresh join cheap. Supersedes
+  D-033's wipe-on-disconnect for humans.
+- ~~**Q11 — Anti-cheat posture.**~~ → **D-091** (2026-08-14): the
+  architecture is the anti-cheat — server authority plus curve gating;
+  no kernel AC, VAC defaults only. The host under D-088 is trusted,
+  stated plainly; ranked play is explicitly gated on official
+  dedicated servers.
 - ~~Q12 — Art direction for mesh tiers 2 and 3 (D-011), and who
-  produces it.~~ → **D-064** (2026-08-09): stylised low-poly with strong
+  produces it.~~ → **D-081** (2026-08-09; corrected 2026-08-11 — first
+  recorded here as `D-064`, then briefly as `D-075`; both IDs collided
+  with unrelated real entries; see D-081's own entry and its editorial
+  note): stylised low-poly with strong
   silhouettes, ~300 tris/soldier; produced by committed Python scripts
   driving Blender headless as a library, not by hand in the GUI. Tier 2
   is absorbed rather than skipped — parametric composition is how the
   generators are written.
-- **Q13 — Persistence/saves** for long matches on a seamless map.
-- **Q14 — Terminology: what does "seamless" mean here** — no loading
-  screens between regions, or one contiguous map? Implies very different
-  streaming work.
+- ~~**Q13 — Persistence/saves** for long matches on a seamless map.~~
+  → **D-092** (2026-08-14): out of M8, by the owner's call. The need
+  decomposes into reconnection (D-090) and replays (D-016), both of
+  which exist or are specified; true suspend/resume of a multiplayer
+  session waits on a measured reason. Two revisit triggers named in
+  the entry.
+- ~~**Q14 — Terminology: what does "seamless" mean here?**~~ →
+  **D-087** (2026-08-14): one contiguous wrapped map with no loading
+  screens — true by construction since D-008, no streaming work exists
+  anywhere in the plan because none is needed. Closed by writing the
+  definition down.
 - **Q15 — Age/tech progression, and what a 1–2 hour match is made of.**
   **DISCHARGED 2026-08-04 by D-068 through D-074.** The planning
   milestone the owner reserved on 2026-08-02 ran; the text below is kept

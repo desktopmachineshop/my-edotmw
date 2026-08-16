@@ -128,9 +128,63 @@ var last_combat_events: Array = []
 ## is for the match rules and the log.
 var destroyed_buildings: Array = []
 
+## Local BuildingSim ids that finished construction on the most recent
+## tick (BuildingSim.advance_construction's own return value, kept here
+## for the same reason `destroyed_buildings` is: a wall-family building
+## only blocks ground movement once complete — playtest fix, see
+## BuildingSim.blocking_cells — so server.gd needs to know the moment one
+## crosses that line to refresh passability, not just on a destruction.
+var completed_buildings: Array = []
+
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
 var _fields := {}
+
+# --- the wall-top tier (D-076) ------------------------------------------
+#
+# A squad's ELEVATION is real state — 0 (ground) or 1 (a wall-top) — but
+# its POSITION within a tier is still derived from a curve exactly as
+# D-006 requires. A tier change happens only as an explicit hop through an
+# access tower's one door, never a smooth walk, so there is nowhere for a
+# per-soldier integration value to hide: the render side reads (cell,
+# tier) and derives a height from it, nothing more.
+
+var _tier := PackedInt32Array()  # 0 = ground, 1 = wall-top, per squad
+
+## Passability for the tier-1 network. Nonzero only on cells
+## BuildingSim.walkable_top_cells() reports. Unlike `_passable`, EMPTY
+## means "no walkway anywhere" rather than "fully open" — a bare SquadSim
+## with no buildings has nothing to climb onto, where a bare SquadSim with
+## no terrain has nowhere blocked.
+var _passable_top := PackedByteArray()
+
+## A second, independent FlowField cache (D-076), the class itself
+## completely unmodified — keyed by tier-1 destination cell index.
+## Deliberately NOT sharing `_fields`/`_pending_fields`/
+## `field_cells_per_tick` with the ground layer: that budget is one
+## counter shared by every in-flight field today, and a wall-top field
+## solving on the same tick as a ground order wave would silently halve
+## both layers' throughput.
+var _fields_top := {}
+var _pending_fields_top: Array[int] = []
+var _field_cells_this_tick_top: int = 0
+
+## Per-tick BFS cell budget for the tier-1 layer, separate from
+## `field_cells_per_tick` for the reason above. Wall-top networks are tiny
+## relative to the map — bounded by how many segments a player has built,
+## not by map area — so a modest fixed budget is enough to solve one
+## outright in a single tick in the ordinary case.
+var top_field_cells_per_tick: int = 1024
+
+## A cross-tier order in progress, per squad: the squad is walking to
+## `_pending_tier_tower[squad]`'s door on its CURRENT tier and will hop to
+## `_pending_tier_target[squad]` once it arrives, then continue toward
+## `_pending_tier_destination[squad]` if that differs from the tower's own
+## cell. -1 in `_pending_tier_target` means "nothing pending" — the same
+## shape server.gd's `_pending_builds` uses for "walk there, then finish".
+var _pending_tier_target := PackedInt32Array()
+var _pending_tier_tower := PackedInt32Array()
+var _pending_tier_destination := PackedInt32Array()
 
 # --- measurement (D-012 / D-022 criterion 5) --------------------------
 var last_tick_usec: int = 0
@@ -157,6 +211,20 @@ var _validated := false
 # terrain generation is explicitly out of M1's scope (D-022).
 var _passable := PackedByteArray()
 
+## Playtest fix: squad id -> destination cell INDEX, for an order
+## `_rebuild_curve` gave up on as unreachable. D-040's give-up logic
+## ("unreachable now is unreachable later") is only true for STATIC
+## terrain; a gate (D-076) is passability that changes at runtime, so a
+## squad ordered to the far side of a currently-CLOSED gate hit the same
+## give-up path and had its order silently cancelled forever, even once
+## the gate opened — the door "not working" was really an order that had
+## already been thrown away. `set_passable` retries every entry here
+## (see `_retry_deferred_orders`) instead of the squad waiting on nothing.
+## Cleared for a squad the moment it receives any FRESH order
+## (`_apply_move_order`), so a stale give-up can never override a player's
+## newer one.
+var _deferred_destination := {}
+
 
 func _init(p_space: TorusSpace = null, p_replicator: CurveReplicator = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -176,6 +244,51 @@ func set_passable(p: PackedByteArray) -> void:
 	# just went stale (D-040).
 	_fields.clear()
 	_pending_fields.clear()
+	_retry_deferred_orders()
+
+
+## Re-issue every order `_rebuild_curve` gave up on (see
+## `_deferred_destination`'s doc) now that passability has actually
+## changed — a gate opening is exactly the kind of change that can turn a
+## "permanently unreachable" verdict from ten ticks ago into a perfectly
+## normal walk. Duplicated and cleared up front, not iterated in place:
+## `order_move` below calls back into `_apply_move_order`, which erases a
+## squad's entry the moment it gets ANY fresh destination — including this
+## one — so mutating the live dict while walking it would skip entries.
+func _retry_deferred_orders() -> void:
+	if _deferred_destination.is_empty():
+		return
+	var retry := _deferred_destination.duplicate()
+	_deferred_destination.clear()
+	for squad in retry:
+		var id: int = squad
+		if id < 0 or id >= _cell.size() or alive_of(id) <= 0:
+			continue
+		order_move(id, space.from_index(int(retry[squad])))
+
+
+## Tier-1 counterpart of `set_passable` (D-076) — same reasoning, scoped
+## to the wall-top network: any cached tier-1 field was solved against the
+## old set of walkway cells and must be dropped, not just left to expire.
+func set_passable_top(p: PackedByteArray) -> void:
+	_passable_top = p
+	_fields_top.clear()
+	_pending_fields_top.clear()
+
+
+## Whether `cell` is walkable at tier 1. Empty `_passable_top` means "no
+## walkway exists at all" — the opposite default from `is_passable`,
+## because most sims (and every test that predates this feature) have no
+## walls, and treating that as "everything climbable" would be wrong.
+func is_passable_top(cell: Vector2i) -> bool:
+	if _passable_top.is_empty():
+		return false
+	var index := space.index(cell)
+	return index < _passable_top.size() and _passable_top[index] != 0
+
+
+func tier_of(squad: int) -> int:
+	return _tier[squad]
 
 
 ## Add a squad and return its id (also its index in every packed array).
@@ -198,6 +311,11 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_damage_accum.append(0.0)
 	_last_attack_tick.append(-1)
 	_attack_move.append(0)
+
+	_tier.append(0)
+	_pending_tier_target.append(-1)
+	_pending_tier_tower.append(-1)
+	_pending_tier_destination.append(-1)
 
 	var curve := StateCurve.new()
 	curve.append_cell(time, at, space)
@@ -385,6 +503,9 @@ func squad_info_entries(squad_ids: Array) -> Array:
 		out.append({
 			"id": id, "def_id": String(_def_id[id]),
 			"alive": _alive[id], "shape": _shape[id], "owner": _owner[id],
+			# D-076: an explicit fact, not something inferred from a curve
+			# going quiet — the same principle D-004/D-025 apply to conceal.
+			"tier": _tier[id],
 		})
 	return out
 
@@ -478,6 +599,12 @@ func _separate_arrivals() -> void:
 	for i in range(_cell.size()):
 		if _alive[i] <= 0:
 			continue
+		# Tier-1 squads are exempt (D-076): the wall-top network is small
+		# and stacking there is expected, not something to shove aside —
+		# see the plan's note that this is a visual concern to revisit
+		# after looking at test-client output, not a capacity system.
+		if _tier[i] != 0:
+			continue
 		# Only settled squads: one still walking is passing through, and
 		# shoving it aside mid-journey is the per-tick avoidance D-006
 		# rules out.
@@ -536,21 +663,27 @@ func _free_cell_near(cell: Vector2i, asking: int) -> Vector2i:
 ## reproduces it. Gives up after a few rings and returns the original —
 ## somewhere sealed off is better handled by the squad failing to arrive
 ## than by searching the whole map every order.
-func _approachable(cell: Vector2i) -> Vector2i:
-	if is_passable(cell):
+## `tier` (D-076): 0 checks ground passability, 1 checks the wall-top
+## network. Defaulted to 0 so every pre-existing call site (ground-only,
+## from before tiers existed) is unaffected.
+func _approachable(cell: Vector2i, tier: int = 0) -> Vector2i:
+	if is_passable(cell, tier):
 		return cell
 	for offset in TorusSpace.disk_offsets(3):
 		var candidate := space.normalize(cell + offset)
-		if is_passable(candidate):
+		if is_passable(candidate, tier):
 			return candidate
 	return cell
 
 
 ## Whether a squad may stand on a cell: terrain only.
 ##
-## Empty passability means fully open, which is what a bare SquadSim in a
-## test gets.
-func is_passable(cell: Vector2i) -> bool:
+## Empty GROUND passability means fully open, which is what a bare
+## SquadSim in a test gets. `tier` 1 defers to `is_passable_top`, whose
+## empty-array default is the OPPOSITE (D-076) — see that function.
+func is_passable(cell: Vector2i, tier: int = 0) -> bool:
+	if tier == 1:
+		return is_passable_top(cell)
 	if _passable.is_empty():
 		return true
 	var index := space.index(cell)
@@ -580,21 +713,102 @@ func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 	return space.normalize(home + Vector2i(2, 0))
 
 
+## Issue a player move order (see the class-level docs below for the full
+## reasoning on separation/quantisation).
+##
+## D-076: the target TIER is inferred from the destination cell itself —
+## a click on a cell `BuildingSim.is_walkable_top_cell` reports is "go up
+## there", any other cell is "go down there" — rather than a parameter a
+## caller has to pass. That is what keeps this signature, and therefore
+## every existing call site and every wire order that reaches it, exactly
+## as it was before the wall-top tier existed. If the squad is already on
+## the tier the destination implies, this is an ordinary same-tier move;
+## otherwise it is a cross-tier request, handled by `_begin_tier_crossing`.
 func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
-	_apply_move_order(squad, destination, true)
+	var wanted_tier := _tier_for_destination(destination)
+	if wanted_tier == _tier[squad]:
+		_pending_tier_target[squad] = -1
+		_apply_move_order(squad, destination, true)
+		return
+	_begin_tier_crossing(squad, destination, wanted_tier)
 
 
 ## Advance, but halt on contact (D-034). Combat clears the stance when it
 ## halts the squad, so the order is spent once it has done its job rather
 ## than sticking around to re-halt the squad every tick it stays engaged.
+##
+## Tier inference (D-076) works exactly as `order_move`'s does — see there.
 func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
-	_apply_move_order(squad, destination, true)
+	var wanted_tier := _tier_for_destination(destination)
+	if wanted_tier == _tier[squad]:
+		_pending_tier_target[squad] = -1
+		_apply_move_order(squad, destination, true)
+	else:
+		_begin_tier_crossing(squad, destination, wanted_tier)
 	_attack_move[squad] = 1
+
+
+## Which tier `destination` belongs to (D-076): 1 if it is a cell on the
+## wall-top network, 0 otherwise. A bare SquadSim with no `buildings`
+## always answers 0 — there is nothing to climb onto.
+func _tier_for_destination(destination: Vector2i) -> int:
+	if buildings == null:
+		return 0
+	return 1 if buildings.is_walkable_top_cell(space.index(destination)) else 0
+
+
+## Start (or restart) a cross-tier move (D-076): walk to the nearest
+## reachable access tower's door on the squad's CURRENT tier, then hop and
+## continue toward `destination` on `wanted_tier` once there. Not a
+## unified BFS graph — `FlowField` itself is never modified for this, only
+## driven twice — this is an explicit two-leg order, the same "walk there,
+## then finish" shape `server.gd`'s `_pending_builds` already uses for
+## out-of-reach construction.
+func _begin_tier_crossing(squad: int, destination: Vector2i, wanted_tier: int) -> void:
+	var tower := _nearest_door_tower(squad, wanted_tier)
+	if tower < 0:
+		# Nothing to climb via. Degrades like any other unreachable order —
+		# the squad simply keeps doing whatever it was already doing.
+		return
+	_pending_tier_target[squad] = wanted_tier
+	_pending_tier_tower[squad] = tower
+	_pending_tier_destination[squad] = space.index(destination)
+	# Walk to the cell the squad must be standing on BEFORE the hop, on its
+	# CURRENT tier: the door (ground) when climbing, the tower's own cell
+	# (tier-1) when descending — `_advance_tier_transitions` checks arrival
+	# against this same cell, so the two must agree on which one it is.
+	var walk_to := buildings.door_cell_of(tower) if wanted_tier == 1 \
+		else buildings.cell_index_of(tower)
+	_apply_move_order(squad, space.from_index(walk_to), true)
+
+
+## Nearest access tower whose door can carry the squad from its CURRENT
+## tier to `wanted_tier` (D-076): the door's ground-side cell when
+## climbing (tier 0 -> 1), the tower's own tier-1 cell when descending
+## (tier 1 -> 0). Straight cell distance, not tier-1 reachability — an
+## unreachable pick simply never arrives, the same as any other walled-off
+## order (`_rebuild_curve`'s give-up rule already handles that).
+func _nearest_door_tower(squad: int, wanted_tier: int) -> int:
+	if buildings == null:
+		return -1
+	var from := cell_of(squad)
+	var best := -1
+	var best_distance := -1
+	for i in range(buildings.building_count()):
+		var door := buildings.door_cell_of(i)
+		if door < 0:
+			continue
+		var from_cell := door if wanted_tier == 1 else buildings.cell_index_of(i)
+		var d := space.distance(from, space.from_index(from_cell))
+		if best == -1 or d < best_distance:
+			best = i
+			best_distance = d
+	return best
 
 
 func is_attack_moving(squad: int) -> bool:
@@ -611,6 +825,10 @@ func stop(squad: int) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
+	# A squad mid-approach to a tower's door is stopping short of climbing
+	# it (D-076) — the same "an order in progress is spent" rule a move
+	# order already applies to server.gd's _pending_builds.
+	_pending_tier_target[squad] = -1
 	_apply_move_order(squad, space.from_index(_cell[squad]))
 
 
@@ -680,11 +898,21 @@ func _apply_move_order(squad: int, destination: Vector2i, quantise := false) -> 
 	# and the squad would simply never move. Handled HERE rather than at
 	# each call site because there are four of them (player orders,
 	# attack-moves, rally points, hauling) and three would have been fixed.
+	#
+	# D-076: resolved against the squad's OWN tier, not always ground —
+	# `_rebuild_curve` reads `_tier[squad]` the same way to pick which
+	# passability/field layer serves the rest of this order.
+	var tier := _tier[squad]
 	var wanted := _quantise(destination) if quantise else destination
-	var dest_index := space.index(_approachable(wanted))
+	var dest_index := space.index(_approachable(wanted, tier))
 	if _destination[squad] == dest_index:
 		return
 	_destination[squad] = dest_index
+	# A fresh order always supersedes whatever _rebuild_curve may have
+	# given up on earlier — see _deferred_destination's doc. Without this,
+	# a later gate opening could resurrect and re-issue an order the
+	# player had already replaced with a different one.
+	_deferred_destination.erase(squad)
 	_rebuild_curve(squad)
 
 
@@ -837,7 +1065,13 @@ func _field_budget_remaining() -> int:
 	return maxi(0, field_cells_per_tick - _field_cells_this_tick)
 
 
-func _field_for(destination_index: int) -> FlowField:
+## `tier` (D-076): 0 is the ground layer, unchanged from before tiers
+## existed; 1 dispatches to `_field_for_top`, a completely separate cache
+## and budget — see that function and `_fields_top`'s own doc for why.
+func _field_for(destination_index: int, tier: int = 0) -> FlowField:
+	if tier == 1:
+		return _field_for_top(destination_index)
+
 	if _fields.has(destination_index):
 		return _fields[destination_index]
 
@@ -866,6 +1100,51 @@ func _field_for(destination_index: int) -> FlowField:
 	return field
 
 
+## Tier-1 counterpart of `_field_for` (D-076) — same `FlowField` class,
+## unmodified, but its own dictionary, its own pending queue and its own
+## per-tick cell budget (`top_field_cells_per_tick`), not the ground
+## layer's. No `fields_per_tick` build-count throttle here: wall-top
+## networks are small enough that it has never been needed.
+func _field_for_top(destination_index: int) -> FlowField:
+	if _fields_top.has(destination_index):
+		return _fields_top[destination_index]
+
+	var field := FlowField.new()
+	field.begin(space, space.from_index(destination_index), _passable_top)
+	var remaining := maxi(0, top_field_cells_per_tick - _field_cells_this_tick_top)
+	if not field.expand(remaining):
+		_pending_fields_top.append(destination_index)
+	_field_cells_this_tick_top += field.expanded_cells()
+
+	_fields_top[destination_index] = field
+	fields_built += 1
+	return field
+
+
+## Tier-1 counterpart of `_expand_pending_fields` (D-076) — identical
+## shape, over the tier-1 dictionary/queue/budget instead of the ground
+## ones.
+func _expand_pending_fields_top() -> void:
+	_field_cells_this_tick_top = 0
+	if _pending_fields_top.is_empty():
+		return
+
+	var still_pending: Array[int] = []
+	for destination_index in _pending_fields_top:
+		var field: FlowField = _fields_top.get(destination_index, null)
+		if field == null or field.is_complete():
+			continue
+		var remaining := maxi(0, top_field_cells_per_tick - _field_cells_this_tick_top)
+		if remaining == 0:
+			still_pending.append(destination_index)
+			continue
+		var before := field.expanded_cells()
+		if not field.expand(remaining):
+			still_pending.append(destination_index)
+		_field_cells_this_tick_top += field.expanded_cells() - before
+	_pending_fields_top = still_pending
+
+
 ## Write the squad's planned path into its curve, starting from where it
 ## is *now*. Keyframes are one per cell, timed by the squad's speed.
 func _rebuild_curve(squad: int) -> void:
@@ -876,7 +1155,10 @@ func _rebuild_curve(squad: int) -> void:
 
 	var speed := _speed[squad]
 	if speed > 0.0 and _destination[squad] != current:
-		var field := _field_for(_destination[squad])
+		# D-076: the squad's OWN tier picks which layer serves this path —
+		# ground or the wall-top network. A squad never silently crosses
+		# tiers here; that only happens through `_advance_tier_transitions`.
+		var field := _field_for(_destination[squad], _tier[squad])
 		# No field this tick (budgeted — see fields_per_tick). Leave the
 		# existing curve alone and try again next tick, rather than
 		# stranding the squad with a one-keyframe curve it would then
@@ -912,19 +1194,27 @@ func _rebuild_curve(squad: int) -> void:
 			current = next
 
 	# If the field could not take the squad a single step, the destination
-	# is unreachable — walled off by water or mountains, which became
-	# possible the moment the server started feeding terrain passability
-	# into the sim. Give up on it by treating the current cell as the
-	# destination.
+	# is unreachable RIGHT NOW — walled off by water or mountains, or
+	# (D-076) by a closed gate. Give up on it by treating the current cell
+	# as the destination, exactly as before.
 	#
 	# Without this the squad re-paths EVERY TICK forever: its curve holds
 	# one keyframe, so `time >= curve.end_time()` is true immediately, and
 	# tick() rebuilds again. That is an invalidation storm of one (D-003),
 	# and it is not subtle — turning terrain on made curves_rebuilt jump
 	# from 265 to 2,011 over a 40-second load test and doubled per-squad
-	# cost, while every functional check stayed green. Terrain is static,
-	# so unreachable now is unreachable later; there is nothing to retry.
+	# cost, while every functional check stayed green. For pure terrain,
+	# unreachable now is unreachable later and there is nothing to retry —
+	# but a gate is passability that changes at runtime, and treating its
+	# "unreachable now" as forever was a real bug: an order given while a
+	# gate happened to be closed was cancelled and never revisited even
+	# once the gate opened. So the ORIGINAL destination is stashed before
+	# being overwritten — see _deferred_destination's doc — and
+	# `set_passable` retries it the moment passability actually changes.
+	# That retry is what keeps this cheap: nothing re-attempts on its own
+	# every tick, only when something could plausibly have unblocked it.
 	if curve.key_count() <= 1 and current != _destination[squad]:
+		_deferred_destination[squad] = _destination[squad]
 		_destination[squad] = current
 
 	_curves[squad] = curve
@@ -936,6 +1226,90 @@ func _rebuild_curve(squad: int) -> void:
 func _log_curve(squad: int, curve: StateCurve) -> void:
 	if replay != null:
 		replay.record(time, squad, replicator.version_of(squad), curve)
+
+
+## Complete any cross-tier move whose squad has now reached its tower's
+## door (D-076). Runs once per tick, after positions are derived from
+## curves — the same "cheap because the array is normally all -1" shape
+## `server.gd`'s `_advance_pending_builds` uses for its own two-leg orders.
+func _advance_tier_transitions() -> void:
+	for squad in range(_cell.size()):
+		if _pending_tier_target[squad] < 0:
+			continue
+		if _alive[squad] <= 0:
+			_pending_tier_target[squad] = -1
+			continue
+		if _cell[squad] != _destination[squad]:
+			continue  # still walking to the door
+
+		var tower := _pending_tier_tower[squad]
+		var wanted_tier := _pending_tier_target[squad]
+		_pending_tier_target[squad] = -1
+		if buildings == null or tower < 0 or buildings.is_destroyed(tower) \
+				or not buildings.is_complete(tower):
+			continue  # the tower is gone; the order simply lapses
+
+		var door := buildings.door_cell_of(tower)
+		var tower_cell := buildings.cell_index_of(tower)
+		if door < 0:
+			continue
+		# The cell the squad must be standing on to hop, on its CURRENT
+		# tier — the door when climbing, the tower's own cell when
+		# descending. Must match `_begin_tier_crossing`'s `walk_to` exactly,
+		# or a squad already sitting on the departure cell (the ordinary
+		# case for a descend, since it is already standing on the tower)
+		# would never be recognised as having "arrived".
+		var departure := door if wanted_tier == 1 else tower_cell
+		if _cell[squad] != departure:
+			# Arrival snapped somewhere other than the departure cell (e.g.
+			# it became briefly unreachable and _approachable picked a
+			# neighbour) — do not hop from the wrong cell.
+			continue
+
+		_tier[squad] = wanted_tier
+		var landing := tower_cell if wanted_tier == 1 else door
+		_cell[squad] = landing
+		_teleport_curve(squad, landing)
+
+		var final_destination := _pending_tier_destination[squad]
+		if final_destination != landing:
+			_apply_move_order(squad, space.from_index(final_destination), true)
+		else:
+			_destination[squad] = landing
+
+
+## An instantaneous hop's curve: one keyframe at the new cell, exactly the
+## shape `add_squad` gives a freshly spawned squad. Climbing/descending is
+## a discrete event (D-076), not a walked, curve-interpolated transition —
+## the whole reason it is legal under D-006 is that there is nowhere for a
+## partial-climb integration value to live.
+func _teleport_curve(squad: int, cell_index: int) -> void:
+	var curve := StateCurve.new()
+	curve.append_cell(time, space.from_index(cell_index), space)
+	_curves[squad] = curve
+	replicator.set_curve(squad, curve)
+	_log_curve(squad, curve)
+
+
+## Any squad standing at tier 1 whose cell no longer has a living
+## `walkable_top` structure under it — its tower or wall segment was just
+## destroyed — is dropped to the nearest passable GROUND cell (D-076).
+## Evicted alive, not killed: losing the structure is punishing enough
+## without an invisible instant-kill riding along on top of it. Called
+## only when something was actually destroyed this tick, so it costs
+## nothing on every ordinary tick.
+func _evict_stranded_tier1_squads() -> void:
+	for squad in range(_cell.size()):
+		if _tier[squad] != 1 or _alive[squad] <= 0:
+			continue
+		if buildings != null and buildings.is_walkable_top_cell(_cell[squad]):
+			continue
+		_tier[squad] = 0
+		var spot := space.index(_free_cell_near(space.from_index(_cell[squad]), squad))
+		_cell[squad] = spot
+		_teleport_curve(squad, spot)
+		_destination[squad] = spot
+		_pending_tier_target[squad] = -1
 
 
 ## Log this tick's casualty/rout events to the replay, if any — same
@@ -969,6 +1343,7 @@ func tick() -> void:
 	# direction (D-040). Also resets this tick's cell budget, so it must
 	# run even when nothing is pending.
 	_expand_pending_fields()
+	_expand_pending_fields_top()  # D-076: its own budget, see that function
 
 	time += 1.0 / TICK_HZ
 	tick_count += 1
@@ -997,6 +1372,11 @@ func tick() -> void:
 	# walking and never interferes with a journey in progress.
 	_separate_arrivals()
 
+	# A squad that just reached a tower's door hops tiers here (D-076) —
+	# after positions are derived and arrivals settle, so it acts on this
+	# tick's real position, and before vision/combat see the result.
+	_advance_tier_transitions()
+
 	last_curves_usec = Time.get_ticks_usec() - curves_started
 
 	# Vision (D-025) recomputes against THIS tick's freshly-derived
@@ -1020,6 +1400,15 @@ func tick() -> void:
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
 	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
+
+	# Idle combat squads chase a nearby enemy rather than waiting for one to
+	# walk all the way into attack_range — the default "for now" stance
+	# (see combat.gd's assign_idle_engagements). Runs after resolve() so it
+	# can see this tick's _engaged set and skip anyone already fighting
+	# where they stand, and reuses resolve()'s bucket map rather than
+	# rebuilding one.
+	combat.assign_idle_engagements(self, tick_count)
+
 	var buildings_started := Time.get_ticks_usec()
 
 	# Buildings advance and shoot after the squad round (D-029). Their
@@ -1028,7 +1417,7 @@ func tick() -> void:
 	# message — and a tick with neither kind of fighting still sends
 	# nothing at all (D-003).
 	if buildings != null:
-		buildings.advance_construction(1.0 / TICK_HZ)
+		completed_buildings = buildings.advance_construction(1.0 / TICK_HZ)
 
 		# Production closes the loop: resources become squads (D-028).
 		# Spawned next to the building that made them, which is why this
@@ -1065,6 +1454,12 @@ func tick() -> void:
 		# rules and the log, not for the wire.
 		destroyed_buildings = combat.resolve_squads_vs_buildings(
 			self, buildings, tick_count)
+
+		# A tower or wall segment razed this tick may have had a squad
+		# standing on top of it (D-076) — drop them to the ground rather
+		# than leaving them stranded at tier 1 on top of rubble.
+		if not destroyed_buildings.is_empty():
+			_evict_stranded_tier1_squads()
 
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).

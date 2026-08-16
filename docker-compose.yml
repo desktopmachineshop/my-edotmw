@@ -1,13 +1,9 @@
-# Project name comes from the INSTANCE (D-075), so teardown is scoped to
-# one checkout's containers and can never touch another's. This is
-# D-014's teardown requirement made stricter, not looser: the name used
-# to be pinned to a single `edotmw`, which scoped teardown away from
-# unrelated software but NOT away from a second checkout of this project.
-#
-# scripts/instance.sh is the one place that derives these; the justfile
-# sources it and exports them. The defaults here are only for a bare
-# `docker compose` typed by hand, which is always the dev instance.
-name: ${EDOTMW_PROJECT:-edotmw-dev}
+# Fallback project name for a BARE `docker compose` invocation only.
+# Every justfile recipe overrides it with `-p edotmw-<instance>` (D-095):
+# the per-worktree project name is what keeps parallel agents' `just
+# down` scoped to their own containers and can never touch unrelated
+# ones (D-014 teardown requirement, tightened per-instance by D-095).
+name: edotmw
 
 # Every headless service pins `target: base` EXPLICITLY. The Dockerfile
 # is multi-stage and `gui` is the last stage, so a bare `build: .` builds
@@ -20,7 +16,7 @@ services:
       context: .
       target: base
     # EDOTMW_SCENARIO starts the match mid-game from res://scenarios
-    # (D-076). Empty — the default — means the real opening, because
+    # (D-096). Empty — the default — means the real opening, because
     # `--scenario=` parses to an empty id and the server treats that as
     # "no scenario". Passed here rather than by `compose run` so the
     # server keeps the `server` network alias that `compose up` gives it
@@ -30,12 +26,15 @@ services:
     volumes:
       - .:/work
       - ./.godot-container:/work/.godot
-    # Only the HOST side varies per instance. Inside the compose network
-    # the server is always on 4433, so `bots` and `client-test` reach
-    # `server:4433` with no instance plumbing at all — each project has
-    # its own network, so there is nothing for them to collide with.
+    # The HOST side of the mapping is per-instance (D-095): the justfile
+    # exports EDOTMW_HOST_PORT from instance-id.sh so two agents' servers
+    # publish two different ports and a client cannot silently reach the
+    # wrong one. IN-CONTAINER the server always listens on 4433, which is
+    # why the bots and client-test services (in-network, "server:4433")
+    # need no change. The :-4433 default only exists for a bare
+    # `docker compose up` outside the justfile.
     ports:
-      - "${EDOTMW_PORT:-4433}:4433/udp"
+      - "${EDOTMW_HOST_PORT:-4433}:4433/udp"
     restart: "no"
     mem_limit: 2g
     cpus: 4

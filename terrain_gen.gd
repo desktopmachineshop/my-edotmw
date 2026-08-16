@@ -42,13 +42,25 @@ class_name TerrainGen
 ## tied to the player count: 2 serves 4, 2 or 1 players. Changing the
 ## player count is therefore a map-generation change, not a config tweak.
 @export var axis_repeats: int = 1
-## Vertical exaggeration applied when building meshes.
-@export var height_scale: float = 2.0
+## Vertical exaggeration applied when building meshes. 15.0 (up from 2.0) is
+## the "for now" default requested after a live look at extreme relief —
+## purely cosmetic (surface_field is the only reader; passability still
+## thresholds the unscaled elevation_field, so this cannot change which
+## ground is walkable).
+@export var height_scale: float = 15.0
 
 ## Normalised thresholds in [0,1].
 @export var sea_level: float = 0.38
 @export var beach_level: float = 0.44
 @export var mountain_level: float = 0.74
+
+## Moisture thresholds splitting land into dry grassland / grassland /
+## forest. Constants rather than exports because `Economy.generate` shapes
+## its tree densities against the same boundaries `biome_at` classifies
+## with — two copies of these numbers would let "how dense is a forest"
+## drift away from "what is a forest".
+const MOISTURE_DRY := 0.35
+const MOISTURE_FOREST := 0.62
 
 # Bounds on the sampling torus's minor radius. The actual value tracks
 # the map's aspect ratio (see _sample) so features come out about as
@@ -272,30 +284,42 @@ func biome_at(space: TorusSpace, cell: Vector2i) -> Biome:
 		return Biome.PEAK if e > mountain_level + 0.12 else Biome.MOUNTAIN
 
 	var m := moisture_at(space, cell)
-	if m < 0.35:
+	if m < MOISTURE_DRY:
 		return Biome.DRY_GRASSLAND
-	if m < 0.62:
+	if m < MOISTURE_FOREST:
 		return Biome.GRASSLAND
 	return Biome.FOREST
 
 
 ## Biome colour for the preview and the terrain mesh — a pure function of
 ## biome_at(), so the picture and the simulation always agree.
+##
+## Re-tuned for D-080's lighting rig (`world_look.gd`): ACES compresses
+## highlights and desaturates midtones, and ambient now samples a blue sky
+## instead of a flat grey, so the pre-D-080 values read muddier and
+## cooler than they were authored to. The two darkest biomes (deep water,
+## forest) are lifted the most — those are the values closest to crushing
+## toward black under the tonemap — and the land biomes are warmed
+## slightly to offset the sky-tinted ambient pushing everything blue.
+## Relative ordering (deep water darker than water, forest darker than
+## grassland) is preserved on purpose: that hierarchy is what a player
+## reads at a glance, and `biome_at()` — the thing that actually gates
+## passability — is untouched.
 func biome_color(space: TorusSpace, cell: Vector2i) -> Color:
 	match biome_at(space, cell):
 		Biome.DEEP_WATER:
-			return Color(0.05, 0.14, 0.35)
+			return Color(0.08, 0.20, 0.42)
 		Biome.WATER:
-			return Color(0.12, 0.32, 0.55)
+			return Color(0.16, 0.38, 0.60)
 		Biome.BEACH:
-			return Color(0.78, 0.72, 0.48)
+			return Color(0.82, 0.74, 0.46)
 		Biome.PEAK:
-			return Color(0.92, 0.92, 0.95)
+			return Color(0.93, 0.93, 0.96)
 		Biome.MOUNTAIN:
-			return Color(0.45, 0.44, 0.42)
+			return Color(0.48, 0.46, 0.44)
 		Biome.DRY_GRASSLAND:
-			return Color(0.68, 0.62, 0.32)
+			return Color(0.72, 0.64, 0.30)
 		Biome.GRASSLAND:
-			return Color(0.29, 0.52, 0.24)
+			return Color(0.30, 0.56, 0.24)
 		_:
-			return Color(0.14, 0.36, 0.18)  # forest
+			return Color(0.16, 0.40, 0.19)  # forest

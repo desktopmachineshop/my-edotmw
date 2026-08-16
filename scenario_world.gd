@@ -2,7 +2,7 @@ class_name ScenarioWorld
 extends RefCounted
 
 ## A complete, ready-to-tick world for a test, with no server, no socket
-## and no match opening (D-076).
+## and no match opening (D-096).
 ##
 ##     var w := ScenarioWorld.build("clash")
 ##     w.tick(2.0)

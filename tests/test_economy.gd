@@ -225,6 +225,74 @@ func test_a_worked_out_node_releases_the_squad() -> void:
 		"A squad must not stand on an empty patch forever")
 
 
+func test_a_finished_tree_sends_the_crew_to_the_next_one() -> void:
+	# With trees a minute deep, "node ran out" happens every haul cycle or
+	# so — making the player re-issue the same order per tree would be pure
+	# micro tax. The crew walks itself to the nearest surviving node of the
+	# same kind within Economy.RETARGET_RADIUS instead.
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	var space: TorusSpace = sim.space
+	economy.nodes[setup["node"]]["remaining"] = 3
+
+	var next_cell := space.index(Vector2i(12, 8))  # two cells east, in radius
+	economy.nodes[next_cell] = {"kind": Economy.ResourceKind.WOOD, "remaining": 500}
+
+	economy.order_gather(sim, setup["squad"], setup["node"])
+	for _i in range(120):
+		sim.tick()
+
+	assert_false(economy.has_node(setup["node"]), "The first tree should be gone")
+	assert_true(economy.is_gathering(setup["squad"]),
+		"The crew should still be employed, on the next tree over")
+	assert_lt(economy.remaining_at(next_cell), 500,
+		"…and to have actually taken something out of it")
+
+
+func test_retargeting_never_switches_resource_kind() -> void:
+	# "Chop wood" silently becoming "pick apples" is the substitution bug
+	# the AI already had fixed once (_nearest_node_of_kind's header). A
+	# crew whose tree runs out with only OTHER kinds nearby is released.
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	var space: TorusSpace = sim.space
+	economy.nodes[setup["node"]]["remaining"] = 3
+
+	var food_cell := space.index(Vector2i(11, 8))
+	economy.nodes[food_cell] = {"kind": Economy.ResourceKind.FOOD, "remaining": 500}
+
+	economy.order_gather(sim, setup["squad"], setup["node"])
+	for _i in range(120):
+		sim.tick()
+
+	assert_false(economy.is_gathering(setup["squad"]),
+		"No wood left in reach — the crew must stop, not start picking apples")
+	assert_eq(economy.remaining_at(food_cell), 500,
+		"The food node must be untouched")
+
+
+func test_depletion_is_reported_once_for_the_wire() -> void:
+	# The client draws a tree where the server said a node is; when the
+	# node runs dry the server has to say so or the tree stands forever.
+	# take_depleted() drains — the same event must not replay next tick.
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	economy.nodes[setup["node"]]["remaining"] = 3
+
+	economy.order_gather(sim, setup["squad"], setup["node"])
+	for _i in range(60):
+		sim.tick()
+
+	assert_false(economy.has_node(setup["node"]), "The node should be exhausted")
+	var events := economy.take_depleted()
+	assert_has(events, setup["node"], "The felling must be reported")
+	assert_eq(economy.take_depleted().size(), 0,
+		"Draining hands ownership to the caller — no replay next tick")
+
+
 func test_a_fighting_unit_cannot_be_told_to_gather() -> void:
 	var setup := _haul_setup()
 	var sim: SquadSim = setup["sim"]
@@ -449,25 +517,106 @@ func _generated_map(width: int, height: int) -> Economy:
 	return economy
 
 
-func test_resource_nodes_are_sparse_at_every_map_size() -> void:
-	# Reported twice from real games as resources being far too common,
-	# the second time specifically on a small map — which is where the
-	# fairness top-up dominates, because a small map has nearly as many
-	# spawns to guarantee as a large one and far fewer natural nodes.
-	#
-	# Bounds rather than exact figures: this is tuning somebody should be
-	# free to move. What must not drift is the order of magnitude, which
-	# is the difference between somewhere to go and everywhere you stand.
+func test_trees_are_abundant_and_ore_stays_scarce() -> void:
+	# The forest rework inverted the old "sparse on purpose" rule FOR
+	# TREES ONLY: wood and food are many small nodes now (a forest is made
+	# of trees, roughly 15x the old node count), while gold and stone keep
+	# the old economics — few, rich, worth holding. Bounds rather than
+	# exact figures: tuning somebody should be free to move. What must not
+	# drift is the SPLIT, which is the design: dense woods, scarce ore.
 	for size in MapSettings.sizes():
 		var economy := _generated_map(int(size["width"]), int(size["height"]))
 		var cells := int(size["width"]) * int(size["height"])
-		var per_node := float(cells) / maxf(float(economy.node_count()), 1.0)
-		assert_gt(per_node, 45.0,
-			"%s: one node per %.0f cells — that is scenery, not a place worth holding" % [
-				size["name"], per_node])
-		assert_lt(per_node, 220.0,
-			"%s: one node per %.0f cells — too sparse to run an economy on" % [
-				size["name"], per_node])
+		var trees := 0
+		var ore := 0
+		for cell in economy.nodes:
+			var kind := economy.kind_at(cell)
+			if kind == Economy.ResourceKind.WOOD or kind == Economy.ResourceKind.FOOD:
+				trees += 1
+			else:
+				ore += 1
+		var per_tree := float(cells) / maxf(float(trees), 1.0)
+		assert_lt(per_tree, 8.0,
+			"%s: one tree per %.0f cells — that is a prairie with markers, not forests" % [
+				size["name"], per_tree])
+		assert_gt(per_tree, 2.0,
+			"%s: one tree per %.0f cells — a solid lawn leaves nowhere to walk or build" % [
+				size["name"], per_tree])
+		var per_ore := float(cells) / maxf(float(ore), 1.0)
+		assert_gt(per_ore, 100.0,
+			"%s: one ore node per %.0f cells — gold and stone are supposed to be places worth fighting over" % [
+				size["name"], per_ore])
+
+
+func test_forests_are_dense_and_open_ground_is_not() -> void:
+	# The point of the rework: tree density has to FOLLOW the biome, or the
+	# map is back to being a uniform sprinkle with better meshes. Forest
+	# cells should mostly carry a tree; grassland mostly should not.
+	var space := TorusSpace.new(84, 96, 1.0)
+	var terrain := TerrainGen.new()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var forest_cells := 0
+	var forest_trees := 0
+	var grass_cells := 0
+	var grass_trees := 0
+	for i in range(space.cell_count()):
+		var biome := terrain.biome_at(space, space.from_index(i))
+		var wooded := economy.nodes.has(i) \
+			and economy.kind_at(i) != Economy.ResourceKind.GOLD \
+			and economy.kind_at(i) != Economy.ResourceKind.STONE
+		if biome == TerrainGen.Biome.FOREST:
+			forest_cells += 1
+			if wooded:
+				forest_trees += 1
+		elif biome == TerrainGen.Biome.GRASSLAND:
+			grass_cells += 1
+			if wooded:
+				grass_trees += 1
+
+	var forest_fill := float(forest_trees) / maxf(float(forest_cells), 1.0)
+	var grass_fill := float(grass_trees) / maxf(float(grass_cells), 1.0)
+	assert_gt(forest_fill, 0.5,
+		"only %.0f%% of forest cells carry a tree — a forest should read as one" % (forest_fill * 100.0))
+	assert_lt(grass_fill, 0.35,
+		"%.0f%% of grassland carries trees — open ground should stay open" % (grass_fill * 100.0))
+	assert_gt(forest_fill, grass_fill * 2.0,
+		"forest is barely denser than prairie — density is not following biome")
+
+
+func test_natural_stone_sits_on_walkable_ground() -> void:
+	# The old generator put stone ON mountain cells, which passability()
+	# marks unwalkable — so every naturally placed stone node was scenery a
+	# crew would march at and stall against (the AI grew its give-up
+	# mechanism against exactly these). Stone lives at the mountain FOOT
+	# now, which is walkable by construction. This guards the fix.
+	var space := TorusSpace.new(84, 96, 1.0)
+	var terrain := TerrainGen.new()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var passable := terrain.passability(space)
+	var stone := 0
+	for cell in economy.nodes:
+		if economy.kind_at(cell) != Economy.ResourceKind.STONE:
+			continue
+		stone += 1
+		assert_eq(int(passable[cell]), 1,
+			"stone node at cell %d is on impassable ground — unreachable scenery" % cell)
+	assert_gt(stone, 0, "the map should grow SOME natural stone at the mountain foot")
+
+
+func test_a_tree_lasts_about_a_minute_under_one_crew() -> void:
+	# The design number: a single shipped gatherer squad works one tree out
+	# in roughly a minute. Pinned against the SHIPPED def, not a caricature
+	# (D-066's lesson): if squad_size or gather_rate moves, TREE_STOCK has
+	# to move with it or every forest quietly changes meaning.
+	var def: UnitDef = UnitRoster.by_id(&"gatherers")
+	var per_second := float(def.squad_size) * def.gather_rate
+	var seconds := float(Economy.TREE_STOCK) / per_second
+	assert_between(seconds, 45.0, 75.0,
+		"a full crew empties a tree in %.0f s — the design says about a minute" % seconds)
 
 
 func test_small_maps_are_not_far_denser_than_large_ones() -> void:
@@ -505,6 +654,40 @@ func test_thinning_the_nodes_did_not_starve_the_map() -> void:
 		total += int(economy.nodes[cell]["remaining"])
 	assert_gt(total, 250000,
 		"only %d resource on the standard map — an hour-long match would strip it bare" % total)
+
+
+func test_a_depletion_event_round_trips_and_fells_the_client_tree() -> void:
+	# The wire half of the felling: NODES tells a client something exists,
+	# NODES_DEPLETED tells it that thing no longer does. The client must
+	# drop the node immediately (the AI and the minimap read `nodes`) while
+	# queueing the felling — WITH its last known kind — for the renderer.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_nodes([
+		{"cell": 42, "kind": Economy.ResourceKind.WOOD},
+		{"cell": 77, "kind": Economy.ResourceKind.FOOD},
+	]))
+	assert_eq(state.nodes.size(), 2)
+
+	state.handle_packet(NetProtocol.encode_nodes_depleted([42]))
+	assert_false(state.nodes.has(42), "A felled tree is not a gather target")
+	assert_true(state.nodes.has(77), "The other node must be untouched")
+
+	var felled: Array = state.take_felled()
+	assert_eq(felled.size(), 1)
+	assert_eq(int(felled[0]["cell"]), 42)
+	assert_eq(int(felled[0]["kind"]), Economy.ResourceKind.WOOD,
+		"The felling must carry the kind — `nodes` no longer knows it")
+	assert_eq(state.take_felled().size(), 0, "Draining hands ownership to the caller")
+
+
+func test_a_depletion_event_for_an_unknown_node_is_ignored() -> void:
+	# Fog gating means a client can in principle hear about a cell it was
+	# never told carried a node (a server bug, a stale packet after a match
+	# reset). That must not fabricate a felling out of nothing.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_nodes_depleted([13]))
+	assert_eq(state.take_felled().size(), 0,
+		"No known node at that cell — nothing to fell")
 
 
 # --- formations (D-058) ------------------------------------------------

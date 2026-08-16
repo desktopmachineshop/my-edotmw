@@ -93,6 +93,15 @@ class VirtualClient:
 	var _next_order_at := 1.0
 	var _orders_issued := 0
 
+	## Whether this bot's opening town hall order has actually gone out.
+	## Distinct from `_orders_issued == 0` on purpose — see where it is set.
+	var _town_hall_ordered := false
+
+	## The squad sent to found the town hall, or -1 before that has
+	## happened. Read by `_issue_order` to keep the raid-order pool from
+	## ever picking this squad while it is still walking to build.
+	var _founding_squad := -1
+
 	## How many times _issue_order has run, whether or not this bot had a
 	## squad to order. Production is paced off this so it keeps running
 	## while the bot owns nothing — which is precisely when it must.
@@ -104,6 +113,7 @@ class VirtualClient:
 	# replacement for it.
 	var _scout_squads: Array = []
 	var _home_cell: Dictionary = {}  # squad id -> Vector2i, sampled before rallying
+	var _gather_assigned: Dictionary = {}  # gatherer squad id -> node cell index
 	var _rallied := false
 	var _recalled := false
 
@@ -265,6 +275,42 @@ class VirtualClient:
 			break
 
 
+	## Send every idle gatherer crew at the nearest wood node this bot has
+	## actually been shown. Bots produced gatherers for two milestones and
+	## never ORDERED them, so the whole haul cycle — gather orders, wallet
+	## replication, node depletion, crew retargeting — ran only in unit
+	## tests and under the server-side AI, never under the load test's
+	## wire. With trees a minute deep (D-087) depletion now happens well
+	## inside a load run, and the bots are what make the felling events a
+	## live, observable flow (`nodes_felled` in the verdict line).
+	##
+	## Re-ordered only when unassigned or when the assigned node vanished
+	## from `state.nodes` (a felling): the server retargets crews itself,
+	## and a bot that re-ordered every tick would fight it.
+	func _put_gatherers_to_work() -> void:
+		for squad in state.squads:
+			var def: UnitDef = UnitRoster.by_id(StringName(
+				String(state.composition.get(squad, {}).get("def_id", ""))))
+			if def == null or def.carry_capacity <= 0:
+				continue
+			if _gather_assigned.has(squad) and state.nodes.has(_gather_assigned[squad]):
+				continue
+			var best := -1
+			var best_distance := 1 << 30
+			var here := state.squad_cell(squad, 0.0)
+			for cell in state.nodes:
+				if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+					continue
+				var d := state.space.distance(here, state.space.from_index(int(cell)))
+				if d < best_distance:
+					best_distance = d
+					best = int(cell)
+			if best < 0:
+				continue
+			_gather_assigned[squad] = best
+			peer.send(0, NetProtocol.encode_order_gather(squad, best),
+				ENetPacketPeer.FLAG_RELIABLE)
+
 	func _issue_order() -> void:
 		if state.space == null:
 			return
@@ -286,10 +332,44 @@ class VirtualClient:
 		# running past a squad that no longer existed. Two bugs whose
 		# symptoms cancelled; fixing the honest one exposed this.
 		_issue_production()
+		_put_gatherers_to_work()
 
 		if state.squads.is_empty():
 			return
-		var squad := state.squads[_rng.randi_range(0, state.squads.size() - 1)]
+
+		# Never pick the squad that is still walking to found its town
+		# hall as the target of the RAID order below. server.gd's
+		# `_handle_order_move` cancels a pending build the instant its
+		# squad is ordered anywhere else ("A builder told to go somewhere
+		# has been told to stop building") — and with a single founding
+		# party, the raid order a few lines down was picking that exact
+		# squad and cancelling the build this same function had just
+		# issued, every 3 seconds, for the rest of the match. No refusal
+		# ever reached the wire, because nothing was refused: both orders
+		# were individually valid, and the second one is just what "stop
+		# building" means. The founding party never built anything and the
+		# load test failed with `buildings_known=0`, which reads exactly
+		# like a replication bug and is not one.
+		# `state.squads` is a PackedInt32Array, which has no `.filter()` —
+		# only the generic Array does — so this is a plain loop rather
+		# than the one-liner it looks like it should be.
+		var founding_pending := _founding_squad in state.squads
+		var raid_pool: Array = []
+		for candidate in state.squads:
+			if founding_pending and candidate == _founding_squad:
+				continue
+			# Working crews stay out of the raid rotation: a move order
+			# cancels a haul the same way it cancels a build (D-034), and a
+			# bot that raids with its own economy exercises neither.
+			if _gather_assigned.has(candidate):
+				continue
+			raid_pool.append(candidate)
+		if raid_pool.is_empty():
+			# The founder is the only squad there is. Leave it be — any
+			# raid order right now has nothing to send but the squad that
+			# must not receive one.
+			return
+		var squad: int = raid_pool[_rng.randi_range(0, raid_pool.size() - 1)]
 
 		# Converge on the middle of the map rather than wandering anywhere
 		# on it. Destinations used to be uniform over the whole torus,
@@ -319,12 +399,30 @@ class VirtualClient:
 		# test exercises construction, building replication and the
 		# persistent-explored hash in the running system rather than
 		# leaving all three to unit tests.
-		if _orders_issued == 0:
+		# Retried until it is actually SENT, not attempted once on the first
+		# order. `spawn_cell_of` needs the WELCOME, and a bot whose first
+		# order tick beat that packet skipped its opening move silently and
+		# never tried again — no town hall, so no production, so four
+		# founding parties wandering an empty map for the whole run. The
+		# verdict then failed with `buildings_known=0`, which reads exactly
+		# like a replication bug and is not one.
+		#
+		# It survived because the guard was `_orders_issued == 0` while the
+		# counter below increments unconditionally, so "did I send it" and
+		# "is this my first order" were quietly the same question. They stop
+		# being the same the moment the send does not happen.
+		if not _town_hall_ordered:
 			var home := state.spawn_cell_of(state.player)
 			if home.x >= 0:
 				var build := state.encode_build(squad, "town_centre", home)
 				if not build.is_empty():
 					peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
+					_town_hall_ordered = true
+					_founding_squad = squad
+					# Stop here — no raid order for this squad on the same
+					# tick its build order was sent. See the note above
+					# `raid_pool` for what happens if a move order follows.
+					return
 
 		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
 		# Orders go out every 3 seconds while the contested middle is a
@@ -633,13 +731,14 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
 		_state_hash_checks(), _desync_count(),
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
-		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes()])
+		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
+		_nodes_felled()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
@@ -677,3 +776,16 @@ func _max_known_nodes() -> int:
 	for vc in _clients:
 		best = maxi(best, vc.state.nodes.size())
 	return best
+
+
+## Depletion events received across all bots (D-087). Bots never drain
+## `felled`, so its size IS the running count. A metric rather than a
+## verdict gate: a felling needs a town hall (40 s), a produced crew and a
+## worked-out tree (~60 s of gathering), so gating on it would quietly pin
+## every run to ~3 minutes — the exact stale-timing trap D-031 set for
+## `test-load 4 40`. Assert it by running long enough and READING it.
+func _nodes_felled() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.state.felled.size()
+	return total

@@ -34,10 +34,38 @@ const C2S_ORDER_PRODUCE := 14
 const C2S_ORDER_GATHER := 16
 const C2S_ORDER_RALLY := 23
 const C2S_ORDER_FORMATION := 24
+const C2S_ORDER_BUILDING_TARGET := 25
+
+## Gates (D-076): open/close it directly (only honored server-side in
+## manual mode), or switch which mode it's in. Two opcodes rather than one
+## overloaded message, matching how ORDER_RALLY and ORDER_BUILDING_TARGET
+## are already separate single-purpose building orders rather than one
+## "building command" envelope.
+const C2S_ORDER_GATE_STATE := 27
+const C2S_ORDER_GATE_MODE := 28
+
+## Append one more site to a squad's build queue instead of replacing it
+## (D-076's drag-to-build-a-line tool) — same payload shape as
+## C2S_ORDER_BUILD, decoded by the same `decode_order_build`, distinguished
+## only by opcode so the server knows which of `_handle_order_build` /
+## `_handle_order_build_queue` to route it to.
+const C2S_ORDER_BUILD_QUEUE := 29
+
+## Dev-testing cheats. Refused server-side unless MatchState.sandbox is on
+## for this match — see server.gd's handlers, every one of which checks
+## that before doing anything else. Toggling `instant_build` and
+## `ai_economy_only` themselves ride the existing LOBBY_SET_OPTION channel
+## (a "key=value" pair, same as a map slider) rather than opcodes of their
+## own, since they are admin-gated MATCH settings, not one-shot player
+## actions the way these three are.
+const C2S_CHEAT_ADD_RESOURCES := 30
+const C2S_CHEAT_SPAWN_UNIT := 31
+const C2S_CHEAT_SPAWN_BUILDING := 32
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
 const S2C_NODES := 17
+const S2C_NODES_DEPLETED := 33
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -240,6 +268,12 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# so trained units could not be selected or ordered by anybody,
 		# including the player who paid for them.
 		buf.put_u32(int(entry.get("owner", 0)))
+		# D-076: which tier the squad occupies — an explicit fact, not
+		# something inferred from a curve going quiet, for the same reason
+		# conceal/reveal (D-004/D-025) are explicit events rather than
+		# silence. 0 (ground) for every squad that predates the wall-top
+		# tier existing.
+		buf.put_u8(int(entry.get("tier", 0)))
 	return buf.data_array
 
 
@@ -262,6 +296,7 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		out.append({
 			"id": id, "def_id": def_id, "alive": alive,
 			"shape": shape_bytes.get_string_from_utf8(), "owner": buf.get_u32(),
+			"tier": int(buf.get_u8()),
 		})
 	return out
 
@@ -311,6 +346,14 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 			var queued_id := String(queued).to_utf8_buffer()
 			buf.put_u16(queued_id.size())
 			buf.put_data(queued_id)
+		# D-076: harmless (false/MANUAL) on every non-gate building — sent
+		# uniformly, same as every other per-building field above.
+		buf.put_u8(1 if bool(entry.get("gate_open", false)) else 0)
+		buf.put_u8(int(entry.get("gate_mode", 0)))
+		# Every building's facing (D-076 amendment) — the client needs it
+		# to render the same rotation the player chose at placement, not
+		# just for the access tower's door.
+		buf.put_u8(int(entry.get("facing", 0)))
 	return buf.data_array
 
 
@@ -341,6 +384,9 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 			var queued_bytes: PackedByteArray = buf.get_data(queued_length)[1]
 			queue.append(queued_bytes.get_string_from_utf8())
 		entry["queue"] = queue
+		entry["gate_open"] = buf.get_u8() == 1
+		entry["gate_mode"] = int(buf.get_u8())
+		entry["facing"] = int(buf.get_u8())
 		out.append(entry)
 	return out
 
@@ -406,6 +452,37 @@ static func decode_nodes(data: PackedByteArray) -> Array:
 	return out
 
 
+## NODES_DEPLETED: these nodes ran dry — the client fells the trees it
+## drew there and stops offering them as gather targets.
+##
+## Its own message rather than a field on S2C_NODES because the two travel
+## in opposite directions of knowledge: NODES tells you something exists,
+## this tells you it no longer does. Sent only for nodes the receiving
+## player KNOWS (was ever sent) and can currently SEE — a felling behind
+## the fog is news you have not earned, exactly the reasoning that keeps a
+## concealed squad a ghost (D-025). A known-but-unseen node therefore
+## stays standing on that client until it next sees the cell, the same
+## staleness a building ghost has (D-030).
+static func encode_nodes_depleted(cells: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_NODES_DEPLETED)
+	buf.put_u32(cells.size())
+	for cell in cells:
+		buf.put_u32(int(cell))
+	return buf.data_array
+
+
+static func decode_nodes_depleted(data: PackedByteArray) -> Array:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var count := buf.get_u32()
+	var out := []
+	for i in range(count):
+		out.append(buf.get_u32())
+	return out
+
+
 ## ORDER_GATHER: put a gatherer squad to work on a resource node
 ## (D-028). Carries the cell rather than a node id, because a node IS a
 ## cell — there is no separate node entity to name.
@@ -467,6 +544,62 @@ static func decode_order_rally(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	return {"building": buf.get_u32(), "cell": buf.get_u32()}
+
+
+## ORDER_BUILDING_TARGET: focus-fire an armed building on a specific enemy
+## squad, overriding its default nearest-enemy pick (Combat._find_squad_near).
+##
+## Named by SQUAD id, not cell, so the building keeps tracking a target that
+## moves — the whole reason a manual target exists rather than just
+## right-clicking the ground. `target_squad` of -1 clears it, going back to
+## automatic targeting.
+static func encode_order_building_target(building_wire_id: int, target_squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_BUILDING_TARGET)
+	buf.put_u32(building_wire_id)
+	buf.put_32(target_squad)
+	return buf.data_array
+
+
+static func decode_order_building_target(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "target": buf.get_32()}
+
+
+## ORDER_GATE_STATE: open or close a gate directly (D-076). Only honored
+## server-side while the gate is in manual mode — see ORDER_GATE_MODE.
+static func encode_order_gate_state(building_wire_id: int, open: bool) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_GATE_STATE)
+	buf.put_u32(building_wire_id)
+	buf.put_u8(1 if open else 0)
+	return buf.data_array
+
+
+static func decode_order_gate_state(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "open": buf.get_u8() == 1}
+
+
+## ORDER_GATE_MODE: switch a gate between BuildingSim.GATE_MODE_MANUAL and
+## GATE_MODE_AUTO (D-076).
+static func encode_order_gate_mode(building_wire_id: int, mode: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_GATE_MODE)
+	buf.put_u32(building_wire_id)
+	buf.put_u8(mode)
+	return buf.data_array
+
+
+static func decode_order_gate_mode(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"building": buf.get_u32(), "mode": int(buf.get_u8())}
 
 
 ## NOTICE: a short human-readable line for the player who sent an order.
@@ -546,7 +679,16 @@ static func decode_building_state_hash(data: PackedByteArray) -> Dictionary:
 ## ORDER_BUILD: a squad is told to found a building at a cell (D-031).
 ## Carries the building's def id rather than an index, so adding a
 ## building to /buildings never renumbers the wire.
-static func encode_order_build(squad: int, def_id: String, cell_index: int) -> PackedByteArray:
+##
+## `facing` (D-076, generalised from the access-tower-only door direction)
+## is one of `TorusSpace.DIRECTIONS`' 6 indices, chosen by the player at
+## placement (rotatable in the ghost before confirming) — EVERY building
+## carries one now, not just an access tower. It is cosmetic mesh
+## rotation for most buildings; `BuildingDef.is_access_tower` is what
+## additionally gives it door meaning. Defaults to 0 (east) for any
+## caller that does not care to choose.
+static func encode_order_build(squad: int, def_id: String, cell_index: int,
+		facing: int = 0) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_ORDER_BUILD)
 	buf.put_u32(squad)
@@ -554,7 +696,93 @@ static func encode_order_build(squad: int, def_id: String, cell_index: int) -> P
 	buf.put_u16(name_bytes.size())
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
+	buf.put_8(facing)
 	return buf.data_array
+
+
+## Same payload as `encode_order_build`, opcode C2S_ORDER_BUILD_QUEUE
+## instead — appends to the squad's build queue rather than replacing it.
+## Decoded by the same `decode_order_build`.
+static func encode_order_build_queue(squad: int, def_id: String, cell_index: int,
+		facing: int = 0) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_BUILD_QUEUE)
+	buf.put_u32(squad)
+	var name_bytes := def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	buf.put_8(facing)
+	return buf.data_array
+
+
+## CHEAT_ADD_RESOURCES: grant the sending player a flat, generous amount
+## of every resource. No payload — who receives it is read from the
+## connection, same as chat's speaker, so a client cannot name a
+## different player to credit.
+static func encode_cheat_add_resources() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_ADD_RESOURCES)
+	return buf.data_array
+
+
+## CHEAT_SPAWN_UNIT: materialise `count` full-strength squads of
+## `archetype` at a cell, bypassing cost and the squad cap. `archetype`
+## rather than a unit id — resolved against the requesting player's civ
+## server-side, the same as C2S_ORDER_PRODUCE, so a client cannot name
+## another civ's unit.
+static func encode_cheat_spawn_unit(archetype: String, cell_index: int, count: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_SPAWN_UNIT)
+	var name_bytes := archetype.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	buf.put_u8(count)
+	return buf.data_array
+
+
+static func decode_cheat_spawn_unit(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"archetype": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+		"count": int(buf.get_u8()),
+	}
+
+
+## CHEAT_SPAWN_BUILDING: raise a COMPLETE building at a cell instantly,
+## bypassing cost, footprint and the no-build claim — the one placement
+## rule still enforced server-side is that the cell is physically
+## buildable at all (not water/mountain/already occupied), so a spawned
+## building never looks broken even though every game-balance rule around
+## it is skipped.
+static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing: int = 0) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_SPAWN_BUILDING)
+	var name_bytes := def_id.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	buf.put_u32(cell_index)
+	buf.put_8(facing)
+	return buf.data_array
+
+
+static func decode_cheat_spawn_building(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var name_length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(name_length)[1]
+	return {
+		"def_id": name_bytes.get_string_from_utf8(),
+		"cell": buf.get_u32(),
+		"facing": buf.get_8(),
+	}
 
 
 static func decode_order_build(data: PackedByteArray) -> Dictionary:
@@ -568,6 +796,7 @@ static func decode_order_build(data: PackedByteArray) -> Dictionary:
 		"squad": squad,
 		"def_id": name_bytes.get_string_from_utf8(),
 		"cell": buf.get_u32(),
+		"facing": buf.get_8(),
 	}
 
 
@@ -757,7 +986,13 @@ const LOBBY_SET_TEAM := 5
 ## match, for player colours and teams (D-052). Inferring it from the
 ## list being non-empty made the client draw the lobby over a running
 ## game while every counter reported a healthy match.
-static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0) -> PackedByteArray:
+## `sandbox`/`instant_build`/`ai_economy_only`: the match-wide dev-testing
+## flags (MatchState's own fields of the same names). Carried as bare
+## fields alongside `phase` rather than folded into `settings` — that
+## dictionary is specifically `MapSettings.to_dict()` (D-049), and these
+## are not map generation parameters.
+static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
+		sandbox := false, instant_build := false, ai_economy_only := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u8(phase)
@@ -771,6 +1006,9 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 		_put_string(buf, String(seat["name"]))
 	var json := JSON.stringify(settings)
 	_put_string(buf, json)
+	buf.put_u8(1 if sandbox else 0)
+	buf.put_u8(1 if instant_build else 0)
+	buf.put_u8(1 if ai_economy_only else 0)
 	return buf.data_array
 
 
@@ -798,7 +1036,35 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		var parsed = JSON.parse_string(json)
 		if parsed is Dictionary:
 			settings = parsed
-	return {"admin": admin, "seats": seats, "settings": settings, "phase": phase}
+	return {
+		"admin": admin, "seats": seats, "settings": settings, "phase": phase,
+		"sandbox": buf.get_u8() == 1,
+		"instant_build": buf.get_u8() == 1,
+		"ai_economy_only": buf.get_u8() == 1,
+	}
+
+
+## LEAVE_MATCH (D-075). "I am done with this match, but not with you."
+##
+## Its own opcode rather than a LOBBY_* action, because those are lobby
+## commands and this one is only ever legal while a match is RUNNING —
+## the exact phase in which `_handle_lobby_command` rejects everything.
+##
+## It exists at all because leaving used to be a disconnect, and a
+## disconnect cannot come back: the server tore the seat down and the
+## client had nothing to return TO. Staying connected is the whole point,
+## so the transport-level goodbye is precisely the wrong tool.
+##
+## No payload. Who is leaving is read from the connection it arrived on,
+## for the same reason chat attaches its speaker server-side: a client
+## that named its own player could send another player home.
+const C2S_LEAVE_MATCH := 26
+
+
+static func encode_leave_match() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_LEAVE_MATCH)
+	return buf.data_array
 
 
 static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:

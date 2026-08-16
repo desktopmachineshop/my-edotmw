@@ -41,7 +41,7 @@ if _ROOT not in sys.path:
 
 from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
 from art.buildings import build as build_building                  # noqa: E402
-from art.lib.bake import flatten, write_glb, write_vat          # noqa: E402
+from art.lib.bake import door_hinge_uv, flatten, write_glb, write_vat  # noqa: E402
 from art.lib.godot_import import (                               # noqa: E402
     ATLAS_PARAMS, VAT_PARAMS, ensure_import_params,
 )
@@ -132,7 +132,7 @@ def build_buildings() -> dict:
 
         flat = flatten(model)
         glb_path = os.path.join(models_dir, f"{building}.glb")
-        write_glb(model, flat, glb_path)
+        write_glb(model, flat, glb_path, uv1_override=door_hinge_uv(model, flat))
 
         entries[building] = {
             "model": f"generated/models/{building}.glb",

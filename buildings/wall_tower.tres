@@ -1,0 +1,35 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"wall_tower"
+display_name = "Wall Tower"
+civ = &"neutral"
+max_health = 1000.0
+build_time = 26.0
+vision_range = 14.0
+no_build_radius = 0
+attack_range = 0.0
+damage = 0.0
+attack_interval = 1.0
+is_drop_off = false
+cost_food = 0
+cost_wood = 60
+cost_gold = 0
+cost_stone = 130
+mesh_primitive = "cylinder"
+mesh_color = Color(0.45, 0.44, 0.48, 1)
+category = "defensive"
+model_id = &"wall_tower"
+footprint_radius = 0
+built_by = Array[StringName]([&"gatherers"])
+upgrade_from = Array[StringName]([&"wall", &"gate", &"garrison_wall", &"garrison_gate"])
+is_gate = false
+walkable_top = true
+top_range_bonus = 3.0
+top_vision_bonus = 6.0
+top_height = 4.0
+is_access_tower = true
+mesh_size = Vector3(2.6, 4.0, 2.6)

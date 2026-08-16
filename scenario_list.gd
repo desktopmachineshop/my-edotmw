@@ -1,6 +1,6 @@
 extends SceneTree
 
-## Prints every shipped scenario (D-076) — what `just scenarios` runs.
+## Prints every shipped scenario (D-096) — what `just scenarios` runs.
 ##
 ## Reads them through `Scenario.load_all()`, the same call the server and
 ## the test fixture use, so this listing cannot drift from what
