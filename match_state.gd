@@ -230,9 +230,32 @@ func set_civ(by_player: int, seat_index: int, civ: StringName) -> bool:
 ## today, but a future reconnect path might, and returning a usable start
 ## beats crashing.
 func spawn_index(player: int, point_count: int) -> int:
+	return spawn_index_in(seats, player, point_count)
+
+
+## The same arithmetic, over a seat list that need not be this one's.
+##
+## Static, and the seat list is a parameter, because THE CLIENT NEEDS THIS
+## TOO. `ClientState.spawn_cell_of` used to reimplement it as
+## `(player - 1) % point_count` under a doc comment claiming it "mirrors
+## server.gd's own wrap … so both sides answer this the same way". It did
+## mirror it, right up until the server started keying on the seat — and
+## then the two silently disagreed for every AI player, whose ids start at
+## 1000 (D-051). An AI asked where its own home was, was told a DIFFERENT
+## player's spawn, and founded its capital there.
+##
+## A copy of a rule is a copy that can drift, and this one did. The client
+## holds the seat list already (S2C_LOBBY, D-048) and it is the SAME list
+## in the SAME order, so there is no reason for a second definition to
+## exist. This is the one.
+static func spawn_index_in(seat_list: Array, player: int, point_count: int) -> int:
 	if point_count <= 0:
 		return 0
-	var seat := seat_of(player)
+	var seat := -1
+	for i in range(seat_list.size()):
+		if int(seat_list[i]["player"]) == player:
+			seat = i
+			break
 	var index := seat if seat >= 0 else player - 1
 	return index % point_count
 
