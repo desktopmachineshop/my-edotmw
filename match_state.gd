@@ -63,6 +63,48 @@ func is_eliminated(player: int) -> bool:
 	return _players.has(player) and bool(_players[player]["eliminated"])
 
 
+## How a player stands in this match, for the in-match scoreboard (D-101).
+##
+## Public information, unlike anything about a player's ARMY: who is still
+## in the match is a fact every player can already infer from the match
+## ending, and hiding it only means nobody can read the board.
+enum Standing { PLAYING, ELIMINATED, VICTOR }
+
+
+## `player`'s standing. The one definition — the wire carries this and
+## nothing recomputes it client-side.
+##
+## VICTOR is "still standing when the match finished", NOT `player ==
+## winner`. `winner` holds a single id, and a TEAM can win (D-050): asking
+## whether a player equals it would mark one of two victorious allies as
+## still playing forever, in the one moment the board is read hardest.
+func standing_of(player: int) -> int:
+	if is_eliminated(player):
+		return Standing.ELIMINATED
+	if phase == Phase.FINISHED:
+		return Standing.VICTOR
+	return Standing.PLAYING
+
+
+## The seat list with each seat's standing attached (D-101).
+##
+## Seats annotated rather than a second list keyed by player, so the thing
+## that goes on the wire is the thing the client already holds — colour is
+## derived from SEAT ORDER (D-052), and a standings list that could be
+## ordered differently would be a second definition of who sits where.
+##
+## Copies, because a caller must not be able to write a standing back onto
+## a seat: `seats` is the lobby's own state, and `start_match` reads
+## `seat["choice"]` off it.
+func scoreboard() -> Array:
+	var out := []
+	for seat in seats:
+		var entry: Dictionary = seat.duplicate()
+		entry["standing"] = standing_of(int(seat["player"]))
+		out.append(entry)
+	return out
+
+
 ## Players still in the match — registered and not eliminated.
 func active_players() -> Array:
 	var out := []

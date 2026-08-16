@@ -771,7 +771,7 @@ func _admit_player(peer, player: int) -> void:
 	# OFF regardless of the launch flag, and the debug panel never opened.
 	# `_broadcast_lobby` (the actual lobby phase) already passed these
 	# correctly; this direct-join path just never got them.
-	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
@@ -2110,11 +2110,26 @@ func _spawn_squads_for(player: int) -> Array:
 ## scanning for scary words instead once failed a good run by matching its
 ## own success line.
 func _advance_match() -> void:
-	for player in _match.update(_sim, _buildings):
+	var eliminated := _match.update(_sim, _buildings)
+	for player in eliminated:
 		print("server: MATCH_ELIMINATED player=%d" % player)
-	if _match.is_finished() and not _reported_match_end:
+	var finished := _match.is_finished() and not _reported_match_end
+	if finished:
 		_reported_match_end = true
 		print("server: MATCH_OVER winner=%d" % _match.winner)
+
+	# Tell the clients, not just the log (D-101). Elimination was a
+	# server-side `print` for three milestones: `MatchState` knew exactly
+	# who was out, the wire carried none of it, and the client's own
+	# comment (see `_build_defeat_screen`) correctly recorded that it
+	# "structurally cannot know whether hjalmar is still fighting or
+	# already out". Re-broadcasting the seat list is the whole fix,
+	# because standing rides on the seat (see `MatchState.scoreboard`).
+	#
+	# Event-driven rather than per-tick: a player is eliminated once, and
+	# a match ends once, so this costs a few hundred bytes per MATCH.
+	if not eliminated.is_empty() or finished:
+		_broadcast_lobby()
 
 
 func _replicate() -> void:
@@ -2562,9 +2577,11 @@ func _seat_summary() -> String:
 
 func _broadcast_lobby() -> void:
 	# The lobby is the authority on settings while it is up, so the
-	# server mirrors its choices before describing them.
+	# server mirrors its choices before describing them. A no-op mid-match
+	# (`set_map_option` refuses outside LOBBY), which is what makes this
+	# function safe to call on an elimination — see `_advance_match`.
 	_settings = _match.map_settings
-	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only)
 	for peer in _clients:
