@@ -17,8 +17,15 @@ class_name LoopbackPeer
 ##
 ## Deliberately NOT a subclass of ENetPacketPeer, and deliberately kept
 ## out of `_clients`: several places legitimately treat that dictionary's
-## keys as real sockets (ENet statistics, the lobby broadcast), and a
-## duck-typed impostor in there would be a null cast waiting to happen.
+## keys as real sockets (ENet statistics, the disconnect path, D-075's
+## "no humans, no server"), and a duck-typed impostor in there would be a
+## null cast waiting to happen.
+##
+## The lobby broadcast used to be on that list and no longer is. It was
+## there by accident rather than by right — an AI seat was told the lobby
+## once, at admission, and never again, so it could not learn that the
+## match had started. Anything a client is TOLD goes through
+## `server._recipients()`; `_clients` is for things a SOCKET has.
 
 var state: ClientState
 

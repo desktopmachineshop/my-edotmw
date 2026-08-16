@@ -63,6 +63,48 @@ func is_eliminated(player: int) -> bool:
 	return _players.has(player) and bool(_players[player]["eliminated"])
 
 
+## How a player stands in this match, for the in-match scoreboard (D-102).
+##
+## Public information, unlike anything about a player's ARMY: who is still
+## in the match is a fact every player can already infer from the match
+## ending, and hiding it only means nobody can read the board.
+enum Standing { PLAYING, ELIMINATED, VICTOR }
+
+
+## `player`'s standing. The one definition — the wire carries this and
+## nothing recomputes it client-side.
+##
+## VICTOR is "still standing when the match finished", NOT `player ==
+## winner`. `winner` holds a single id, and a TEAM can win (D-050): asking
+## whether a player equals it would mark one of two victorious allies as
+## still playing forever, in the one moment the board is read hardest.
+func standing_of(player: int) -> int:
+	if is_eliminated(player):
+		return Standing.ELIMINATED
+	if phase == Phase.FINISHED:
+		return Standing.VICTOR
+	return Standing.PLAYING
+
+
+## The seat list with each seat's standing attached (D-102).
+##
+## Seats annotated rather than a second list keyed by player, so the thing
+## that goes on the wire is the thing the client already holds — colour is
+## derived from SEAT ORDER (D-052), and a standings list that could be
+## ordered differently would be a second definition of who sits where.
+##
+## Copies, because a caller must not be able to write a standing back onto
+## a seat: `seats` is the lobby's own state, and `start_match` reads
+## `seat["choice"]` off it.
+func scoreboard() -> Array:
+	var out := []
+	for seat in seats:
+		var entry: Dictionary = seat.duplicate()
+		entry["standing"] = standing_of(int(seat["player"]))
+		out.append(entry)
+	return out
+
+
 ## Players still in the match — registered and not eliminated.
 func active_players() -> Array:
 	var out := []
@@ -230,9 +272,32 @@ func set_civ(by_player: int, seat_index: int, civ: StringName) -> bool:
 ## today, but a future reconnect path might, and returning a usable start
 ## beats crashing.
 func spawn_index(player: int, point_count: int) -> int:
+	return spawn_index_in(seats, player, point_count)
+
+
+## The same arithmetic, over a seat list that need not be this one's.
+##
+## Static, and the seat list is a parameter, because THE CLIENT NEEDS THIS
+## TOO. `ClientState.spawn_cell_of` used to reimplement it as
+## `(player - 1) % point_count` under a doc comment claiming it "mirrors
+## server.gd's own wrap … so both sides answer this the same way". It did
+## mirror it, right up until the server started keying on the seat — and
+## then the two silently disagreed for every AI player, whose ids start at
+## 1000 (D-051). An AI asked where its own home was, was told a DIFFERENT
+## player's spawn, and founded its capital there.
+##
+## A copy of a rule is a copy that can drift, and this one did. The client
+## holds the seat list already (S2C_LOBBY, D-048) and it is the SAME list
+## in the SAME order, so there is no reason for a second definition to
+## exist. This is the one.
+static func spawn_index_in(seat_list: Array, player: int, point_count: int) -> int:
 	if point_count <= 0:
 		return 0
-	var seat := seat_of(player)
+	var seat := -1
+	for i in range(seat_list.size()):
+		if int(seat_list[i]["player"]) == player:
+			seat = i
+			break
 	var index := seat if seat >= 0 else player - 1
 	return index % point_count
 
@@ -516,6 +581,7 @@ var map_settings := MapSettings.new()
 ## key that only ever meet at run time is a button that silently does
 ## nothing, which is the failure mode D-065 records.
 const REROLL_OPTION := "reroll_seed"
+
 
 
 ## Adjust one setting. Returns true if anything actually changed.

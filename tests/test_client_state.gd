@@ -129,6 +129,50 @@ func test_a_welcome_carrying_everything_still_reads_the_spawn_table() -> void:
 	assert_almost_eq(state.match_elapsed(), 120.0, 1.0)
 
 
+func test_a_client_and_the_server_agree_where_an_ai_player_starts() -> void:
+	# The client's own copy of "which spawn point is mine" drifted from the
+	# server's the day the server moved to the SEAT index (MatchState.
+	# spawn_index), and stayed wrong for every AI player: ids start at 1000
+	# (D-051), so `(player - 1) % point_count` lands on some other player's
+	# start. An AI asked where its home was and was told a rival's corner —
+	# where it then tried to found its capital.
+	#
+	# Driven through the real seat list, because that is the fact both sides
+	# key on and the only thing that makes them agree by construction.
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)                            # seat 0 — the human
+	m.add_ai(1, CivRoster.ids()[0], 1000)      # seat 1
+	m.add_ai(1, CivRoster.ids()[0], 1001)      # seat 2
+
+	var spawns := [11, 22, 33, 44]
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_lobby(m.admin_player, m.seats, {}, 0))
+	state.handle_packet(NetProtocol.encode_welcome(1000, W, H, [], spawns))
+
+	for seat in m.seats:
+		var who := int(seat["player"])
+		var server_cell := state.space.from_index(
+			spawns[m.spawn_index(who, spawns.size())])
+		assert_eq(state.spawn_cell_of(who), server_cell,
+			"client and server disagree about where player %d starts" % who)
+
+	# Name the exact case that shipped, so a regression says so rather than
+	# just failing somewhere in the loop.
+	assert_eq(state.spawn_cell_of(1000), state.space.from_index(22),
+		"AI 1000 sits in seat 1 and starts on spawn point 1, not on (1000-1)%4")
+
+
+func test_a_client_with_no_seat_list_still_answers_from_the_spawn_table() -> void:
+	# The fallback, kept honest: a fixture that sends only a WELCOME (every
+	# test above, and any client that has not yet been told the lobby) has
+	# nothing but a player id to go on, and must still get a usable cell
+	# rather than nothing.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(2, W, H, [], [11, 22]))
+	assert_eq(state.spawn_cell_of(2), state.space.from_index(22))
+
+
 func test_a_welcome_without_the_new_fields_still_reads() -> void:
 	# The trailing-field rule this protocol already uses for spawns: a
 	# packet written before these existed must read back as "not stated"

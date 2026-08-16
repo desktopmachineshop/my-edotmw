@@ -242,15 +242,19 @@ func _ready() -> void:
 		return
 
 	# What the world WILL be. Seeded from the map file, then edited in the
-	# lobby (D-049).
-	_settings = MapSettings.new()
-	_settings.width = _config.width
-	_settings.height = _config.height
-	_settings.player_slots = _config.player_slots
+	# lobby (D-049) — including what the spawn sampler reads, which travels
+	# with the rest so the lobby preview can reproduce the server's starts
+	# exactly rather than guessing at them (D-104).
+	_settings = MapSettings.from_map(_config)
 	# --seed PINS the world; without it the default stands here and a
 	# lobby rolls over it a few lines below (D-100). Every seedless
 	# headless flow — bots, scenarios, test-load, test-client — takes this
 	# branch and keeps the one reproducible map it has always run on.
+	#
+	# A rolled seed moves the STARTS as well as the ground, because
+	# `to_spawn_config` mixes the map's base spawn seed with this one —
+	# which is what D-100 means by a seed reproducing the whole match
+	# setup rather than only the terrain.
 	if args.has("seed"):
 		_settings.pin_seed(int(args["seed"]))
 	# Overridable from the command line for a no-lobby quick start (D-049
@@ -275,7 +279,16 @@ func _ready() -> void:
 	var ai_wanted := int(args.get("ai", 0))
 
 	_match = MatchState.new()
-	_match.players_expected = maxi(1, int(args.get("players", 1))) + ai_wanted
+	# `maxi` around the SUM, not around the human count alone.
+	#
+	# It used to be `maxi(1, players) + ai_wanted`, which cannot express "no
+	# humans at all": `just ai-ladder` asked for `--players=1 --ai=2`, so the
+	# server expected three participants, two arrived, and every ladder match
+	# stayed in Phase.LOBBY for its whole cap while the recipe reported the
+	# resulting nothing as a draw and blamed the AI. `--players=0 --ai=2` is
+	# a real two-computer match now, and the default (1 human, no AI) is
+	# unchanged.
+	_match.players_expected = maxi(1, int(args.get("players", 1)) + ai_wanted)
 	_match.require_admin_start = int(args.get("lobby", 0)) != 0
 	_match.squad_cap = _config.squad_cap
 	_match.map_settings = _settings
@@ -396,12 +409,10 @@ func _build_world() -> void:
 	# Spawn placement follows the LOBBY's chosen slot count and map size
 	# (D-049), not the map file's — the file is only the starting point
 	# those settings were seeded from.
-	var spawn_config := MapConfig.new()
-	spawn_config.width = _settings.width
-	spawn_config.height = _settings.height
-	spawn_config.player_slots = _settings.player_slots
-	spawn_config.min_spawn_spacing = _config.min_spawn_spacing
-	spawn_config.spawn_seed = _config.spawn_seed + _settings.seed
+	# Derived by MapSettings, not here (D-104): the lobby's map preview
+	# draws these too, and the last time each side built its own sampler
+	# the preview marked twenty starts of which none were real.
+	var spawn_config := _settings.to_spawn_config()
 	_spawn_points = spawn_config.spawn_points(_passable)
 
 	var seating := spawn_config.validate_spawns(_passable)
@@ -730,7 +741,7 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# correcting later would mean a founding party existing before the
 	# civilisation that raised it.
 	_clients[peer] = {"player": player, "visible": {}}
-	_match.add_player(player)
+	var started := _match.add_player(player)
 	if _match.phase == MatchState.Phase.LOBBY:
 		_broadcast_lobby()
 		# Tick 0 while still in the lobby: the match has not begun, so
@@ -748,6 +759,8 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# lives in the sim (see _validated_squad), and a second copy here is
 	# what silently stopped every produced squad from taking orders.
 	_peak_clients = maxi(_peak_clients, _clients.size())
+	if started:
+		_note_match_started()
 	_admit_player(peer, player)
 
 
@@ -781,7 +794,7 @@ func _admit_player(peer, player: int) -> void:
 	# OFF regardless of the launch flag, and the debug panel never opened.
 	# `_broadcast_lobby` (the actual lobby phase) already passed these
 	# correctly; this direct-join path just never got them.
-	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
@@ -1055,6 +1068,12 @@ func _validated_squad(peer, squad: int) -> int:
 	if record == null:
 		return -1
 	if not _match.is_running():
+		# SAY SO. This dropped the order without a word for four milestones,
+		# and the silence is most of what made the AI's lost founding order
+		# so hard to find: a well-formed order, sent, accepted by the socket,
+		# and gone. D-034's rule is that a refused order tells the player
+		# why; there is no reason for this one to be the exception.
+		_notify(peer, "The match has not started")
 		return -1
 	# Bounds first: owner_of/alive_of index packed arrays directly.
 	if squad < 0 or squad >= _sim.squad_count():
@@ -2179,11 +2198,26 @@ func _spawn_squads_for(player: int) -> Array:
 ## scanning for scary words instead once failed a good run by matching its
 ## own success line.
 func _advance_match() -> void:
-	for player in _match.update(_sim, _buildings):
+	var eliminated := _match.update(_sim, _buildings)
+	for player in eliminated:
 		print("server: MATCH_ELIMINATED player=%d" % player)
-	if _match.is_finished() and not _reported_match_end:
+	var finished := _match.is_finished() and not _reported_match_end
+	if finished:
 		_reported_match_end = true
 		print("server: MATCH_OVER winner=%d" % _match.winner)
+
+	# Tell the clients, not just the log (D-102). Elimination was a
+	# server-side `print` for three milestones: `MatchState` knew exactly
+	# who was out, the wire carried none of it, and the client's own
+	# comment (see `_build_defeat_screen`) correctly recorded that it
+	# "structurally cannot know whether hjalmar is still fighting or
+	# already out". Re-broadcasting the seat list is the whole fix,
+	# because standing rides on the seat (see `MatchState.scoreboard`).
+	#
+	# Event-driven rather than per-tick: a player is eliminated once, and
+	# a match ends once, so this costs a few hundred bytes per MATCH.
+	if not eliminated.is_empty() or finished:
+		_broadcast_lobby()
 
 
 func _replicate() -> void:
@@ -2574,13 +2608,44 @@ func _seat_ai(player: int, civ: StringName) -> void:
 	brain.send = func(packet: PackedByteArray) -> void:
 		_dispatch(peer, packet)
 
+	# The civ this seat was DEALT, recorded where the rest of the server
+	# reads civs from. Without it `_civ_of` fell through to its round-robin
+	# fallback, `all[(player - 1) % all.size()]` — and an AI's player id is
+	# 1000-odd (D-051), so the modulo answered a different civ from the one
+	# the brain was constructed with. The AI reported one civilisation in
+	# AI_STATS and fielded another's troops for the whole match.
+	_civs[player] = civ
+
 	# Registered with the match like any player, so elimination and
 	# victory count an AI exactly as they count a human (D-033).
-	_match.add_player(player)
+	var started := _match.add_player(player)
 	_ai_clients[peer] = {"player": player, "visible": {}}
 	_ai_players.append(brain)
 	_admit_player(peer, player)
 	print("server: AI seated as player %d (%s)" % [player, civ])
+	# An all-AI match (`--players=0 --ai=n`) begins the moment the last seat
+	# is filled, with nobody left to connect and trigger the path above.
+	if started:
+		_note_match_started()
+
+
+## The match has just left the lobby on the NO-LOBBY path (`--lobby=0`),
+## where nobody presses start and `_on_match_started` never runs.
+##
+## Deliberately small: on this path the world was built at boot, seats were
+## filled as they arrived and everyone was admitted on the way in, so the
+## only thing the transition still owes anybody is the NEWS of it.
+##
+## And the news matters. `_broadcast_lobby` is how a client learns the
+## phase (D-048), and an AI seat is a client (D-051) that will not act
+## until it hears the match is running — so an AI seated while the phase
+## was still LOBBY would otherwise wait for a message that never came.
+## The same print the lobby path emits, so "did a match actually start"
+## has one marker in the log however it started; `just ai-ladder` fails on
+## its absence rather than reporting a match that never happened as a draw.
+func _note_match_started() -> void:
+	print("server: match started — %s" % _seat_summary())
+	_broadcast_lobby()
 
 
 ## EVERY peer that receives simulation state — sockets and AI seats alike.
@@ -2633,12 +2698,29 @@ func _seat_summary() -> String:
 func _broadcast_lobby() -> void:
 	# The lobby is the authority on settings while it is up, so the
 	# server mirrors its choices before describing them.
+	#
+	# D-102 made this fire mid-match (on an elimination) for the first
+	# time, so it is worth saying why that is safe: the two are THE SAME
+	# OBJECT — `_match.map_settings = _settings` at construction, lobby or
+	# no lobby — and the one thing that ever breaks the aliasing is
+	# `set_map_option`'s rollback, which is lobby-only and which this
+	# assignment exists to repair. Guarding it on the phase looks
+	# defensive and is not: it would skip that repair on the broadcast
+	# that follows a lobby start, which runs with the match already
+	# RUNNING.
 	_settings = _match.map_settings
-	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.seats,
+	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only)
-	for peer in _clients:
-		(peer as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+	# `_recipients()`, not `_clients` — the third time this exact drift has
+	# been found, and see that function's own doc for the first two. An AI
+	# seat is a client (D-051), it is told the lobby once at admission, and
+	# it was then never told again: it could not learn that the match had
+	# started, which seat list it was in, or who its teammates were. The
+	# peers are deliberately untyped here for the same reason `_replicate`
+	# does not cast — a LoopbackPeer answers send() and is not an ENet one.
+	for peer in _recipients():
+		peer.send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Relay a chat message (D-050).

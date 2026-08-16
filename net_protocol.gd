@@ -1015,6 +1015,12 @@ const LOBBY_SET_TEAM := 5
 ## fields alongside `phase` rather than folded into `settings` — that
 ## dictionary is specifically `MapSettings.to_dict()` (D-049), and these
 ## are not map generation parameters.
+##
+## `standing` per seat is `MatchState.Standing` — playing, eliminated or
+## victorious (D-102). It rides HERE rather than in a message of its own
+## because it is the same fact the seat list already carries: who is in
+## this match. A seat with no `standing` key encodes as PLAYING, which is
+## what every caller that predates the scoreboard means.
 static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
 		sandbox := false, instant_build := false, ai_economy_only := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
@@ -1025,6 +1031,7 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 	for seat in seats:
 		buf.put_u8(1 if String(seat["kind"]) == "ai" else 0)
 		buf.put_u8(int(seat.get("team", 0)))
+		buf.put_u8(int(seat.get("standing", 0)))
 		buf.put_u32(int(seat["player"]))
 		_put_string(buf, String(seat["civ"]))
 		_put_string(buf, String(seat["name"]))
@@ -1047,12 +1054,14 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 	for _i in range(count):
 		var is_ai := buf.get_u8() == 1
 		var team := int(buf.get_u8())
+		var standing := int(buf.get_u8())
 		var player := int(buf.get_u32())
 		var civ := _get_string(buf)
 		var name := _get_string(buf)
 		seats.append({
 			"kind": "ai" if is_ai else "human",
 			"player": player, "civ": civ, "team": team, "name": name,
+			"standing": standing,
 		})
 	var settings := {}
 	var json := _get_string(buf)
@@ -1142,6 +1151,15 @@ static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
 	buf.put_u32(int(settings["player_slots"]))
 	buf.put_32(int(settings["seed"]))
 	_put_string(buf, String(settings["preset"]))
+	# Where people start is part of the world, not a detail of it (D-104):
+	# a client that has to guess these guesses wrong, and the last one that
+	# did drew twenty spawn markers of which none were real. Note the LOBBY
+	# packet carries the same dictionary as JSON and so gained them for
+	# free — this one is field by field, and a field-by-field encoder is
+	# exactly where a "replicated" value quietly is not.
+	buf.put_32(int(settings["spawn_seed"]))
+	buf.put_u32(int(settings["min_spawn_spacing"]))
+	buf.put_u32(int(settings["min_spawn_landmass"]))
 	for key in ["sea_level", "beach_level", "mountain_level",
 			"elevation_frequency", "moisture_frequency", "height_scale"]:
 		buf.put_float(float(settings[key]))
@@ -1158,6 +1176,9 @@ static func decode_map_settings(data: PackedByteArray) -> Dictionary:
 		"player_slots": int(buf.get_u32()),
 		"seed": int(buf.get_32()),
 		"preset": _get_string(buf),
+		"spawn_seed": int(buf.get_32()),
+		"min_spawn_spacing": int(buf.get_u32()),
+		"min_spawn_landmass": int(buf.get_u32()),
 	}
 	for key in ["sea_level", "beach_level", "mountain_level",
 			"elevation_frequency", "moisture_frequency", "height_scale"]:

@@ -1128,6 +1128,70 @@ gen-cover-preview SECONDS="0.6": _import
     fi
     echo "VERDICT: ok - $summary; LOOK AT artifacts/cover-godot.png"
 
+# A rendered picture of a WOOD, framed on the densest one on the patch.
+#
+# The same idea as gen-cover-preview and bought the same way: forests read
+# as ranks and files for a whole milestone with every number healthy,
+# because trees stood one per cell at the exact cell centre. Nothing that
+# counts things can see a lattice. Neither could either instrument that
+# existed — gen-terrain-preview's PNG is top-down and has no trees in it,
+# and test-client aims its camera at a spawn, which is open ground by
+# construction and so the one place a wood is least likely to be.
+#
+# Software-rasterised, so no GPU: this answers "is the picture right", and
+# `bench-render` answers "how fast".
+#
+# The verdict gates on the failures a screenshot of an empty meadow would
+# otherwise hide: no trees drawn at all, and a stand that is still one tree
+# per node cell.
+[doc("Render a wood to artifacts/forest-godot.png")]
+gen-forest-preview SECONDS="0.6": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-forest-preview needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    log="{{artifacts_dir}}/forest-preview.log"
+    out="{{artifacts_dir}}/forest-godot.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            forest_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/forest-godot.png" | tee "$log"
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 forest_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/forest-godot.png" | tee "$log"
+    fi
+    if [ ! -s "$out" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    summary="$(grep -o '[0-9]* trees ([0-9.]* per node), [0-9]* instances in [0-9]* multimeshes, [0-9]* models' "$log" | head -n 1)"
+    if [ -z "$summary" ]; then
+        echo "VERDICT: FAIL - the preview never reported what it drew"
+        exit 1
+    fi
+    trees="$(echo "$summary" | sed 's/\([0-9]*\) trees.*/\1/')"
+    per_node="$(echo "$summary" | sed 's/.*(\([0-9.]*\) per node).*/\1/')"
+    if [ "$trees" -lt 100 ]; then
+        echo "VERDICT: FAIL - only $trees trees; the map has no wood on it"
+        exit 1
+    fi
+    # One tree per node cell IS the defect: placement at hex resolution,
+    # which no amount of jitter or scaling hides.
+    if awk -v n="$per_node" 'BEGIN { exit !(n < 1.5) }'; then
+        echo "VERDICT: FAIL - $per_node trees per node cell; a stand is one tree again"
+        exit 1
+    fi
+    echo "VERDICT: ok - $summary; LOOK AT artifacts/forest-godot.png"
+
 # A rendered picture of the GROUND, in the shipping lighting rig (D-096/D-097).
 #
 # `gen-terrain-preview` prints healthy numbers and a top-down biome PNG, and
@@ -1301,16 +1365,23 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
+        # --players=0: nobody human is coming. This said --players=1 for
+        # three milestones, so the server waited for a third participant
+        # that the recipe never launches and EVERY ladder match sat in
+        # Phase.LOBBY for its whole cap — reported below as a draw, and
+        # read as an AI weakness through several rounds of AI work. The
+        # "match actually started" assertion after the loop is what makes
+        # that unrepeatable; this is only the fix.
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=1 \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         fi
@@ -1331,10 +1402,31 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
         exit 1
     fi
 
+    # ASSERT THE MATCH HAPPENED, before reading a single statistic off it.
+    #
+    # This is CLAUDE.md's standing rule — "assert the thing did happen, not
+    # merely that nothing complained" — arriving in the one harness that
+    # most needed it. The ladder spent three milestones reporting
+    # `draws (time cap): N` for matches that never left the lobby: a
+    # harness describing a game that was never played, in the exact
+    # vocabulary of an AI that would not fight. Every number below is
+    # meaningless without this line.
+    started=$(grep -c '^server: match started' "$log" || true)
+    if [ "$started" -lt "{{MATCHES}}" ]; then
+        echo "ai-ladder: FAILED — only $started of {{MATCHES}} matches ever left the lobby." >&2
+        echo "  A match that never started is not a draw. Check --players/--ai against" >&2
+        echo "  the server's players_expected, and see $log." >&2
+        exit 1
+    fi
+
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
     awk '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
+            match($0, /phase=([0-9]+)/, ph)
+            # phase 0 is LOBBY. A summary printed while still in the lobby
+            # is a match that never ran, whatever its winner field says.
+            if (ph[1] == "0") { unstarted++ }
             if (w[1] == "-1") { draws++ } else { wins[w[1]]++ }
             matches++
         }
@@ -1351,6 +1443,10 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
         }
         END {
             if (matches == 0) { print "  no matches completed — see the log"; exit 1 }
+            if (unstarted > 0) {
+                printf "  FAILED: %d of %d matches ended still in the lobby — nothing was measured\n", unstarted, matches
+                exit 1
+            }
             printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
             for (k in n) {
                 printf "  player %-5s civ=%-10s wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f",

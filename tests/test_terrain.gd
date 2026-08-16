@@ -1,6 +1,7 @@
 extends GutTest
 
-## Guards D-008's "periodic noise sampling" tax and D-017's chunking.
+## Guards D-008's "periodic noise sampling" tax, D-017's chunking, and
+## D-105's "a bigger map is bigger, not finer".
 ##
 ## The seam tests here are the ones that matter. Non-periodic noise over a
 ## wrapped grid produces terrain that looks completely fine in isolation
@@ -195,6 +196,150 @@ func test_flow_field_routes_around_terrain() -> void:
 		if passable[i] == 0:
 			assert_false(field.is_reachable(i),
 				"Impassable cell %d should not be routable through" % i)
+
+
+# --- map size is extent, not resolution (D-105) -----------------------
+
+## Mean absolute elevation change between cells `step` apart, over the
+## whole map.
+##
+## This IS feature size, measured rather than inferred: a field whose
+## features are N cells across changes little over a step much smaller
+## than N and a lot over a step comparable to it. Taking it at several
+## steps pins the whole curve, so a fix that merely rescaled one number
+## could not satisfy it by accident.
+func _separation_delta(terrain: TerrainGen, space: TorusSpace, step: int) -> float:
+	var field := terrain.elevation_field(space)
+	var total := 0.0
+	var samples := 0
+	# Every third cell. The statistic converges long before the map does,
+	# and this runs over four maps totalling 61,068 cells.
+	for i in range(0, space.cell_count(), 3):
+		var c := space.from_index(i)
+		total += absf(field[i] - field[space.index(c + Vector2i(step, 0))])
+		samples += 1
+	return total / float(samples)
+
+
+func _sized(entry: Dictionary) -> TorusSpace:
+	return TorusSpace.new(int(entry["width"]), int(entry["height"]), 1.0)
+
+
+func test_feature_size_is_constant_in_cells_at_every_map_size() -> void:
+	# The defect, stated directly. The generator normalises the cell
+	# coordinate by the map's dimensions before sampling, so without a size
+	# term `elevation_frequency` means "features across the map" — a count
+	# per map rather than a size in cells. Every map is then the same world
+	# drawn at a different resolution, which is what issue #54 measured:
+	# `continents`/1337 gave two landmasses covering 39% and 78% of the map
+	# at Standard, Large and Huge alike.
+	#
+	# Measured with the size term removed, this walks 0.0854 -> 0.0311 at
+	# step 4 across the four sizes, a spread of 2.75x.
+	var terrain := _terrain()
+	for step in [4, 8, 16]:
+		var lowest := INF
+		var highest := -INF
+		var report := ""
+		for entry in MapSettings.sizes():
+			var delta := _separation_delta(terrain, _sized(entry), step)
+			lowest = minf(lowest, delta)
+			highest = maxf(highest, delta)
+			report += " %s=%.4f" % [String(entry["name"]), delta]
+		assert_lt(highest / lowest, 1.25,
+			"At %d cells apart the elevation delta spans %.2fx across map sizes (%s) — feature size is a fraction of the map, not a number of cells" % [step, highest / lowest, report.strip_edges()])
+
+
+## Connected components of `mask == want`, ignoring specks under 10 cells.
+func _component_count(space: TorusSpace, mask: PackedByteArray, want: int) -> int:
+	var seen := PackedByteArray()
+	seen.resize(space.cell_count())
+	var found := 0
+	for i in range(space.cell_count()):
+		if seen[i] != 0 or mask[i] != want:
+			continue
+		var size := 0
+		var stack: Array[int] = [i]
+		seen[i] = 1
+		while not stack.is_empty():
+			var at: int = stack.pop_back()
+			size += 1
+			for d in range(6):
+				var n := space.neighbor_index(at, d)
+				if seen[n] == 0 and mask[n] == want:
+					seen[n] = 1
+					stack.append(n)
+		if size >= 10:
+			found += 1
+	return found
+
+
+func test_a_bigger_map_holds_more_features_rather_than_bigger_ones() -> void:
+	# The statistic above is the honest one; this is the claim a PLAYER
+	# makes, and the two can come apart. Counted on WATER bodies rather
+	# than landmasses on purpose: at `continents`' ~20% water the land
+	# percolates and comes out as one or two masses at every size no
+	# matter how big its features are, so a landmass count measures
+	# connectivity and not extent. Inland seas are the same field's
+	# features, counted where percolation cannot swallow them.
+	#
+	# Huge is 4x Standard's area, so at constant feature size it should
+	# hold roughly 4x the seas. Measured: 3 -> 16 with the fix, 3 -> 4
+	# without it.
+	var terrain := _terrain()
+	var counts := []
+	for entry in [MapSettings.sizes()[1], MapSettings.sizes()[3]]:
+		var space := _sized(entry)
+		var field := terrain.elevation_field(space)
+		var wet := PackedByteArray()
+		wet.resize(space.cell_count())
+		for i in range(space.cell_count()):
+			wet[i] = 1 if field[i] < terrain.sea_level else 0
+		counts.append(_component_count(space, wet, 1))
+	assert_gte(counts[1], counts[0] * 5 / 2,
+		"Standard has %d inland seas and a 4x-larger Huge map has %d — enlarging the map inflates its features instead of adding any" % [counts[0], counts[1]])
+
+
+func test_the_reference_width_leaves_shipped_presets_meaning_what_they_did() -> void:
+	# Every /terrain preset was tuned at the Standard size, so the size
+	# term must be exactly 1 there or all four need re-tuning. This is the
+	# clause that let D-105 land without touching a .tres.
+	var standard: Dictionary = MapSettings.sizes()[1]
+	assert_eq(int(standard["width"]), int(TerrainGen.REFERENCE_WIDTH),
+		"REFERENCE_WIDTH must be the Standard map's width, or presets silently change meaning")
+	assert_almost_eq(TerrainGen.effective_frequency(_sized(standard), 2.5), 2.5, 1e-6)
+
+	# And it is genuinely proportional either side of that.
+	assert_almost_eq(TerrainGen.effective_frequency(_sized(MapSettings.sizes()[3]), 2.5),
+		5.0, 1e-6, "A double-width map must sample at double the frequency")
+
+	# The readout the lobby shows, which is the inverse and therefore does
+	# not depend on the map at all.
+	assert_almost_eq(TerrainGen.feature_cells(2.5), 33.6, 0.05)
+
+
+func test_periodicity_survives_the_size_scaling() -> void:
+	# Scaling frequency multiplies the embedding coordinates uniformly, and
+	# u/v are angles, so this cannot tear a seam (D-008). Asserted at the
+	# size where the size term is largest rather than trusted.
+	var space := _sized(MapSettings.sizes()[3])
+	var terrain := _terrain()
+
+	var seam := _column_delta(terrain, space, space.width - 1, 0)
+	var interior := 0.0
+	for q in [17, 61, 103, 149]:
+		interior += _column_delta(terrain, space, q, q + 1)
+	interior /= 4.0
+	assert_lt(seam, interior * 3.0,
+		"Elevation jumps %.4f across the horizontal seam of a Huge map vs %.4f typical interior" % [seam, interior])
+
+	var row_seam := _row_delta(terrain, space, space.height - 1, 0)
+	var row_interior := 0.0
+	for r in [23, 71, 119, 167]:
+		row_interior += _row_delta(terrain, space, r, r + 1)
+	row_interior /= 4.0
+	assert_lt(row_seam, row_interior * 3.0,
+		"Elevation jumps %.4f across the vertical seam of a Huge map vs %.4f typical interior" % [row_seam, row_interior])
 
 
 # --- chunking (D-017) -------------------------------------------------

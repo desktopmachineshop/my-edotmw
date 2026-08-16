@@ -21,6 +21,30 @@ func _shipped_space() -> TorusSpace:
 	return config.to_space()
 
 
+## A generator whose features fit a toy map (D-105).
+##
+## Feature size is a number of CELLS now, not a fraction of the map, so a
+## 16-cell-wide map at shipped tuning holds half of one landmass and has no
+## passability boundary anywhere on it — nothing to draw a cliff on, and the
+## tests below correctly reported proving nothing. A toy map needs toy features,
+## so this asks for `TARGET_FEATURE_CELLS`-wide ones explicitly rather than
+## inheriting a number calibrated for an 84-cell-wide world.
+##
+## The alternative was to run these on the shipped map, which is 63x the cells
+## and several seconds of `build_fields` per test for no extra coverage: what is
+## under test is the SKIRT, and a skirt does not know how big its map is.
+const TARGET_FEATURE_CELLS := 4.0
+
+
+func _toy_terrain(space: TorusSpace) -> TerrainGen:
+	var terrain := TerrainGen.new()
+	terrain.elevation_frequency = TerrainGen.REFERENCE_WIDTH / TARGET_FEATURE_CELLS
+	terrain.moisture_frequency = terrain.elevation_frequency
+	assert_gt(TerrainGen.effective_frequency(space, terrain.elevation_frequency), 2.0,
+		"a toy map must still hold at least a couple of features, or these tests prove nothing")
+	return terrain
+
+
 # --- one predicate, drawn ------------------------------------------------
 
 
@@ -120,7 +144,7 @@ func test_the_shipped_map_draws_a_non_trivial_number_of_cliffs() -> void:
 ## shared edge it stands on must differ in class.
 func test_every_cliff_stands_on_a_passability_boundary() -> void:
 	var space := TorusSpace.new(16, 8)
-	var terrain := TerrainGen.new()
+	var terrain := _toy_terrain(space)
 	var fields := terrain.build_fields(space)
 
 	var boundary_edges := 0
@@ -295,7 +319,14 @@ func test_no_walkable_cell_samples_the_top_of_the_cliff_beside_it() -> void:
 ## defect, and two of them here would leave the ground exactly as flat as it was
 ## while the code looked finished.
 func test_the_cliff_tunables_change_the_surface() -> void:
-	var space := TorusSpace.new(32, 16)
+	# The SMALLEST SHIPPED map (Skirmish), at shipped tuning, rather than a toy
+	# one. `cliff_rise` only has anything to add where the natural step at a
+	# passability boundary falls BELOW `cliff_min_step`, and that is a property
+	# of the gradient — which since D-105 is a property of feature size in cells
+	# and nothing else. Toy features are steep enough that every boundary already
+	# clears the threshold on its own, so the rise measurably does nothing and
+	# this test would report the defect it exists to catch.
+	var space := TorusSpace.new(42, 48)
 
 	var flat := TerrainGen.new()
 	flat.cliff_rise = 0.0
@@ -308,10 +339,13 @@ func test_the_cliff_tunables_change_the_surface() -> void:
 	assert_eq(flat_quads, 0,
 		"a threshold nothing can exceed still produced %d cliffs" % flat_quads)
 	assert_gt(carved_quads, 0,
-		"the shipped settings produce no cliffs on a 32x16 map")
+		"the shipped settings produce no cliffs on a Skirmish map")
 
 	# And the rise specifically: with the same threshold, lifting the impassable
-	# tier must draw more.
+	# tier must draw more. The margin is thin on the smallest map — 82 faces
+	# against 77 — because most of a coastline clears `cliff_min_step` without
+	# any help; it is deterministic rather than close, and setting cliff_rise to
+	# 0.0 is exactly what it catches.
 	var unlifted := TerrainGen.new()
 	unlifted.cliff_rise = 0.0
 	var unlifted_quads := int(TerrainChunk.build_all(space, unlifted, 16)["cliff_quads"])

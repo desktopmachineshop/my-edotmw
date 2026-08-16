@@ -543,9 +543,23 @@ func test_trees_are_abundant_and_ore_stays_scarce() -> void:
 			"%s: one tree per %.0f cells — a solid lawn leaves nowhere to walk or build" % [
 				size["name"], per_tree])
 		var per_ore := float(cells) / maxf(float(ore), 1.0)
-		assert_gt(per_ore, 100.0,
+		# 80 rather than 100 since D-105. Stone sits at the mountain FOOT, so
+		# how much of it a map holds follows the LENGTH of its mountain
+		# perimeter — which used to be a fixed count of ranges however big the
+		# map was, and is now proportional to area like everything else.
+		# Measured across the four sizes, one ore node per: 101/144/219/340
+		# cells before, 92/144/152/145 after. The bound moves because the
+		# smallest map now sits at 92 and the other three stopped drifting;
+		# ore is more consistent across sizes than it has ever been, not
+		# scarcer.
+		assert_gt(per_ore, 80.0,
 			"%s: one ore node per %.0f cells — gold and stone are supposed to be places worth fighting over" % [
 				size["name"], per_ore])
+		# The SPLIT is the design and the bounds above are tuning, so state it
+		# outright rather than leaving it implicit in two independent numbers.
+		assert_gt(per_ore / per_tree, 15.0,
+			"%s: ore is only %.1fx scarcer than trees — dense woods and scarce ore have collapsed into one distribution" % [
+				size["name"], per_ore / per_tree])
 
 
 func test_forests_are_dense_and_open_ground_is_not() -> void:
@@ -917,3 +931,117 @@ func test_a_guaranteed_resource_is_one_the_spawn_can_walk_to() -> void:
 	assert_gt(economy.nodes.size(), 0,
 		"nothing was placed at all — the fill found no reachable ground, which "
 		+ "would starve the spawn just as surely")
+
+
+# --- fairness top-ups land on ground that grows them (D-104) -----------
+
+func test_a_stone_top_up_goes_to_the_mountain_foot_when_there_is_one() -> void:
+	# D-087 moved stone to the mountain FOOT so a node reads as belonging
+	# to the ground it sits on, and noted that its old mountain-cell
+	# placement was unreachable scenery. The fairness pass then put stone
+	# outcrops on grass and sand anyway, because it picked cells by
+	# passability alone — the mechanism was right and the post-pass walked
+	# straight past it.
+	var settings := MapSettings.new()
+	settings.width = 84
+	settings.height = 96
+	settings.seed = 1337
+	settings.apply_preset(TerrainPresetRoster.by_id(&"highlands"))
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var passable := terrain.passability(space)
+
+	# A start with rock in reach: the case where "prefer suitable ground"
+	# has an answer to give.
+	var spawn := Vector2i(-1, -1)
+	for index in range(space.cell_count()):
+		var coord := space.from_index(index)
+		if passable[index] == 0:
+			continue
+		if _mountain_foot(space, terrain, coord):
+			spawn = coord
+			break
+	assert_ne(spawn, Vector2i(-1, -1), "No mountain foot on a highlands map — the fixture is wrong, not the code")
+
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+	# Every quota short, so every kind is placed by the pass under test.
+	economy.nodes.clear()
+	economy.balance_for_spawns([spawn], passable, 9, 1)
+
+	var stone_cells: Array[Vector2i] = []
+	for cell_index in economy.nodes:
+		if int(economy.nodes[cell_index]["kind"]) == Economy.ResourceKind.STONE:
+			stone_cells.append(space.from_index(int(cell_index)))
+	assert_eq(stone_cells.size(), 1, "the pass should have placed exactly one stone node")
+	assert_true(_mountain_foot(space, terrain, stone_cells[0]),
+		"stone was topped up at %s, which does not border the mountains — an outcrop on open grass" % stone_cells[0])
+
+
+func test_no_top_up_lands_on_a_beach_while_better_ground_is_free() -> void:
+	# What the P01 screenshot was actually showing. A beach cell borders
+	# water by definition and the authored node models overhang the cell
+	# they sit on, so a rock dropped there reads as standing in the sea.
+	#
+	# The biome-blind arm is the counter-test: without it this passes just
+	# as happily on a map with no beaches at all.
+	var settings := MapSettings.new()
+	settings.width = 84
+	settings.height = 96
+	settings.player_slots = 20
+	settings.seed = 424242
+	settings.apply_preset(TerrainPresetRoster.by_id(&"islands"))
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var passable := terrain.passability(space)
+	var spawns := settings.to_spawn_config().spawn_points(passable)
+	assert_gt(spawns.size(), 0, "no spawns, so nothing below proves anything")
+
+	var aware := _top_ups_on_beach(settings, spawns, false)
+	var blind := _top_ups_on_beach(settings, spawns, true)
+
+	assert_gt(blind, 0,
+		"picking cells by passability alone should still strand top-ups on the shoreline — if it does not, the check below is vacuous")
+	assert_eq(aware, 0,
+		"%d fairness top-ups were placed on beach cells with other walkable ground free" % aware)
+
+
+## Does this cell border the mountains? The test's OWN definition, not a
+## call into the code under test — a check that asks the implementation
+## for its own answer cannot see it being wrong (D-022's audit).
+func _mountain_foot(space: TorusSpace, terrain: TerrainGen, coord: Vector2i) -> bool:
+	var biome := terrain.biome_at(space, coord)
+	if biome == TerrainGen.Biome.MOUNTAIN or biome == TerrainGen.Biome.PEAK \
+			or biome == TerrainGen.Biome.WATER or biome == TerrainGen.Biome.DEEP_WATER:
+		return false
+	for neighbour in space.neighbors(coord):
+		var b := terrain.biome_at(space, neighbour)
+		if b == TerrainGen.Biome.MOUNTAIN or b == TerrainGen.Biome.PEAK:
+			return true
+	return false
+
+
+## How many nodes the fairness pass adds on beach cells. Nulling
+## `Economy.terrain` after generation reproduces the old biome-blind pass
+## exactly, so both arms run the same code over the same world.
+func _top_ups_on_beach(settings: MapSettings, spawns: Array, blind: bool) -> int:
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var passable := terrain.passability(space)
+
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+	var before := {}
+	for cell in economy.nodes:
+		before[cell] = true
+	if blind:
+		economy.terrain = null
+	economy.balance_for_spawns(spawns, passable, 9, 1)
+
+	var beached := 0
+	for cell in economy.nodes:
+		if before.has(cell):
+			continue
+		if terrain.biome_at(space, space.from_index(int(cell))) == TerrainGen.Biome.BEACH:
+			beached += 1
+	return beached

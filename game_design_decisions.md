@@ -20,6 +20,604 @@ supersede instead, so the rationale trail survives.
 
 ## 1. Decisions
 
+### D-107 · 2026-08-16 · Accepted — an AI seat acts only while the match is running, and latches on effect rather than on intent
+
+**Numbering note.** Written as D-099 by inspection of this file, which
+then topped out at D-098, and renumbered to **D-107** on rebase. D-099 is
+spoken for: the coordinator of the seven parallel fix branches assigned
+#68=D-099, #70=D-100, #66=D-101, #76=D-102, #71=D-103, #73=D-104,
+#75=D-105, #78=D-106 — and this branch (PR #77) was opened after that
+assignment and is not in the list. D-107 is the first id past every
+assigned one, which is the only choice that cannot collide with a branch
+still in flight. See D-100's own numbering note for the *other* collision
+(ground cover holds a D-100 in force with no heading here), and D-081's
+for the precedent. **The trap both notes record is the same one, and it
+applies to this entry too: the highest heading in this file has never
+been the highest number in force.** Do not pick an id by grepping `###
+D-` alone — check `docs/plans/`, the code citations, and what is open.
+
+**Decision:** Three rules, all about the AI seat, all bought with the
+same defect (issue #61, found while staging the #39 siege playtest):
+
+1. **An AI acts only once its own client says the match is running.**
+   `AiPlayer.update()` returns immediately unless `state.welcomed` and
+   `not state.in_lobby()`. The fact comes off the wire (S2C_LOBBY's
+   phase, D-048), not from the server object — because D-051's whole
+   claim is that an AI knows exactly what a client in its seat knows.
+2. **An order is latched on its EFFECT, never on having sent it.**
+   `_found_town` stops when it can SEE a town centre it owns, not when
+   it remembers asking for one. It is bounded on the other side by
+   `_founder()`: it cannot ask at all unless it holds a squad whose
+   archetype the shipped `BuildingDef.built_by` allows to found one.
+3. **Anything a client is TOLD goes to `server._recipients()`**, which is
+   sockets and AI seats alike. `_clients` is only for things a SOCKET has
+   — ENet statistics, disconnects, D-075's "no humans, no server".
+
+And one harness rule, which is CLAUDE.md's standing "assert the thing
+happened" applied to the one harness that lacked it: **`just ai-ladder`
+fails unless every match is observed to leave the lobby.**
+
+**Rationale:** The server ticks AI brains from the moment a seat exists.
+In a no-lobby match (`--ai=n`) that is at boot, before anybody has
+connected and while `MatchState.phase` is still LOBBY. So `_found_town`
+fired on tick 0, `server._validated_squad` dropped the order on its
+not-running guard *without a word*, and `_founded = true` was set on the
+line before `send.call(order)`. One attempt, spent into a closed door,
+never repeated: **every AI opponent in every match, on every map, sat on
+its founding party for the whole game** — no town centre, no gatherers,
+no barracks, no army. `just quick-test`, `just run-server AI=n` and every
+lobby with an AI seat were all matches against opponents that did
+literally nothing.
+
+Nothing failed, and nothing could. `tests/test_ai_player.gd` drives the
+brain with the match already running, so it exercised the logic and never
+the timing. The ladder — the one harness that would have noticed — could
+not start a match either (below), so it reported ten minutes of nothing
+as `draws (time cap)` and that was read as an AI weakness through several
+rounds of AI work.
+
+Two more defects fell out of the same path:
+
+- **`ClientState.spawn_cell_of` disagreed with the server about where a
+  player starts.** It computed `(player - 1) % spawn_cells.size()` under
+  a doc comment claiming it "mirrors server.gd's own wrap … so both sides
+  answer this the same way". It did mirror it, until the server moved to
+  the SEAT index (`MatchState.spawn_index`) precisely because AI ids start
+  at 1000 and any modulo of a player id collides. So an AI that got as far
+  as founding would have founded on a rival's start. Fixed by deleting the
+  copy: `MatchState.spawn_index_in` is now static, takes a seat list, and
+  the client passes the one it already holds.
+- **`just ai-ladder` could not start a match at all.** `server.gd`
+  computed `players_expected = maxi(1, --players) + ai_wanted` and the
+  recipe passed `--players=1 --ai=2` while launching no human, so two of
+  three expected participants ever arrived. `maxi` now wraps the SUM, so
+  `--players=0` is expressible, and the recipe says so.
+
+**Rejected alternatives:**
+
+- *Gate the AI in `server.gd` instead* (`if _match.is_running(): for
+  brain in _ai_players`). One line, and untestable: server.gd needs a
+  live ENet host, which is why MatchState exists at all. The rule would
+  have been correct and unguarded, and this is a defect class that
+  survives precisely by nothing failing.
+- *Remove the `_founded` latch outright.* Measured, and wrong: the AI
+  re-sends forever and the log fills with "gatherers cannot build a Town
+  Centre" the moment the founders are consumed. The fix is not "retry
+  blindly", it is "latch on what actually happened, and know when asking
+  is illegal".
+- *Put the player's own spawn index on the wire as a new WELCOME field.*
+  Works, but adds a protocol field to carry a fact the client can already
+  derive — and derive from the SAME list, in the SAME order, using the
+  SAME function the server uses. A second definition is what broke this.
+- *Have the ladder detect a stuck lobby by watching for silence.* An
+  absence of evidence, which is the exact shape of the vacuous log-grep
+  that hid a live bug for the whole of M1. It greps for a structured
+  marker the server prints when a match actually starts.
+- *Let the ladder keep exiting 0 on a lobby-locked run.* This is the
+  `test-load` lesson verbatim: a harness that reports a game that was
+  never played, in the vocabulary of a game that was played badly, is
+  worse than no harness.
+
+**Consequences:**
+
+- Measured on the ladder map, one 180 s match, before → after:
+  `squads_peak` **1 → 24**, `buildings` **0 → 2**, `first_attack`
+  **never → ~175 s**. No AI logic changed; only its timing.
+- `server._note_match_started()` exists for the no-lobby path, where
+  nobody presses start and `_on_match_started` never runs. It prints the
+  same `server: match started` marker the lobby path does — so "did a
+  match actually start" has ONE marker in the log however it began — and
+  broadcasts the lobby, which is how an AI seated during the lobby learns
+  the phase changed.
+- `_seat_ai` now records its civ in `_civs`. It did not, so `_civ_of`
+  fell through to `all[(player - 1) % all.size()]` — the same id-modulo
+  family — and an AI reported one civilisation in `AI_STATS` while
+  fielding another's troops.
+- `_validated_squad` now `_notify`s "The match has not started" instead of
+  dropping in silence. D-034's rule is that a refused order says why;
+  this was the exception, and the silence is most of what made the lost
+  founding order hard to find.
+- **CLAUDE.md's ladder numbers were measured against an AI that never
+  played** and are void. So is anything derived from them.
+- `just ai-ladder` now runs a genuinely all-AI server (`--players=0`).
+  That is also the first thing in this project to hold a running match
+  with no socket attached; D-075's "no humans, no server" is untouched,
+  because it fires only on a disconnect.
+
+**Revisit trigger:** If an AI ever needs to act during the lobby — a
+seat that picks its own civ, say — `match_running()` is the one place to
+widen, and it must widen by asking a *different* question rather than by
+being removed. And if `just ai-ladder` ever reports a draw at the cap
+again, believe it this time: the "match actually started" assertion is
+what makes that reading honest.
+
+**The lesson, which is the point of this entry:** this is D-061's family
+— a mechanic fully written, correct, and reached from an unreachable
+branch — with a new wrinkle worth naming on its own. **A latch that
+records an INTENT will eventually be read as a record of an OUTCOME.**
+`_founded = true` above `send.call(order)` is nine characters of
+optimism, and it cost the game every AI opponent it ever had. Latch on
+the effect, or do not latch.
+
+---
+### D-104 · 2026-08-16 · Accepted — a start is a PLACE, not a legal cell: spawns need land, top-ups need ground, and one derivation feeds both sides
+
+*(Editorial, 2026-08-16: first written as D-101 and renumbered to D-104
+before merge. Several fix sessions were working in parallel off a `main`
+that tops out at D-098, and each independently picked "the next free
+id" — four of them chose 101. The ids were assigned centrally afterwards:
+#68=D-099, #70=D-100, #66=D-101, #76=D-102, #71=D-103, this one=D-104,
+#75=D-105. Same failure as D-081's collision and the same fix; the
+lesson, now paid for twice, is that "the next free id" is not a local
+question when the log has more than one author at a time.)*
+
+**Decision:** Three rules, all from one playtest report (#53, the P01
+`islands` session), all of the same shape — a check that tested the
+cheapest available property and called it the answer.
+
+1. **A spawn candidate must stand on a landmass of at least
+   `min_spawn_landmass` cells** (96, and map data like every other spawn
+   rule). Passability of the candidate's own cell is necessary and not
+   sufficient. The test is a flood fill capped at the minimum, so it is
+   O(min) per candidate and answers only the question asked — "does this
+   clear the bar", never "how big is this island".
+2. **The fairness post-pass (D-036 revised) picks ground before it picks
+   a cell.** A top-up goes to the nearest reachable cell whose biome
+   would GROW that resource; failing that, any walkable cell; failing
+   that, a beach. It says out loud how many landed on unsuitable ground,
+   per CLAUDE.md's no-silent-caps rule. The old pass chose by passability
+   alone.
+3. **`MapSettings.to_spawn_config()` is the ONE derivation of where
+   players start**, and what it reads (`spawn_seed`, `min_spawn_spacing`,
+   `min_spawn_landmass`) travels on the wire with the rest of the
+   settings. `MapSettings.from_map()` is the one place a map file becomes
+   those settings. No other script may assign `spawn_seed`; a
+   source-scanning test enforces it.
+
+**Rationale:**
+
+*On (1).* `islands` is ~71% water at its shipped settings. On the
+reported world (168x194, seed 1337) the sampler returned 20 of 20
+points, 0 on impassable ground, and **one of them was a six-cell rock**
+— a founding party rendered standing in open sea, and a player dead on
+arrival, because a town hall plus the resources to work it do not fit on
+six cells and D-031 makes that founding party the entire opening.
+Nothing failed: `validate_spawns` compares COUNTS, and twenty of twenty
+were found. This is the "mechanism correct, shipped numbers do nothing"
+family (D-066) wearing its other face — the mechanism was correct about
+a property that was not the one that mattered.
+
+96 was measured, not guessed: a sweep of four presets x four map sizes x
+three seeds. It rejects every stranded start the sweep found (smallest
+under a spawn went 6 → 400+ on the reported world, 4 → 235 on
+`islands` Standard) while still seating 20 of 20 on every size from
+Standard up. 271 — a full `fairness_radius` disk — would have cost
+`islands` Skirmish every one of its spawns. Skirmish maps are bounded by
+`min_spawn_spacing` long before they are bounded by this.
+
+The check runs LAST of the three, after passability and spacing, purely
+for cost: the three are an AND so the order cannot change the answer,
+and it is the only one of them that is not O(1)-ish. Measured on the
+over-packed Skirmish maps — 20 slots on 2,016 cells, where the sampler
+burns its whole attempt ceiling and every candidate reaches the fill —
+**1.0–3.5 s with the fill first against 0.2–0.4 s with it last**.
+
+*On (2).* D-087 moved stone to the mountain FOOT precisely so a node
+reads as belonging to the ground it sits on, and noted its old
+MOUNTAIN-cell placement was unreachable scenery. The fairness pass then
+put stone outcrops on grass and sand anyway — measured on the reported
+world, **38 top-ups, 9 of them on beach, none on ground that grows what
+they hold**. `resource_visuals.gd` already had a comment shrugging at
+this case. The mechanism was right, its caller walked straight past it:
+the third instance in this project of a rule that is fully written,
+fully called, and reached by nobody who honours it (D-061, D-065).
+
+Beach is ranked below other walkable ground rather than merely
+unpreferred, because that is what the screenshot was actually showing: a
+beach cell borders water by definition, and the authored node models
+span ~2.3–2.6 world units against a ~1.73-unit cell, so a rock dropped
+there overhangs the sea. Measured after: **beach top-ups 9 → 0** on the
+reported world, 16 → 0 on `islands` Standard, and top-ups on
+naturally-yielding ground 0 → 3, 0 → 10, 2 → 13, 1 → 10 across four
+worlds.
+
+The band table `_roll_kind` walks is now ONE table (`Economy._bands`)
+read by both the generator and the fairness pass, rather than a second
+spelling of the same knowledge. Verified equivalent to the code it
+replaced across 16 worlds and **63,359 nodes, 0 mismatches** — a
+refactor of the generator was not the point and must not have been a
+side effect.
+
+*On (3).* `client.gd` drew the lobby's spawn markers from its own
+`MapConfig` seeded with the match seed; `server.gd` seeded its own with
+the map file's base **plus** the match seed. Both called
+`MapConfig.spawn_points`, under a comment in the client saying "this is
+the SHARED implementation the server uses (D-039), so this is the same
+answer rather than a second guess at it". Measured: **0 of 20 markers
+were real spawns.** An admin choosing a map by looking at where players
+will start was being shown fiction — including being unable to see that
+one start was a six-cell rock.
+
+**Sharing an implementation is not sharing its arguments**, and a
+comment asserting otherwise is the D-065 pattern exactly: a claim about
+the code that outlived the code. The fix is that neither side may build
+the sampler's inputs; both ask `MapSettings`, and the inputs travel on
+the wire for the same reason terrain parameters do (`MapSettings`'
+header: concrete numbers travel, not preset names).
+
+**Rejected alternatives:**
+
+- **Reject the `islands` preset, or the seed, instead.** The single-cell
+  test is shared by every preset — `continents` 42x48 seed 1337 has a
+  seven-cell spawn too. `islands` has enough water to hit it often; it
+  does not own the defect.
+- **Score each start's surroundings and re-roll bad maps.** The
+  heuristic nobody has designed, giving a statistical guarantee, that
+  `test_map_symmetry.gd`'s header already rejects for terrain fairness.
+  A hard floor on connected ground is a rule you can state.
+- **Make the fairness pass biome-strict.** A player with no forest in
+  reach still needs wood; "fair" beats "geologically tidy" when the
+  alternative is losing at map-generation time. The fallback stays — it
+  just stopped being the first choice, and it now says when it fires.
+- **Send the server's spawn POINTS to the lobby instead of the inputs.**
+  Tempting and wrong in the same way as sending a preset id: the preview
+  is drawn for a world that does not exist yet, so there is nothing to
+  send until the admin presses start. The inputs exist; the world does
+  not.
+- **Cache the per-cell ground rank in the fairness pass.** Measured
+  SLOWER than recomputing (it ranks every reachable cell where the plain
+  loop ranks only free ones). Left simple, and the measurement recorded
+  in the code so nobody re-optimises it on intuition.
+
+**Consequences:**
+
+- `MapConfig.min_spawn_landmass` is a new map-data field (`maps/*.tres`
+  carry it explicitly). Zero disables the check, which is also what a
+  caller with no `passable` gets — the fill has nothing to walk.
+- A map too fragmented to seat everyone now surfaces through
+  `validate_spawns`' existing warning rather than as a stranded player.
+  That path was already there and already visible; this makes it the one
+  that fires.
+- `Economy.terrain` is remembered by `generate()`. An Economy that never
+  generated has no ground to reason about and falls back to the old
+  biome-blind behaviour — the only callers that do this are tests
+  authoring nodes by hand.
+- Spawn sampling costs more at world build: **12–33 ms against
+  1.0–4.5 ms** at 20 slots, across every preset from Standard (8,064
+  cells) to Huge (32,592). The fairness pass costs **~0.45 s against
+  ~0.12 s** on a 20-player 168x194 map. Both are once, at world build,
+  and neither is on a tick. (Measured on a host running several other
+  agents' containers, so read them as orders of magnitude — the M6
+  worst-tick lesson.)
+- The lobby preview and the server now agree by construction, so the
+  preview is evidence about the match again.
+
+**Revisit trigger:** A map preset whose intended play is genuinely
+archipelagic — where a six-cell rock start is the point — needs
+`min_spawn_landmass` as a per-preset value rather than per-map, and
+needs the naval movement that would make it playable. Also revisit if
+the fairness pass's log line reports a large majority compromised on
+maps people actually play: that is the pass telling you the guarantee
+and the terrain disagree, and the answer then is the terrain, not the
+pass.
+### D-105 · 2026-08-16 · Accepted — map size is extent, not resolution
+
+**Decision:** terrain feature size is a number of **cells**, not a
+fraction of the map. `TerrainGen._sample_at` multiplies whatever
+frequency it is handed by `space.width / REFERENCE_WIDTH` (84, the
+Standard lobby size) before converting it to noise-space units, so a
+landmass, a biome patch and a warped shoreline all come out the same size
+in cells at every map size, and a bigger map holds proportionally more of
+them.
+
+Three clauses:
+
+1. **One place, all fields.** The size term lives in
+   `TerrainGen.effective_frequency`, called once by `_sample_at`, so
+   elevation, moisture and the blend warp are treated alike by
+   construction. Applying it per field would have left biome patches
+   map-sized while landmasses became cell-sized, which is half a fix.
+2. **It composes with `axis_repeats`, it does not replace it.** D-036's
+   repeat count still divides the scale, so symmetry and feature size
+   stay independent knobs, exactly as before.
+3. **`REFERENCE_WIDTH` is the Standard map's width**, pinned by a test.
+   Every `/terrain` preset was tuned at Standard, so the size term is
+   exactly 1 there and no `.tres` needed re-tuning. The standard map's
+   preview PNG is **byte-identical** before and after this change, which
+   is how that is checked.
+
+**Rationale.** The generator normalises the cell coordinate by the map's
+dimensions before embedding it on the sampling torus, so before this
+`elevation_frequency` meant "features across the map" — a count per map.
+That is a coherent definition, and it made **Map size a resolution
+control**: the same world drawn with more hexes. Measured on
+`continents`/1337, flood-filling connected passable regions:
+
+| size | cells | water | landmasses | mean / total | largest / total |
+|---|---|---|---|---|---|
+| Skirmish 42x48 | 2,016 | 21.3% | 1 | 78.3% | 78.3% |
+| Standard 84x96 | 8,064 | 21.7% | 2 | 39.1% | 78.0% |
+| Large 126x146 | 18,396 | 21.7% | 2 | 39.2% | 78.0% |
+| Huge 168x194 | 32,592 | 21.7% | **2** | 39.1% | 78.0% |
+
+A 16x increase in area bought **zero** additional landmasses, and every
+landmass was a fixed fraction of the map to a tenth of a percent. Those
+constants are the signature of a field defined over the unit torus. The
+lobby said so out loud: its slider was labelled "Landmass count" and read
+2.50 at every size.
+
+Feature size, measured directly as the mean absolute elevation change
+between cells a fixed number of cells apart — which is what "how big is a
+landmass" means without any flood-fill heuristic — walked **0.0854 →
+0.0311** across the four sizes at a 4-cell separation, a 2.75x spread. It
+is flat to within 1.06x now, and `tests/test_terrain.gd` asserts under
+1.25x at three separations.
+
+**Rejected alternatives:**
+
+- **Per-size seeds.** Fixes the symptom in the screenshots — two sizes
+  looking like the same place — and none of the problem: Huge would get a
+  *different* two landmasses, each still 78% of the map. The scaling gets
+  the different-layout benefit for free, since it also changes where the
+  field is sampled.
+- **Re-tuning each preset per size**, i.e. a table of frequencies. Four
+  presets x four sizes of hand-tuned numbers that must be kept in step,
+  to express one proportionality. A custom size would have no entry.
+- **Scaling by area (`sqrt(w*h)`) rather than width.** Identical on every
+  shipped size, because `MapSettings.sizes()` holds the aspect ratio
+  fixed at ~1.155 by design. Width is the axis the minor radius already
+  tracks (`_sample_at`), so scaling by it keeps horizontal and vertical
+  feature size in cells equal, which is the property that comment exists
+  to preserve.
+- **Clamping the size term below**, so a small map keeps some variety.
+  A fudge with no principle behind it, and it would reintroduce exactly
+  the bug at the small end.
+
+**Consequences:**
+
+- **A Skirmish map is now a CORNER of a world, not a whole one.** At
+  42 cells wide and 33.6-cell landmasses it holds a little over one, and
+  it samples a small enough patch of the field that its statistics no
+  longer match the global ones — water fell from 20.5% to 14.6% at seed
+  1337. That is correct under this decision and worth knowing before
+  reading a small-map number as a regression. If Skirmish reads as too
+  bland, the lever is a per-size default `elevation_frequency`, which is
+  a lobby matter and not this entry.
+- **Resource density stopped drifting with map size, which is a fix
+  nobody asked for.** Stone sits at the mountain FOOT, so a map's ore
+  count follows the LENGTH of its mountain perimeter — which used to be a
+  fixed number of ranges however big the map was. One ore node per
+  **101 / 144 / 219 / 340** cells across the four sizes before; **92 /
+  144 / 152 / 145** after. `tests/test_economy.gd`'s scarcity bound moves
+  from 100 to 80 for the smallest map and gains an explicit assertion on
+  the ore-to-tree ratio, which is the property that entry actually
+  protects.
+- **Toy maps in tests are genuinely flat now**, and two D-097 cliff tests
+  correctly reported proving nothing on a 16x8 map. They ask for toy
+  features explicitly (`_toy_terrain`). The `cliff_rise` test moved to
+  the Skirmish size at shipped tuning instead, because whether the rise
+  adds anything depends on the natural gradient at a boundary, and a toy
+  map's gradient clears `cliff_min_step` on its own.
+- **The lobby slider is relabelled "Landmass size" and reads in cells**
+  (`TerrainGen.feature_cells`). "Landmass count" stopped being a property
+  of the parameter the moment the parameter stopped depending on the map.
+- **`blend_warp_frequency` is correct at every size for the first time.**
+  It was documented as "the boundary wanders every few hexes" — a
+  cell-relative intent in map-relative units — so at Huge it wandered
+  every ~7.6 cells against Standard's ~3.8, and the scalloped shoreline
+  D-096's amendment exists to remove came back at exactly the sizes
+  nobody had looked at.
+- **Periodicity is untouched**, and this is the load-bearing claim.
+  `u` and `v` are angles; the size term scales the embedded torus
+  uniformly in noise space and cannot move where the field meets itself.
+  D-008's wrap guarantees hold for any real frequency, and a seam test at
+  the Huge size asserts it rather than trusting the argument.
+- **Nothing new goes on the wire and nothing desyncs.** `MapSettings`
+  already carries width, height and both frequencies (D-049), and both
+  sides derive the effective value from the same two numbers.
+- Huge draws **1,896 cliff faces against 280** and is 18.0% impassable
+  against 21.7% — the same country, more of it.
+
+**Revisit trigger:** a map size whose aspect ratio departs from
+`MapSettings.sizes()`' ~1.155, at which point width and `sqrt(area)` stop
+agreeing and the choice in the rejected list needs re-making. Also
+revisit if Skirmish is judged too featureless in play — the answer there
+is a per-size default, not a return to map-relative features.
+
+### D-102 · 2026-08-16 · Accepted — the in-match scoreboard: identity is public, strength is fog
+
+**Decision:** A match carries a **player scoreboard**, opened from the
+in-game menu (ESC → Players, beside Settings — D-063), listing every seat
+in the match. What it may show is decided by where the fact came from,
+not by what is convenient:
+
+1. **Identity is public and is not gated.** Name, human/AI, civ (as
+   RESOLVED — a seat that said Random shows what it drew), team and
+   colour are all lobby facts: every player chose them in front of every
+   other player. They need no new plumbing at all, because the seat list
+   already survives the whole match on the client (`ClientState.lobby`)
+   and `colour_of` is already the one definition every surface draws
+   from (D-052).
+2. **Standing is public and travels on the wire.** `MatchState.Standing`
+   is PLAYING / ELIMINATED / VICTOR, produced by
+   `MatchState.standing_of`, attached to each seat by
+   `MatchState.scoreboard()`, and carried as one byte per seat inside the
+   existing `S2C_LOBBY` packet. The server re-broadcasts that packet when
+   a player is eliminated and when the match ends.
+3. **Army size is NOT public.** The strength columns (squads, men) are
+   derived client-side from `ClientState.composition` and shown only for
+   **yourself and your allies**. Everybody else gets `Scoreboard.UNKNOWN`,
+   drawn as a dash, and the panel says why on its face.
+4. **Eliminated players stay listed**, dimmed and marked (D-033). The
+   board never shortens.
+5. The deciding lives in `scoreboard.gd` — all-static and pure, the same
+   split as `render_cull.gd` and `selection_pick.gd`. `client.gd` only
+   draws what it is handed.
+
+**Rationale.**
+
+*Why it exists at all.* Raised from the #29 lobby playtest, where it
+blocked a pass criterion outright: "each player has a distinct colour,
+consistent between world, minimap and HUD" could not be judged, because
+the tester could not remember which player was which once the lobby
+closed. Colours were fully built, tested for distinctness and drawn
+consistently — and unusable. That is this project's recurring
+"mechanism correct, feature absent" shape (D-055, D-061, D-065, D-066)
+applied to **legibility** rather than to numbers: nothing failed, and a
+player still could not use the thing.
+
+*Why standing had to go on the wire, and identity did not.* The split
+was found by checking the encoder rather than trusting a decision entry,
+which is D-065's lesson. Identity was already there and complete. Standing
+was not there at all: elimination has been a server-side `print` since
+D-033, and the client's own defeat screen records — accurately — that it
+"structurally cannot know whether hjalmar is still fighting or already
+out". A client cannot derive standing through fog, so a scoreboard that
+tried would be guessing.
+
+*Why it rides on the seat list rather than in a message of its own.*
+Standing IS a fact about a seat, and the seat list is already "the whole
+thing, sent on any change" (see `encode_lobby`). A separate standings
+message would be a second list that could be ordered differently from
+the first — and seat ORDER is what colour is derived from (D-052), so two
+orderings is exactly the drift worth refusing. The cost is a byte per
+seat on a packet sent a handful of times per match.
+
+*Why army size is derived rather than sent.* This is the load-bearing
+half. A scoreboard showing every player's army size would be a fog bypass
+with a friendly face — the maphack D-004/D-025's architecture exists to
+make impossible, shipped as a menu item. Deriving from `composition`
+means there is no packet carrying another player's strength, so no future
+caller can leak one: the gate is structural rather than remembered. Own
+and ally counts are *complete* rather than partial, and not by luck —
+`SquadSim.visible_to` sends a player their allies' squads unconditionally
+(D-050), which is precisely why allies can be totalled honestly and
+enemies cannot.
+
+*Why VICTOR is not `player == winner`.* `MatchState.winner` holds one id
+and a TEAM can win (D-050). Testing equality with it would leave one of
+two victorious allies reading as still playing, in the one moment the
+board is looked at hardest. VICTOR is "not eliminated when the match
+finished", which is the same rule `_check_victory` already uses.
+
+**Rejected alternatives.**
+
+- **Show everyone's army size.** The obvious reading of "current stats",
+  and a fog bypass. Rejected on D-004/D-025; the whole reason this
+  project's fog is curve gating is that the client does not HAVE the
+  data to leak, and a scoreboard that asked the server for it would put
+  it there.
+- **Show a partial enemy count — "what you can see".** Worse than a
+  dash: a number that looks total and is not is precisely the
+  "numbers all correct while the picture is wrong" failure this project
+  has hit repeatedly. A dash is the truth, and the panel says which rule
+  produced it.
+- **Include ally BUILDING counts alongside squads.** Buildings are
+  vision-gated even for allies (`BuildingSim.visible_to` checks owner,
+  not alliance), so an ally's building count would be exactly the
+  partial-dressed-as-total number rejected above. Left out; if it is
+  wanted, the honest fix is to make ally buildings unconditionally
+  visible the way ally squads already are, which is a change to D-050
+  and not to the board.
+- **Invent a score.** Nothing in this project scores a player, and
+  nothing counts kills, losses or razings — the defeat screen already
+  says so and shows only time held. A score column would have had to
+  invent both the number and the counters behind it. Standing is the
+  real standing.
+- **Its own `S2C_SCOREBOARD` opcode.** More wire surface for a fact the
+  seat list already carries, and a second ordering of the same players.
+- **Compute standing on the client from what it can see.** Impossible
+  through fog, and a client that decided who was out would eventually
+  disagree with the server about who won.
+- **A hotkey (Tab) instead of the menu.** Not rejected on merit — the
+  menu is where the issue asked for it and where a player will look
+  without being told. A hotkey is cheap to add later.
+- **Layout arithmetic in `hud_layout.gd`.** Suggested in the issue, and
+  it turned out there is none: the panel sits inside the game menu's
+  existing container row, exactly as the settings pane does, so it is
+  laid out by the same containers and scaled by the same CanvasLayer
+  transform. The part that was worth extracting from `client.gd` is not
+  where the box goes but **what a player is entitled to see**, which is
+  why the pure module is `scoreboard.gd`.
+
+**Consequences.**
+
+- `MatchState` gains `Standing`, `standing_of` and `scoreboard()`; the
+  latter returns COPIES, so a caller cannot write match state back onto
+  the lobby's seats (`start_match` reads `seat["choice"]` off them).
+- `encode_lobby`/`decode_lobby` gain one byte per seat. A seat with no
+  `standing` key encodes as PLAYING, which is what every call site
+  predating this means. This is a mid-packet field, not a trailing one,
+  so client and server must ship together — true today, and precisely
+  what D-094's protocol version handshake is for once Steam makes mixed
+  versions routine.
+- `server.gd` broadcasts the seat list on elimination and on match end —
+  which is the first time `_broadcast_lobby` has ever run outside the
+  LOBBY phase. It mirrors `_match.map_settings` into `_settings` on the
+  way through, and that is safe **because the two are the same object**:
+  `_match.map_settings = _settings` at construction, whether or not this
+  server has a lobby. The only thing that ever breaks the aliasing is
+  `set_map_option`'s rollback, which is lobby-only and which this very
+  assignment exists to repair. Worth writing down because it was got
+  WRONG here first: this entry briefly shipped a phase guard against a
+  bug that could not happen, argued from `set_map_option` being
+  lobby-gated rather than from the aliasing that actually makes it a
+  no-op — and the guard would itself have suppressed the repair on the
+  broadcast that follows a lobby start.
+- The board is refreshed on a 0.25 s throttle while open, for the same
+  reason the minimap is: its numbers change at 10 Hz at most.
+- **This is the first thing that shows a player their own live army size
+  as a number.** If that turns out to want to be on the HUD rather than
+  behind a menu, this is where the count already lives.
+
+**Revisit trigger:** any wish to put a stat on the board that a player
+could not already derive from what the server chose to send them. That is
+the moment this stops being a rendering of existing knowledge and becomes
+a second data channel, and it has to be argued against D-004/D-025
+explicitly. Also revisit if ally buildings become unconditionally visible
+(the buildings column becomes honest), or if kills/losses/razings ever
+get counted (a real score becomes possible).
+
+**Editorial note on the number.** This entry takes **D-102**. It was
+written as D-101, which is what its first commit message still says, and
+moved twice before landing:
+
+- **099 and 100 were spent when it was written.** `ground_cover.gd`,
+  `cover_preview.gd` and `tests/test_ground_cover.gd` all cite D-100 for
+  ground cover, and no entry for either number existed in this file at
+  the time — the code landed and its entry did not survive the merges
+  D-098's own editorial note describes. (D-100 has an entry again now:
+  the map-seed roll immediately below, itself renumbered from D-099.)
+- **101 was claimed twice the same day**, by PRs #66 and #71, both
+  opened before this one.
+
+So it took the next number past the front rather than becoming the third
+D-101 — and that landed on the same number the coordinating session
+independently assigned this branch (#76 = D-102, see the numbering note
+on D-100 below). **The IDs are stable once merged, not before**, which is
+the convention here rather than a failure: several agents author entries
+in parallel against one document, and whoever lands later renumbers.
+---
 ### D-101 · 2026-08-16 · Accepted — the minimap draws buildings, and draws them from knowledge rather than from sight
 **Decision:** The minimap paints every building a client **knows about**,
 in its owner's colour (D-052), **unconditional on current visibility**,
@@ -121,6 +719,161 @@ appearing on the minimap (that would be a wire-gating bug, D-004, not a
 paint bug); the minimap gains a third fog state (#59) and buildings need
 to distinguish remembered from visible; or minimap resolution changes
 enough that cell-count footprints stop being the right unit.
+### D-108 · 2026-08-16 · Accepted — a node cell is a STAND of trees, not one tree on the lattice point
+
+**Decision:** a resource node is drawn as several trees on their own
+offsets inside its cell, and the canopy shrink D-087 introduced to stop
+them touching is reversed. Concretely, in `ResourceVisuals`:
+
+1. **A cell grows `tree_count_for` trees, not one.** The count comes from
+   a per-biome base (`BASE_TREES`: forest 3.4, grassland 2.4, dry 1.5,
+   beach 1.8) swung ±30% by the cell's own moisture, then spread
+   **uniformly over a range** around that mean rather than rounded to it —
+   never below 1, never above `MAX_PER_CELL` (5). The spread is the point:
+   an equal count in every cell is the same lattice at a different
+   spacing. Ore is always exactly one seam.
+2. **Every tree stands off the cell centre.** Tree *i* of *n* takes sector
+   *i* of a ring, wandering within `SECTOR_JITTER` (0.62) of that sector,
+   at a radius in `[MIN_OFFSET, MAX_OFFSET]` = [0.34, 0.78] hex_size. At
+   n = 1 the sector is the whole circle, so a lone tree still goes
+   anywhere — which alone is what breaks the ranks and files.
+3. **`MAX_OFFSET` is under a hex's inradius** (sqrt(3)/2 ≈ 0.866), so a
+   tree never leaves the cell it belongs to. That is the whole safety
+   argument: it cannot drift onto water or over a cliff, and it stays
+   nearer its own cell's centre than any other's, which is what the click
+   test ranks by. Ore takes a tighter `ORE_MAX_OFFSET` (0.35) because a
+   seam is *the* thing a player clicks.
+4. **Species, variant, yaw and scale roll PER TREE**, salted with the
+   tree's index through `_roll_at(cell, salt, index)` — GroundCover's
+   arithmetic, for GroundCover's reason. A cell of four identical models
+   at four sizes is a clone stamp, not a stand.
+5. **Canopy scale goes back up**: 0.60–0.92 → **0.68–1.10**, so canopies
+   are wider than the cell under them and interlock. Ore keeps the old
+   0.60–0.92 range; that range was about canopies touching, which a lone
+   boulder cannot do.
+6. **Rendering only.** A node's *cell* is simulation state — economy
+   targeting, gather range, `S2C_NODES_DEPLETED` and its fog gating are
+   all per-cell — and none of it moves. The same split D-084/D-096 kept
+   for terrain: the picture varies, the simulation stays discrete. The
+   client samples ground height **at each tree's own position**, not at
+   the cell centre, or a stand on a slope stands in the air.
+7. **`just gen-forest-preview` is the instrument.** A rendered wood, from
+   a low angle, framed on the densest patch of forest on the map, through
+   the real `Economy.generate` → `ResourceVisuals.trees_for` → `UnitMesh`
+   → one MultiMesh per model path.
+
+**Rationale:** reported from the #29 lobby playtest (issue #51): a forest
+read as ranks and files you could count along. The region-scale outline
+was organic — D-087's density field doing its job — and the interior was
+unmistakably a hex grid. Two causes, both in the code:
+
+- every tree stood at the exact cell centre, so the only positional
+  freedom a tree had was which cell it was in. Placement was at hex
+  resolution and the eye read the lattice straight off it;
+- canopies had been deliberately shrunk to 0.60–0.92 *so that they could
+  not touch*, because at one tree per cell centre full-size canopies
+  merged into one undifferentiated blob. The hard gap around every tree
+  was the other half of what made it read as artificial.
+
+Those two interlock, which is why the fix is one decision and not two:
+**position has to vary before canopies may grow.** Scale alone
+reproduces the blob that motivated the shrink; offset alone leaves
+placement at hex resolution — dithered rows are still rows, and a wood
+still cannot be denser than the node grid allows.
+
+Measured on the shipped Standard map, in `tests/test_resource_visuals.gd`:
+**1,438 wood nodes now grow 4,202 trees (2.92 per cell)**, and **99% of
+trees have a neighbour inside a canopy width** — 2.15 world units, taken
+off the shipped meshes at the middle of the new scale range rather than
+written down. Before, every tree had a clear ring around it by
+construction.
+
+**Rejected alternatives:**
+- **An offset and nothing else** (the issue's step 1 on its own). Breaks
+  the ranks and files and leaves the density ceiling exactly where it
+  was: one tree per node cell means a wood can never be thicker than
+  D-087's placement field, whatever it looks like up close.
+- **Raising the canopy scale and nothing else.** This is the change
+  D-087 already tried in the other direction and backed out of. On a
+  regular lattice it is strictly worse than what shipped.
+- **Sub-cell node positions in the simulation** — give the node itself a
+  world position instead of a cell. That is the honest version of "trees
+  are where they are drawn", and it is a wire, economy, fog and gather
+  range change for a cosmetic complaint. D-084/D-096 settled the pattern
+  for terrain and it applies unchanged.
+- **An RNG, or deriving placement from world position.** Both were named
+  out in the issue and both are right to refuse: the module is a pure
+  hash of the cell (D-087) so two clients and nine torus copies agree by
+  construction, and a world-position derivation would dress each lattice
+  copy differently (D-035's reason for cell-derived terrain UVs).
+- **A Poisson-disk or blue-noise scatter over the whole map.** Better
+  spacing in principle, and not a pure function of one cell — it needs
+  global state, so it would have to be replicated or recomputed
+  identically everywhere, and it cannot be evaluated per chunk as chunks
+  are built. The per-cell ring gets clumping from the count spread
+  instead, for one hash per tree.
+- **Clamping offsets against passability.** The issue suggested it and it
+  is unnecessary once the bound is under the inradius — the tree is on
+  its own cell's ground by construction. It would also make a pure module
+  read terrain it currently does not need, for a check that can never
+  fire.
+
+**Consequences:**
+- Wood instances roughly triple (1,438 → 4,202 on the shipped map). They
+  are MultiMesh instances built **per chunk on a reveal or a felling**,
+  never per frame, which is the budget D-087 set. `bench-render` has not
+  been re-run for this; the frame at full scale is CPU-bound on soldier
+  derivation, not on static MultiMeshes (D-086/D-096).
+- A felling now stands up one instance per tree in the cell, each tipping
+  about **its own** axis (`tip_axis_for(cell, index)`) — a stand that all
+  went over the same way at the same moment reads as one object breaking.
+- `client.gd`'s chunk table keys a cell to a LIST of trees, and
+  `_node_placed` keeps the cell's models plus the CELL's own centre.
+  `_resource_cell_at` still ranks by that centre: the drawn trees are all
+  inside the cell, so the hit test and the picture cannot disagree by more
+  than the cell.
+- `model_for` gained an `index` parameter (defaulting to 0) and
+  `scale_for` became kind-aware. Both are cosmetic entry points with no
+  callers outside the client and its tests.
+- **A new instrument, because none of the existing ones could see this.**
+  `gen-terrain-preview` draws a top-down biome map with no trees in it;
+  `test-client` aims its camera at a spawn, which is open ground by
+  construction and therefore the one place a wood is least likely to be;
+  every assertion in `test_resource_visuals.gd` was about species pools,
+  bounds and determinism. This is the third time a defect has been
+  invisible to every number and obvious in a picture, and the third time
+  the answer has been a recipe that frames the thing on purpose —
+  `gen-terrain-shot` (D-096) and `gen-cover-preview` (D-100) are the
+  other two.
+
+**Revisit trigger:** `bench-render` showing tree instances as a material
+share of the frame at D-018's full scale (they are static geometry today,
+and the frame is soldier-derivation bound); or `MAX_PER_CELL` being
+raised as a *tuning* lever rather than staying a worst-case bound, which
+is how a cap quietly becomes a knob; or trees acquiring any gameplay
+meaning at all — sight blocking, cover, movement cost — at which point
+where a tree is drawn stops being cosmetic and clause 6 has to be
+reopened rather than extended.
+
+**Numbering note:** written as D-101, renumbered to **D-107** at the
+rebase onto main, and renumbered again to **D-108** when the merge train
+landed — which is exactly the merge step D-098's amendment says is the
+right moment to fix a number. Main's D-100 records a coordinator
+assigning numbers across seven parallel branches — #68=D-099, #70=D-100,
+**#66=D-101**, #76=D-102, #71=D-103, #73=D-104, #75=D-105, #78=D-106 —
+and this work (PR #72) is not in that list, so D-101 belongs to somebody
+else and the first number clear of the whole assigned block is D-107.
+**Reasoning identically, PR #77 also took D-107, and it merged first**,
+so this entry moved once more. That is the third instance of the same
+trap in one afternoon: picking "the first free number" is safe only
+against numbers you can SEE, and a branch you cannot see is exactly what
+parallel work consists of. The durable fix is a coordinator assignment
+that covers every open branch, not a smarter derivation.
+Taking a number *inside* the block and letting the coordinator sort it
+out later is the failure D-100's own note is still paying for: two
+entries meaning different things under one ID, with code citing both.
+This may still need reconciling if #72 is assigned a number of its own.
+---
 
 ### D-100 · 2026-08-16 · Accepted — a lobby rolls its map; a pinned seed reproduces the whole match
 
@@ -261,6 +1014,136 @@ lobby rolls" needs a third case rather than an edit.
 
 ---
 
+
+### D-106 · 2026-08-16 · Accepted — the ground has fog of war, in three states
+
+*(Numbered 106 by assignment, not by counting. `main` tops out at D-098 and
+several fix sessions were running off it in parallel, each independently
+picking "the next free ID" — this entry was drafted as 101, renumbered to 102
+on noticing another worktree's draft, and collided again. IDs for the open set
+were then handed out centrally: 099, 100, 101, 102, 103, 104, 105 belong to
+other PRs and 106 to this one. Third time this project has paid for an ID
+collision — see D-081's editorial note — and the first time the fix was to stop
+letting each author choose.)*
+
+**Decision:** unscouted **terrain** is drawn black, terrain the player has seen
+but cannot currently see is drawn dim, and terrain in sight is drawn fully.
+Three states, per cell, client-side:
+
+1. **`terrain_fog.gd`** holds the field — one byte per cell, UNEXPLORED /
+   EXPLORED / VISIBLE — stamped from this player's own (and allied, D-050)
+   squads and buildings through `TorusSpace.disk_offsets`, exactly as
+   `vision.gd` stamps the server's. Explored is persistent: terrain does not
+   move, so once seen it is never un-known (the same rule D-030 gives
+   buildings).
+2. **The field reaches the renderer as a texture**, one texel per cell, laid
+   out like `TorusSpace.index`, sampled per ground fragment through a new UV2
+   channel that `TerrainChunk.fog_uv` derives from the **cell** — never from
+   world position, so all nine lattice copies (D-035) agree, the same
+   constraint the atlas UVs already work under. `shaders/terrain.gdshader`
+   multiplies ALBEDO (and SPECULAR) by it.
+3. **The fog uniform defaults to white.** `bench-render`, `gen-terrain-shot`,
+   `gen-model-preview` and `gen-cover-preview` share `make_material()` and have
+   no player whose knowledge could be asked about; they keep rendering the
+   whole map without knowing this feature exists.
+4. **The client's camera opens on the player's own ground** rather than on the
+   middle of the map, because the middle of the map is now black.
+
+**Why this was not already covered by D-004/D-025.** Those define fog as curve
+gating — entity state withheld on the wire — and terrain is not entity state.
+It is derived client-side from the map settings (D-049), identical for every
+player, and there is nothing about it to withhold. So the ground fell outside
+the fog mechanism entirely and nothing noticed: `client.gd`'s `_explored` set
+was correct, was documented as "the map starts black and is revealed by line of
+sight", and was read at exactly two sites, both inside `_update_minimap`. The
+minimap was the only surface in the game that drew any fog at all, for six
+milestones, while the 3D world drew the whole map lit from the first frame.
+Found by the owner playing (#58, playtest P12), not by any check.
+
+That makes this the fifth instance of the family CLAUDE.md already names —
+`UnitDef.cost`, `BuildingDef.cost`, `BuildingSim.damage` (D-055), three
+`CivDef` knobs — and specifically of D-065's harder variant: **a doc comment
+that describes a behaviour is not evidence the behaviour exists.** The rule
+that comes out of it is the one this entry's tests are built on: when a
+mechanism is supposed to be VISIBLE, assert that something outside its own file
+calls it.
+
+**Why three states rather than two.** Two would either black out ground the
+player has scouted — throwing away the map they earned, and making a base
+invisible the moment the last unit leaves it — or leave it lit, which claims
+knowledge the player does not have. The middle state IS the information: it is
+what separates "I remember a town centre here" from "I can see it now", and the
+entity layer has drawn that distinction since D-025's ghosts. The ground was
+the only part of the picture that did not.
+
+**Rejected alternatives:**
+
+- **A fog volume / post-process over the whole scene** — dims units, trees,
+  buildings and UI along with the ground, and the entity layer already has its
+  own truthful answers (server gating, ghosts). Would have made a concealed
+  squad's ghost and a lit squad differ by *two* mechanisms.
+- **Per-vertex fog baked into the chunk meshes** — the fog changes several
+  times a second and remeshing the standard map costs 600–1,100 ms.
+- **Deriving the cell from world position in the shader** — cheaper (no vertex
+  channel) and wrong: D-035 draws the same meshes at nine offsets, so each copy
+  would fog differently. It would also be a second definition of
+  world-to-cell, which `torus_space.gd` exists to be the only one of.
+- **Recovering the cell from the existing atlas UV** — nearly free, and it
+  breaks on the cliff skirts (D-097), whose UV.y is derived from world HEIGHT.
+  Rock faces would have read the fog of a row they are not in.
+- **Gating terrain on the wire to match the entity layer** — nothing to gate;
+  the client generates it from the seed. Fog on terrain is presentation, and
+  saying so plainly is what keeps it out of the desync surface.
+- **A hard per-cell edge (no blur)** — measured against D-096's finding: a
+  one-cell transition at high contrast puts the 50% contour on the hex edges
+  and reads as scalloped, and black-against-lit is the strongest contrast the
+  map can produce. The field is blurred over the hex neighbourhood before
+  upload, which with the texture's own bilinear filtering spreads the edge over
+  about three cells.
+
+**Consequences:**
+
+- **Ground fog is presentational and carries no authority.** A client that
+  computed it wrongly would draw its own map wrongly and gain nothing: squads,
+  buildings and node depletion are all gated server-side. That is what makes
+  local derivation legal here, exactly as it already was for the minimap.
+- **`client.gd`'s explored set is gone**, replaced by the field above; the
+  minimap now reads `TerrainFog.is_explored` and is otherwise untouched. The
+  minimap's own missing third state is a separate issue and deliberately not
+  changed here.
+- **The client's fog radius uses the same world-units-to-cells conversion
+  `Vision` does** (`TerrainFog.radius_in_cells`), pinned by a test. A client
+  that rounded differently would draw a lit disk one ring wider or narrower
+  than the one the server actually gates on, and enemies would step out of
+  ground the player is being shown as dark.
+- **The camera now opens on the player's spawn.** Not cosmetic: the previous
+  default (map centre) is unexplored black on a 128×64 map, so a match would
+  have opened on an empty screen.
+- **`client.gd` reports `textured=` and `fogged=` when it builds terrain.**
+  Both of those fail silently and identically — ground that is drawn and wrong
+  — and the second one is this entry's whole subject.
+- Cost, measured rather than assumed: **5.76 ms per refresh on the shipped
+  8,064-cell map** (12 seeing things at radius 7), in the test container on a
+  host running four other agents — so four refreshes a second is ~2% of wall
+  time, and the figure is an upper bound rather than a typical one. Plus an
+  8 KB texture upload, one extra `vec2` per terrain vertex, and one texture tap
+  per ground fragment against the three the atlas already takes. A loose
+  regression bound sits on it in `test_terrain_fog.gd` — loose because a tight
+  timing gate on a shared host gets muted rather than fixed; what it is really
+  guarding is the shape, since the two ways this could have been written
+  (`distance()` per cell, `neighbor_index` per query) are orders of magnitude
+  away rather than a little.
+- `test-unit` green at 692 tests across 46 scripts; `test-client` clean, with
+  `fogged=true` and a frame in which only scouted ground is lit; `test-load`
+  unaffected (it renders nothing) — figure and squad count in the PR.
+
+**Revisit trigger:** terrain-occluded line of sight (still open since D-025).
+The moment elevation decides what a unit can SEE, the field this draws stops
+being a disk stamp and the two halves — what the server gates and what the
+client shades — have to be derived from one definition rather than from the
+same radius twice. Also revisit if ground cover (D-100) is ever wired into the
+client: props are client-derived and NOT fog-gated by that decision, so a fern
+would stand fully lit on black ground.
 ### D-099 · 2026-08-16 · Accepted — a concealed squad disappears; a seen building stays
 
 **Numbering note.** D-099 is this entry's ASSIGNED id, from the session
@@ -1606,6 +2489,19 @@ in a frame profile, promote placement to a bulk pass. If forests ever
 gain gameplay meaning (concealment, passability), that is a new decision
 — this one is explicitly cosmetic-plus-economy.
 
+**Amendment, 2026-08-16 (D-108):** clause 6's last sentence — one tree
+per cell at 0.60–0.92 of authored size so canopies could not touch — is
+**superseded by D-108**. A playtest found that a wood read as ranks and
+files: the region-scale outline this decision's density field produces
+was organic, and its interior was the hex lattice, because the only
+positional freedom a tree had was which cell it stood in. A cell now
+grows a hash-chosen STAND of trees on their own bounded offsets, and the
+canopy shrink is reversed. Everything else here stands unchanged,
+including the per-cell purity, the chunked batching and the felling
+path — a felling now plays one instance per tree in the cell. Note the
+consequences paragraph above already quoted **1,438 wood nodes**; the
+same map now draws **4,202 trees** on them.
+
 ### D-086 · 2026-08-11 · Accepted — polished low poly: the lighting layer the game never had
 
 **Decision:** The art style question ("low poly vs cartoon vs the current
@@ -2464,6 +3360,41 @@ seat forever and the admin role never passed on.
 
 **Revisit trigger:** the first match with two humans in it. At that point
 "leave" has to become per-player and this entry is reopened, not patched.
+
+**Amendment, 2026-08-16 — the second match had no ground** (issue #57,
+found in the #29 lobby playtest). Everything above about what a match
+writes on the lobby was about *state*; this was about a *node*.
+`_teardown_match()` freed `_terrain_root` — correctly, for the reason
+given there: the lobby can change size, seed and preset between matches
+(D-049), so a kept mesh is only correct until somebody moves a slider.
+But the root was constructed exactly once, in `client.gd`'s `_ready()`,
+and nothing rebuilt it. Every match after a return to the lobby parented
+its chunk meshes to a null instance and drew squads and forests standing
+on nothing.
+
+Two things worth carrying:
+
+- **It was invisible to every number**, in the way D-096 and M7 both
+  were. The meshes really were built; the capture verdict's
+  `terrain=true` is set by the *caller* of `_build_terrain()` and stays
+  true whether or not the function got past its first `add_child`. Only a
+  picture of a SECOND match shows it.
+- **The fix is ownership, not a null check placed anywhere.**
+  `_build_terrain()` now mints the root as well as the chunks, and
+  `_ready()` no longer touches it, so the builder is self-sufficient
+  rather than depending on an initialisation that ran an unknown number
+  of matches ago. That is the same shape as the teardown's own rule:
+  whoever frees a thing and whoever builds it have to agree about what
+  "a thing" is.
+
+`client.gd` is native-only (D-014) and this file and CLAUDE.md both say
+the client is unreachable from GUT — which was read as "all of it" and is
+only true of what it DRAWS. Its node LIFETIME needs neither a GPU nor a
+window: `_build_terrain()` and `_teardown_match()` null-guard every node
+they touch, so `tests/test_return_to_lobby.gd` now instantiates the real
+script (never adding it to the tree, so `_ready()` does not run) and
+plays match → lobby → match against it. Both new tests were observed to
+fail before the fix.
 
 ---
 

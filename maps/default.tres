@@ -14,4 +14,5 @@ squad_cap = 40
 symmetry_order = 1
 player_slots = 20
 min_spawn_spacing = 12
+min_spawn_landmass = 96
 spawn_seed = 20260801

@@ -111,13 +111,47 @@ fight better than line infantry, and only they can build a town hall —
 expressed in `BuildingDef.built_by`, which is also how they are barred
 from building anything else. Everything else is produced.
 
-**Use `just test-load 4 120`.** Two separate reasons, both learned the
-hard way:
+**Use `just test-load 4 150`** — and know before you run it that **the
+verdict's `reveal_events` gate is currently failing on `main` itself, and
+no duration fixes it.** Measured 2026-08-16 on `main` at f5142fc, and on
+a branch off it, in an isolated worktree per D-095:
+
+| tree | duration | conceal | reveal | verdict |
+|---|---|---|---|---|
+| `main` alone | 150 s | 16 | **1** | clean, by one event |
+| `main` alone | 210 s | 15 | **0** | FAIL |
+| branch | 150 s | 15 | **0** | FAIL |
+| branch | 150 s (repeat) | 15 | **0** | FAIL |
+| branch | 210 s | 15 | **0** | FAIL |
+
+Four of five fail, on BOTH trees, with `main`'s 210 s run numerically
+identical to the branch's. **So a `reveal_events=0` failure right now is
+not yours** — that is **issue #69**, which reports the same thing on the
+previous base too. Check against `main` in its own worktree before
+spending an hour on your diff. Squads are still being CONCEALED 15 times
+a run and `ghosts_peak` is 15; it is the return leg that has stopped
+happening, and `bot_client.gd`'s scripted phases are the suspect rather
+than fog itself (the same counter reaches 11 in a `test-client` scenario
+run).
+
+**A single green run is not a measurement, and this file has just been
+caught by that.** It said "`4 150` is clean" on the strength of one run
+that reported `reveal_events=10`; four subsequent runs across two trees
+report 0. If you are about to write a duration into this file, run it
+more than once.
+
+`4 120` is stale regardless: three runs there reported `conceal_events=2`,
+which is the fog half barely running at all.
 
 - Spawns are far apart on a 128×64 map, so four armies cannot reach each
   other quickly. A short run fails with `casualties_applied=0
   conceal_events=0 reveal_events=0` — the verdict correctly reporting
   that combat and fog never happened rather than passing vacuously.
+- **A reveal needs a conceal AND a return.** `reveal_events` counts a
+  squad re-entering vision after leaving it, so it is the LAST of the fog
+  criteria to be satisfied and the first to fail. It is also the one
+  currently failing on `main` — see the table above before reading a zero
+  there as a fault in your own change.
 - **A town hall takes 40 seconds and the founding party is spent on it
   (D-031), so a player owns no soldiers until production finishes.** Any
   run shorter than ~90 s reports `soldiers=0` and fails, and that is the
@@ -359,13 +393,42 @@ actually do with it.** Measured after: `test-load 4 120` clean,
 **59.60 µs/squad at 52 squads** against 60.72 before, so the per-radius
 sort costs nothing.
 
-**The ladder still decides at these values:** `just ai-ladder 3 600` gives
-**2 of 3 decided, 1 draw**, one win each civ, first attack ~195 s — the
-same 2-of-3 D-055 measured before the buff. Read at **420 s** the same
-build reported 3 of 3 drawn, which was the CAP truncating longer matches,
-not a weaker AI. **A stronger defence lengthens matches, so quote a
-ladder result with its cap** — the same rule as quoting µs/squad with a
-squad count.
+**Every ladder number recorded before 2026-08-16 is void, and so is
+anything derived from one** (D-107). They were measured against an AI
+that had never played: an AI seat spent its one founding order on the
+first tick, before the match was running, into a server guard that
+dropped it silently — and latched `_founded` on the SEND. **So every
+match against AI opponents, on every map, since AI seats existed, was
+against opponents that did literally nothing.** The ladder was the one
+harness that would have noticed and could not start a match itself
+(`--players=1 --ai=2`, no human ever launched), so ten minutes of nothing
+was reported as `draws (time cap)` and read as an AI weakness through
+several rounds of AI work.
+
+The void numbers, for the record, were "2 of 3 decided, 1 draw, first
+attack ~195 s at a 600 s cap". **Two rules from them survive and still
+apply:** a stronger defence lengthens matches, so **quote a ladder result
+with its cap** (the same rule as quoting µs/squad with a squad count) —
+the same build read 3 of 3 drawn at 420 s purely from truncation; and the
+ladder now **fails** rather than reporting a draw if any match never left
+the lobby.
+
+**The first ladder number taken from an AI that actually plays**
+(2026-08-16, `just ai-ladder 3 600`): **2 of 3 decided, 1 draw**, one win
+each civ, first attack **~171 s (northmen) / ~179 s (legion)**,
+`squads_peak` ~19 legion / ~12.7 northmen, `buildings` ~1.7 / ~0.7.
+**That is the same headline the void figure claimed**, which is a
+coincidence and worth saying out loud: the old *conclusion* was
+accidentally right while its *evidence* was a set of matches nobody
+played. Do not read the agreement as the old numbers having been fine.
+Note also the asymmetry — legion out-economies northmen roughly 3:2 here
+— which is the first thing on this ladder that is actually about the
+civs.
+
+**The lesson worth carrying, which is not about the AI:** a latch that
+records an INTENT will eventually be read as a record of an OUTCOME.
+`_founded = true` sat one line above `send.call(order)`. Latch on the
+effect — something the actor can SEE — or do not latch.
 
 **Check which instance you are on before believing a load-test failure.**
 Two runs failed with `buildings_known=0` and identical numbers, and it
@@ -539,6 +602,34 @@ leaves roughly **66 mountain cells and 80 land/mountain edges** on 8,064.
 Cliffs there are mostly coastal. If more rock is wanted the lever is
 `mountain_level` and the `/terrain` presets.
 
+**Map size is EXTENT now, not resolution (D-105, 2026-08-16).** Feature
+size is a number of cells, not a fraction of the map: `_sample_at`
+multiplies any frequency it is handed by `space.width / REFERENCE_WIDTH`
+(84, the Standard size) before embedding, so a landmass is ~34 cells
+across on every map and a bigger map holds proportionally more of them.
+Before it, a Huge map was **the same two landmasses as a Skirmish map,
+each 16x larger** — 39.1%/39.2%/39.1% of the map at Standard/Large/Huge,
+constant to a tenth of a percent, which is the signature of a field
+defined over the unit torus. Four things to carry forward:
+
+- **The reference width is the Standard map's, and a test pins it.** Every
+  `/terrain` preset was tuned there, so Standard is *byte-identical*
+  before and after — that is how the claim is checked, not by argument.
+- **The size term lives in ONE function** (`TerrainGen.effective_frequency`),
+  so elevation, moisture and the blend warp all get it. Applied per field
+  it would have left biomes map-sized while landmasses went cell-sized.
+- **A Skirmish map is now a corner of a world, not a whole one**, and it
+  no longer matches the field's global statistics — water fell 20.5% →
+  14.6% at seed 1337. Small-map numbers moving is this decision working.
+  Toy maps in tests are genuinely flat as a result: two D-097 cliff tests
+  correctly reported proving nothing on 16x8 and now ask for toy features
+  explicitly.
+- **Resource density stopped drifting with map size** as a side effect,
+  because stone sits at the mountain FOOT and ore therefore follows the
+  mountain PERIMETER — which used to be a fixed count of ranges whatever
+  the map size. One ore node per 101/144/219/340 cells before, 92/144/
+  152/145 after.
+
 **`just gen-terrain-shot` is the new recipe, and it exists because the
 old instruments structurally could not see any of this.**
 `gen-terrain-preview` draws a top-down biome map from `biome_color` and
@@ -573,6 +664,87 @@ interleaving is for — but any absolute quoted from a long benchmarking
 session should be checked against a fresh one. This is the same lesson as
 M6's worst-tick figures taken while the host was building containers.
 
+**A start is a PLACE, not a legal cell (D-104, 2026-08-16).** From a
+playtest of the `islands` preset: a founding party apparently standing in
+open sea. Nothing was placed in water — `spawn_points` returned 20 of 20,
+none impassable, and no node sat on an impassable cell. Three defects
+under that, all the same shape, all invisible to every number:
+
+- **`spawn_points` tested ONE cell.** Passable, and nothing about what
+  surrounds it. `islands` is ~71% water, so one player in twenty started
+  on a **six-cell rock** — legal ground, and dead on arrival, since a town
+  hall plus resources do not fit and D-031 makes the founding party the
+  whole opening. `validate_spawns` could not see it: it compares COUNTS,
+  and twenty of twenty were found. `MapConfig.min_spawn_landmass` (96) is
+  the fix — a flood fill capped at the minimum, so it costs O(min) per
+  candidate and answers only "does this clear the bar". **96 was swept,
+  not guessed** (4 presets x 4 sizes x 3 seeds): it rejects every stranded
+  start found while still seating 20 of 20 from Standard up. It runs LAST
+  of the three candidate tests — the three are an AND so order cannot
+  change the answer, and on the over-packed Skirmish maps it measured
+  **1.0–3.5 s with the fill first against 0.2–0.4 s with it last**.
+  Sampling costs 12–33 ms at 20 slots from Standard up, against
+  1.0–4.5 ms before.
+- **The fairness pass picked cells by passability alone**, so stone
+  outcrops landed on sand and grass — flatly against D-087, which moved
+  stone to the mountain foot so a node reads as belonging to its ground.
+  It prefers ground that GROWS the thing now, falls back to any walkable
+  cell, ranks beach last (a beach cell borders water by definition, and
+  the authored models overhang the cell), and **says how many it had to
+  compromise**. Measured: beach top-ups 9 → 0 on the reported world,
+  16 → 0 on `islands` Standard. The band table the generator rolls
+  against is now ONE table both read (`Economy._bands`) — verified
+  identical to what it replaced across **63,359 nodes on 16 worlds, 0
+  mismatches**.
+- **The lobby's spawn preview drew twenty markers, none of them real.**
+  Both sides called `MapConfig.spawn_points` — the client under a comment
+  saying "this is the SHARED implementation the server uses (D-039), so
+  this is the same answer" — and fed it different seeds. **Sharing an
+  implementation is not sharing its arguments**, and the comment
+  asserting otherwise is why it survived (the D-065 family again).
+  `MapSettings.to_spawn_config()` is the one derivation now, its inputs
+  travel on the wire like every other terrain number, and a
+  source-scanning test fails if any other script assigns `spawn_seed`.
+
+**Rejected while fixing it, with the measurement:** caching the per-cell
+ground rank in the fairness pass measured SLOWER than recomputing it, so
+it is not there — the cache ranks every reachable cell where the plain
+loop ranks only free ones.
+**The ground has fog of war now, and did not for six milestones (D-106,
+2026-08-16).** The 3D world drew the whole map lit from the first frame:
+unscouted ground looked exactly like ground you were standing on, and the
+minimap was the only surface in the game that drew any fog at all. Found by
+the owner playing (#58), not by any check.
+
+The cause is the exact shape CLAUDE.md already warns about, one level worse.
+`client.gd`'s `_explored` set was correct, was documented as "the map starts
+black and is revealed by line of sight", and was read at exactly two sites,
+both inside `_update_minimap`. Nothing failed. Every entity-level fog
+mechanism (D-004 gating, D-025 conceal, D-030 explored buildings, D-087 node
+depletion) was real and tested. **Terrain was simply never part of it, and
+because terrain is derived client-side from the seed there is no wire evidence
+of the gap either.** So: fifth instance of the declared-and-unread family, and
+D-065's harder variant of it — *a doc comment describing a behaviour is not
+evidence the behaviour exists.*
+
+Three things to carry forward:
+
+- **Fog on the ground is three states, not two** — unexplored black, explored
+  dim, visible full. Two would either black out the map a player earned or
+  claim knowledge they do not have. `terrain_fog.gd` is vision.gd's sibling:
+  same disk stamp, but presentational, so nothing it computes reaches the wire
+  and a wrong answer cannot gain an advantage.
+- **The test that catches this class asserts the CALLER exists.** Every other
+  check can pass while nothing draws the thing. `test_terrain_fog.gd` scans for
+  a `TerrainChunk.set_fog` call outside `terrain_chunk.gd` — the "grep for
+  uncalled public members" rule, written down as a test.
+- **The client now prints `textured=` and `fogged=` when it builds terrain**,
+  because both fail silently and identically: ground that is drawn and wrong.
+
+Also: the camera opens on the player's spawn rather than the map's centre,
+which was harmless while the whole map was lit and is an empty black screen
+now.
+
 **Resource nodes are forests now (D-087, 2026-08-14).** Placement is a
 per-biome density field riding the same moisture noise `biome_at`
 classifies with — dense forest hearts, groves thickening toward the
@@ -596,6 +768,34 @@ Bots finally ORDER the gatherers they produce — the haul cycle had never
 run under `test-load`'s wire before — and report `nodes_felled` in the
 verdict (a metric, not a gate: a felling needs ~3 minutes of match, and
 gating would re-set D-031's stale-timing trap).
+
+**And a forest was still a grid until D-108 (2026-08-16).** A playtest
+reported ranks and files you could count along. The blob-scale outline
+was organic — the density field above doing its job — and the interior
+was the hex lattice, because **a tree's only positional freedom was which
+cell it stood in**: one tree per node cell, drawn at the exact cell
+centre. Compounding it, canopies had been deliberately shrunk (0.60–0.92)
+*so that they could not touch*, because at one tree per centre full-size
+canopies merged into one blob — so every tree also had a hard gap around
+it. A node cell now grows a hash-chosen STAND (1–5, mean ~2.9 in forest)
+on jittered ring offsets, and the canopy shrink is reversed. **1,438 wood
+nodes now draw 4,202 trees, and 99% of them touch a neighbour's canopy.**
+
+Three things to carry forward. **The two causes interlock, so the fix is
+one change**: scale alone reproduces the blob that motivated the shrink,
+and offset alone leaves placement at hex resolution — dithered rows are
+still rows, and a wood still cannot be denser than the node grid. **The
+offset bound is what makes it safe without a passability test**: it is
+under a hex's inradius (sqrt(3)/2), so a tree cannot leave its own cell,
+drift onto water or stand nearer someone else's centre — and it stays a
+rendering-only change, D-084/D-096's split again (the node's CELL is
+still what the economy, the wire and the fog mean). And **no number could
+see any of this**: node counts, chunk counts and frame times were healthy
+throughout, `gen-terrain-preview` draws a top-down map with no trees in
+it, and `test-client` aims its camera at a spawn — open ground by
+construction, the one place a wood cannot be. `just gen-forest-preview`
+is the instrument that can, and it frames the densest wood on the map
+from a low angle for exactly that reason.
 
 **D-086 (2026-08-11): the lighting layer M7's art never had.** The
 "low poly vs cartoon vs current" style question turned out to have a
@@ -692,6 +892,36 @@ quote it with the count, as ever). The pieces:
   into a real match; **leave-to-lobby and no-humans-means-no-server
   (D-075)**; the in-game UI reworked to the reference design; authored
   models for resource nodes and the wall family; tower upgrades.
+- **An in-match scoreboard (D-102)**, from the #29 playtest, where the
+  absence of one blocked a pass criterion outright: per-player colours
+  were fully built, tested for distinctness and drawn consistently, and
+  a player could not tell which colour was whose once the lobby closed.
+  **That is the "mechanism correct, feature absent" family applied to
+  legibility** — nothing failed, and the feature was half-delivered.
+  Everything the board needed for IDENTITY was already on the client;
+  the half that did not exist was **standing**: elimination has been a
+  server-side `print` since D-033 and the wire carried none of it, which
+  the client's own defeat screen had recorded correctly for two
+  milestones. **The board is also the fog line applied to a menu** —
+  army size is derived from what the server already sent (own and ally
+  only, D-050), never asked for, so an enemy's total is a dash and there
+  is no packet a future caller could leak one from.
+
+**"`client.gd` is unreachable from GUT" is only true of what it DRAWS**
+(D-075's 2026-08-16 amendment). Its node LIFETIME needs neither a GPU nor
+a window, and reading the claim as covering all of it is how the second
+match after a return to the lobby came up with **no terrain at all** for
+a whole milestone: `_terrain_root` was built once in `_ready()`, freed by
+`_teardown_match()`, and never rebuilt, so every later match parented its
+chunk meshes to a null instance. Squads and forests rendered perfectly on
+top of nothing, and every number stayed green — the capture verdict's
+`terrain=true` is set by the *caller* of `_build_terrain()`, so it says
+nothing about whether the function got past its first `add_child`.
+`tests/test_return_to_lobby.gd` now instantiates the real script (never
+adding it to the tree, so `_ready()` does not run) and plays
+match → lobby → match against it. **When a client-side thing is
+lifetime rather than pixels, it is testable — try before assuming
+otherwise.**
 
 **M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
 2026-08-14 and produced **D-087 through D-094**, closing every question
@@ -905,15 +1135,26 @@ terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
                         passability in one pass (D-096). `corner_cells`
                         is THE definition of which three cells meet at a
                         corner, and it returns them sorted so all three
-                        agree bit for bit.
+                        agree bit for bit. Every frequency it samples with
+                        is a DENSITY against `REFERENCE_WIDTH`, scaled by
+                        the map's own width in `effective_frequency`
+                        (D-105) — so a bigger map is bigger, not finer.
 terrain_fields.gd        What `build_fields` returns. One object, because
                         surface and colours are indexed identically and a
                         caller that paired them wrongly would just paint
                         the ground wrong with nothing failing.
 terrain_chunk.gd         Chunked hex meshing (D-017) — never per-cell.
                         Owns the continuous cell-derived UVs (D-096), the
-                        per-cell atlas tile slots the shader blends, and
-                        the cliff skirts (D-097).
+                        per-cell atlas tile slots the shader blends, the
+                        cliff skirts (D-097) and the cell-derived fog UVs
+                        (D-106).
+terrain_fog.gd           What ONE CLIENT knows about each cell of the
+                        ground (D-106): never seen, seen once, in sight
+                        now. vision.gd's sibling on the other side of the
+                        wire — the same disk stamp, but it decides how the
+                        map is DRAWN rather than what is sent. Purely
+                        presentational: nothing here reaches the wire,
+                        which is what makes deriving it locally legal.
 render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
@@ -932,6 +1173,17 @@ hud_layout.gd            Where the HUD's pieces go, for a window of any
                         Also owns the HUD's non-obvious arithmetic: the
                         match clock, the n/cap readout, and the compass
                         dial's geometry (D-063).
+scoreboard.gd            Who is in this match, and what this player is
+                        ENTITLED to see about them (D-102). All-static and
+                        pure. Identity (colour, civ, team) is public and
+                        needs no plumbing — it was already on the client.
+                        Army size is DERIVED from what the server chose to
+                        send, never asked for, so an enemy's total cannot
+                        be leaked by a future caller: own and ally counts
+                        only, everyone else a dash. Standing (playing/
+                        eliminated/victor) is the one thing here that had
+                        to go on the wire, because fog makes it
+                        underivable.
 selection_pick.gd        Which thing a click selected, from every
                         candidate's screen geometry (D-061). Same split
                         as render_cull.gd: the client needs a GPU, the
@@ -1021,6 +1273,12 @@ cover_preview.gd         The same idea for ground cover: every prop, on
                         generated terrain, with a real squad standing in
                         it so "cover never hides a unit" is looked at
                         rather than asserted.
+forest_preview.gd        The same idea again for WOODS (D-108), framed on
+                        the densest one on the map from a low angle —
+                        because a lattice is invisible from overhead and
+                        obvious at eye height. Real Economy.generate, real
+                        trees_for, real batching; nothing it draws is its
+                        own idea of a forest.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -1260,7 +1518,8 @@ Dev loop and tests:
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
-  690 tests across 46 scripts, measured 2026-08-16)*. FILTER selects
+  768 tests across 51 scripts, measured 2026-08-16 on the nine-PR merge
+  train, not on any one branch)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
 - `just test-scenario [SCENARIO] [N] [DURATION]` — the fast integration
   loop: a real server and real bots starting mid-match from a scenario
@@ -1274,6 +1533,12 @@ Dev loop and tests:
   success, failure, and Ctrl-C. Prints the per-squad update cost — the
   number to watch — plus how many client/server state-hash comparisons
   ran and how many desynced.
+- `just ai-ladder [MATCHES] [SECONDS] [AI]` — headless AI-vs-AI matches on
+  `maps/ladder.tres`, to make "smarter" a measurement (D-054). Runs a
+  genuinely all-AI server (`--players=0`); **fails** unless every match is
+  observed to leave the lobby, which for three milestones it did not
+  (D-107). Quote a result WITH its cap — a stronger defence lengthens
+  matches, and a truncated one reads as a draw.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost, and the count of cliff faces the shipped map draws.
   Vary CHUNK_SIZE to settle D-017 with data. The PNG is **top-down biome
@@ -1285,6 +1550,15 @@ Dev loop and tests:
   milestones while the ground read as a honeycomb of flat hexes, and
   because `test-client` aims its camera at a spawn — walkable ground by
   construction, and therefore the one place a cliff cannot be.
+- `just gen-forest-preview [SECONDS]` — a RENDERED picture of a WOOD
+  (D-108), framed on the densest forest on the map from a low angle, with
+  real soldiers standing in it for scale. Real node placement
+  (`Economy.generate`), real stands (`ResourceVisuals.trees_for`), real
+  batching. Software-rasterised, no GPU. **Look at
+  `artifacts/forest-godot.png`.** It exists because forests read as ranks
+  and files for a milestone with every number healthy, and neither
+  existing instrument could show it: `gen-terrain-preview`'s PNG is
+  top-down with no trees in it, and `test-client` points at a spawn.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running

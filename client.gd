@@ -142,14 +142,37 @@ var _camera_max_height := CAMERA_MAX_HEIGHT
 ## Standard-map default baked into the Environment built at startup.
 var _world_environment: WorldEnvironment = null
 
-## Cells this player has ever seen. Fog of war on the client side: the map
-## starts black and is revealed by line of sight, and once revealed stays
-## revealed (terrain does not move). Derived locally from our own squads'
-## vision_range rather than replicated — the client already knows where
-## its squads are and what they are, so the server would be sending
-## something the client can compute (D-006's derivation principle applied
-## to vision rather than to soldiers).
-var _explored := {}
+## What this player knows about each cell of the map: never seen, seen
+## once, or in sight right now (D-106). Fog of war on the client side —
+## the map starts black and is revealed by line of sight, and once
+## revealed stays revealed (terrain does not move).
+##
+## Derived locally from our own squads' vision_range rather than
+## replicated — the client already knows where its squads are and what
+## they are, so the server would be sending something the client can
+## compute (D-006's derivation principle applied to vision rather than to
+## soldiers).
+##
+## Read by BOTH the minimap and the 3D ground. It used to be a set of
+## explored cells read only by the minimap, and the terrain was drawn
+## fully lit from the first frame with every test green — see D-106 and
+## issue #58.
+var _fog: TerrainFog = null
+
+## The one terrain material (`TerrainChunk.make_material`), kept so the
+## fog field above can be pushed into it, and the texture it is pushed
+## through — updated in place four times a second rather than rebuilt, so
+## this costs one small upload rather than a new texture resource.
+var _terrain_material: Material = null
+var _fog_texture: ImageTexture = null
+var _fog_updated_at := -1.0
+
+## How often the fog field is restamped and re-uploaded. The same 4 Hz the
+## minimap redraws at and for the same reason: the simulation advances at
+## 10 Hz (D-020) and nothing on the map can walk far enough in a quarter
+## second for a player to notice the lag. Costs a pass over every cell,
+## so it is not free enough to do per frame.
+const FOG_INTERVAL := 0.25
 
 ## Render LOD tiers (D-045): distance from the camera in world units, and
 ## the most soldiers a squad past that distance is drawn with.
@@ -269,9 +292,6 @@ func _ready() -> void:
 	_world_environment.environment = WorldLook.make_environment()
 	add_child(_world_environment)
 
-	_terrain_root = Node3D.new()
-	add_child(_terrain_root)
-
 	# Not in capture mode: a headless render is given its resolution on the
 	# command line (see `_run_seconds`'s own doc comment above), and a
 	# minimum that fought a smaller requested size would make screenshots
@@ -323,6 +343,7 @@ func _process(delta: float) -> void:
 		_build_terrain()
 		_terrain_built = true
 
+	_home_camera_once()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -332,6 +353,8 @@ func _process(delta: float) -> void:
 	_refresh_build_markers()
 	_update_placement_ghost()
 	_update_hud()
+	# Before the minimap, which reads the field this stamps.
+	_update_fog()
 	_update_minimap()
 	# Every frame, NOT throttled with the rest of the minimap (see
 	# `_update_minimap`'s own MINIMAP_INTERVAL comment — fog and squad dots
@@ -347,11 +370,40 @@ func _process(delta: float) -> void:
 	_refresh_lobby()
 	_refresh_debug_panel()
 	_refresh_defeat()
+	_refresh_scoreboard()
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
 		if _now >= _run_seconds:
 			_finish_capture()
+
+
+## Whether the camera has been put over this player's own opening position
+## yet. Once per match, and reset with the rest of the match state.
+var _camera_homed := false
+
+
+## Point the camera at where this player starts, the first time there is a
+## where to point it at.
+##
+## `_build_terrain` leaves it at the middle of the map, which was a
+## reasonable default for as long as the whole map was drawn lit. Now that
+## the ground is fogged (D-106) the middle of a 128x64 map is unexplored
+## black, so a match would open on an empty screen with the founding party
+## somewhere off in the dark. Capture mode has centred on the player's own
+## ground since M3 for exactly this reason (`_found_home_town`); a human
+## deserves it more than a screenshot does.
+func _home_camera_once() -> void:
+	if _camera_homed or not _terrain_built or _state.space == null:
+		return
+	var home := _state.spawn_cell_of(_state.player)
+	if home.x < 0:
+		if _state.squads.is_empty():
+			return
+		home = _state.squad_cell(_state.squads[0], _now)
+	_camera_homed = true
+	_camera_target = _state.space.to_world(home)
+	_update_camera()
 
 
 ## Screenshot, self-assess, report, exit. Mirrors bot_client's verdict
@@ -487,10 +539,24 @@ func _service_network() -> void:
 ## cell. The client generates it locally from the map dimensions rather
 ## than receiving it, which is why terrain generation has to be
 ## deterministic for a seed.
+##
+## Once PER MATCH, though, not once per session: `_teardown_match()` frees
+## the mesh on the way back to the lobby, for the reason its own comment
+## gives. So this owns the root as well as its contents — everything the
+## ground needs is built here and nothing is inherited from a startup that
+## ran an unknown number of matches ago. It used to be constructed in
+## `_ready()` alone, and every match after the first one parented its
+## chunks to a freed node: the meshes were built, discarded, and the world
+## rendered squads and forests standing on nothing while every number
+## (chunk counts, soldiers, desyncs) stayed green.
 func _build_terrain() -> void:
 	var space := _state.space
 	if space == null:
 		return
+
+	if _terrain_root == null:
+		_terrain_root = Node3D.new()
+		add_child(_terrain_root)
 	# From the SERVER's settings, not local defaults (D-049). The two
 	# sides agreeing about where the water is used to rest on both
 	# constructing a default TerrainGen — an implicit contract that could
@@ -535,6 +601,17 @@ func _build_terrain() -> void:
 	# renders. Textured when generated/ has been built, vertex colour alone
 	# when it has not.
 	var material := TerrainChunk.make_material()
+	# Kept, because the ground is fogged by a texture this client updates as
+	# it explores (D-106) and there is nowhere else to reach the material
+	# from once the chunks are built.
+	_terrain_material = material
+	_fog = TerrainFog.new(space)
+	_fog_texture = null
+	_fog_updated_at = -1.0
+	# Bound before the first frame is drawn rather than at the first
+	# throttled update: the shader's default is fully lit, so a material
+	# with no fog yet would flash the whole unexplored map for a frame.
+	_push_fog_to_terrain()
 
 	var meshes := []
 	for cy in range(grid.y):
@@ -628,7 +705,16 @@ func _build_terrain() -> void:
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
-	print("client: built %d terrain chunks" % _terrain_root.get_child_count())
+	# Reported, not assumed. Both of these fail SILENTLY and identically —
+	# ground that is drawn but wrong — and the fog one is the whole of #58:
+	# a material that never received the field renders the entire map lit,
+	# which is exactly what a healthy frame looks like to every number the
+	# client prints.
+	var shaded := _terrain_material as ShaderMaterial
+	var fogged := shaded != null \
+		and shaded.get_shader_parameter(TerrainFog.SHADER_PARAM) != null
+	print("client: built %d terrain chunks — textured=%s fogged=%s" % [
+		_terrain_root.get_child_count(), TerrainChunk.has_atlas(), fogged])
 
 
 ## The D-006 payoff, once per frame: for every squad the client knows
@@ -1217,6 +1303,10 @@ var _menu_button: Button = null
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
 var _settings_panel: Control = null
+## The player scoreboard (D-102), a sibling of the settings pane inside
+## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
+var _scoreboard_panel: Control = null
+var _scoreboard_rows: VBoxContainer = null
 ## The defeat screen (see `_build_defeat_screen`/`_refresh_defeat`).
 var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
@@ -2065,21 +2155,29 @@ const NODE_CHUNK := 16
 
 ## chunk key (cell region) -> { "root": Node3D, "centre": Vector3,
 ##   "multis": {model_id: MultiMeshInstance3D},
-##   "cells": {cell: {"model": StringName, "xform": Transform3D}},
+##   "cells": {cell: [{"model": StringName, "xform": Transform3D}, ...]},
 ##   "dirty": bool }
+## A cell holds a LIST: a node cell grows several trees, each on its own
+## offset inside the cell, which is what stops a forest reading as the hex
+## lattice it stands on (ResourceVisuals.trees_for).
 ## The root is repositioned every frame to the lattice copy nearest the
 ## camera (D-035) — per CHUNK, not per tree, which is what keeps the
 ## torus tax off the per-tree path.
 var _tree_chunks := {}
 
-## cell -> {"chunk": Vector2i, "world": Vector3, "model": StringName,
-## "kind": int} — the reverse index the click test and the felling read.
+## cell -> {"chunk": Vector2i, "world": Vector3, "kind": int,
+## "models": Array[StringName]} — the reverse index the click test and the
+## felling read. `world` is the CELL's own centre, not any tree's drawn
+## position: it is what the click test ranks by and what the simulation
+## means by the node, and trees stand inside their own cell by
+## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
 
 ## Fellings mid-animation: {"node": MeshInstance3D, "kind": int,
-## "cell": int, "age": float, "base": Transform3D}. A felled tree leaves
-## its chunk's MultiMesh and becomes a short-lived individual instance —
-## the one moment a tree is worth a node of its own.
+## "axis": Vector3, "age": float, "base": Transform3D}. A felled cell's
+## trees leave its chunk's MultiMesh and become short-lived individual
+## instances — the one moment a tree is worth a node of its own — each
+## tipping about its own axis so a stand does not fall as one object.
 var _fallings := []
 
 ## kind -> the primitive stand-in mesh used when the art build is missing
@@ -2713,8 +2811,17 @@ func _refresh_resource_nodes() -> void:
 	_advance_fallings()
 
 
-## One node enters the world: pick its model from the ground it stands on,
-## pose it, and file it in its chunk.
+## One node enters the world: grow the cell's trees from the ground they
+## stand on, pose each one, and file the lot in its chunk.
+##
+## A cell is several trees on their own offsets, not one at the centre
+## (ResourceVisuals.trees_for). Each is sampled for height AT ITS OWN
+## position rather than at the cell centre — on a slope the difference is
+## a tree standing in the air — and every offset is inside the cell's own
+## hexagon, so nothing here can walk onto water or over the cliff next
+## door. A tree in an edge cell may hang a fraction of a cell past its
+## chunk's block, which costs nothing: the MultiMesh's AABB comes from the
+## transforms actually in it, so the culling volume already knows.
 func _place_node(cell: int, kind: int) -> void:
 	var space := _state.space
 	var coord := space.from_index(cell)
@@ -2722,14 +2829,22 @@ func _place_node(cell: int, kind: int) -> void:
 	if _state.terrain_sampler.is_valid():
 		world.y = _state.terrain_sampler.call(world.x, world.z)
 
-	var model := _node_model_for(cell, coord, kind)
-	# The authored models are grounded at y=0 (split_markers bakes them
-	# so); the primitive fallback is a centred cylinder and needs lifting
-	# onto its base.
-	var lift := 0.0 if UnitMesh.mesh_for(model) != null else 0.75
-	var basis := Basis(Vector3.UP, ResourceVisuals.yaw_for(cell)) \
-		.scaled(Vector3.ONE * ResourceVisuals.scale_for(cell))
-	var xform := Transform3D(basis, world + Vector3(0.0, lift, 0.0))
+	var entries := []
+	var models: Array[StringName] = []
+	for tree in _node_trees_for(cell, coord, kind):
+		var model: StringName = tree["model"]
+		var at: Vector3 = world + (tree["offset"] as Vector3) * space.hex_size
+		if _state.terrain_sampler.is_valid():
+			at.y = _state.terrain_sampler.call(at.x, at.z)
+		# The authored models are grounded at y=0 (split_markers bakes them
+		# so); the primitive fallback is a centred cylinder and needs lifting
+		# onto its base.
+		var lift := 0.0 if UnitMesh.mesh_for(model) != null else 0.75
+		var basis := Basis(Vector3.UP, float(tree["yaw"])) \
+			.scaled(Vector3.ONE * float(tree["scale"]))
+		entries.append({"model": model,
+			"xform": Transform3D(basis, at + Vector3(0.0, lift, 0.0))})
+		models.append(model)
 
 	var key := Vector2i(coord.x / NODE_CHUNK, coord.y / NODE_CHUNK)
 	var chunk: Dictionary = _tree_chunks.get(key, {})
@@ -2741,16 +2856,18 @@ func _place_node(cell: int, kind: int) -> void:
 		chunk = {"root": root, "centre": space.to_world(centre_cell),
 			"multis": {}, "cells": {}, "dirty": true}
 		_tree_chunks[key] = chunk
-	chunk["cells"][cell] = {"model": model, "xform": xform}
+	chunk["cells"][cell] = entries
 	chunk["dirty"] = true
-	_node_placed[cell] = {"chunk": key, "world": world, "model": model, "kind": kind}
+	_node_placed[cell] = {"chunk": key, "world": world, "kind": kind,
+		"models": models}
 
 
-## The model a node wears — species from the same TerrainGen the ground
-## was meshed from, so a desert grows arid types and a treeline frays into
-## its neighbour region's species (ResourceVisuals's job; this is just the
+## What grows on a node cell — how many, which species, where in the cell
+## and at what size. Species come from the same TerrainGen the ground was
+## meshed from, so a desert grows arid types and a treeline frays into its
+## neighbour region's species (ResourceVisuals's job; this is just the
 ## plumbing that feeds it terrain samples).
-func _node_model_for(cell: int, coord: Vector2i, kind: int) -> StringName:
+func _node_trees_for(cell: int, coord: Vector2i, kind: int) -> Array[Dictionary]:
 	var biome := TerrainGen.Biome.GRASSLAND
 	var moisture := 0.5
 	var neighbours := []
@@ -2759,7 +2876,7 @@ func _node_model_for(cell: int, coord: Vector2i, kind: int) -> StringName:
 		moisture = _terrain_gen.moisture_at(_state.space, coord)
 		for neighbour in _state.space.neighbors(coord):
 			neighbours.append(_terrain_gen.biome_at(_state.space, neighbour))
-	return ResourceVisuals.model_for(kind, biome, neighbours, moisture, cell)
+	return ResourceVisuals.trees_for(kind, biome, neighbours, moisture, cell)
 
 
 ## The mesh behind a model id, or the per-kind primitive stand-in when the
@@ -2794,11 +2911,11 @@ func _node_mesh_for(model: StringName, kind: int) -> Mesh:
 func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 	var groups := {}
 	for cell in chunk["cells"]:
-		var entry: Dictionary = chunk["cells"][cell]
-		var model: StringName = entry["model"]
-		if not groups.has(model):
-			groups[model] = []
-		groups[model].append(entry["xform"])
+		for entry in chunk["cells"][cell]:
+			var model: StringName = entry["model"]
+			if not groups.has(model):
+				groups[model] = []
+			groups[model].append(entry["xform"])
 
 	var multis: Dictionary = chunk["multis"]
 	for model in multis.keys():
@@ -2814,7 +2931,8 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 			multimesh.transform_format = MultiMesh.TRANSFORM_3D
 			var kind := Economy.ResourceKind.WOOD
 			for cell in chunk["cells"]:
-				if chunk["cells"][cell]["model"] == model:
+				if _node_placed.has(cell) \
+						and (_node_placed[cell]["models"] as Array).has(model):
 					kind = int(_node_placed[cell]["kind"])
 					break
 			multimesh.mesh = _node_mesh_for(model, kind)
@@ -2828,8 +2946,12 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 	chunk["dirty"] = false
 
 
-## A node the server reported worked out: pull it from its chunk and stand
-## up a short-lived individual instance to play the fall.
+## A node the server reported worked out: pull its trees from the chunk and
+## stand each one up as a short-lived individual instance to play the fall.
+##
+## The whole cell goes at once — one node is worked out, not one trunk —
+## but each tree keeps its own tip axis, so a stand crashes down as several
+## trees rather than as one object breaking apart.
 func _begin_felling(felled: Dictionary) -> void:
 	var cell := int(felled["cell"])
 	var placed: Dictionary = _node_placed.get(cell, {})
@@ -2838,18 +2960,20 @@ func _begin_felling(felled: Dictionary) -> void:
 	_node_placed.erase(cell)
 
 	var chunk: Dictionary = _tree_chunks.get(placed["chunk"], {})
-	var xform := Transform3D()
+	var entries := []
 	if not chunk.is_empty() and chunk["cells"].has(cell):
-		xform = chunk["cells"][cell]["xform"]
+		entries = chunk["cells"][cell]
 		chunk["cells"].erase(cell)
 		chunk["dirty"] = true
 
 	var kind := int(felled["kind"])
-	var instance := MeshInstance3D.new()
-	instance.mesh = _node_mesh_for(placed["model"], kind)
-	add_child(instance)
-	_fallings.append({"node": instance, "kind": kind, "cell": cell,
-		"age": 0.0, "base": xform})
+	for i in range(entries.size()):
+		var instance := MeshInstance3D.new()
+		instance.mesh = _node_mesh_for(entries[i]["model"], kind)
+		add_child(instance)
+		_fallings.append({"node": instance, "kind": kind,
+			"axis": ResourceVisuals.tip_axis_for(cell, i),
+			"age": 0.0, "base": entries[i]["xform"]})
 
 
 ## Advance every mid-animation felling: trees tip about their base with an
@@ -2866,8 +2990,7 @@ func _advance_fallings() -> void:
 			(fall["node"] as MeshInstance3D).queue_free()
 			continue
 		var base: Transform3D = fall["base"]
-		var tip := Basis(ResourceVisuals.tip_axis_for(int(fall["cell"])),
-			float(pose["angle"]))
+		var tip := Basis(fall["axis"] as Vector3, float(pose["angle"]))
 		var origin := base.origin + Vector3(0.0, -float(pose["sink"]), 0.0)
 		(fall["node"] as MeshInstance3D).transform = Transform3D(
 			tip * base.basis, origin + _lattice_offset_for(base.origin))
@@ -4351,7 +4474,8 @@ func _update_minimap() -> void:
 		return
 	_minimap_updated_at = _now
 
-	_update_explored()
+	if _fog == null:
+		return
 
 	var image: Image = _minimap_base.duplicate()
 
@@ -4361,7 +4485,7 @@ func _update_minimap() -> void:
 	# should look it, rather than showing terrain nobody has scouted.
 	for y in range(image.get_height()):
 		for x in range(image.get_width()):
-			if not _explored.has(_state.space.index(Vector2i(x, y))):
+			if not _fog.is_explored(_state.space.index(Vector2i(x, y))):
 				image.set_pixel(x, y, HudTheme.BG_VOID.darkened(0.5))
 
 	# Buildings, in their owner's colour (D-052) and NOT gated on current
@@ -4391,7 +4515,7 @@ func _update_minimap() -> void:
 	# Resource nodes, but only where this player has actually been. Fog
 	# governs what you know about the map, and that includes what is on it.
 	for cell in _state.nodes:
-		if not _explored.has(cell):
+		if not _fog.is_explored(int(cell)):
 			continue
 		var coord := _state.space.from_index(int(cell))
 		image.set_pixel(coord.x, coord.y, _node_colour(int(_state.nodes[cell])))
@@ -4436,7 +4560,7 @@ func _centre_minimap_crop_on_camera() -> void:
 	_minimap_crop_material.set_shader_parameter("focus_uv", focus)
 
 
-## Extend the explored set from what this player can currently see.
+## Restamp what this player can see, and push it to the ground (D-106).
 ##
 ## Computed locally rather than replicated. The client knows where its own
 ## squads are and what kind they are, so it can derive its own vision the
@@ -4446,13 +4570,22 @@ func _centre_minimap_crop_on_camera() -> void:
 ##
 ## Buildings see too, and a town hall sees a long way, so a base lights up
 ## a useful area around itself.
-func _update_explored() -> void:
-	if _state.space == null:
+##
+## Throttled here rather than by the minimap, which is where this used to
+## live: the minimap gives up early when the HUD has not been laid out yet
+## (`_update_minimap`'s own first two lines), and the 3D world must not go
+## unfogged because a Control was missing.
+func _update_fog() -> void:
+	if _fog == null or _state.space == null:
 		return
+	if _fog_updated_at >= 0.0 and _now - _fog_updated_at < FOG_INTERVAL:
+		return
+	_fog_updated_at = _now
 
-	var hex_width := _state.space.hex_size * TorusSpace.SQRT_3
-	if hex_width <= 0.0:
-		return
+	# Everything in sight a moment ago drops back to remembered, and the
+	# reveals below raise back whatever is still in sight. Ground already
+	# explored stays explored.
+	_fog.forget_visible()
 
 	# Allied squads reveal ground too (D-050). Without this the server
 	# would gate on the team's shared sight while the client painted fog
@@ -4466,7 +4599,8 @@ func _update_explored() -> void:
 		var def := UnitRoster.by_id(StringName(_state.composition[squad]["def_id"]))
 		if def == null:
 			continue
-		_reveal_around(_state.squad_cell(squad, _now), floori(def.vision_range / hex_width))
+		_fog.reveal(_state.squad_cell(squad, _now),
+			TerrainFog.radius_in_cells(_state.space, def.vision_range))
 
 	for wire_id in _state.buildings:
 		var info: Dictionary = _state.buildings[wire_id]
@@ -4475,13 +4609,24 @@ func _update_explored() -> void:
 		var building_def := BuildingSim.def_by_id(StringName(info["def_id"]))
 		if building_def == null:
 			continue
-		_reveal_around(_state.space.from_index(int(info["cell"])),
-			floori(building_def.vision_range / hex_width))
+		_fog.reveal(_state.space.from_index(int(info["cell"])),
+			TerrainFog.radius_in_cells(_state.space, building_def.vision_range))
+
+	_push_fog_to_terrain()
 
 
-func _reveal_around(centre: Vector2i, radius: int) -> void:
-	for offset in TorusSpace.disk_offsets(maxi(radius, 0)):
-		_explored[_state.space.index(centre + offset)] = true
+## Hand the field to the terrain material. The half of this feature that
+## was missing entirely: `_explored` was correct, documented and read by
+## nothing but the minimap for six milestones (#58).
+func _push_fog_to_terrain() -> void:
+	if _fog == null or _terrain_material == null:
+		return
+	var image := _fog.bake()
+	if _fog_texture == null:
+		_fog_texture = ImageTexture.create_from_image(image)
+		TerrainChunk.set_fog(_terrain_material, _fog_texture)
+	else:
+		_fog_texture.update(image)
 
 
 ## Minimap colour per resource, picked to read against the terrain
@@ -6149,7 +6294,14 @@ const MAP_OPTIONS := [
 		"min": 0, "max": MapSettings.SEED_MAX, "reroll": true},
 	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
 	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
-	{"key": "elevation_frequency", "label": "Landmass count", "kind": "slider", "min": 0.5, "max": 8.0},
+	# Reads in CELLS, not as the raw parameter (D-105). "Landmass count"
+	# was the bug stated out loud: it sat at 2.50 on every map size
+	# because the terrain was defined in fractions of the map, so picking
+	# a bigger map bought a higher-resolution drawing of the same world.
+	# Now the parameter is a density and the readout is the size it
+	# produces — the same at every size, which is the fix made visible.
+	{"key": "elevation_frequency", "label": "Landmass size", "kind": "slider",
+		"min": 0.5, "max": 8.0, "readout": "cells"},
 	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 20.0},
 ]
 
@@ -6326,6 +6478,15 @@ func _build_game_menu() -> void:
 	resume.pressed.connect(_toggle_game_menu)
 	column.add_child(resume)
 
+	# The one place a player can find out who they are playing against
+	# (D-102). Beside Settings rather than on a hotkey of its own because
+	# ESC is the menu every player already knows, and a board nobody can
+	# find is the same non-delivery as no board at all.
+	var players := _styled_button("Players", HudTheme.NEUTRAL)
+	players.tooltip_text = "Colour, civ, team and standing for every player in this match."
+	players.pressed.connect(_toggle_scoreboard)
+	column.add_child(players)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -6350,8 +6511,172 @@ func _build_game_menu() -> void:
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
 
+	_scoreboard_panel = _build_scoreboard_panel(row)
+	_scoreboard_panel.visible = false
+
 	_settings_panel = _build_settings_panel(row)
 	_settings_panel.visible = false
+
+
+## The player scoreboard (D-102) — every player in the match, their
+## colour, civ, team and standing.
+##
+## Built once and refilled, rather than rebuilt on every open: the rows
+## change while it is up (a player is eliminated, an ally loses squads),
+## so it needs a refresh path either way, and one path is fewer than two.
+##
+## Everything drawn here comes from `Scoreboard.rows`, including which
+## columns this player may see at all — see that file on why an enemy's
+## army size is a dash rather than a number.
+func _build_scoreboard_panel(parent: Control) -> Control:
+	var frame := VBoxContainer.new()
+	parent.add_child(frame)
+	var column := _lobby_panel("PLAYERS", frame)
+	column.custom_minimum_size = Vector2(430.0, 0.0)
+
+	var heading := HBoxContainer.new()
+	heading.add_theme_constant_override("separation", 10)
+	column.add_child(heading)
+	# Column captions, in the same widths the rows use below. Spelled out
+	# rather than a grid because the swatch is not a label and a
+	# GridContainer would have to be told that in three places.
+	for caption in [
+			{"text": "", "width": 18.0},
+			{"text": "PLAYER", "width": 128.0},
+			{"text": "CIV", "width": 96.0},
+			{"text": "TEAM", "width": 58.0},
+			{"text": "SQUADS", "width": 54.0},
+			{"text": "MEN", "width": 46.0}]:
+		var label := Label.new()
+		label.text = String(caption["text"])
+		label.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+		label.modulate = HudTheme.TEXT_GHOST
+		label.custom_minimum_size = Vector2(float(caption["width"]), 0.0)
+		heading.add_child(label)
+
+	_scoreboard_rows = VBoxContainer.new()
+	_scoreboard_rows.add_theme_constant_override("separation", 4)
+	column.add_child(_scoreboard_rows)
+
+	# Says why the dashes are there. A blank column reads as a bug; this
+	# reads as the rule it is (D-004/D-025).
+	var note := Label.new()
+	note.text = "Army size is shown for you and your allies only — fog of war hides the rest."
+	note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	note.modulate = HudTheme.TEXT_FAINT
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size = Vector2(410.0, 0.0)
+	column.add_child(note)
+
+	var close := _styled_button("Back", HudTheme.NEUTRAL)
+	close.pressed.connect(_toggle_scoreboard)
+	column.add_child(close)
+	return frame
+
+
+## One scoreboard row. Deliberately shaped like `_seat_row`, because it
+## answers the same question the lobby's seat list answers — the whole
+## complaint was that the answer disappeared when the lobby did.
+func _scoreboard_row(row: Dictionary) -> Control:
+	var mine: bool = bool(row["is_you"])
+	var out: bool = int(row["standing"]) == MatchState.Standing.ELIMINATED
+
+	var frame := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = HudTheme.BG_ROW if mine else HudTheme.BG_ROW_DIM
+	style.set_corner_radius_all(HudTheme.RADIUS_LG)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	style.border_color = HudTheme.accent_border(1.0) if mine else HudTheme.BORDER
+	style.set_border_width_all(1)
+	if mine:
+		style.border_width_left = 3
+	frame.add_theme_stylebox_override("panel", style)
+	# Eliminated players stay listed and are dimmed rather than removed —
+	# a board that quietly shortened would lose the one mapping it exists
+	# to provide, and "who knocked whom out" is most of what a player
+	# wants from it (D-033).
+	if out:
+		frame.modulate = Color(1.0, 1.0, 1.0, 0.55)
+
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 10)
+	frame.add_child(line)
+
+	# The same colour the army wears on the field, from the same one
+	# definition every other surface reads (D-052).
+	line.add_child(_swatch(row["colour"], Vector2(18.0, 18.0)))
+
+	var name_label := Label.new()
+	name_label.text = "%s%s" % [String(row["name"]),
+		"  (you)" if mine else ("  (ai)" if String(row["kind"]) == "ai" else "")]
+	name_label.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	name_label.modulate = HudTheme.TEXT_BRIGHT if mine else HudTheme.TEXT
+	name_label.custom_minimum_size = Vector2(128.0, 0.0)
+	line.add_child(name_label)
+
+	# What a Random seat actually RESOLVED to — the lobby's own label
+	# function, so "Random" can only appear here if the server really did
+	# leave it unresolved.
+	var civ := Label.new()
+	civ.text = _civ_label(String(row["civ"]))
+	civ.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	civ.modulate = HudTheme.TEXT
+	civ.custom_minimum_size = Vector2(96.0, 0.0)
+	line.add_child(civ)
+
+	var team := Label.new()
+	team.text = "—" if int(row["team"]) == 0 else "Team %d" % int(row["team"])
+	team.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	team.modulate = HudTheme.ACCENT_BRIGHT if bool(row["is_ally"]) else HudTheme.TEXT_DIM
+	team.custom_minimum_size = Vector2(58.0, 0.0)
+	line.add_child(team)
+
+	for column_key in ["squads", "soldiers"]:
+		var value := Label.new()
+		value.text = Scoreboard.column_text(int(row[column_key]))
+		value.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		value.modulate = HudTheme.TEXT if int(row[column_key]) != Scoreboard.UNKNOWN \
+			else HudTheme.TEXT_GHOST
+		value.custom_minimum_size = Vector2(54.0 if column_key == "squads" else 46.0, 0.0)
+		line.add_child(value)
+
+	var standing := Label.new()
+	standing.text = Scoreboard.standing_text(int(row["standing"]))
+	standing.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	standing.modulate = HudTheme.TEXT_FAINT
+	if int(row["standing"]) == MatchState.Standing.VICTOR:
+		standing.modulate = HudTheme.ACCENT_BRIGHT
+	line.add_child(standing)
+
+	return frame
+
+
+## How often an open board rebuilds itself. Throttled for the same reason
+## the minimap is: the numbers on it change at the simulation's 10 Hz at
+## most, and rebuilding twenty rows of Controls every frame is work with
+## no viewer-visible effect.
+const SCOREBOARD_INTERVAL := 0.25
+var _scoreboard_updated_at := -1.0
+
+
+## Refill the board from the client's current knowledge. Only while it is
+## on screen — the rows are Controls, and rebuilding them for a panel
+## nobody is looking at is work with no viewer.
+func _refresh_scoreboard(force := false) -> void:
+	if _scoreboard_panel == null or not _scoreboard_panel.visible:
+		return
+	if not force and _scoreboard_updated_at >= 0.0 \
+			and _now - _scoreboard_updated_at < SCOREBOARD_INTERVAL:
+		return
+	_scoreboard_updated_at = _now
+	for child in _scoreboard_rows.get_children():
+		child.queue_free()
+		_scoreboard_rows.remove_child(child)
+	for row in Scoreboard.rows(_state):
+		_scoreboard_rows.add_child(_scoreboard_row(row))
 
 
 ## The settings pane, opened beside the menu rather than replacing it, so
@@ -6420,13 +6745,25 @@ func _toggle_game_menu() -> void:
 	if _game_menu_layer == null:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
-	if not _game_menu_layer.visible and _settings_panel != null:
-		_settings_panel.visible = false
+	if not _game_menu_layer.visible:
+		if _settings_panel != null:
+			_settings_panel.visible = false
+		if _scoreboard_panel != null:
+			_scoreboard_panel.visible = false
 
 
 func _toggle_settings() -> void:
 	if _settings_panel != null:
 		_settings_panel.visible = not _settings_panel.visible
+
+
+func _toggle_scoreboard() -> void:
+	if _scoreboard_panel == null:
+		return
+	_scoreboard_panel.visible = not _scoreboard_panel.visible
+	# Filled on the way open rather than waiting out the throttle, so it
+	# is never briefly empty.
+	_refresh_scoreboard(true)
 
 
 func _on_fullscreen_toggled(on: bool) -> void:
@@ -6514,12 +6851,22 @@ func _teardown_match() -> void:
 	_free_nodes(_progress_anchor)
 	_free_nodes(_queue_anchor)
 
+	# The root goes with its chunks, and `_build_terrain()` mints a new one
+	# for the next match — freeing it here while only the CHUNKS were
+	# rebuilt is exactly how the second match came up with no ground.
 	if _terrain_root != null:
 		_terrain_root.queue_free()
 		_terrain_root = null
 	_terrain_built = false
 
-	_explored.clear()
+	# The next match may be a different map entirely (D-049), so the field is
+	# dropped rather than cleared — its size and its neighbour table both
+	# belong to the space it was built for.
+	_fog = null
+	_fog_texture = null
+	_terrain_material = null
+	_fog_updated_at = -1.0
+	_camera_homed = false
 	_scout_home.clear()
 	_control_groups.clear()
 	_building_defs.clear()
@@ -7379,14 +7726,12 @@ func _rebuild_map_preview(settings: Dictionary) -> void:
 			image.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
 
 	# Where people start, the way a lobby preview shows player positions.
-	# MapConfig.spawn_points is the SHARED implementation the server uses
-	# (D-039), so this is the same answer rather than a second guess at it.
-	var spawn_config := MapConfig.new()
-	spawn_config.width = space.width
-	spawn_config.height = space.height
-	spawn_config.player_slots = map.player_slots
-	spawn_config.spawn_seed = map.seed
-	for cell in spawn_config.spawn_points(terrain.passability(space)):
+	# `MapSettings.to_spawn_config` is the shared DERIVATION, not merely
+	# the shared implementation (D-104) — this used to build its own
+	# MapConfig and seed it with the match seed where the server seeds it
+	# with the map's base plus the match seed, so every marker it drew was
+	# somewhere nobody starts, under a comment asserting the opposite.
+	for cell in map.to_spawn_config().spawn_points(terrain.passability(space)):
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				image.set_pixel(
@@ -7510,13 +7855,27 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 			row.add_child(slider)
 
 			var value := Label.new()
-			value.text = "%.2f" % float(settings.get(key, 0.0))
+			value.text = _slider_readout(option, settings)
 			value.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
-			value.custom_minimum_size = Vector2(52.0, 0.0)
+			value.custom_minimum_size = Vector2(66.0, 0.0)
 			value.modulate = HudTheme.TEXT_MUTED
 			row.add_child(value)
 
 	return row
+
+
+## What a map slider's number reads as.
+##
+## Most are the raw parameter, which is what a sea level or a relief
+## multiplier already means to a human. Landmass size is not: since D-105
+## `elevation_frequency` is a density against `TerrainGen.REFERENCE_WIDTH`,
+## and the number a player can act on is how wide a landmass comes out —
+## which is now the same at every map size, and is the point.
+func _slider_readout(option: Dictionary, settings: Dictionary) -> String:
+	var raw := float(settings.get(String(option["key"]), 0.0))
+	if String(option.get("readout", "")) == "cells":
+		return "%d cells" % roundi(TerrainGen.feature_cells(raw))
+	return "%.2f" % raw
 
 
 ## Keyboard remains as a fallback for starting, so the screen is usable

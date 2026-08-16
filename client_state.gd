@@ -257,13 +257,28 @@ func match_elapsed() -> float:
 
 
 ## Where `player` (1-based) starts, or (-1, -1) if the server sent no
-## spawn table. Mirrors server.gd's own wrap — players are numbered from
-## 1, spawn points indexed from 0 — so both sides answer this the same
-## way instead of each doing its own arithmetic.
+## spawn table.
+##
+## Answered by calling the SERVER'S OWN function over the seat list this
+## client already holds (`MatchState.spawn_index_in`), rather than by
+## repeating its arithmetic here. The repeat is what went wrong: this used
+## to compute `(player - 1) % spawn_cells.size()` under a comment saying it
+## mirrored the server, and the server moved to the seat index — precisely
+## because AI ids start at 1000 (D-051) and any modulo of a player id
+## collides. Every AI then believed its home was some other player's spawn
+## and founded its town hall there.
+##
+## Falls back to the old wrap when no seat list has arrived, which is the
+## honest answer in that case: with nothing but a player id there is
+## nothing better to say, and a test fixture that sends only a WELCOME
+## still gets a usable cell.
 func spawn_cell_of(player: int) -> Vector2i:
 	if space == null or spawn_cells.is_empty() or player < 1:
 		return Vector2i(-1, -1)
-	return space.from_index(spawn_cells[(player - 1) % spawn_cells.size()])
+	var seats: Array = lobby.get("seats", [])
+	var index := MatchState.spawn_index_in(seats, player, spawn_cells.size()) \
+		if not seats.is_empty() else (player - 1) % spawn_cells.size()
+	return space.from_index(spawn_cells[index])
 
 
 func _handle_curve(data: PackedByteArray) -> void:

@@ -167,6 +167,31 @@ static func vertex_uv(scale: Vector2, cell: Vector2i, corner: int) -> Vector2:
 		scale.y * float(v_numerator) / 3.0)
 
 
+## Where one vertex of one cell reads the fog-of-war field (D-106), as a UV into
+## a one-texel-per-cell texture laid out like `TorusSpace.index`.
+##
+## Cell-derived, like `vertex_uv` and for the same reason (D-035): the mesh is
+## drawn nine times across the seams and all nine copies must sample the same
+## cell. Deriving it from world position instead would fog each copy differently.
+##
+## `cell` is the UNWRAPPED coordinate, so a chunk at the map's edge produces a UV
+## slightly outside [0,1] — which is exactly right, because the fog sampler
+## repeats and the torus period is the texture period. The half-texel is what
+## puts a cell's CENTRE vertex on its own texel centre, so a cell entirely inside
+## a vision disk samples that cell's own value exactly and only the corners
+## blend.
+static func fog_uv(space: TorusSpace, cell: Vector2i, corner: int) -> Vector2:
+	var nq := 0
+	var nr := 0
+	if corner >= 0:
+		var offset: Vector2i = CORNER_AXIAL_THIRDS[corner]
+		nq = offset.x
+		nr = offset.y
+	return Vector2(
+		(float(3 * cell.x + nq) / 3.0 + 0.5) / float(maxi(space.width, 1)),
+		(float(3 * cell.y + nr) / 3.0 + 0.5) / float(maxi(space.height, 1)))
+
+
 ## How many atlas tiles a fragment blends. Three, because a hex corner is shared
 ## by exactly three cells and therefore mixes at most three biomes.
 const TILE_SLOTS := 3
@@ -397,6 +422,7 @@ static func _append_skirt(space: TorusSpace, fields: TerrainFields,
 	var normals: PackedVector3Array = out["normals"]
 	var colors: PackedColorArray = out["colors"]
 	var uvs: PackedVector2Array = out["uvs"]
+	var fog_uvs: PackedVector2Array = out["fog_uvs"]
 	var tiles: PackedFloat32Array = out["tiles"]
 	var weights: PackedFloat32Array = out["weights"]
 	var indices: PackedInt32Array = out["indices"]
@@ -413,11 +439,17 @@ static func _append_skirt(space: TorusSpace, fields: TerrainFields,
 	for e in range(2):
 		var flat: Vector3 = corner_positions[ours[e]]
 		var u := vertex_uv(uv_step, unwrapped, ours[e]).x
+		# The ground's own fog coordinate at that corner, so a cliff face is as
+		# known as the plateau it holds up. Its atlas v is derived from world
+		# HEIGHT (see just above), which is why fog needs its own channel rather
+		# than being recovered from UV the way the ground's cell could be.
+		var rock_fog := fog_uv(space, unwrapped, ours[e])
 		for height in [high[e], low[e]]:
 			vertices.append(Vector3(flat.x, height, flat.z))
 			normals.append(shading_normal)
 			colors.append(rock)
 			uvs.append(Vector2(u, height * v_per_world))
+			fog_uvs.append(rock_fog)
 			for slot in range(TILE_SLOTS):
 				tiles.append(float(TerrainGen.Biome.MOUNTAIN))
 				weights.append(1.0 / float(TILE_SLOTS))
@@ -465,6 +497,10 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var uvs := PackedVector2Array()
+	# Where each vertex reads the client's fog-of-war field (D-106). A second UV
+	# channel rather than a custom one: it is a texture coordinate, and both of
+	# the custom channels are already spoken for by the atlas tiling.
+	var fog_uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
 	# Four floats per vertex each, because Godot's custom vertex channels come
 	# in fixed widths; the fourth is unused and the shader reads .xyz.
@@ -480,6 +516,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 		"normals": PackedVector3Array(),
 		"colors": PackedColorArray(),
 		"uvs": PackedVector2Array(),
+		"fog_uvs": PackedVector2Array(),
 		"tiles": PackedFloat32Array(),
 		"weights": PackedFloat32Array(),
 		"indices": PackedInt32Array(),
@@ -518,6 +555,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 			# Continuous across cells, derived from the UNWRAPPED cell, and
 			# periodic over the map — see `vertex_uv` and `uv_scale`.
 			uvs.append(vertex_uv(uv_step, unwrapped, -1))
+			fog_uvs.append(fog_uv(space, unwrapped, -1))
 			_append_tiles(tile_slots, tile_weights, slots, weights, 0)
 
 			for corner in range(CORNERS):
@@ -531,6 +569,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 				normals.append(_corner_normal(space, fields, unwrapped, corner))
 				colors.append(fields.colors[surface_base + 1 + corner])
 				uvs.append(vertex_uv(uv_step, unwrapped, corner))
+				fog_uvs.append(fog_uv(space, unwrapped, corner))
 				_append_tiles(tile_slots, tile_weights, slots, weights, 1 + corner)
 
 			# Fan from the centre vertex.
@@ -553,6 +592,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_TEX_UV2] = fog_uvs
 	arrays[Mesh.ARRAY_CUSTOM0] = tile_slots
 	arrays[Mesh.ARRAY_CUSTOM1] = tile_weights
 	arrays[Mesh.ARRAY_INDEX] = indices
@@ -573,6 +613,7 @@ static func build_mesh(space: TorusSpace, terrain: TerrainGen, chunk: Vector2i,
 		rock[Mesh.ARRAY_NORMAL] = skirt["normals"]
 		rock[Mesh.ARRAY_COLOR] = skirt["colors"]
 		rock[Mesh.ARRAY_TEX_UV] = skirt["uvs"]
+		rock[Mesh.ARRAY_TEX_UV2] = skirt["fog_uvs"]
 		rock[Mesh.ARRAY_CUSTOM0] = skirt["tiles"]
 		rock[Mesh.ARRAY_CUSTOM1] = skirt["weights"]
 		rock[Mesh.ARRAY_INDEX] = skirt["indices"]
@@ -774,7 +815,28 @@ static func make_material() -> Material:
 	# to `art/terrain/atlas.py`.
 	material.set_shader_parameter("atlas_grid",
 		Vector2(float(ATLAS_COLUMNS), float(ATLAS_ROWS)))
+	# Fog is NOT set here: this material is shared by four headless tools that
+	# have no player, and the shader's `hint_default_white` leaves them looking
+	# at the whole map. Only a client in a match calls `set_fog` (D-106).
 	return material
+
+
+## Bind one client's fog-of-war field to the terrain material (D-106).
+##
+## Separated from the client so the binding is reachable from a headless test:
+## the defect this closes was not a wrong fog field, it was a right one that
+## never reached the ground, and the only thing that could have caught it is a
+## check that the material actually carries it.
+##
+## Silently does nothing on the untextured fallback (`make_material` returns a
+## StandardMaterial3D when `generated/` has not been built), which is the same
+## bargain the fallback already makes everywhere else: no art build costs
+## fidelity, never the game.
+static func set_fog(material: Material, fog: Texture2D) -> void:
+	var shaded := material as ShaderMaterial
+	if shaded == null:
+		return
+	shaded.set_shader_parameter(TerrainFog.SHADER_PARAM, fog)
 
 
 ## Build every chunk, returning stats. This is the measurement
