@@ -2183,21 +2183,29 @@ const NODE_CHUNK := 16
 
 ## chunk key (cell region) -> { "root": Node3D, "centre": Vector3,
 ##   "multis": {model_id: MultiMeshInstance3D},
-##   "cells": {cell: {"model": StringName, "xform": Transform3D}},
+##   "cells": {cell: [{"model": StringName, "xform": Transform3D}, ...]},
 ##   "dirty": bool }
+## A cell holds a LIST: a node cell grows several trees, each on its own
+## offset inside the cell, which is what stops a forest reading as the hex
+## lattice it stands on (ResourceVisuals.trees_for).
 ## The root is repositioned every frame to the lattice copy nearest the
 ## camera (D-035) — per CHUNK, not per tree, which is what keeps the
 ## torus tax off the per-tree path.
 var _tree_chunks := {}
 
-## cell -> {"chunk": Vector2i, "world": Vector3, "model": StringName,
-## "kind": int} — the reverse index the click test and the felling read.
+## cell -> {"chunk": Vector2i, "world": Vector3, "kind": int,
+## "models": Array[StringName]} — the reverse index the click test and the
+## felling read. `world` is the CELL's own centre, not any tree's drawn
+## position: it is what the click test ranks by and what the simulation
+## means by the node, and trees stand inside their own cell by
+## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
 
 ## Fellings mid-animation: {"node": MeshInstance3D, "kind": int,
-## "cell": int, "age": float, "base": Transform3D}. A felled tree leaves
-## its chunk's MultiMesh and becomes a short-lived individual instance —
-## the one moment a tree is worth a node of its own.
+## "axis": Vector3, "age": float, "base": Transform3D}. A felled cell's
+## trees leave its chunk's MultiMesh and become short-lived individual
+## instances — the one moment a tree is worth a node of its own — each
+## tipping about its own axis so a stand does not fall as one object.
 var _fallings := []
 
 ## kind -> the primitive stand-in mesh used when the art build is missing
@@ -2831,8 +2839,17 @@ func _refresh_resource_nodes() -> void:
 	_advance_fallings()
 
 
-## One node enters the world: pick its model from the ground it stands on,
-## pose it, and file it in its chunk.
+## One node enters the world: grow the cell's trees from the ground they
+## stand on, pose each one, and file the lot in its chunk.
+##
+## A cell is several trees on their own offsets, not one at the centre
+## (ResourceVisuals.trees_for). Each is sampled for height AT ITS OWN
+## position rather than at the cell centre — on a slope the difference is
+## a tree standing in the air — and every offset is inside the cell's own
+## hexagon, so nothing here can walk onto water or over the cliff next
+## door. A tree in an edge cell may hang a fraction of a cell past its
+## chunk's block, which costs nothing: the MultiMesh's AABB comes from the
+## transforms actually in it, so the culling volume already knows.
 func _place_node(cell: int, kind: int) -> void:
 	var space := _state.space
 	var coord := space.from_index(cell)
@@ -2840,14 +2857,22 @@ func _place_node(cell: int, kind: int) -> void:
 	if _state.terrain_sampler.is_valid():
 		world.y = _state.terrain_sampler.call(world.x, world.z)
 
-	var model := _node_model_for(cell, coord, kind)
-	# The authored models are grounded at y=0 (split_markers bakes them
-	# so); the primitive fallback is a centred cylinder and needs lifting
-	# onto its base.
-	var lift := 0.0 if UnitMesh.mesh_for(model) != null else 0.75
-	var basis := Basis(Vector3.UP, ResourceVisuals.yaw_for(cell)) \
-		.scaled(Vector3.ONE * ResourceVisuals.scale_for(cell))
-	var xform := Transform3D(basis, world + Vector3(0.0, lift, 0.0))
+	var entries := []
+	var models: Array[StringName] = []
+	for tree in _node_trees_for(cell, coord, kind):
+		var model: StringName = tree["model"]
+		var at: Vector3 = world + (tree["offset"] as Vector3) * space.hex_size
+		if _state.terrain_sampler.is_valid():
+			at.y = _state.terrain_sampler.call(at.x, at.z)
+		# The authored models are grounded at y=0 (split_markers bakes them
+		# so); the primitive fallback is a centred cylinder and needs lifting
+		# onto its base.
+		var lift := 0.0 if UnitMesh.mesh_for(model) != null else 0.75
+		var basis := Basis(Vector3.UP, float(tree["yaw"])) \
+			.scaled(Vector3.ONE * float(tree["scale"]))
+		entries.append({"model": model,
+			"xform": Transform3D(basis, at + Vector3(0.0, lift, 0.0))})
+		models.append(model)
 
 	var key := Vector2i(coord.x / NODE_CHUNK, coord.y / NODE_CHUNK)
 	var chunk: Dictionary = _tree_chunks.get(key, {})
@@ -2859,16 +2884,18 @@ func _place_node(cell: int, kind: int) -> void:
 		chunk = {"root": root, "centre": space.to_world(centre_cell),
 			"multis": {}, "cells": {}, "dirty": true}
 		_tree_chunks[key] = chunk
-	chunk["cells"][cell] = {"model": model, "xform": xform}
+	chunk["cells"][cell] = entries
 	chunk["dirty"] = true
-	_node_placed[cell] = {"chunk": key, "world": world, "model": model, "kind": kind}
+	_node_placed[cell] = {"chunk": key, "world": world, "kind": kind,
+		"models": models}
 
 
-## The model a node wears — species from the same TerrainGen the ground
-## was meshed from, so a desert grows arid types and a treeline frays into
-## its neighbour region's species (ResourceVisuals's job; this is just the
+## What grows on a node cell — how many, which species, where in the cell
+## and at what size. Species come from the same TerrainGen the ground was
+## meshed from, so a desert grows arid types and a treeline frays into its
+## neighbour region's species (ResourceVisuals's job; this is just the
 ## plumbing that feeds it terrain samples).
-func _node_model_for(cell: int, coord: Vector2i, kind: int) -> StringName:
+func _node_trees_for(cell: int, coord: Vector2i, kind: int) -> Array[Dictionary]:
 	var biome := TerrainGen.Biome.GRASSLAND
 	var moisture := 0.5
 	var neighbours := []
@@ -2877,7 +2904,7 @@ func _node_model_for(cell: int, coord: Vector2i, kind: int) -> StringName:
 		moisture = _terrain_gen.moisture_at(_state.space, coord)
 		for neighbour in _state.space.neighbors(coord):
 			neighbours.append(_terrain_gen.biome_at(_state.space, neighbour))
-	return ResourceVisuals.model_for(kind, biome, neighbours, moisture, cell)
+	return ResourceVisuals.trees_for(kind, biome, neighbours, moisture, cell)
 
 
 ## The mesh behind a model id, or the per-kind primitive stand-in when the
@@ -2912,11 +2939,11 @@ func _node_mesh_for(model: StringName, kind: int) -> Mesh:
 func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 	var groups := {}
 	for cell in chunk["cells"]:
-		var entry: Dictionary = chunk["cells"][cell]
-		var model: StringName = entry["model"]
-		if not groups.has(model):
-			groups[model] = []
-		groups[model].append(entry["xform"])
+		for entry in chunk["cells"][cell]:
+			var model: StringName = entry["model"]
+			if not groups.has(model):
+				groups[model] = []
+			groups[model].append(entry["xform"])
 
 	var multis: Dictionary = chunk["multis"]
 	for model in multis.keys():
@@ -2932,7 +2959,8 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 			multimesh.transform_format = MultiMesh.TRANSFORM_3D
 			var kind := Economy.ResourceKind.WOOD
 			for cell in chunk["cells"]:
-				if chunk["cells"][cell]["model"] == model:
+				if _node_placed.has(cell) \
+						and (_node_placed[cell]["models"] as Array).has(model):
 					kind = int(_node_placed[cell]["kind"])
 					break
 			multimesh.mesh = _node_mesh_for(model, kind)
@@ -2946,8 +2974,12 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 	chunk["dirty"] = false
 
 
-## A node the server reported worked out: pull it from its chunk and stand
-## up a short-lived individual instance to play the fall.
+## A node the server reported worked out: pull its trees from the chunk and
+## stand each one up as a short-lived individual instance to play the fall.
+##
+## The whole cell goes at once — one node is worked out, not one trunk —
+## but each tree keeps its own tip axis, so a stand crashes down as several
+## trees rather than as one object breaking apart.
 func _begin_felling(felled: Dictionary) -> void:
 	var cell := int(felled["cell"])
 	var placed: Dictionary = _node_placed.get(cell, {})
@@ -2956,18 +2988,20 @@ func _begin_felling(felled: Dictionary) -> void:
 	_node_placed.erase(cell)
 
 	var chunk: Dictionary = _tree_chunks.get(placed["chunk"], {})
-	var xform := Transform3D()
+	var entries := []
 	if not chunk.is_empty() and chunk["cells"].has(cell):
-		xform = chunk["cells"][cell]["xform"]
+		entries = chunk["cells"][cell]
 		chunk["cells"].erase(cell)
 		chunk["dirty"] = true
 
 	var kind := int(felled["kind"])
-	var instance := MeshInstance3D.new()
-	instance.mesh = _node_mesh_for(placed["model"], kind)
-	add_child(instance)
-	_fallings.append({"node": instance, "kind": kind, "cell": cell,
-		"age": 0.0, "base": xform})
+	for i in range(entries.size()):
+		var instance := MeshInstance3D.new()
+		instance.mesh = _node_mesh_for(entries[i]["model"], kind)
+		add_child(instance)
+		_fallings.append({"node": instance, "kind": kind,
+			"axis": ResourceVisuals.tip_axis_for(cell, i),
+			"age": 0.0, "base": entries[i]["xform"]})
 
 
 ## Advance every mid-animation felling: trees tip about their base with an
@@ -2984,8 +3018,7 @@ func _advance_fallings() -> void:
 			(fall["node"] as MeshInstance3D).queue_free()
 			continue
 		var base: Transform3D = fall["base"]
-		var tip := Basis(ResourceVisuals.tip_axis_for(int(fall["cell"])),
-			float(pose["angle"]))
+		var tip := Basis(fall["axis"] as Vector3, float(pose["angle"]))
 		var origin := base.origin + Vector3(0.0, -float(pose["sink"]), 0.0)
 		(fall["node"] as MeshInstance3D).transform = Transform3D(
 			tip * base.basis, origin + _lattice_offset_for(base.origin))
