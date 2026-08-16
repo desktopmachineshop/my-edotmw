@@ -859,7 +859,11 @@ just implemented.
   hashes exactly `visible_to(player)`, and a client that counted its own
   ghosts would hash a strictly larger set and desync on a perfectly
   healthy system. Don't build a second data-hiding mechanism anywhere —
-  extend this one.
+  extend this one. **A ghost is data the client keeps, not a picture on
+  screen** (D-099): a concealed squad is drawn nowhere — 3D view or
+  minimap — while a building once seen stays drawn, unfaded, forever.
+  Those two rules differ on purpose, and the transparent unit shader that
+  used to fade a ghost is deleted rather than dormant.
 
 ## Project layout
 
@@ -984,7 +988,8 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         materials. CACHED — a .glb is a scene, and
                         loading one per squad is the M4 `by_id` defect
                         with a bigger constant.
-/shaders/*.gdshader     Unit opaque, unit ghost, building static (D-082);
+/shaders/*.gdshader     Unit opaque, building static (D-082); the ghost
+                        variant is gone with the ghost rendering (D-099).
                         VAT sampling shared via a .gdshaderinc. Plus
                         `terrain.gdshader` (D-096): three atlas taps per
                         ground fragment on continuous UVs, which is what

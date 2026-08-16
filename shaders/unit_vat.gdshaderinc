@@ -1,11 +1,15 @@
 // Shared vertex-animation-texture sampling (D-065).
 //
-// Included by unit_anim.gdshader (opaque) and unit_anim_ghost.gdshader
-// (transparent). The two exist as separate shaders rather than one shader with
-// a uniform because Godot decides whether a material is transparent from
-// whether the shader WRITES to ALPHA — it is a compile-time property, not a
-// runtime one. One shader that could do both would make all 26,644 soldiers
-// alpha-sorted to serve the handful that are fog ghosts (D-025).
+// Included by unit_anim.gdshader, which is the only shader soldiers render
+// through: a squad is drawn opaque or not drawn at all (D-099).
+//
+// There was a transparent sibling here for fog ghosts until D-099 deleted the
+// ghost rendering it served. Worth knowing before adding another one: Godot
+// decides whether a material is transparent from whether the shader WRITES to
+// ALPHA — a compile-time property, not a runtime one. So a translucent variant
+// is necessarily a SECOND shader program, and one shader that could do both
+// would make all 26,644 soldiers alpha-sorted to serve the handful that need
+// it.
 //
 // ## What the runtime supplies
 //
