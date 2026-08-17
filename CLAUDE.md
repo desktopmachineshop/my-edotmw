@@ -284,6 +284,15 @@ client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
+cmd_args.gd              The one parse of `--key=value`, and the one check
+                        that a value about to be read as a NUMBER is one
+                        (D-20260817-recipe-args-are-positional). All three
+                        binaries above refuse to start on an argument they
+                        cannot use, because `int()` STRIPS non-digits
+                        rather than failing: `--seed=SANDBOX=1` is seed 1,
+                        a plausible and entirely wrong world. They each
+                        kept a private copy of the parser before, which is
+                        why none of them could be tested.
 
 --- data ---
 /units/*.tres          Unit definitions (UnitDef resources) — the MVP
@@ -503,11 +512,22 @@ them — but which must not be undone:
   claude-<session>  [host:port]`), which is how the owner tells several
   test windows apart. Launch clients only through the recipes so the
   `--instance` flag is always passed.
-- **An agent's quick launch is the dev build:** `just quick-test`
-  resolves `SANDBOX=auto` through `instance-id.sh agent` — on for any
-  checkout that is not the owner's own default branch (D-077's sandbox
-  mode, cheats panel included), off for `main`. It prints which it
-  resolved, because both halves used to fail silently.
+- **An agent's quick launch is the dev build.** `quick-test` takes two
+  POSITIONAL arguments, `SEED` then `SANDBOX`, and prints which it
+  resolved (it printed nothing at all before):
+
+  | you type | seed | sandbox (D-077 cheats panel) |
+  |---|---|---|
+  | `just quick-test` | 1337 | `auto` |
+  | `just quick-test 1337 1` | 1337 | ON |
+  | `just quick-test 1337 0` | 1337 | off |
+  | `just quick-test 42` | 42 | `auto` |
+  | `just quick-test SANDBOX=1` | — | **refused**, loudly |
+
+  `auto` asks `instance-id.sh agent`: ON for any checkout that is not
+  the owner's own default branch, off on `main`/`master`. The seed is
+  the FIRST argument and nothing else sets it — there is no `SEED=`
+  form, and there never was one that worked.
 - **just takes recipe arguments POSITIONALLY** — `just quick-test 1337 1`,
   never `just quick-test SANDBOX=1`. A `NAME=value` written after a
   recipe name binds the whole string to that recipe's FIRST parameter,

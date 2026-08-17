@@ -19,6 +19,15 @@ Two rules, one root cause (#89, found in the P04 sandbox playtest of
    a list of what is NOT an agent's (the default branch: `main`,
    `master`), overridable with `EDOTMW_AGENT`. `quick-test` reads it to
    resolve `SANDBOX=auto`; nothing pattern-matches branch names itself.
+3. **And the same check again on the far side of the boundary.**
+   `cmd_args.gd` is the one parse of `--key=value` and the one numeric
+   check; `server.gd`, `client.gd` and `bot_client.gd` refuse to start
+   on an argument that is not the number they are about to read it as.
+   Raised by #98, and right: `docs/COMMANDS.md` tells you to launch the
+   binary by hand when a recipe does not expose the flag you want, and
+   no recipe check covers that path. The three files carried a
+   byte-identical private copy of the parser, none of which a GUT test
+   could reach.
 
 ## Rationale
 
@@ -85,11 +94,12 @@ the human's own checkout sits on the default branch.
 - **A `just` setting that rejects `NAME=value` arguments.** None exists.
   Overrides must precede the recipe name, and even a *declared*
   variable's name binds positionally when written after it — verified.
-- **Validate inside the consumers (`server.gd`'s `_parse_args`).** The
-  wrong value never reaches a consumer that could name the cause: by
-  then it is `"SANDBOX=1"` in a `--seed` slot with no idea what a recipe
-  parameter is. Assert the value on the near side of the boundary, where
-  the mistake is still legible.
+- **Validate ONLY inside the consumers.** Rejected as a replacement, and
+  adopted as the second line (clause 3): a consumer cannot name the
+  cause — by then it is `"SANDBOX=1"` in a `--seed` slot with no idea
+  what a recipe parameter is — so the near-side check has to exist too,
+  and `CmdArgs.complaint` carries the recipe hint across for the case
+  where the far side is all there is.
 - **Make the check a `just` dependency so it runs before `_import`.**
   It would save ~10 s on a mistyped command, at the cost of a private
   recipe layer and a variadic-argument dance for `enum`. Not worth it:
@@ -132,6 +142,13 @@ the human's own checkout sits on the default branch.
 - Amends D-095: `instance-id.sh` gains a third mode, and the justfile no
   longer re-derives any part of instance identity — including the
   agent/human distinction, which it had been re-deriving by hand.
+- **A source-scanning test cannot see a script that does not compile.**
+  The first version of the far-side guard declared `var bad` where
+  `server.gd`'s `_ready` already had one; `test_recipe_args.gd`'s scan
+  for `CmdArgs.invalid_integers(` passed on the text while `server.gd`
+  failed to parse. `tests/test_scripts_parse.gd` is what caught it —
+  worth knowing before writing another scan-shaped test, because the
+  scan will happily go green over a file the engine has thrown away.
 
 ## Revisit trigger
 
