@@ -99,3 +99,18 @@ appearing on the minimap (that would be a wire-gating bug, D-004, not a
 paint bug); the minimap gains a third fog state (#59) and buildings need
 to distinguish remembered from visible; or minimap resolution changes
 enough that cell-count footprints stop being the right unit.
+
+**Amendment, 2026-08-17 (D-20260817-minimap-squad-colours):** the
+two-colour split this entry recorded as deliberate — "squads in own/enemy
+cyan-and-red, buildings in per-player colour ... worth revisiting the
+squad dots against it" — is **resolved in favour of per-player colour
+everywhere**. A playtester hit it the same week: their own army read cyan
+where it is red in the lobby and on the field, and their ALLY read in the
+enemy colour, which is worse than inconsistent given allies share vision
+(D-050). Everything else here stands.
+
+Worth carrying forward on its own account: this entry SAW the
+inconsistency, described it accurately, and shipped it anyway.
+**Recording a known defect in a decision file is not the same as having a
+check that fails** — the note was read by nobody in the weeks it took a
+player to hit it, and what closes it is a test, not a better note.
