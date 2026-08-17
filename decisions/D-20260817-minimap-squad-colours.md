@@ -121,3 +121,40 @@ Any view acquiring a colour rule of its own — the scan in
 would pass it and is the gap to watch. Also: a match size where 20 distinct
 `PlayerColours` stop being distinguishable at one pixel per cell, which is
 a `PlayerColours` question rather than a minimap one.
+
+## Amendment, 2026-08-17 — two sessions found this independently
+
+Two AO sessions fixed #82 in parallel (a coordination slip: a worker was
+spawned for an issue another session had already picked up). This entry's
+fix merged as #86; the other became #87, was rebased down to what this one
+does not cover, and is recorded here because **what the two agreed on is
+evidence, and what they did not is worth not overstating.**
+
+**What converged.** Both sessions, working without sight of each other,
+gave the SAME reason the ally case is severe rather than cosmetic, in
+nearly the same words: D-050 gives teammates shared vision, so an ally's
+army is exactly the kind of thing you see on the minimap and nowhere
+else, and it was drawn in the enemy tone. Two independent readings of the
+same code reaching the same judgement about which half of a bug matters
+is the strongest evidence available here that the fix is aimed right.
+
+**What did NOT converge, and was nearly recorded as though it had.** In
+relaying this, the coordinating session described the agreement as both
+workers independently finding a *second* bug — allied squads revealing
+ground under D-050. **Neither session found that, and it is not in either
+write-up.** D-050 appears in both purely as the reason the ally COLOUR
+matters; both explicitly say the opposite about vision — this entry
+changes only what `_update_minimap` paints, and #87's own text reads
+"nothing on the wire, in the simulation or in fog gating changes". A
+fabricated second finding would have been the most citable line in this
+file and the only one with nothing behind it, so it is corrected here
+rather than quietly dropped. Whether ally vision has a real defect is
+untested by either session and remains open.
+
+**The gap this entry's revisit trigger names is now closed.** It observes
+that `tests/test_minimap_paint.gd`'s scan is per-literal, "so a *new*
+hardcoded pair would pass it and is the gap to watch". #87 adds the
+invariant form — `_update_minimap` may hold no `Color(` literal at all —
+and demonstrates the two are complementary rather than asserting it:
+repainting the squad pass from a new colour, `Color(0.9, 0.1, 0.9)`,
+leaves this entry's scan green at 23/23 and reddens the invariant.
