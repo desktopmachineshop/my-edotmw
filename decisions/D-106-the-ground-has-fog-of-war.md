@@ -127,3 +127,92 @@ client shades — have to be derived from one definition rather than from the
 same radius twice. Also revisit if ground cover (D-100) is ever wired into the
 client: props are client-derived and NOT fog-gated by that decision, so a fern
 would stand fully lit on black ground.
+
+### Amendment, 2026-08-17 — three corrections from review, and where the rule lives
+
+Kept as an amendment rather than edited into the clauses above, per this
+directory's rule 3. No new decision ID: nothing here changes what was decided,
+only what was built. (A fresh ID was offered and declined for that reason.)
+
+**1. Allied BUILDINGS revealed nothing.** The squad loop asked
+`ClientState.friendly_squads()` and was team-aware; the buildings loop beside it
+still compared `owner != player`. The server stamps buildings into the TEAM's
+shared coverage (`Vision._group_of`), so the client's fog came out strictly
+NARROWER than the vision it is gated on: an ally's town hall lit nothing, its
+base rendered black, and enemy squads standing in it drew fully lit on the dark
+ground. Exactly the failure the squad loop's own comment warns about, one entity
+type down, written directly underneath it.
+
+**The fix that matters is where the rule now lives.** Stamping moved out of
+`client.gd` into `TerrainFog.rebuild(ClientState)`, mirroring
+`Vision.rebuild(SquadSim)`. `client.gd` needs a scene tree and a GPU and is
+unreachable from GUT, so no test could have been written against the old
+placement at all — while `ClientState` is the headless half of the client by
+design (the load-test bots run it). **When a rule cannot be tested where it
+lives, that is a fact about where it lives, not about the rule.** Four tests
+now: an allied building lights ground, an enemy one does not (we are TOLD about
+enemy buildings we have scouted — D-030 keeps them), two players on team 0 are
+not allies because 0 is free-for-all, and rubble sees nothing.
+
+**2. A refresh cost the MAP, not the army.** The cost clause above budgeted "one
+pass over the map's cells at 4 Hz" and measured it only on the Standard map.
+There were three such passes, and `MapSettings.sizes()` goes four times bigger.
+Measured, 12 seeing things at radius 7, walking:
+
+| steady-state refresh | Standard (8,064) | Huge (32,592) |
+|---|---|---|
+| before | 8,064 cells, 11.20 ms | 32,592 cells, 42.55 ms |
+| after | 977 cells, 2.54 ms | 977 cells, 2.49 ms |
+
+`forget_visible` now demotes only the cells stamped last refresh, and `bake`
+re-shades only cells whose level changed plus one ring — the ring because a
+cell's drawn shade averages seven levels, so one change moves seven shades. The
+one-off first bake (13.16 / 41.25 ms) is reported rather than budgeted: it lands
+beside a terrain mesh build costing 600–1,100 ms.
+
+Scaling `FOG_INTERVAL` by cell count was the obvious alternative and was
+rejected: it buys the same budget by making the fog lag an army by a second on
+exactly the maps with the most ground to cross.
+
+**The cost test could not have caught this**, because it loaded
+`maps/default.tres` and nothing else — a generous bound on the small map stays
+green through a four-times regression on the big one. It now walks both ends of
+`MapSettings.sizes()`.
+
+**And it asserts WORK, not milliseconds, which took three goes.** The first
+version compared the two maps' wall-clock times as a ratio, and that gate went
+red with nothing wrong: the same code measured 2.73 vs 2.61 ms on a quiet host
+and 7.81 vs 20.61 ms while eleven branches were being built beside it. That is
+this project's own "a tight timing gate on a shared host gets muted rather than
+fixed", committed two commits after writing it down. `TerrainFog` now counts the
+cells each bake re-shades and the test asserts that count is EQUAL across map
+sizes — deterministic, and it fails at 32,592 against 8,064 the moment the diff
+is removed. The milliseconds are still measured and printed, because the number
+is worth knowing; they are no longer the assertion.
+
+The second go was wrong in a more interesting way: the seers' positions were
+derived from `space.width`, so the "identical" armies spread further apart on the
+bigger map, overlapped less, and genuinely covered more distinct cells — 1,092
+against 1,176. A correct implementation read as a scaling one. The comparison
+only means anything if the army is the same, which now means literally the same
+coordinates on both maps.
+
+The optimisation has its own separate guard: an incremental bake is compared
+byte-for-byte with a from-scratch one after each step of a walking army, because
+its failure mode is a one-cell halo of stale fog trailing the army — correct
+everywhere the eye is not, and invisible to every other test in the file.
+
+**3. The Vision-parity test did not reference `Vision`.** It asserted
+`radius_in_cells` against the same arithmetic written out a second time in the
+test — which reads as a cross-check and is two hand-copies agreeing, the shape
+D-022's audit block records. `radius_in_cells` now CALLS
+`Vision._range_in_cells`; so does the test; and the shipped roster's own vision
+ranges are included alongside the hand-picked values.
+
+That closed a real divergence at the edge: `Vision._stamp` returns early on a
+non-positive range and stamps NOTHING, while any positive range under one hex
+still floors to a radius-0 disk — which is the origin cell. Zero and nothing are
+different answers, so the conversion returns a negative sentinel rather than a 0
+that would have meant both.
+
+**Measured after:** `just test-unit` green at 781 tests across 51 scripts.

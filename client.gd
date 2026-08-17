@@ -170,8 +170,15 @@ var _fog_updated_at := -1.0
 ## How often the fog field is restamped and re-uploaded. The same 4 Hz the
 ## minimap redraws at and for the same reason: the simulation advances at
 ## 10 Hz (D-020) and nothing on the map can walk far enough in a quarter
-## second for a player to notice the lag. Costs a pass over every cell,
-## so it is not free enough to do per frame.
+## second for a player to notice the lag.
+##
+## Flat rather than scaled by map size, which was the other way this could
+## have been bounded: a refresh costs what this player is LOOKING at, not
+## what the map contains (see `TerrainFog.forget_visible` and
+## `_changed_since_last_bake`), so the Huge preset's four-times-bigger map
+## does not cost four times more. Scaling the interval instead would have
+## bought the same budget by making the fog lag an army by a second on
+## exactly the maps with the most ground to cross.
 const FOG_INTERVAL := 0.25
 
 ## Render LOD tiers (D-045): distance from the camera in world units, and
@@ -4630,36 +4637,12 @@ func _update_fog() -> void:
 		return
 	_fog_updated_at = _now
 
-	# Everything in sight a moment ago drops back to remembered, and the
-	# reveals below raise back whatever is still in sight. Ground already
-	# explored stays explored.
-	_fog.forget_visible()
-
-	# Allied squads reveal ground too (D-050). Without this the server
-	# would gate on the team's shared sight while the client painted fog
-	# from its own squads alone — allies' units standing in black,
-	# perfectly visible and apparently in the dark.
-	for squad in _state.friendly_squads():
-		if not _state.curves.has(squad) or not _state.composition.has(squad):
-			continue
-		if _state.alive_of(squad) <= 0:
-			continue
-		var def := UnitRoster.by_id(StringName(_state.composition[squad]["def_id"]))
-		if def == null:
-			continue
-		_fog.reveal(_state.squad_cell(squad, _now),
-			TerrainFog.radius_in_cells(_state.space, def.vision_range))
-
-	for wire_id in _state.buildings:
-		var info: Dictionary = _state.buildings[wire_id]
-		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
-			continue
-		var building_def := BuildingSim.def_by_id(StringName(info["def_id"]))
-		if building_def == null:
-			continue
-		_fog.reveal(_state.space.from_index(int(info["cell"])),
-			TerrainFog.radius_in_cells(_state.space, building_def.vision_range))
-
+	# The stamping itself lives in TerrainFog, against ClientState — which
+	# this client and the load-test bots both run, and which a GUT test can
+	# build without a scene tree or a GPU. What was here instead shipped
+	# with allied BUILDINGS excluded while allied squads were included,
+	# and no test could have been written against it in this file.
+	_fog.rebuild(_state, _now)
 	_push_fog_to_terrain()
 
 
