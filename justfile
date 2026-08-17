@@ -301,8 +301,14 @@ status:
 # Manual dev loop: run the server in the foreground.
 # AI is how many computer opponents to seat (D-051). They take ordinary
 # player slots, read the world through a client like you do, and are held
-# to every rule you are.
-# LOBBY=1 holds the server in the lobby (D-048): the world is NOT
+# to every rule you are. It is POSITIONAL — `run-server 3`, never
+# `run-server AI=3`: that binds the whole string "AI=3" to AI, and it
+# only ever worked because `int()` strips the non-digits. The same typo
+# on the third parameter — `run-server LOBBY=1` — binds to AI instead and
+# gives you one AI and no lobby. Both fail loudly now (#89,
+# D-20260817-recipe-args-are-positional).
+# LOBBY=1 (positionally, the third argument) holds the server in the
+# lobby (D-048): the world is NOT
 # generated until the admin presses start, because its size, seed and
 # shape are all still being chosen (D-049). The first human to connect is
 # admin and adds AI seats there — a lobby of one cannot start a match.
@@ -310,6 +316,8 @@ status:
 run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int AI "{{AI}}"
+    bash recipe-arg.sh enum LOBBY "{{LOBBY}}" 0 1
     if [ ! -f "{{server_scene}}" ]; then
         echo "NOT IMPLEMENTED UNTIL M1: {{server_scene}} doesn't exist yet." >&2
         exit 1
@@ -333,11 +341,13 @@ run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
 # to agree about the port and about lobby mode.
 #
 # Deliberately its OWN recipe instead of `run-server`'s LOBBY parameter.
-# just takes arguments POSITIONALLY, so `just run-server LOBBY=1` silently
-# parses "LOBBY=1" as the AI count, passes --ai=LOBBY=1, and int() reads
-# that as 0 — no error, no lobby, a server that looks fine and is not in
-# the mode you asked for. Exactly the silent-default class this project
-# keeps getting bitten by.
+# just takes arguments POSITIONALLY, so `just run-server LOBBY=1` parses
+# "LOBBY=1" as the AI count, passes --ai=LOBBY=1, and int() reads that as
+# 0 — no lobby, and a server that looks fine and is not in the mode you
+# asked for. That is no longer SILENT — every recipe below checks what it
+# was handed (D-20260817-recipe-args-are-positional, #89) — but this
+# recipe stays, because "play a game" needs server and client to agree
+# about port and mode whatever the arguments say.
 #
 # The world is NOT generated until the admin presses start (D-049): its
 # size, seed and shape are all still being chosen, so there is genuinely
@@ -346,6 +356,7 @@ run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
 lobby PLAYERS="1":
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int PLAYERS "{{PLAYERS}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
@@ -397,21 +408,37 @@ lobby PLAYERS="1":
 # port and mode, and skipping the lobby means there is no admin screen to
 # fall back on if you get that wrong.
 #
-# SANDBOX defaults to "auto": ON when this checkout is an agent worktree
-# (instance claude-*), OFF for the human's own checkout. An agent going
-# straight into quick launch is always dev-testing, so it gets the dev
-# build — sandbox mode (D-077) with its cheats panel — without having to
-# remember to ask for it. Pass SANDBOX=0/1 to override either way.
+# SANDBOX defaults to "auto", resolved by `instance-id.sh agent`: ON for
+# an agent worktree, OFF for the human's own checkout on the default
+# branch. An agent going straight into quick launch is always
+# dev-testing, so it gets the dev build — sandbox mode (D-077) with its
+# cheats panel — without having to remember to ask for it.
+#
+# Both arguments are POSITIONAL, like every just recipe's:
+#   {{just_executable()}} quick-test 1337 1     # this seed, sandbox ON
+#   {{just_executable()}} quick-test 1337 0     # this seed, sandbox OFF
+# Writing `SANDBOX=1` binds that whole string to SEED instead, which used
+# to launch with --seed=SANDBOX=1 and sandbox off, silently — and since
+# `int()` strips the non-digits, on world seed 1 rather than 1337 (#89).
+# Both values are checked below, so it now fails loudly
+# (D-20260817-recipe-args-are-positional).
 [doc("Quick test: you + 3 AI, all random civs, no lobby (agents get sandbox)")]
 quick-test SEED="1337" SANDBOX="auto":
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int SEED "{{SEED}}"
+    bash recipe-arg.sh enum SANDBOX "{{SANDBOX}}" 0 1 auto
     sandbox="{{SANDBOX}}"
     if [ "$sandbox" = "auto" ]; then
-        case "{{instance}}" in
-            claude-*) sandbox=1 ;;
-            *)        sandbox=0 ;;
-        esac
+        sandbox="$(bash instance-id.sh agent)"
+    fi
+    # Say what was resolved. Both halves of this failed SILENTLY before
+    # (#89) and the only tell was a cheats panel that never appeared,
+    # which reads as a broken feature rather than a mistyped command.
+    if [ "$sandbox" = "1" ]; then
+        echo "quick-test: instance {{instance}}, seed {{SEED}} — sandbox ON (dev build, D-077)"
+    else
+        echo "quick-test: instance {{instance}}, seed {{SEED}} — sandbox off"
     fi
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -467,6 +494,7 @@ quick-test SEED="1337" SANDBOX="auto":
 run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int PORT "{{PORT}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014: it cannot be containerized)." >&2
@@ -506,6 +534,8 @@ run-client ADDRESS="127.0.0.1" PORT=port:
 run-bots N DURATION="-1": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
     if [ "{{runtime}}" = "docker" ]; then
         # In-network: the bots reach this project's server as "server:4433",
         # so no host port is involved (D-095).
@@ -574,6 +604,8 @@ test-unit FILTER="" TEST="": _import
 test-load N DURATION:
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
     mkdir -p "{{artifacts_dir}}"
     trap '"{{just_executable()}}" down' EXIT INT TERM
     "{{just_executable()}}" up
@@ -714,6 +746,8 @@ test-load N DURATION:
 test-scenario SCENARIO="siege" N="4" DURATION="30":
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
     mkdir -p "{{artifacts_dir}}"
     trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
     "{{just_executable()}}" _import
@@ -826,6 +860,8 @@ scenarios: _import
 test-client SECONDS="60" BOTS="3": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    bash recipe-arg.sh int BOTS "{{BOTS}}"
     if [ "{{runtime}}" != "docker" ]; then
         echo "test-client requires the docker runtime (it needs the software-GL image)." >&2
         echo "For the native GUI client use: {{just_executable()}} run-client" >&2
@@ -945,6 +981,7 @@ replay-info FILE="res://artifacts/replay-4433.edmw": _import
 gen-terrain-preview CHUNK_SIZE="16": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int CHUNK_SIZE "{{CHUNK_SIZE}}"
     mkdir -p "{{artifacts_dir}}"
     if [ "{{runtime}}" = "docker" ]; then
         docker compose -p {{compose_project}} run --rm --no-deps test --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
@@ -1043,6 +1080,7 @@ bootstrap-art:
 gen-model-preview SECONDS="1.2": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1086,6 +1124,7 @@ gen-model-preview SECONDS="1.2": _import
 gen-cover-preview SECONDS="0.6": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1148,6 +1187,7 @@ gen-cover-preview SECONDS="0.6": _import
 gen-forest-preview SECONDS="0.6": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1210,6 +1250,7 @@ gen-forest-preview SECONDS="0.6": _import
 gen-terrain-shot HEIGHT="14": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1272,6 +1313,8 @@ profile: _import
 bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int FRAMES "{{FRAMES}}"
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the render benchmark needs a native Godot with a GPU (D-014)." >&2
@@ -1299,6 +1342,9 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
 lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    bash recipe-arg.sh int AI "{{AI}}"
+    bash recipe-arg.sh int PRESET "{{PRESET}}"
     if [ "{{runtime}}" != "docker" ]; then
         echo "lobby-shot requires the docker runtime (it needs the software-GL image)." >&2
         exit 1
@@ -1364,6 +1410,9 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
 ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    bash recipe-arg.sh int MATCHES "{{MATCHES}}"
+    bash recipe-arg.sh int SECONDS "{{SECONDS}}"
+    bash recipe-arg.sh int AI "{{AI}}"
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/ai-ladder.log"
     : > "$log"

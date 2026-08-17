@@ -473,7 +473,17 @@ var _finished := false
 
 
 func _initialize() -> void:
-	var args := _parse_args(OS.get_cmdline_user_args())
+	var args := CmdArgs.parse(OS.get_cmdline_user_args())
+	# A load test measured with the wrong number of bots is worse than one
+	# that did not run: `int()` strips non-digits, so a mistyped --clients
+	# reads as a plausible count and the verdict quotes it as fact
+	# (D-20260817-recipe-args-are-positional, #89/#98).
+	var bad_args := CmdArgs.invalid_integers(args, ["clients", "port"])
+	bad_args.append_array(CmdArgs.invalid_numbers(args, ["duration"]))
+	if not bad_args.is_empty():
+		push_error(CmdArgs.complaint("bot_client.gd", bad_args))
+		quit(1)
+		return
 
 	var client_count: int = int(args.get("clients", 1))
 	# Inside the compose network the server is a hostname, not localhost,
@@ -754,16 +764,6 @@ func _report() -> void:
 
 ## Minimal `--key=value` CLI parser for user args (after `--`).
 ## Example: godot --headless --script bot_client.gd -- --clients=20 --address=127.0.0.1 --port=4433
-func _parse_args(raw_args: PackedStringArray) -> Dictionary:
-	var parsed := {}
-	for arg in raw_args:
-		if arg.begins_with("--"):
-			var kv := arg.substr(2).split("=", true, 1)
-			if kv.size() == 2:
-				parsed[kv[0]] = kv[1]
-	return parsed
-
-
 ## The best-informed bot's resource-node count (D-061).
 ##
 ## A MAX rather than a union, for the same reason `_max_known_squads` is:

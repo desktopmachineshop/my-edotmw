@@ -16,12 +16,13 @@
 # that sneaks back in fails to connect instead of connecting to the
 # wrong server.
 #
-# The justfile evaluates this script for its `instance` and `port`
-# variables; nothing else may re-derive either. Overrides exist for the
-# one case the isolation is deliberately broken — the human asking two
-# checkouts to talk to each other:
+# The justfile evaluates this script for its `instance`, `port` and
+# `agent` values; nothing else may re-derive any of them. Overrides exist
+# for the one case the isolation is deliberately broken — the human
+# asking two checkouts to talk to each other:
 #   EDOTMW_INSTANCE=<name>   share/override the instance name
 #   EDOTMW_PORT=<port>       share/override the UDP port
+#   EDOTMW_AGENT=0|1         override "is this an agent's worktree?"
 set -euo pipefail
 
 raw="${EDOTMW_INSTANCE:-}"
@@ -63,8 +64,35 @@ case "${1:-name}" in
             printf '%s\n' "$(( 20000 + (sum % 10000) ))"
         fi
         ;;
+    agent)
+        # Is this checkout a disposable AGENT worktree, or the human's
+        # own? `quick-test` reads this to decide whether to launch the
+        # dev build — D-077's sandbox mode with its cheats panel — since
+        # an agent going straight into a quick launch is always
+        # dev-testing and should not have to remember to ask.
+        #
+        # Stated as "which checkouts are NOT an agent's", deliberately.
+        # This used to be a whitelist of agent branch prefixes
+        # (claude-*) living in the justfile, and when the harness started
+        # branching `ao/<project>/<session>` every agent worktree
+        # silently resolved to "the human" and lost its dev tools with no
+        # error at all (#89, D-20260817-recipe-args-are-positional). The
+        # human's own checkout sits on the default branch: that set is
+        # small, known, and does not change when a new agent harness
+        # appears. A human working on a feature branch in their own
+        # checkout gets the dev build too — visible, and one positional
+        # argument to turn off, where the old failure was neither.
+        if [ -n "${EDOTMW_AGENT:-}" ]; then
+            if [ "$EDOTMW_AGENT" = "0" ]; then printf '0\n'; else printf '1\n'; fi
+        else
+            case "$name" in
+                main|master) printf '0\n' ;;
+                *)           printf '1\n' ;;
+            esac
+        fi
+        ;;
     *)
-        echo "usage: instance-id.sh [name|port]" >&2
+        echo "usage: instance-id.sh [name|port|agent]" >&2
         exit 2
         ;;
 esac
