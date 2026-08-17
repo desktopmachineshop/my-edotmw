@@ -244,7 +244,12 @@ minimap_paint.gd         What the minimap paints over the terrain, and how
                         the minimap had no buildings pass at all until
                         this file existed. Footprints wrap; sizes come
                         from BuildingDef.no_build_radius, never a list of
-                        ids.
+                        ids. Also owns `fogged`, the minimap's three fog
+                        TONES (D-20260817): the levels are TerrainFog's,
+                        this file only decides what they look like on a
+                        1px-per-cell image. Fog only ever subtracts, so
+                        VISIBLE is biome_color untouched and the minimap
+                        cannot invent a colour the 3D ground lacks.
 ground_cover.gd          Which decorative props dress a cell (D-100).
                         Same shape as resource_visuals.gd and the exact
                         OPPOSITE of what it dresses: cover is client-

@@ -4479,14 +4479,22 @@ func _update_minimap() -> void:
 
 	var image: Image = _minimap_base.duplicate()
 
-	# Unexplored ground is black. This is the client half of fog of war
-	# (D-004): the server already refuses to send anything outside vision,
-	# so the map a player has never walked past is genuinely unknown — it
-	# should look it, rather than showing terrain nobody has scouted.
+	# Three fog states, three tones (D-20260817) — the minimap drawing what
+	# `TerrainFog` already knows (D-106) rather than asking it the one
+	# question `is_explored` answers. The ground got its third state and the
+	# minimap kept two, so remembered ground and ground under a scout's eyes
+	# were still the same pixel here after the 3D view had learned to tell
+	# them apart.
+	#
+	# Only the two fogged levels touch the image: VISIBLE is the biome
+	# colour `_minimap_base` already carries, unchanged (see
+	# `MinimapPaint.fogged` on why it is the untouched one).
 	for y in range(image.get_height()):
 		for x in range(image.get_width()):
-			if not _fog.is_explored(_state.space.index(Vector2i(x, y))):
-				image.set_pixel(x, y, HudTheme.BG_VOID.darkened(0.5))
+			var level := _fog.level_at(_state.space.index(Vector2i(x, y)))
+			if level != TerrainFog.VISIBLE:
+				image.set_pixel(x, y,
+					MinimapPaint.fogged(image.get_pixel(x, y), level))
 
 	# Buildings, in their owner's colour (D-052) and NOT gated on current
 	# vision (D-101). This is the pass that was missing entirely: nothing
@@ -4497,6 +4505,10 @@ func _update_minimap() -> void:
 	#
 	# Painted before squads so an army defending a base is drawn on top of
 	# it: what is happening outranks what is standing there.
+	# Deliberately NOT dimmed by the fog pass above, unlike the ground and
+	# the resource nodes: D-101 draws a building from KNOWLEDGE, and fading
+	# one because nobody is currently watching it would be re-gating it on
+	# vision through the back door.
 	for mark in MinimapPaint.building_marks(_state.buildings):
 		_plot_minimap(image, _state.space.from_index(int(mark["cell"])),
 			_state.colour_of(int(mark["owner"])), int(mark["size"]))
@@ -4513,12 +4525,16 @@ func _update_minimap() -> void:
 		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
 
 	# Resource nodes, but only where this player has actually been. Fog
-	# governs what you know about the map, and that includes what is on it.
+	# governs what you know about the map, and that includes what is on it —
+	# so a node fades with the ground it stands on, or a dot a scout walked
+	# past three minutes ago reads as live intelligence.
 	for cell in _state.nodes:
-		if not _fog.is_explored(int(cell)):
+		var node_level := _fog.level_at(int(cell))
+		if node_level == TerrainFog.UNEXPLORED:
 			continue
 		var coord := _state.space.from_index(int(cell))
-		image.set_pixel(coord.x, coord.y, _node_colour(int(_state.nodes[cell])))
+		image.set_pixel(coord.x, coord.y,
+			MinimapPaint.fogged(_node_colour(int(_state.nodes[cell])), node_level))
 
 	if _minimap_texture == null:
 		_minimap_texture = ImageTexture.create_from_image(image)
@@ -4575,6 +4591,12 @@ func _centre_minimap_crop_on_camera() -> void:
 ## live: the minimap gives up early when the HUD has not been laid out yet
 ## (`_update_minimap`'s own first two lines), and the 3D world must not go
 ## unfogged because a Control was missing.
+##
+## The minimap reads the SAME field (`_fog.level_at`, D-20260817) rather than
+## keeping a second one. Two derivations of one player's sight is the
+## defect D-095 exists to prevent wearing a different hat: they would drift
+## silently, and the symptom would be a minimap disagreeing with the ground
+## about what the player can see.
 func _update_fog() -> void:
 	if _fog == null or _state.space == null:
 		return

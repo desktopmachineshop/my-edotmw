@@ -161,3 +161,132 @@ func test_the_client_paints_buildings_on_the_minimap() -> void:
 		"_update_minimap makes a pass over the buildings the client knows")
 	assert_true(body.contains("_state.buildings"),
 		"and paints them from replicated building state")
+
+
+# --- three fog tones (D-20260817) --------------------------------------------
+#
+# The minimap drew TWO states while `TerrainFog` (D-106) computed three, so
+# remembered ground and ground under a scout's eyes stayed the same pixel
+# here after the 3D view had learned to tell them apart. Observed to fail
+# before the fix: collapsing `fogged`'s EXPLORED branch to return `colour`
+# — exactly what the client did — reddens the first three tests below.
+
+
+func _tones(colour: Color) -> Array[Color]:
+	return [
+		MinimapPaint.fogged(colour, TerrainFog.UNEXPLORED),
+		MinimapPaint.fogged(colour, TerrainFog.EXPLORED),
+		MinimapPaint.fogged(colour, TerrainFog.VISIBLE),
+	]
+
+
+## Perceptual-ish brightness, spelled out rather than `get_luminance` so the
+## ordering assertion below reads.
+func _luma(colour: Color) -> float:
+	return 0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b
+
+
+## Distance between two tones as the largest single-channel difference —
+## channel-wise rather than luma, so a pair differing only in hue still
+## counts as separated.
+func _gap(a: Color, b: Color) -> float:
+	return maxf(maxf(absf(a.r - b.r), absf(a.g - b.g)), absf(a.b - b.b))
+
+
+func test_the_three_fog_levels_are_three_distinct_tones() -> void:
+	# The whole defect in one assertion: EXPLORED and VISIBLE were equal.
+	for biome in TerrainGen.Biome.values():
+		var tone := _tones(TerrainGen.color_of(biome))
+		assert_ne(tone[1], tone[2],
+			"biome %d: remembered ground is not drawn as live vision" % biome)
+		assert_ne(tone[1], tone[0],
+			"biome %d: remembered ground is not drawn as never-seen" % biome)
+		assert_ne(tone[0], tone[2], "biome %d: never-seen is not live" % biome)
+
+
+func test_the_three_tones_are_separated_enough_to_read() -> void:
+	# Distinct is not the same as legible, and "isn't distinct enough" was
+	# the original report. A one-per-255 step satisfies the test above and
+	# changes nothing on screen — the D-066 failure mode.
+	for biome in TerrainGen.Biome.values():
+		var tone := _tones(TerrainGen.color_of(biome))
+		assert_gt(_gap(tone[1], tone[2]), 0.08,
+			"biome %d: remembered reads as dimmer than live" % biome)
+		assert_gt(_gap(tone[0], tone[1]), 0.08,
+			"biome %d: never-seen reads as darker than remembered" % biome)
+
+
+func test_remembered_ground_sits_between_the_other_two() -> void:
+	# The three tones are one line, not three unrelated colours. If EXPLORED
+	# were ever brighter than VISIBLE the minimap would be advertising the
+	# ground the player knows least about.
+	for biome in TerrainGen.Biome.values():
+		var tone := _tones(TerrainGen.color_of(biome))
+		assert_lt(_luma(tone[0]), _luma(tone[1]),
+			"biome %d: never-seen is the darkest" % biome)
+		assert_lt(_luma(tone[1]), _luma(tone[2]),
+			"biome %d: live vision is the brightest" % biome)
+
+
+func test_live_vision_is_the_biome_colour_untouched() -> void:
+	# Fog only ever SUBTRACTS. `biome_color` is the single source of truth
+	# for this map's look (D-083) — a minimap that brightened live cells
+	# would show a palette no other view of the same map has.
+	for biome in TerrainGen.Biome.values():
+		var colour := TerrainGen.color_of(biome)
+		assert_eq(MinimapPaint.fogged(colour, TerrainFog.VISIBLE), colour,
+			"biome %d is drawn exactly as biome_color says when in sight" % biome)
+
+
+func test_unexplored_ignores_the_terrain_under_it() -> void:
+	# Ground nobody has scouted must not leak its biome through the fog.
+	var tones := {}
+	for biome in TerrainGen.Biome.values():
+		tones[MinimapPaint.fogged(TerrainGen.color_of(biome),
+			TerrainFog.UNEXPLORED)] = true
+	assert_eq(tones.size(), 1, "unexplored ground is one tone, not a dimmed map")
+
+
+func test_the_minimap_and_the_ground_read_one_fog_field() -> void:
+	# The resolution that matters more than the tones: `TerrainFog` is the
+	# ONE definition of what this player can see, and the minimap asks it
+	# rather than keeping a second explored/visible set of its own. Two
+	# derivations of one player's sight would drift silently, and the
+	# symptom would be a minimap disagreeing with the ground it sits beside.
+	var handle := FileAccess.open(CLIENT_SCRIPT, FileAccess.READ)
+	assert_not_null(handle, "client.gd is readable")
+	var source := handle.get_as_text()
+	handle.close()
+
+	var start := source.find("func _update_minimap")
+	assert_gt(start, -1, "_update_minimap still exists")
+	var end := source.find("\nfunc ", start + 1)
+	var body := source.substr(start, end - start if end > start else -1)
+
+	assert_true(body.contains("_fog.level_at"),
+		"the minimap reads TerrainFog's three levels, not just is_explored")
+	assert_true(body.contains("MinimapPaint.fogged"),
+		"and shades its pixels through MinimapPaint.fogged")
+	assert_false(source.contains("MinimapFog"),
+		"no second fog module survives beside TerrainFog")
+	assert_false(source.contains("HudTheme.BG_VOID.darkened(0.5)"),
+		"the client no longer hand-rolls the unexplored tone")
+
+
+func test_buildings_are_painted_unfogged() -> void:
+	# The deliberate exception, and the one place the two features could
+	# have silently eaten each other: D-101 draws a building from
+	# KNOWLEDGE, so fading one because nobody is watching it would re-gate
+	# it on vision through the back door. The building pass must not run
+	# its colour through `fogged`.
+	var handle := FileAccess.open(CLIENT_SCRIPT, FileAccess.READ)
+	assert_not_null(handle, "client.gd is readable")
+	var source := handle.get_as_text()
+	handle.close()
+
+	var start := source.find("MinimapPaint.building_marks")
+	assert_gt(start, -1, "the building pass still exists")
+	var end := source.find("\n\n", start)
+	var pass_body := source.substr(start, end - start if end > start else 240)
+	assert_false(pass_body.contains("fogged"),
+		"a known building is drawn at full strength wherever it stands")
