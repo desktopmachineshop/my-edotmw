@@ -145,3 +145,25 @@ it is a picture at 1080p** (`docs/playtest/p30-hud-1080-{before,after}.png`):
 this fix is a deliberate no-op, and in design units the panel is 264 at
 every window size — the bug is only visible in real pixels DIVIDED BY the
 window, which is what the new test measures.
+
+**And the same playtest's second half, which is a layout lesson rather than
+a fog or colour one (D-20260817-selection-bar-three-columns):** the command
+panel was 264 design units tall because it paid for the title stack AND the
+formation grid AND the build grid, one under the other, when it only ever
+had to be as tall as the WORST of the three. Two grids a player uses at
+different moments were stacked because the break between "Stop" and "Build
+Barracks" was drawn as a horizontal divider; as a vertical RULE between two
+columns the same break costs no height at all. Three columns — selection,
+orders, build — with 26-unit buttons put the bar at **72 units, 7% of a
+1080p window against the 36.7% it started at**.
+
+**The trap in it is worth more than the layout.** A one-row chip strip
+seats four tiles and a barracks trains SIX — and those tiles are the train
+ORDERS, not a picture of them (D-061). So the first short version made two
+units unbuildable at some window sizes: a cap that hides a CONTROL, this
+project's oldest defect family, arriving disguised as a spacing tweak. The
+strip therefore reserves its two-chip minimum BEFORE the buttons take their
+share, takes the build column's width whenever the selection cannot build,
+and its overflow chip PAGES rather than merely reporting. **When a layout
+gets tighter, the question is never "what still fits" — it is "what can no
+longer be reached".**

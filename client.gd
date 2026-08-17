@@ -1248,18 +1248,22 @@ var _progress_bar_fill: ColorRect = null
 var _progress_caption: Label = null
 var _queue_swatches: Array[ColorRect] = []
 var _queue_caption: Label = null
-## Formation/behaviour — the actions column's top segment.
+## Formation and movement — the panel's MIDDLE column.
 var _action_buttons: Array[Button] = []
-## Building — the actions column's bottom segment, visually split from
-## `_action_buttons` by `_build_actions_divider`/`_build_actions_caption`
-## (see `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why). Buildings
-## themselves never populate this — a building's own "what can I build"
-## question is answered by the chip strip's Train tiles instead (see
-## `_show_train_chips`), not by this segment.
+var _commands_rule: ColorRect = null
+## Building — the panel's RIGHT column, its own grid beside
+## `_action_buttons` rather than a second segment stacked under it (see
+## `HudLayout.ACTION_ROWS`' doc comment for why the stack cost the panel
+## its height). Buildings themselves never populate this — a building's own
+## "what can I build" question is answered by the chip strip's Train tiles
+## instead (see `_show_train_chips`), not by this column.
 var _build_action_buttons: Array[Button] = []
+## One cost row per build button (see `_build_cost_row`): a price is drawn
+## as swatches and numbers rather than spelled out in the button's text,
+## which is what makes a 26-unit one-line button able to carry one at all.
+var _build_cost_rows: Array = []
 var _build_actions: Array = []
-var _build_actions_divider: ColorRect = null
-var _build_actions_caption: Label = null
+var _build_column_rule: ColorRect = null
 
 ## Chips: one per squad, or — past `HudLayout.CHIP_COLLAPSE_THRESHOLD` — one
 ## per ARCHETYPE, in the middle of the wide selection panel (the reference
@@ -1268,6 +1272,22 @@ var _build_actions_caption: Label = null
 ## information (a name, a count/cost, a fraction) wearing a different
 ## label — see `_show_chips`.
 const CHIP_POOL_SIZE := 16
+
+## One cost row per chip — a train tile's price (see `_build_cost_row`).
+var _chip_cost_rows: Array = []
+
+## Which page of chips is showing, when there are more than the strip can
+## hold at once (see `_chip_window`). Zero for every selection that fits,
+## which is nearly all of them; reset whenever the selection changes.
+var _chip_page := 0
+## Which chip slot is the "+N more" pager on this refresh, or -1. A chip is
+## a Panel and its click is routed by INDEX, so the pager has to be
+## identifiable by index rather than by what it says.
+var _chip_more_index := -1
+## Where the showing page starts in the full list. Kept rather than
+## re-derived from the page number: the LAST page is short, so multiplying
+## the page by what is on screen would not land back on the same entries.
+var _chip_offset := 0
 var _chip_panels: Array[Panel] = []
 var _chip_names: Array[Label] = []
 var _chip_counts: Array[Label] = []
@@ -1496,14 +1516,15 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 	_selection_detail = _hud_label(Vector2.ZERO, HudTheme.MONO_SIZE, HudTheme.TEXT_FAINT)
 	layer.add_child(_selection_detail)
 
-	var bar_width := HudLayout.TITLE_COLUMN_WIDTH - HudLayout.PANEL_PAD * 2.0
-	var health := _bar(Vector2.ZERO, bar_width, HudTheme.GOOD)
+	# The two bars live in different sub-columns of the selection column now
+	# (see hud_layout.gd's table), so they are no longer the same width.
+	var health := _bar(Vector2.ZERO, HudLayout.TITLE_TEXT_WIDTH, HudTheme.GOOD)
 	_health_bar_back = health[0]
 	_health_bar_fill = health[1]
 	layer.add_child(_health_bar_back)
 	layer.add_child(_health_bar_fill)
 
-	var progress := _bar(Vector2.ZERO, bar_width, HudTheme.ACCENT_BRIGHT)
+	var progress := _bar(Vector2.ZERO, HudLayout.PROGRESS_BAR_WIDTH, HudTheme.ACCENT_BRIGHT)
 	_progress_bar_back = progress[0]
 	_progress_bar_fill = progress[1]
 	layer.add_child(_progress_bar_back)
@@ -1517,7 +1538,9 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 	layer.add_child(_queue_caption)
 	for i in range(8):
 		var swatch := ColorRect.new()
-		swatch.size = Vector2(14.0, 14.0)
+		# From HudLayout, because the swatch row is the lowest thing in the
+		# title column and therefore a term in the panel's own height.
+		swatch.size = Vector2(HudLayout.QUEUE_SWATCH_SIZE, HudLayout.QUEUE_SWATCH_SIZE)
 		swatch.color = HudTheme.accent_wash(0.9)
 		swatch.visible = false
 		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1526,38 +1549,113 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 
 	_build_chip_pool(layer)
 
-	# Two pools, not one: formation/behaviour (control) and building are
-	# visually separate segments of the actions column (see
-	# `HudLayout.BUILD_DIVIDER_Y`'s doc comment), each with its own
-	# pooled, relabelled-not-rebuilt buttons for the reason every pool in
-	# this HUD is — the selection changes constantly and churning Controls
-	# in _process is how a frame budget goes.
-	for i in range(6):
+	# Two pools, not one: formation/movement (control) and building are the
+	# panel's middle and right COLUMNS (see `HudLayout.ACTION_ROWS`' doc
+	# comment), each with its own pooled, relabelled-not-rebuilt buttons
+	# for the reason every pool in this HUD is — the selection changes
+	# constantly and churning Controls in _process is how a frame budget
+	# goes.
+	#
+	# Both pools are sized from the SAME grid now, because side by side
+	# they are the same grid in two columns.
+	for i in range(HudLayout.ACTION_ROWS * HudLayout.ACTION_COLUMNS):
 		var button := _build_action_button(i, _on_action_pressed)
 		_action_buttons.append(button)
 		layer.add_child(button)
 
-	_build_actions_divider = ColorRect.new()
-	_build_actions_divider.color = HudTheme.RULE
-	_build_actions_divider.visible = false
-	_build_actions_divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(_build_actions_divider)
+	# No per-column captions: at 72 units the bar has no row to spare for
+	# them (see `HudLayout.ACTIONS_Y`), so the rules and the buttons' own
+	# words are what tell the two grids apart.
+	_commands_rule = _column_rule(layer)
+	_build_column_rule = _column_rule(layer)
 
-	_build_actions_caption = _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE - 1, HudTheme.TEXT_GHOST)
-	_build_actions_caption.text = "BUILD"
-	_build_actions_caption.visible = false
-	layer.add_child(_build_actions_caption)
-
-	# Playtest fix: sized to HudLayout.BUILD_ACTION_ROWS x ACTION_COLUMNS
-	# (was a hardcoded 6 — one row short of what even the OLD flat build
-	# list needed once D-076 added five wall-family defs, and PANEL_HEIGHT
-	# didn't have room for a second row anyway). Now tiered by category
-	# (see _squad_build_actions), so this is headroom over the actual
-	# per-screen worst case, not a tight fit.
-	for i in range(HudLayout.BUILD_ACTION_ROWS * HudLayout.ACTION_COLUMNS):
+	for i in range(HudLayout.ACTION_ROWS * HudLayout.ACTION_COLUMNS):
 		var button := _build_action_button(i, _on_build_action_pressed)
+		# Left, not centred, and only in THIS column: a build button carries
+		# its price at its right end (see `_place_cost_row`), and a centred
+		# name drifts under it as the name gets longer. The orders column
+		# never has a price, so its buttons stay centred.
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		_build_action_buttons.append(button)
 		layer.add_child(button)
+		_build_cost_rows.append(_build_cost_row(layer, HudLayout.COST_SLOTS))
+
+
+## The thin vertical rule down a column's left edge — what tells the three
+## columns apart now that they sit side by side (see
+## `HudLayout.column_rule_rect`). Both are the same widget, so this is the
+## one place either one's look is written.
+func _column_rule(layer: CanvasLayer) -> ColorRect:
+	var rule := ColorRect.new()
+	rule.color = HudTheme.RULE
+	rule.visible = false
+	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(rule)
+	return rule
+
+
+## A row of cost ICONS — one swatch and one number per resource a price
+## names (see `HudLayout.COST_SLOTS`' doc comment for why a price is drawn
+## rather than spelled). Pooled and hidden, like every other repeated
+## widget in this HUD, and parented to the LAYER rather than to the button
+## or chip it decorates, which is the same shape the chip's own labels use.
+func _build_cost_row(layer: CanvasLayer, slots: int) -> Dictionary:
+	var swatches: Array[ColorRect] = []
+	var numbers: Array[Label] = []
+	for i in range(slots):
+		var swatch := ColorRect.new()
+		swatch.size = Vector2(HudLayout.COST_SWATCH_SIZE, HudLayout.COST_SWATCH_SIZE)
+		swatch.visible = false
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		swatches.append(swatch)
+		layer.add_child(swatch)
+
+		var number := _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE, HudTheme.TEXT_DIM)
+		number.visible = false
+		number.size = Vector2(HudLayout.COST_NUMBER_WIDTH, 14.0)
+		numbers.append(number)
+		layer.add_child(number)
+	return {"swatches": swatches, "numbers": numbers}
+
+
+## What a price is made of, zeroes left out — the entries a cost row draws.
+## `_cost_text`'s list-shaped sibling, kept beside it so the words and the
+## icons can never disagree about which resources a thing costs.
+func _cost_entries(food: int, wood: int, gold: int, stone: int) -> Array:
+	var out := []
+	for pair in [[Economy.ResourceKind.FOOD, food], [Economy.ResourceKind.WOOD, wood],
+			[Economy.ResourceKind.GOLD, gold], [Economy.ResourceKind.STONE, stone]]:
+		if int(pair[1]) > 0:
+			out.append(pair)
+	return out
+
+
+## Draw a price at `at`, and answer how wide it came out — the caller needs
+## that to keep its own label clear of it.
+##
+## More entries than the row has slots draws the first few; the caller is
+## expected to carry the whole price on a tooltip (a chip does, and has two
+## slots against a shipped worst case of three). A test fails if a def ever
+## costs more resources than the BUTTON's row can show, because that is the
+## one place a price is weighed rather than merely stated.
+func _place_cost_row(row: Dictionary, at: Vector2, entries: Array) -> float:
+	var swatches: Array = row["swatches"]
+	var numbers: Array = row["numbers"]
+	var shown := mini(entries.size(), swatches.size())
+	for i in range(swatches.size()):
+		var visible := i < shown
+		swatches[i].visible = visible
+		numbers[i].visible = visible
+		if not visible:
+			continue
+		var x := at.x + HudLayout.cost_entry_x(i)
+		swatches[i].color = _node_colour(int(entries[i][0]))
+		swatches[i].position = Vector2(x, at.y)
+		numbers[i].position = Vector2(
+			x + HudLayout.COST_SWATCH_SIZE + HudLayout.COST_SWATCH_GAP,
+			at.y + HudLayout.COST_SWATCH_SIZE * 0.5 - 7.0)
+		numbers[i].text = str(int(entries[i][1]))
+	return HudLayout.cost_strip_width(shown)
 
 
 ## One action button — a formation/behaviour button and a build button are
@@ -1565,7 +1663,16 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 ## either pool's styling is written.
 func _build_action_button(index: int, on_pressed: Callable) -> Button:
 	var button := Button.new()
-	button.size = HudLayout.ACTION_BUTTON
+	# A placeholder: the real size depends on the panel's width and is set
+	# by `_layout_hud` on every resize (see `HudLayout.action_button_size`).
+	button.size = Vector2(HudLayout.ACTION_BUTTON_MIN_WIDTH, HudLayout.ACTION_BUTTON_HEIGHT)
+	# Clipped rather than allowed to overflow: at the narrow end of the
+	# button's width range a label runs past its own edge and over its
+	# neighbour, which reads as two broken buttons rather than one long
+	# name. The tooltip (set per label in `_set_actions`) is where the full
+	# text survives.
+	button.clip_text = true
+	button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	button.visible = false
 	# Styled rather than left at Godot's default grey, which reads as
 	# an unfinished editor widget sitting on top of the game.
@@ -1589,6 +1696,20 @@ func _build_action_button(index: int, on_pressed: Callable) -> Button:
 	button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE - 1)
 	button.pressed.connect(on_pressed.bind(index))
 	return button
+
+
+## Reserve room at a button's right end for the price drawn there.
+##
+## Through the STYLEBOX's content margin rather than by shortening the
+## text: the margin is what Godot lays the label out inside, so the
+## ellipsis lands where the icons start instead of at the button's edge —
+## which is the difference between a name that visibly ran out of room and
+## one drawn straight through its own cost.
+func _inset_button_text(button: Button, strip_width: float) -> void:
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var style := button.get_theme_stylebox(state)
+		if style is StyleBoxFlat:
+			style.content_margin_right = 4.0 + strip_width 				+ (HudLayout.PANEL_PAD * 0.5 if strip_width > 0.0 else 0.0)
 
 
 ## The chip pool — pooled and relabelled for the same reason the action
@@ -1646,6 +1767,11 @@ func _build_chip_pool(layer: CanvasLayer) -> void:
 		layer.add_child(chip_bar[0])
 		layer.add_child(chip_bar[1])
 
+		# A train tile states a PRICE, and states it in icons for the same
+		# reason the top bar does. Two slots: a chip is 116 units wide, and
+		# the tooltip carries the whole price when a unit costs three.
+		_chip_cost_rows.append(_build_cost_row(layer, HudLayout.CHIP_COST_SLOTS))
+
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -1670,12 +1796,19 @@ func _build_hud() -> void:
 		var swatch := ColorRect.new()
 		swatch.color = _node_colour(kinds[i])
 		swatch.size = Vector2(HudLayout.RESOURCE_SWATCH_SIZE, HudLayout.RESOURCE_SWATCH_SIZE)
-		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# The swatch is the READOUT's name now, not decoration beside it
+		# (see `HudLayout.COST_SLOTS`' doc comment) — so it answers when
+		# hovered, which is where a player who has not learnt the four
+		# colours yet finds out what they mean.
+		swatch.mouse_filter = Control.MOUSE_FILTER_STOP
+		swatch.tooltip_text = names[i]
 		_resource_swatches.append(swatch)
 		layer.add_child(swatch)
 
 		var value := _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE, HudTheme.TEXT)
-		value.text = "%s —" % names[i]
+		value.text = "—"
+		value.mouse_filter = Control.MOUSE_FILTER_STOP
+		value.tooltip_text = names[i]
 		_resource_labels.append(value)
 		layer.add_child(value)
 
@@ -1967,36 +2100,38 @@ func _layout_hud() -> void:
 	_selection_panel.position = _panel_rect.position
 	_selection_panel.size = _panel_rect.size
 
+	# The selection column is a TABLE now, not a stack (see hud_layout.gd's
+	# "selection column, as a table"): name and strength down the left,
+	# what it is producing down the right. Every offset carries its own x,
+	# so this loop places rather than decides.
 	var title_col := HudLayout.title_column_rect(_panel_rect)
-	var pad := title_col.position + Vector2(HudLayout.PANEL_PAD, 0.0)
-	_selection_title.position = pad + Vector2(0.0, HudLayout.TITLE_Y)
-	_selection_title.size = Vector2(title_col.size.x - HudLayout.PANEL_PAD * 2.0, 20.0)
-	_selection_detail.position = pad + Vector2(0.0, HudLayout.DETAIL_Y)
+	_selection_title.position = title_col.position + HudLayout.TITLE_AT
+	_selection_title.size = Vector2(HudLayout.TITLE_TEXT_WIDTH, 20.0)
+	_selection_detail.position = title_col.position + HudLayout.DETAIL_AT
 	_selection_detail.size = _selection_title.size
-	_place_bar(_health_bar_back, _health_bar_fill, pad + Vector2(0.0, HudLayout.HEALTH_Y))
-	_place_bar(_progress_bar_back, _progress_bar_fill, pad + Vector2(0.0, HudLayout.PROGRESS_Y))
-	_progress_caption.position = pad + Vector2(0.0, HudLayout.PROGRESS_CAPTION_Y)
-	_queue_caption.position = pad + Vector2(0.0, HudLayout.QUEUE_CAPTION_Y)
+	_place_bar(_health_bar_back, _health_bar_fill, title_col.position + HudLayout.HEALTH_AT)
+	_place_bar(_progress_bar_back, _progress_bar_fill,
+		title_col.position + HudLayout.PROGRESS_AT)
+	_progress_caption.position = title_col.position + HudLayout.PROGRESS_CAPTION_AT
+	# Sized AND clipped: a Label runs past its own box unless told not to,
+	# and this one shares a row with the chip strip immediately to its
+	# right — "Training Gatherers — 12s" was drawn straight across the
+	# first chip on the first render of this column.
+	_progress_caption.size = Vector2(HudLayout.PROGRESS_BAR_WIDTH, 14.0)
+	_progress_caption.clip_text = true
+	_progress_caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_queue_caption.size = Vector2(HudLayout.PROGRESS_BAR_WIDTH, 12.0)
+	_queue_caption.clip_text = true
+	_selection_title.clip_text = true
+	_selection_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_selection_detail.clip_text = true
+	_selection_detail.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_queue_caption.position = title_col.position + HudLayout.QUEUE_CAPTION_AT
 	for i in range(_queue_swatches.size()):
-		# To the right of the queue caption's own text, not below it — the
-		# title column has no spare row left underneath (see the const's
-		# neighbouring comment in hud_layout.gd for the budget this fits).
-		_queue_swatches[i].position = pad + Vector2(
-			70.0 + float(i) * HudLayout.QUEUE_SWATCH_PITCH, HudLayout.QUEUE_SWATCH_Y - 1.0)
+		_queue_swatches[i].position = title_col.position + HudLayout.QUEUE_SWATCH_AT \
+			+ Vector2(float(i) * HudLayout.QUEUE_SWATCH_PITCH, 0.0)
 
-	var actions_col := HudLayout.actions_column_rect(_panel_rect)
-	for i in range(_action_buttons.size()):
-		_action_buttons[i].position = actions_col.position + HudLayout.action_slot(i)
-
-	var divider := HudLayout.build_divider_rect()
-	_build_actions_divider.position = actions_col.position + divider.position
-	_build_actions_divider.size = divider.size
-	_build_actions_caption.position = actions_col.position \
-		+ Vector2(HudLayout.PANEL_PAD, HudLayout.BUILD_CAPTION_Y)
-	for i in range(_build_action_buttons.size()):
-		_build_action_buttons[i].position = actions_col.position + HudLayout.build_slot(i)
-
-	_layout_chips()
+	_layout_panel_columns()
 
 	# `_minimap_bounds` stays the ONE definition of where the minimap is,
 	# because it is also the hit-test rect — reading the size back off the
@@ -2054,11 +2189,44 @@ func _layout_lobby(design: Vector2) -> void:
 	_map_blurb.custom_minimum_size = Vector2(0.0, LobbyLayout.map_blurb_height(design))
 
 
+## Lay one action grid out inside its own column. Both grids are the same
+## grid in different columns, so this is written once.
+func _place_action_grid(buttons: Array[Button], column: Rect2, button_size: Vector2) -> void:
+	for i in range(buttons.size()):
+		buttons[i].position = column.position + HudLayout.action_slot(i, button_size)
+		buttons[i].size = button_size
+
+
+func _place_rule(rule: ColorRect, column: Rect2) -> void:
+	var at := HudLayout.column_rule_rect(column)
+	rule.position = at.position
+	rule.size = at.size
+
+
 ## Where the chip strip (see `_build_chip_pool`) sits, and how many columns
 ## it has — both re-derived on every resize, since the strip's width (and
 ## therefore its column count) depends on the window.
-func _layout_chips() -> void:
-	_chip_strip_rect = HudLayout.chip_strip_rect(_panel_rect)
+func _layout_panel_columns() -> void:
+	# ONE function for all three columns, because they share one input: an
+	# empty build column takes no width, so the orders column slides right
+	# and the chip strip takes what both of them vacate (see
+	# `HudLayout.commands_column_rect`). Laid out separately, the strip
+	# widened and the orders column did not — which drew a squad's chips
+	# across its own formation buttons, twice.
+	#
+	# Button SIZE is set here too, not once at build time: it is a function
+	# of the panel's width, so a resize that changes the column width and
+	# leaves the buttons at their old size tiles them over each other.
+	var in_use := not _build_actions.is_empty()
+	var button_size := HudLayout.action_button_size(_panel_rect)
+	var commands_col := HudLayout.commands_column_rect(_panel_rect, in_use)
+	var build_col := HudLayout.build_column_rect(_panel_rect)
+	_place_action_grid(_action_buttons, commands_col, button_size)
+	_place_action_grid(_build_action_buttons, build_col, button_size)
+	_place_rule(_commands_rule, commands_col)
+	_place_rule(_build_column_rule, build_col)
+
+	_chip_strip_rect = HudLayout.chip_strip_rect(_panel_rect, in_use)
 	_chip_columns = HudLayout.chip_columns(_chip_strip_rect.size.x)
 	var label_width := HudLayout.CHIP_SIZE.x - 16.0
 	# Measured from the font's own metrics, not hand-tuned pixel offsets —
@@ -3795,11 +3963,10 @@ func _update_hud() -> void:
 	# Only OUR four. Wallets are private, so the protocol never carries
 	# anyone else's (D-028).
 	for i in range(_resource_labels.size()):
-		var names := ["Food", "Wood", "Gold", "Stone"]
-		if _state.wallet.size() > i:
-			_resource_labels[i].text = "%s %d" % [names[i], _state.wallet[i]]
-		else:
-			_resource_labels[i].text = "%s —" % names[i]
+		# The number alone: the swatch to its left is the name (and says so
+		# on hover). Four words removed from the top bar is 300 design units
+		# of it back, which is why RESOURCE_PITCH could halve.
+		_resource_labels[i].text = str(_state.wallet[i]) if _state.wallet.size() > i else "—" 
 
 	# Show the server's explanation for a few seconds after it arrives.
 	# Timed off the COUNTER rather than the string, so two identical
@@ -3880,8 +4047,11 @@ func _update_selection_panel() -> void:
 
 	if _selected.is_empty():
 		_hide_chips()
-		_selection_title.text = "Nothing selected"
-		_selection_detail.text = "Click a squad or a building. Drag to box-select."
+		# Short enough for the selection column's own width, which halved
+		# when the bar did: a placeholder clipped to "Nothing select..." is
+		# the layout admitting it in the one state a new player sees first.
+		_selection_title.text = "No selection"
+		_selection_detail.text = "Click or drag to select"
 		_set_actions([])
 		_set_build_actions([])
 		return
@@ -3899,8 +4069,6 @@ func _update_selection_panel() -> void:
 	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
 	_selection_detail.text = "%d soldiers" % strength
 
-	_show_chips(counts)
-
 	# The build menu's category drill-down (playtest fix, see
 	# _build_menu_category's doc) is client state that outlives one panel
 	# refresh, so a NEW selection has to reset it explicitly — otherwise
@@ -3916,17 +4084,25 @@ func _update_selection_panel() -> void:
 		_build_menu_selection_key = selection_key
 		_build_menu_category = ""
 		_build_menu_group = ""
+		_chip_page = 0
 
 	# Actions offered are the ones EVERY selected squad can do. Offering a
 	# build button because one founder is in the box would produce an
 	# order most of the selection must refuse. Control and build are two
-	# separate intersections (and two separate segments — see
-	# `HudLayout.BUILD_DIVIDER_Y`'s doc comment), not one list split
+	# separate intersections (and two separate COLUMNS — see
+	# `HudLayout.ACTION_ROWS`' doc comment), not one list split
 	# afterward, so a founder mixed with line infantry correctly loses
 	# Build entirely rather than showing a button only part of the
 	# selection can act on.
 	_set_actions(_shared_squad_actions(counts.keys(), _squad_control_actions))
 	_set_build_actions(_shared_squad_actions(counts.keys(), _squad_build_actions))
+
+	# Chips LAST, because how wide the strip is depends on whether the
+	# build column has anything in it — which the line above is what
+	# decides. Filling them first measured the strip against the PREVIOUS
+	# selection's build list, which is a subtler version of the same
+	# staleness `_show_chips` guards against.
+	_show_chips(counts)
 
 
 ## Populate the chip strip: one chip per SQUAD up to the collapse
@@ -3935,9 +4111,21 @@ func _update_selection_panel() -> void:
 ## `HudLayout.CHIP_COLLAPSE_THRESHOLD`'s doc comment for why a chip per
 ## individual squad stops being legible at that point).
 func _show_chips(counts: Dictionary) -> void:
+	# Re-measured, never inherited: where all three columns sit depends on
+	# the selection now (an empty build column takes no width), so a layout
+	# from the last window resize is stale the moment the selection
+	# changes. That is exactly what shipped in the first three-column
+	# build — six squads drew six chips measured against a strip that had
+	# been laid out for a different selection.
+	_layout_panel_columns()
 	# Informational only in this mode — see `_on_chip_input`.
 	_chip_train_ids.clear()
-	var per_squad := _selected.size() <= HudLayout.CHIP_COLLAPSE_THRESHOLD
+	# Collapsed by what FITS as well as by what is legible (see
+	# `HudLayout.chip_collapse_at`): on the short bar, six identical
+	# "Gatherers 5/5" tiles do not fit and would not have been worth the
+	# room if they did — "Gatherers x6" with their combined strength is
+	# the same fact in one chip.
+	var per_squad := _selected.size() <= HudLayout.chip_collapse_at(_chip_strip_rect)
 	var entries := []
 	if per_squad:
 		for squad in _selected:
@@ -3966,8 +4154,12 @@ func _show_chips(counts: Dictionary) -> void:
 		# ordering the old text-only detail line used to give.
 		entries.sort_custom(func(a, b): return int(a["alive"]) > int(b["alive"]))
 
+	entries = _chip_window(entries)
 	for i in range(_chip_panels.size()):
 		var showing := i < entries.size()
+		# A composition chip states a strength, not a price: its cost row is
+		# cleared rather than left showing the last building's.
+		_place_cost_row(_chip_cost_rows[i], Vector2.ZERO, [])
 		_chip_panels[i].visible = showing
 		_chip_panels[i].tooltip_text = ""
 		_chip_names[i].visible = showing
@@ -3978,6 +4170,15 @@ func _show_chips(counts: Dictionary) -> void:
 			continue
 		var entry: Dictionary = entries[i]
 		_chip_names[i].text = String(entry["name"])
+		# The overflow chip (see `_fit_chips`) counts nothing and is a
+		# fraction of nothing — a strength bar drawn at zero on it would
+		# read as a squad that has just been wiped out.
+		if bool(entry.get("more", false)):
+			_chip_panels[i].tooltip_text = "Show the rest"
+			_chip_counts[i].visible = false
+			_chip_bar_backs[i].visible = false
+			_chip_bar_fills[i].visible = false
+			continue
 		var total := int(entry["total"])
 		var alive := int(entry["alive"])
 		_chip_counts[i].text = "%d/%d" % [alive, total] if total > 0 else "—"
@@ -3997,6 +4198,9 @@ func _show_chips(counts: Dictionary) -> void:
 ## things doing the same job side by side is what got reported as "why
 ## are there two buttons for Gatherers".
 func _show_train_chips(def: BuildingDef) -> void:
+	# Re-measured for the reason `_show_chips` is, and this is the side
+	# that needs the width: a building's tiles are its train orders.
+	_layout_panel_columns()
 	var entries := []
 	_chip_train_ids.clear()
 	if def != null:
@@ -4007,10 +4211,23 @@ func _show_train_chips(def: BuildingDef) -> void:
 				entries.append({
 					"name": unit.display_name,
 					"cost": _cost_text(unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone),
+					"costs": _cost_entries(unit.cost_food, unit.cost_wood,
+						unit.cost_gold, unit.cost_stone),
 					"affordable": _can_afford(unit.cost_food, unit.cost_wood,
 						unit.cost_gold, unit.cost_stone),
 				})
 				_chip_train_ids.append(archetype)
+
+	# Capped like any other chip list, and the ids capped WITH it so a
+	# chip and the order it sends stay index-aligned. A truncated train
+	# list means an unreachable action rather than a cramped one, which is
+	# why `HudLayout.ACTION_BUTTON_MIN_WIDTH` is chosen to keep the strip
+	# wide enough for every shipped building's list at the smallest window
+	# this HUD allows — asserted in `test_hud_layout.gd`, so reaching this
+	# branch at all is a test failure before it is a player's problem.
+	var shown := _chip_window(entries)
+	_chip_train_ids = _chip_id_window(_chip_train_ids)
+	entries = shown
 
 	for i in range(_chip_panels.size()):
 		var showing := i < entries.size()
@@ -4025,7 +4242,12 @@ func _show_train_chips(def: BuildingDef) -> void:
 		if not showing:
 			continue
 		_chip_names[i].text = String(entries[i]["name"])
-		_chip_counts[i].text = String(entries[i]["cost"])
+		# Drawn, not spelled (see `_place_cost_row`) — "16 food" was the
+		# widest thing on a 116-unit tile, and a swatch says the same word.
+		_chip_counts[i].visible = false
+		_place_cost_row(_chip_cost_rows[i],
+			_chip_panels[i].position + HudLayout.CHIP_COST_AT,
+			entries[i].get("costs", []))
 		# Greyed when unaffordable, and its click refused in
 		# `_on_chip_input`. These chips ARE the train control (not a picture
 		# of one), so they need the same affordability gate the build list
@@ -4033,13 +4255,62 @@ func _show_train_chips(def: BuildingDef) -> void:
 		# most-used button in the game looking available and then bouncing.
 		var affordable := bool(entries[i].get("affordable", true))
 		_chip_panels[i].modulate = Color(1, 1, 1, 1) if affordable else Color(1, 1, 1, 0.45)
-		_chip_panels[i].tooltip_text = "Click to train" if affordable \
-			else "Not enough resources"
+		# The whole price in words here, because the tile itself draws at
+		# most `HudLayout.CHIP_COST_SLOTS` of it.
+		_chip_panels[i].tooltip_text = "%s — %s" % [
+			String(entries[i]["name"]), String(entries[i]["cost"])] if affordable 			else "Not enough resources — %s" % String(entries[i]["cost"])
+
+
+## The slice of a chip list the strip can actually SHOW, plus a "+N more"
+## chip that PAGES to the rest when there is a rest.
+##
+## The bar is one row of chips tall now (`HudLayout.CHIP_ROWS`), so a long
+## list genuinely does not fit — and a chip past the end does not
+## disappear, it draws outside the panel, over the battlefield, looking
+## entirely deliberate. That much is the standing "no silent caps" rule.
+##
+## The pager is the other half, and it is what makes the short bar legal
+## rather than merely tidy: a building's train tiles ARE its train orders
+## (`_show_train_chips`), so a strip that showed four of a barracks' six
+## units would make two units unbuildable at that window size. A cap that
+## hides a LABEL is a cosmetic trade; one that hides a CONTROL is the
+## defect family this project keeps rediscovering. Paging keeps every tile
+## one click away at any window.
+func _chip_window(entries: Array) -> Array:
+	_chip_more_index = -1
+	_chip_offset = 0
+	var capacity := HudLayout.chip_capacity(_chip_strip_rect)
+	if entries.size() <= capacity:
+		_chip_page = 0
+		return entries
+	# One slot on every page belongs to the pager itself.
+	var per_page := maxi(capacity - 1, 1)
+	var pages := int(ceil(float(entries.size()) / float(per_page)))
+	_chip_page = posmod(_chip_page, pages)
+	_chip_offset = _chip_page * per_page
+	var shown := entries.slice(_chip_offset, mini(_chip_offset + per_page, entries.size()))
+	_chip_more_index = shown.size()
+	shown.append({
+		"name": "+%d more" % (entries.size() - shown.size()),
+		"alive": 0, "total": 0, "cost": "", "more": true,
+	})
+	return shown
+
+
+## The same window, applied to the ids that make train chips clickable, so
+## a chip and the order it sends stay index-aligned on every page.
+func _chip_id_window(ids: Array) -> Array:
+	if _chip_more_index < 0:
+		return ids
+	return ids.slice(_chip_offset, mini(_chip_offset + _chip_more_index, ids.size()))
 
 
 func _hide_chips() -> void:
 	_chip_train_ids.clear()
+	_chip_more_index = -1
+	_chip_page = 0
 	for i in range(_chip_panels.size()):
+		_place_cost_row(_chip_cost_rows[i], Vector2.ZERO, [])
 		_chip_panels[i].visible = false
 		_chip_panels[i].tooltip_text = ""
 		_chip_names[i].visible = false
@@ -4053,6 +4324,14 @@ func _hide_chips() -> void:
 ## so a click on one of those falls through and does nothing — they are
 ## informational, not (yet) a control.
 func _on_chip_input(event: InputEvent, index: int) -> void:
+	if index == _chip_more_index:
+		# The pager (see `_chip_window`): the next page, wrapping, and
+		# refreshed immediately rather than next frame so the click feels
+		# like the button it is.
+		if event is InputEventMouseButton and event.pressed 				and event.button_index == MOUSE_BUTTON_LEFT:
+			_chip_page += 1
+			_update_selection_panel()
+		return
 	if index >= _chip_train_ids.size():
 		return
 	if event is InputEventMouseButton and event.pressed \
@@ -4078,16 +4357,18 @@ func _on_chip_input(event: InputEvent, index: int) -> void:
 func _on_chip_hover(index: int, entered: bool) -> void:
 	if index >= _chip_panels.size():
 		return
-	var clickable := index < _chip_train_ids.size()
+	# The pager is clickable too (see `_chip_window`), so it lights up like
+	# the control it is rather than sitting inert under the cursor.
+	var clickable := index < _chip_train_ids.size() or index == _chip_more_index
 	_chip_panels[index].add_theme_stylebox_override("panel",
 		_chip_style_hover if (entered and clickable) else _chip_style_normal)
 
 
 ## The actions common to every unit type in the selection, from whichever
 ## per-def-id generator is passed in — `_squad_control_actions` for the
-## top segment, `_squad_build_actions` for the bottom one (see
-## `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why those are two
-## generators and two segments rather than one list).
+## middle column, `_squad_build_actions` for the right-hand one (see
+## `HudLayout.ACTION_ROWS`' doc comment for why those are two
+## generators and two columns rather than one list).
 ##
 ## Intersection rather than union: a button that most of the selection
 ## would refuse is worse than an absent one, because the refusal arrives
@@ -4170,7 +4451,7 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 		if unit == null:
 			continue
 		out.append({
-			"label": "%s\n%s" % [unit.display_name, _cost_text(
+			"label": "%s  ·  %s" % [unit.display_name, _cost_text(
 				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
 			"kind": "train", "id": archetype,
 			# Same affordability gate as the build list. Missing here at
@@ -4185,7 +4466,7 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 	# nothing to focus-fire with.
 	if def.damage > 0.0:
 		out.append({
-			"label": "Target\nShift+Right-click an enemy",
+			"label": "Target", "hint": "Shift+Right-click an enemy",
 			"kind": "target_select", "id": &"",
 		})
 	# Playtest fix: explicit Auto/Locked/Open modes, one button each,
@@ -4226,9 +4507,9 @@ func _cost_text(food: int, wood: int, gold: int, stone: int) -> String:
 	return "free" if parts.is_empty() else " · ".join(parts)
 
 
-## Formation and behaviour SQUADS offer, from their UnitDef — the actions
-## column's TOP segment (see `HudLayout.BUILD_DIVIDER_Y`'s doc comment for
-## why building is a separate segment below it, not appended to this list).
+## Formation and movement SQUADS offer, from their UnitDef — the panel's
+## MIDDLE column (see `HudLayout.ACTION_ROWS`' doc comment for why
+## building is its own column beside it, not appended to this list).
 func _squad_control_actions(def_id: StringName) -> Array:
 	var out := []
 	var def := UnitRoster.by_id(def_id)
@@ -4247,7 +4528,7 @@ func _squad_control_actions(def_id: StringName) -> Array:
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
 	if def != null and def.carry_capacity > 0:
-		out.append({"label": "Gather\nor right-click a node", "kind": "gather", "id": &""})
+		out.append({"label": "Gather", "hint": "Gather here, or right-click a node", "kind": "gather", "id": &""})
 	return out
 
 
@@ -4366,8 +4647,8 @@ func _build_menu_group_of(def: BuildingDef) -> String:
 
 
 const BUILD_GROUP_LABELS := {
-	"palisade": "Palisade\nwall & gate",
-	"garrison": "Garrison\nwall, gate & tower",
+	"palisade": "Palisade",
+	"garrison": "Garrison",
 }
 
 
@@ -4375,9 +4656,16 @@ const BUILD_GROUP_LABELS := {
 ## label and its affordability cannot differ depending on how you reached it.
 func _build_action_for(building: BuildingDef) -> Dictionary:
 	return {
-		"label": "Build %s\n%s" % [building.display_name, _cost_text(
+		# The name alone — not "Build <name>", and not the price either.
+		# The column this sits in is the build column, and the price is
+		# drawn beside the name as icons (`_place_cost_row`), which is what
+		# fits on a one-line button when the words did not.
+		"label": building.display_name,
+		"hint": "%s — %s" % [building.display_name, _cost_text(
 			building.cost_food, building.cost_wood,
 			building.cost_gold, building.cost_stone)],
+		"costs": _cost_entries(building.cost_food, building.cost_wood,
+			building.cost_gold, building.cost_stone),
 		"kind": "build", "id": building.id,
 		"enabled": _can_afford(building.cost_food, building.cost_wood,
 			building.cost_gold, building.cost_stone),
@@ -4389,6 +4677,11 @@ func _build_action_for(building: BuildingDef) -> Dictionary:
 ## goes.
 func _set_actions(actions: Array) -> void:
 	_actions = actions
+	# The middle column's caption and rule follow the same visibility its
+	# buttons do — an "ORDERS" heading over an empty column reads as a
+	# panel that failed to load, which is what the build column's own
+	# caption already knew.
+	_commands_rule.visible = not actions.is_empty()
 	for i in range(_action_buttons.size()):
 		var button := _action_buttons[i]
 		if i >= actions.size():
@@ -4396,6 +4689,11 @@ func _set_actions(actions: Array) -> void:
 			continue
 		button.visible = true
 		button.text = String(actions[i]["label"])
+		# The button is one line of 26 units now (see
+		# `HudLayout.ACTION_BUTTON_HEIGHT`), so anything that used to be a
+		# second line is a tooltip — and a label too long for a narrow
+		# window clips with an ellipsis, with the full text here too.
+		button.tooltip_text = String(actions[i].get("hint", actions[i]["label"]))
 		# Playtest fix: something you cannot afford is greyed and
 		# unpressable, rather than looking available and being silently
 		# refused by the server on click. The server still re-checks (D-002)
@@ -4475,23 +4773,35 @@ func _set_gate(mode_key: String) -> void:
 			ENetPacketPeer.FLAG_RELIABLE)
 
 
-## The build segment's own version of `_set_actions` — see
-## `HudLayout.BUILD_DIVIDER_Y`'s doc comment for why this is a second pool
+## The build column's own version of `_set_actions` — see
+## `HudLayout.ACTION_ROWS`' doc comment for why this is a second pool
 ## rather than the first one's actions continuing past a fixed index. The
-## divider and its caption follow the same visibility: empty (a building
+## column's rule and caption follow the same visibility: empty (a building
 ## selected, or a squad that cannot build anything) hides the whole
-## segment rather than showing a divider over nothing.
+## column rather than heading an empty one.
 func _set_build_actions(actions: Array) -> void:
 	_build_actions = actions
-	_build_actions_divider.visible = not actions.is_empty()
-	_build_actions_caption.visible = not actions.is_empty()
+	_build_column_rule.visible = not actions.is_empty()
 	for i in range(_build_action_buttons.size()):
 		var button := _build_action_buttons[i]
+		var row: Dictionary = _build_cost_rows[i]
 		if i >= actions.size():
 			button.visible = false
+			_place_cost_row(row, Vector2.ZERO, [])
 			continue
 		button.visible = true
 		button.text = String(actions[i]["label"])
+		button.tooltip_text = String(actions[i].get("hint", actions[i]["label"]))
+		# The price sits at the button's right end, and the button's own
+		# text is inset to keep clear of it — a label clipped by an
+		# ellipsis where the icons start reads as a name that ran out of
+		# room, which is true, rather than as one drawn over its own price.
+		var entries: Array = actions[i].get("costs", [])
+		var strip := _place_cost_row(row, button.position + Vector2(
+			button.size.x - HudLayout.cost_strip_width(mini(entries.size(),
+				HudLayout.COST_SLOTS)) - HudLayout.PANEL_PAD * 0.5,
+			(button.size.y - HudLayout.COST_SWATCH_SIZE) * 0.5), entries)
+		_inset_button_text(button, strip)
 
 
 func _on_build_action_pressed(index: int) -> void:
