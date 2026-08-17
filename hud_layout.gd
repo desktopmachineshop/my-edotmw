@@ -586,6 +586,19 @@ static func chip_rows(strip_height: float) -> int:
 	return maxi(1, int((strip_height - PANEL_PAD_Y + CHIP_GAP) / (CHIP_SIZE.y + CHIP_GAP)))
 
 
+## When a per-squad chip list should collapse to one chip per ARCHETYPE.
+##
+## The lower of the legibility threshold and what the strip can actually
+## hold. `CHIP_COLLAPSE_THRESHOLD` alone was the whole rule while the strip
+## was four rows deep and could seat twelve; at one row it seats four, so
+## six selected squads meant four chips and a pager where "Gatherers x6"
+## says more in one chip than six identical tiles say in six. The collapse
+## was always the better answer for a uniform selection — the short bar
+## just made it the only one.
+static func chip_collapse_at(strip: Rect2) -> int:
+	return mini(CHIP_COLLAPSE_THRESHOLD, chip_capacity(strip))
+
+
 ## How many chips a strip can actually SHOW.
 ##
 ## Necessary because the panel is short now: the chip strip used to be tall

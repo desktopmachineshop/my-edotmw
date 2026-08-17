@@ -3960,8 +3960,6 @@ func _update_selection_panel() -> void:
 	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
 	_selection_detail.text = "%d soldiers" % strength
 
-	_show_chips(counts)
-
 	# The build menu's category drill-down (playtest fix, see
 	# _build_menu_category's doc) is client state that outlives one panel
 	# refresh, so a NEW selection has to reset it explicitly — otherwise
@@ -3990,6 +3988,13 @@ func _update_selection_panel() -> void:
 	_set_actions(_shared_squad_actions(counts.keys(), _squad_control_actions))
 	_set_build_actions(_shared_squad_actions(counts.keys(), _squad_build_actions))
 
+	# Chips LAST, because how wide the strip is depends on whether the
+	# build column has anything in it — which the line above is what
+	# decides. Filling them first measured the strip against the PREVIOUS
+	# selection's build list, which is a subtler version of the same
+	# staleness `_show_chips` guards against.
+	_show_chips(counts)
+
 
 ## Populate the chip strip: one chip per SQUAD up to the collapse
 ## threshold, one per ARCHETYPE past it (the reference design's own
@@ -3997,9 +4002,21 @@ func _update_selection_panel() -> void:
 ## `HudLayout.CHIP_COLLAPSE_THRESHOLD`'s doc comment for why a chip per
 ## individual squad stops being legible at that point).
 func _show_chips(counts: Dictionary) -> void:
+	# Re-measured, never inherited: the strip's WIDTH depends on the
+	# selection now (it takes the build column when nothing selected can
+	# build), so a rect laid out at the last window resize is stale the
+	# moment the selection changes. That is exactly what shipped in the
+	# first three-column build — six squads drew six chips measured against
+	# the wide strip and landed on top of the formation buttons.
+	_layout_chips()
 	# Informational only in this mode — see `_on_chip_input`.
 	_chip_train_ids.clear()
-	var per_squad := _selected.size() <= HudLayout.CHIP_COLLAPSE_THRESHOLD
+	# Collapsed by what FITS as well as by what is legible (see
+	# `HudLayout.chip_collapse_at`): on the short bar, six identical
+	# "Gatherers 5/5" tiles do not fit and would not have been worth the
+	# room if they did — "Gatherers x6" with their combined strength is
+	# the same fact in one chip.
+	var per_squad := _selected.size() <= HudLayout.chip_collapse_at(_chip_strip_rect)
 	var entries := []
 	if per_squad:
 		for squad in _selected:
@@ -4069,6 +4086,9 @@ func _show_chips(counts: Dictionary) -> void:
 ## things doing the same job side by side is what got reported as "why
 ## are there two buttons for Gatherers".
 func _show_train_chips(def: BuildingDef) -> void:
+	# Re-measured for the reason `_show_chips` is, and this is the side
+	# that needs the width: a building's tiles are its train orders.
+	_layout_chips()
 	var entries := []
 	_chip_train_ids.clear()
 	if def != null:

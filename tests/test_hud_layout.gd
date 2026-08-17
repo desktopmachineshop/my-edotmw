@@ -565,6 +565,68 @@ func test_the_chip_strip_fills_the_gap_between_the_title_and_the_orders() -> voi
 		0.01)
 
 
+func test_the_strip_is_wider_when_the_build_column_is_free() -> void:
+	# The rule that lets a barracks show all six train tiles — and the trap
+	# that comes with it: the strip's width now depends on the SELECTION, so
+	# the two capacities genuinely differ and measuring against the wrong
+	# one overflows the chips into the orders column.
+	for viewport in [Vector2(1600.0, 900.0), Vector2(1920.0, 1080.0)]:
+		var panel: Rect2 = _laid_out(viewport)["panel"]
+		var narrow := HudLayout.chip_strip_rect(panel, true)
+		var wide := HudLayout.chip_strip_rect(panel, false)
+		assert_true(wide.size.x > narrow.size.x,
+			"a free build column widens the strip at %s" % viewport)
+		assert_almost_eq(wide.position.x + wide.size.x,
+			HudLayout.build_column_rect(panel).position.x - HudLayout.PANEL_PAD, 0.01,
+			"the wide strip stops where the build column starts at %s" % viewport)
+		assert_true(HudLayout.chip_capacity(wide) > HudLayout.chip_capacity(narrow),
+			"the two strips do not hold the same number of chips at %s" % viewport)
+
+
+func test_the_client_re_measures_the_strip_whenever_it_fills_it() -> void:
+	# THE bug this exists for, found by playing the first three-column
+	# build: six squads selected drew six chips straight across the
+	# formation buttons. `_chip_strip_rect` was computed in `_layout_chips`,
+	# which only runs on a RESIZE — fine while the strip's width was a
+	# function of the window alone, and stale the moment it became a
+	# function of the selection as well (see the test above). The panel's
+	# last resize had nothing selected, so every chip count was measured
+	# against the wide strip.
+	#
+	# The rule lives in client.gd, which needs a GPU — so this is the same
+	# shape of check `test_terrain_fog.gd` uses for the same reason: scan
+	# the source and assert the CALLER exists. Every other check here can
+	# pass while the client measures a rect it laid out a minute ago.
+	var source := FileAccess.get_file_as_string("res://client.gd")
+	assert_false(source.is_empty(), "client.gd is readable")
+	for fill in ["_show_chips", "_show_train_chips"]:
+		var at := source.find("func %s(" % fill)
+		assert_true(at >= 0, "%s exists" % fill)
+		var ends := source.find("\nfunc ", at + 1)
+		var body := source.substr(at, (ends if ends > at else source.length()) - at)
+		assert_true(body.contains("_layout_chips()"),
+			"%s re-measures the chip strip before filling it" % fill)
+
+
+func test_a_per_squad_chip_list_collapses_before_it_stops_fitting() -> void:
+	# The other half of the overlap fix: rather than paging through six
+	# identical "Gatherers 5/5" tiles, a uniform selection collapses to one
+	# chip per archetype. The threshold can therefore never be larger than
+	# what the strip holds — if it were, a selection just under it would
+	# page instead of collapsing, which is the worse answer at every size.
+	for viewport in SIZES:
+		var panel: Rect2 = _laid_out(viewport)["panel"]
+		for in_use in [true, false]:
+			var strip := HudLayout.chip_strip_rect(panel, in_use)
+			var collapse_at := HudLayout.chip_collapse_at(strip)
+			assert_true(collapse_at <= HudLayout.chip_capacity(strip),
+				"a per-squad list that reaches the collapse point still fits at %s" % viewport)
+			assert_true(collapse_at >= 1,
+				"one squad is always shown per-squad at %s" % viewport)
+			assert_true(collapse_at <= HudLayout.CHIP_COLLAPSE_THRESHOLD,
+				"the legibility threshold is still a ceiling at %s" % viewport)
+
+
 func test_no_chip_is_ever_drawn_outside_the_panel() -> void:
 	# The strip is two rows deep now, so its capacity is a real bound rather
 	# than a formality — and a chip past the end does not vanish, it draws

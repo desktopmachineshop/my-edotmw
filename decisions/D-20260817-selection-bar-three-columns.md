@@ -117,6 +117,43 @@ trainable unit fails there rather than in a match.
   across the first chip, because a Godot `Label` does not clip unless told
   to and its box had just become a third as wide.
 
+## Amendment, 2026-08-17: the overlap the short bar shipped with
+
+Found by playing it: with six squads selected, six chips drew straight
+across the formation buttons.
+
+`_chip_strip_rect` was computed in `Client._layout_chips`, which runs on a
+RESIZE. That was correct for as long as the strip's width was a function of
+the WINDOW alone — and this decision made it a function of the SELECTION as
+well (the strip takes the build column when nothing selected can build).
+The panel's last resize had nothing selected, so every chip count was
+measured against the wide strip and drawn into the orders column.
+
+**The lesson is not "call the layout function more often".** It is that
+widening the inputs of a cached value silently invalidates the schedule
+that cached it, and nothing about the change looks like a caching change.
+The same shape as the fourth entry in D-100's family: a value that was
+right when written, and that nobody re-read after its dependencies grew.
+
+Three parts to the fix:
+
+- both chip fills re-measure the strip themselves, so the rect cannot be
+  older than the list it is measuring;
+- the squad branch sets its action lists BEFORE filling chips, because the
+  strip's width depends on whether the build column has anything in it —
+  filling first measured against the *previous* selection's build list;
+- and `chip_collapse_at` collapses a per-squad list to one chip per
+  ARCHETYPE as soon as it stops fitting, rather than paging. Six identical
+  "Gatherers 5/5" tiles were never worth the room: "Gatherers x6" with
+  their combined strength is the same fact in one chip, and the collapse
+  rule already existed — it was capped at a legibility threshold of 8 set
+  when the strip was four rows deep.
+
+The guard is a SOURCE SCAN (`test_hud_layout.gd`), the same shape
+`test_terrain_fog.gd` uses and for the same reason: the rule lives in
+`client.gd`, which needs a GPU, and every other check in the file passes
+while the client measures a rect it laid out a minute ago.
+
 ## Revisit trigger
 
 A player unable to tell the orders column from the build column at a
