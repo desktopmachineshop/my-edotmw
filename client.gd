@@ -327,12 +327,32 @@ func _exit_tree() -> void:
 	if _host != null:
 		_host.destroy()
 		_host = null
+	# The one line every interactive session ends with, whatever else
+	# happened. A playtest asked to judge "zero desyncs across the session"
+	# was previously judging it by console SILENCE, and silence is what a
+	# client prints when it has checked nothing at all — see
+	# ClientState._desync_reports for the full account.
+	print("client: state sync — %s" % _state.desync_summary())
+
+
+## Surfaces desyncs as they happen, on the console, in every session —
+## not only in the screenshot path's VERDICT line, which an interactive
+## client never reaches (it ends in `get_tree().quit()`).
+##
+## Bounded by ClientState itself, so a client that is desyncing on every
+## state-hash message costs a handful of lines and then only the counters.
+func _report_desyncs() -> void:
+	for line in _state.take_desync_reports():
+		push_warning(String(line))
 
 
 func _process(delta: float) -> void:
 	_now += delta
 	_frame_delta = delta
 	_service_network()
+	# Immediately after the packets that could have produced one, so a
+	# desync is reported on the frame it is detected.
+	_report_desyncs()
 	# Before anything reads the world: a return to the lobby (D-075)
 	# invalidates every id below this line, and refreshing squads against
 	# a torn-down match would draw one frame of the dead one.
@@ -462,6 +482,11 @@ func _finish_capture() -> void:
 	var ok := (
 		_state.welcomed
 		and _state.desync_count == 0
+		# Buildings have their own hash against their own message (D-030)
+		# and it was read by nothing here — the squad half was gated and
+		# the building half was counted and dropped, so a client whose
+		# building state had drifted could pass this verdict outright.
+		and _state.building_desync_count == 0
 		and squads_drawn > 0
 		and soldiers > 0
 		and (_screenshot_path == "" or (_shot_taken and distinct >= MIN_DISTINCT_COLOURS))
@@ -490,10 +515,11 @@ func _finish_capture() -> void:
 	# (D-099), so it is deliberately not a claim about the frame. It is still
 	# worth printing — a run in which nothing was ever hidden proves nothing
 	# about fog, which is why `conceal_events` gates the verdict below.
-	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
+	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d state_hash_checks=%d building_desyncs=%d building_state_hash_checks=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
 		"ok" if ok else "failed",
 		str(_terrain_built), str(_state.welcomed), squads_drawn, live_squads, ghosts, soldiers,
-		_state.curves.size(), _state.desync_count, distinct,
+		_state.curves.size(), _state.desync_count, _state.state_hash_checks,
+		_state.building_desync_count, _state.building_state_hash_checks, distinct,
 		_state.casualties_applied, _state.conceal_events, _state.reveal_events, _state.ghosts_peak])
 
 	get_tree().quit(0 if ok else 1)
@@ -7397,6 +7423,11 @@ const SANDBOX_RESOURCE_GRANT_LABEL := 1000  # mirrors server.gd's CHEAT_RESOURCE
 ## in-game UI again.
 var _debug_window: Window
 var _debug_status_label: Label
+## The state-sync readout (`ClientState.desync_summary`). Kept separate
+## from `_debug_status_label`, which the cheat buttons overwrite — a
+## desync count that an "Armed: 3 x militia" message could wipe would be
+## readable only until the next click.
+var _debug_sync_label: Label
 var _debug_visible_last := false
 
 ## "" (off), "unit", or "building" — which cheat, if any, the next left
@@ -7413,7 +7444,7 @@ var _cheat_arm_count: int = 1
 func _build_debug_panel() -> void:
 	_debug_window = Window.new()
 	_debug_window.title = "Sandbox — Dev Tools"
-	_debug_window.size = Vector2i(300, 440)
+	_debug_window.size = Vector2i(300, 500)
 	# Near the main window rather than wherever the OS defaults to, so it
 	# does not open off-screen or stacked exactly on top of the game.
 	_debug_window.position = DisplayServer.window_get_position() + Vector2i(40, 60)
@@ -7513,6 +7544,18 @@ func _build_debug_panel() -> void:
 	_debug_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_debug_status_label)
 
+	col.add_child(HSeparator.new())
+
+	# A number a tester can read at any moment, because "zero desyncs
+	# across the session" is not a thing a scrolling console can answer —
+	# a report printed nine minutes ago is gone. Refreshed in
+	# `_refresh_debug_panel`, and green until it is not, so it says the
+	# checks RAN rather than merely that nobody complained.
+	_debug_sync_label = Label.new()
+	_debug_sync_label.add_theme_font_size_override("font_size", 12)
+	_debug_sync_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(_debug_sync_label)
+
 
 ## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
 ## COUNT enforces — kept as its own constant here (not shared across the
@@ -7566,6 +7609,11 @@ func _refresh_debug_panel() -> void:
 	if _debug_window == null:
 		return
 	var showing: bool = bool(_state.lobby.get("sandbox", false)) and not _state.in_lobby()
+	if showing and _debug_sync_label != null:
+		var desyncs := _state.desync_count + _state.building_desync_count
+		_debug_sync_label.text = "State sync: %s" % _state.desync_summary()
+		_debug_sync_label.modulate = (
+			Color(0.9, 0.4, 0.4) if desyncs > 0 else Color(0.55, 0.8, 0.55))
 	if showing and not _debug_visible_last:
 		# Sandbox mode just turned on (or a match just started with it
 		# already on) — open automatically. Does NOT run every frame

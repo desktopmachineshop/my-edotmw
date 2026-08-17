@@ -141,6 +141,69 @@ var state_hash_checks: int = 0
 var desync_count: int = 0
 var last_desync := ""
 
+## Desync lines nobody has printed yet. Same drain-once shape as `felled`
+## above: whoever surfaces them takes ownership, and a consumer that never
+## drains (the bots, which report through their own VERDICT instead) costs
+## nothing.
+##
+## This queue exists because the counters above were *write-only outside
+## the capture path*. `client.gd`'s VERDICT line reads `desync_count`, and
+## that line only ever runs in the screenshot path used by
+## `just test-client`, which ends in `get_tree().quit()`. An interactive
+## session never reaches it, so a GUI client stayed silent through zero
+## desyncs and through a thousand alike — and a playtest told to "watch
+## the console for any desync report" was judging a criterion that could
+## not fail. That is D-022's audit finding wearing new clothes: silence
+## read as success.
+##
+## Drain with `take_desync_reports()`; read `desync_summary()` for the
+## totals, which are the source of truth. This queue is deliberately NOT:
+## it stops filling at DESYNC_REPORT_LIMIT so a client that is desyncing
+## every tick cannot flood a console (or grow an array without bound in a
+## headless consumer that never drains). The counters keep counting past
+## the cap, and the last queued line says so.
+var _desync_reports := []
+
+## Enough to see the first few and their ticks — after that the pattern is
+## established and the number is what matters.
+const DESYNC_REPORT_LIMIT := 5
+
+
+func _note_desync(what: String) -> void:
+	var reported := _desync_reports.size()
+	if reported < DESYNC_REPORT_LIMIT:
+		_desync_reports.append("client: DESYNC %s" % what)
+	elif reported == DESYNC_REPORT_LIMIT:
+		# Queued rather than dropped silently, so a console that goes quiet
+		# after five lines says why instead of looking like the desyncs
+		# stopped — which is the same silence-reads-as-success trap this
+		# whole queue exists to close.
+		_desync_reports.append(
+			"client: DESYNC reporting capped at %d lines — the counters keep counting"
+			% DESYNC_REPORT_LIMIT)
+
+
+## Desync lines not yet surfaced, handing ownership to the caller (the
+## GUI client prints them). Empty on a healthy client, which is the
+## normal case and costs nothing.
+func take_desync_reports() -> Array:
+	var out := _desync_reports
+	_desync_reports = []
+	return out
+
+
+## The state-sync accounting as one line a human can read at any moment.
+##
+## Phrased as a POSITIVE statement of what was checked, not as the absence
+## of a complaint: "zero desyncs across the session" is only a meaningful
+## pass if the checks are known to have run at all. Same reasoning as
+## `test-load`'s verdict failing when zero comparisons ran.
+func desync_summary() -> String:
+	return "squads %d desync%s in %d checks, buildings %d desync%s in %d checks" % [
+		desync_count, "" if desync_count == 1 else "s", state_hash_checks,
+		building_desync_count, "" if building_desync_count == 1 else "s",
+		building_state_hash_checks]
+
 # --- M2 observation counters (D-026 criterion 9) ---------------------
 #
 # Additive only — nothing above this reads them, so they cannot change any
@@ -480,6 +543,7 @@ func _handle_state_hash(data: PackedByteArray) -> void:
 		desync_count += 1
 		last_desync = "tick %d: client composition hash %d != server %d over %d squads" % [
 			int(decoded["tick"]), ours, theirs, composition.size()]
+		_note_desync(last_desync)
 
 
 ## BUILDING_INFO (D-029/D-030). Buildings are **persistent-explored**:
@@ -551,6 +615,7 @@ func _handle_building_state_hash(data: PackedByteArray) -> void:
 		building_desync_count += 1
 		last_building_desync = "tick %d: client building hash %d != server %d over %d buildings" % [
 			int(decoded["tick"]), ours, theirs, buildings.size()]
+		_note_desync(last_building_desync)
 
 
 ## Hash of every building this client knows about. Must produce the same
