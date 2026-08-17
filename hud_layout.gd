@@ -247,8 +247,57 @@ const ACTION_GRID_HEIGHT := ACTIONS_Y + float(ACTION_ROWS) * ACTION_BUTTON_HEIGH
 ## made; none of them removed a control.
 const PANEL_HEIGHT := maxf(TITLE_COLUMN_HEIGHT, maxf(CHIP_STRIP_HEIGHT, ACTION_GRID_HEIGHT))
 
+## ## Costs are ICONS, not words
+##
+## A price is a colour and a number: "150 wood" spends 70 units of a
+## 151-unit build button on a word the player already knows from the
+## swatch. The swatch IS the icon, and it is the same colour vocabulary the
+## top bar, the minimap and the world markers all use (`Client._node_colour`
+## resolves every one of them), so it needs no legend beyond the game.
+##
+## `COST_SLOTS` is four because a unit or building may cost all four
+## resources; the shipped worst case is three (a heavy infantry def), and a test
+## fails if any def ever exceeds the slots. A CHIP is 116 units wide and
+## seats two, with the full price on its tooltip — a chip states a price,
+## while the button is the control you actually weigh it on.
+## Tight on purpose: the whole point is the room a price gives back, and a
+## generously-spaced icon price would give it straight back again. 20 units
+## of number is three digits at CAPTION_SIZE, which every shipped cost is.
+const COST_SWATCH_SIZE := 8.0
+const COST_SWATCH_GAP := 2.0
+const COST_NUMBER_WIDTH := 20.0
+const COST_ENTRY_GAP := 6.0
+const COST_SLOTS := 4
+const CHIP_COST_SLOTS := 2
+## Where a tile's price sits inside it — the row the "5/5" of a composition
+## chip occupies, since a tile shows one or the other and never both.
+const CHIP_COST_AT := Vector2(8.0, 30.0)
+
+
+## How wide one swatch-and-number pair is.
+static func cost_entry_width() -> float:
+	return COST_SWATCH_SIZE + COST_SWATCH_GAP + COST_NUMBER_WIDTH
+
+
+## Where the i'th pair starts, within the strip.
+static func cost_entry_x(index: int) -> float:
+	return float(index) * (cost_entry_width() + COST_ENTRY_GAP)
+
+
+## How wide a strip of this many pairs is — what a button has to keep clear
+## of its own label, and what a chip has to fit.
+static func cost_strip_width(entries: int) -> float:
+	if entries <= 0:
+		return 0.0
+	return cost_entry_x(entries - 1) + cost_entry_width()
+
+
 ## One resource readout every this many pixels, across the top bar.
-const RESOURCE_PITCH := 168.0
+## Down from 168, which was sized for "Food 448". The readout is a swatch
+## and a number now — the word was the widest part of it, and four of them
+## were spending 300 units of the top bar on saying what four colours
+## already say.
+const RESOURCE_PITCH := 96.0
 const RESOURCE_X := 16.0
 
 ## The Menu button, at the right end of the top bar. Its own slot rather

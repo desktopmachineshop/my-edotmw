@@ -627,6 +627,54 @@ func test_a_per_squad_chip_list_collapses_before_it_stops_fitting() -> void:
 				"the legibility threshold is still a ceiling at %s" % viewport)
 
 
+# --- prices are drawn, not spelled -------------------------------------
+
+func test_a_price_leaves_room_for_the_thing_it_is_the_price_of() -> void:
+	# The point of drawing a price rather than spelling it is the room it
+	# gives back, so the strip has to be small enough that the NAME still
+	# has a button to sit on — at the narrowest button, not just at 1080p.
+	var two := HudLayout.cost_strip_width(2)
+	assert_true(two + HudLayout.PANEL_PAD * 2.0 <= HudLayout.ACTION_BUTTON_MIN_WIDTH,
+		"a two-resource price plus padding fits the narrowest build button")
+	assert_true(HudLayout.cost_strip_width(HudLayout.CHIP_COST_SLOTS)
+		<= HudLayout.CHIP_SIZE.x - 16.0,
+		"a train tile's price fits the tile")
+	# Pairs do not overlap, and an empty price takes no room at all.
+	assert_eq(HudLayout.cost_strip_width(0), 0.0)
+	for i in range(1, HudLayout.COST_SLOTS):
+		assert_true(HudLayout.cost_entry_x(i)
+			>= HudLayout.cost_entry_x(i - 1) + HudLayout.cost_entry_width(),
+			"price entry %d clears the one before it" % i)
+
+
+func test_no_shipped_price_names_more_resources_than_a_button_can_draw() -> void:
+	# The icons replaced words, so a price that does not fit is now a
+	# SILENT truncation rather than a clipped sentence. Asserted against the
+	# shipped defs: a unit or building that ever costs more kinds than
+	# COST_SLOTS fails here rather than quietly showing three quarters of
+	# its own price.
+	var checked := 0
+	for def in BuildingSim.all_defs():
+		var kinds := 0
+		for cost in [def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone]:
+			if int(cost) > 0:
+				kinds += 1
+		assert_true(kinds <= HudLayout.COST_SLOTS,
+			"%s names %d resources, and a button draws %d"
+				% [def.id, kinds, HudLayout.COST_SLOTS])
+		checked += 1
+	for def in UnitRoster.load_all():
+		var kinds := 0
+		for cost in [def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone]:
+			if int(cost) > 0:
+				kinds += 1
+		assert_true(kinds <= HudLayout.COST_SLOTS,
+			"%s names %d resources, and a button draws %d"
+				% [def.id, kinds, HudLayout.COST_SLOTS])
+		checked += 1
+	assert_true(checked > 0, "the shipped defs were actually read")
+
+
 func test_no_chip_is_ever_drawn_outside_the_panel() -> void:
 	# The strip is two rows deep now, so its capacity is a real bound rather
 	# than a formality — and a chip past the end does not vanish, it draws

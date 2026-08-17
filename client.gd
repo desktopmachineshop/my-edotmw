@@ -1254,6 +1254,10 @@ var _commands_rule: ColorRect = null
 ## "what can I build" question is answered by the chip strip's Train tiles
 ## instead (see `_show_train_chips`), not by this column.
 var _build_action_buttons: Array[Button] = []
+## One cost row per build button (see `_build_cost_row`): a price is drawn
+## as swatches and numbers rather than spelled out in the button's text,
+## which is what makes a 26-unit one-line button able to carry one at all.
+var _build_cost_rows: Array = []
 var _build_actions: Array = []
 var _build_column_rule: ColorRect = null
 
@@ -1264,6 +1268,9 @@ var _build_column_rule: ColorRect = null
 ## information (a name, a count/cost, a fraction) wearing a different
 ## label — see `_show_chips`.
 const CHIP_POOL_SIZE := 16
+
+## One cost row per chip — a train tile's price (see `_build_cost_row`).
+var _chip_cost_rows: Array = []
 
 ## Which page of chips is showing, when there are more than the strip can
 ## hold at once (see `_chip_window`). Zero for every selection that fits,
@@ -1560,8 +1567,14 @@ func _build_selection_panel(layer: CanvasLayer) -> void:
 
 	for i in range(HudLayout.ACTION_ROWS * HudLayout.ACTION_COLUMNS):
 		var button := _build_action_button(i, _on_build_action_pressed)
+		# Left, not centred, and only in THIS column: a build button carries
+		# its price at its right end (see `_place_cost_row`), and a centred
+		# name drifts under it as the name gets longer. The orders column
+		# never has a price, so its buttons stay centred.
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		_build_action_buttons.append(button)
 		layer.add_child(button)
+		_build_cost_rows.append(_build_cost_row(layer, HudLayout.COST_SLOTS))
 
 
 ## The thin vertical rule down a column's left edge — what tells the three
@@ -1575,6 +1588,70 @@ func _column_rule(layer: CanvasLayer) -> ColorRect:
 	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(rule)
 	return rule
+
+
+## A row of cost ICONS — one swatch and one number per resource a price
+## names (see `HudLayout.COST_SLOTS`' doc comment for why a price is drawn
+## rather than spelled). Pooled and hidden, like every other repeated
+## widget in this HUD, and parented to the LAYER rather than to the button
+## or chip it decorates, which is the same shape the chip's own labels use.
+func _build_cost_row(layer: CanvasLayer, slots: int) -> Dictionary:
+	var swatches: Array[ColorRect] = []
+	var numbers: Array[Label] = []
+	for i in range(slots):
+		var swatch := ColorRect.new()
+		swatch.size = Vector2(HudLayout.COST_SWATCH_SIZE, HudLayout.COST_SWATCH_SIZE)
+		swatch.visible = false
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		swatches.append(swatch)
+		layer.add_child(swatch)
+
+		var number := _hud_label(Vector2.ZERO, HudTheme.CAPTION_SIZE, HudTheme.TEXT_DIM)
+		number.visible = false
+		number.size = Vector2(HudLayout.COST_NUMBER_WIDTH, 14.0)
+		numbers.append(number)
+		layer.add_child(number)
+	return {"swatches": swatches, "numbers": numbers}
+
+
+## What a price is made of, zeroes left out — the entries a cost row draws.
+## `_cost_text`'s list-shaped sibling, kept beside it so the words and the
+## icons can never disagree about which resources a thing costs.
+func _cost_entries(food: int, wood: int, gold: int, stone: int) -> Array:
+	var out := []
+	for pair in [[Economy.ResourceKind.FOOD, food], [Economy.ResourceKind.WOOD, wood],
+			[Economy.ResourceKind.GOLD, gold], [Economy.ResourceKind.STONE, stone]]:
+		if int(pair[1]) > 0:
+			out.append(pair)
+	return out
+
+
+## Draw a price at `at`, and answer how wide it came out — the caller needs
+## that to keep its own label clear of it.
+##
+## More entries than the row has slots draws the first few; the caller is
+## expected to carry the whole price on a tooltip (a chip does, and has two
+## slots against a shipped worst case of three). A test fails if a def ever
+## costs more resources than the BUTTON's row can show, because that is the
+## one place a price is weighed rather than merely stated.
+func _place_cost_row(row: Dictionary, at: Vector2, entries: Array) -> float:
+	var swatches: Array = row["swatches"]
+	var numbers: Array = row["numbers"]
+	var shown := mini(entries.size(), swatches.size())
+	for i in range(swatches.size()):
+		var visible := i < shown
+		swatches[i].visible = visible
+		numbers[i].visible = visible
+		if not visible:
+			continue
+		var x := at.x + HudLayout.cost_entry_x(i)
+		swatches[i].color = _node_colour(int(entries[i][0]))
+		swatches[i].position = Vector2(x, at.y)
+		numbers[i].position = Vector2(
+			x + HudLayout.COST_SWATCH_SIZE + HudLayout.COST_SWATCH_GAP,
+			at.y + HudLayout.COST_SWATCH_SIZE * 0.5 - 7.0)
+		numbers[i].text = str(int(entries[i][1]))
+	return HudLayout.cost_strip_width(shown)
 
 
 ## One action button — a formation/behaviour button and a build button are
@@ -1615,6 +1692,20 @@ func _build_action_button(index: int, on_pressed: Callable) -> Button:
 	button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE - 1)
 	button.pressed.connect(on_pressed.bind(index))
 	return button
+
+
+## Reserve room at a button's right end for the price drawn there.
+##
+## Through the STYLEBOX's content margin rather than by shortening the
+## text: the margin is what Godot lays the label out inside, so the
+## ellipsis lands where the icons start instead of at the button's edge —
+## which is the difference between a name that visibly ran out of room and
+## one drawn straight through its own cost.
+func _inset_button_text(button: Button, strip_width: float) -> void:
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var style := button.get_theme_stylebox(state)
+		if style is StyleBoxFlat:
+			style.content_margin_right = 4.0 + strip_width 				+ (HudLayout.PANEL_PAD * 0.5 if strip_width > 0.0 else 0.0)
 
 
 ## The chip pool — pooled and relabelled for the same reason the action
@@ -1672,6 +1763,11 @@ func _build_chip_pool(layer: CanvasLayer) -> void:
 		layer.add_child(chip_bar[0])
 		layer.add_child(chip_bar[1])
 
+		# A train tile states a PRICE, and states it in icons for the same
+		# reason the top bar does. Two slots: a chip is 116 units wide, and
+		# the tooltip carries the whole price when a unit costs three.
+		_chip_cost_rows.append(_build_cost_row(layer, HudLayout.CHIP_COST_SLOTS))
+
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -1696,12 +1792,19 @@ func _build_hud() -> void:
 		var swatch := ColorRect.new()
 		swatch.color = _node_colour(kinds[i])
 		swatch.size = Vector2(HudLayout.RESOURCE_SWATCH_SIZE, HudLayout.RESOURCE_SWATCH_SIZE)
-		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# The swatch is the READOUT's name now, not decoration beside it
+		# (see `HudLayout.COST_SLOTS`' doc comment) — so it answers when
+		# hovered, which is where a player who has not learnt the four
+		# colours yet finds out what they mean.
+		swatch.mouse_filter = Control.MOUSE_FILTER_STOP
+		swatch.tooltip_text = names[i]
 		_resource_swatches.append(swatch)
 		layer.add_child(swatch)
 
 		var value := _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE, HudTheme.TEXT)
-		value.text = "%s —" % names[i]
+		value.text = "—"
+		value.mouse_filter = Control.MOUSE_FILTER_STOP
+		value.tooltip_text = names[i]
 		_resource_labels.append(value)
 		layer.add_child(value)
 
@@ -3856,11 +3959,10 @@ func _update_hud() -> void:
 	# Only OUR four. Wallets are private, so the protocol never carries
 	# anyone else's (D-028).
 	for i in range(_resource_labels.size()):
-		var names := ["Food", "Wood", "Gold", "Stone"]
-		if _state.wallet.size() > i:
-			_resource_labels[i].text = "%s %d" % [names[i], _state.wallet[i]]
-		else:
-			_resource_labels[i].text = "%s —" % names[i]
+		# The number alone: the swatch to its left is the name (and says so
+		# on hover). Four words removed from the top bar is 300 design units
+		# of it back, which is why RESOURCE_PITCH could halve.
+		_resource_labels[i].text = str(_state.wallet[i]) if _state.wallet.size() > i else "—" 
 
 	# Show the server's explanation for a few seconds after it arrives.
 	# Timed off the COUNTER rather than the string, so two identical
@@ -3941,8 +4043,11 @@ func _update_selection_panel() -> void:
 
 	if _selected.is_empty():
 		_hide_chips()
-		_selection_title.text = "Nothing selected"
-		_selection_detail.text = "Click a squad or a building. Drag to box-select."
+		# Short enough for the selection column's own width, which halved
+		# when the bar did: a placeholder clipped to "Nothing select..." is
+		# the layout admitting it in the one state a new player sees first.
+		_selection_title.text = "No selection"
+		_selection_detail.text = "Click or drag to select"
 		_set_actions([])
 		_set_build_actions([])
 		return
@@ -4048,6 +4153,9 @@ func _show_chips(counts: Dictionary) -> void:
 	entries = _chip_window(entries)
 	for i in range(_chip_panels.size()):
 		var showing := i < entries.size()
+		# A composition chip states a strength, not a price: its cost row is
+		# cleared rather than left showing the last building's.
+		_place_cost_row(_chip_cost_rows[i], Vector2.ZERO, [])
 		_chip_panels[i].visible = showing
 		_chip_panels[i].tooltip_text = ""
 		_chip_names[i].visible = showing
@@ -4099,6 +4207,8 @@ func _show_train_chips(def: BuildingDef) -> void:
 				entries.append({
 					"name": unit.display_name,
 					"cost": _cost_text(unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone),
+					"costs": _cost_entries(unit.cost_food, unit.cost_wood,
+						unit.cost_gold, unit.cost_stone),
 					"affordable": _can_afford(unit.cost_food, unit.cost_wood,
 						unit.cost_gold, unit.cost_stone),
 				})
@@ -4128,7 +4238,12 @@ func _show_train_chips(def: BuildingDef) -> void:
 		if not showing:
 			continue
 		_chip_names[i].text = String(entries[i]["name"])
-		_chip_counts[i].text = String(entries[i]["cost"])
+		# Drawn, not spelled (see `_place_cost_row`) — "16 food" was the
+		# widest thing on a 116-unit tile, and a swatch says the same word.
+		_chip_counts[i].visible = false
+		_place_cost_row(_chip_cost_rows[i],
+			_chip_panels[i].position + HudLayout.CHIP_COST_AT,
+			entries[i].get("costs", []))
 		# Greyed when unaffordable, and its click refused in
 		# `_on_chip_input`. These chips ARE the train control (not a picture
 		# of one), so they need the same affordability gate the build list
@@ -4136,8 +4251,10 @@ func _show_train_chips(def: BuildingDef) -> void:
 		# most-used button in the game looking available and then bouncing.
 		var affordable := bool(entries[i].get("affordable", true))
 		_chip_panels[i].modulate = Color(1, 1, 1, 1) if affordable else Color(1, 1, 1, 0.45)
-		_chip_panels[i].tooltip_text = "Click to train" if affordable \
-			else "Not enough resources"
+		# The whole price in words here, because the tile itself draws at
+		# most `HudLayout.CHIP_COST_SLOTS` of it.
+		_chip_panels[i].tooltip_text = "%s — %s" % [
+			String(entries[i]["name"]), String(entries[i]["cost"])] if affordable 			else "Not enough resources — %s" % String(entries[i]["cost"])
 
 
 ## The slice of a chip list the strip can actually SHOW, plus a "+N more"
@@ -4189,6 +4306,7 @@ func _hide_chips() -> void:
 	_chip_more_index = -1
 	_chip_page = 0
 	for i in range(_chip_panels.size()):
+		_place_cost_row(_chip_cost_rows[i], Vector2.ZERO, [])
 		_chip_panels[i].visible = false
 		_chip_panels[i].tooltip_text = ""
 		_chip_names[i].visible = false
@@ -4534,13 +4652,16 @@ const BUILD_GROUP_LABELS := {
 ## label and its affordability cannot differ depending on how you reached it.
 func _build_action_for(building: BuildingDef) -> Dictionary:
 	return {
-		# The name alone, not "Build <name>": the column this sits in is
-		# captioned BUILD now (it was an unlabelled lower segment of a
-		# shared column when the verb was carried by every button), and the
-		# repeated verb costs width the button no longer has to spare.
-		"label": "%s  ·  %s" % [building.display_name, _cost_text(
+		# The name alone — not "Build <name>", and not the price either.
+		# The column this sits in is the build column, and the price is
+		# drawn beside the name as icons (`_place_cost_row`), which is what
+		# fits on a one-line button when the words did not.
+		"label": building.display_name,
+		"hint": "%s — %s" % [building.display_name, _cost_text(
 			building.cost_food, building.cost_wood,
 			building.cost_gold, building.cost_stone)],
+		"costs": _cost_entries(building.cost_food, building.cost_wood,
+			building.cost_gold, building.cost_stone),
 		"kind": "build", "id": building.id,
 		"enabled": _can_afford(building.cost_food, building.cost_wood,
 			building.cost_gold, building.cost_stone),
@@ -4659,12 +4780,24 @@ func _set_build_actions(actions: Array) -> void:
 	_build_column_rule.visible = not actions.is_empty()
 	for i in range(_build_action_buttons.size()):
 		var button := _build_action_buttons[i]
+		var row: Dictionary = _build_cost_rows[i]
 		if i >= actions.size():
 			button.visible = false
+			_place_cost_row(row, Vector2.ZERO, [])
 			continue
 		button.visible = true
 		button.text = String(actions[i]["label"])
 		button.tooltip_text = String(actions[i].get("hint", actions[i]["label"]))
+		# The price sits at the button's right end, and the button's own
+		# text is inset to keep clear of it — a label clipped by an
+		# ellipsis where the icons start reads as a name that ran out of
+		# room, which is true, rather than as one drawn over its own price.
+		var entries: Array = actions[i].get("costs", [])
+		var strip := _place_cost_row(row, button.position + Vector2(
+			button.size.x - HudLayout.cost_strip_width(mini(entries.size(),
+				HudLayout.COST_SLOTS)) - HudLayout.PANEL_PAD * 0.5,
+			(button.size.y - HudLayout.COST_SWATCH_SIZE) * 0.5), entries)
+		_inset_button_text(button, strip)
 
 
 func _on_build_action_pressed(index: int) -> void:
