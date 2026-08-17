@@ -350,12 +350,26 @@ func _ready() -> void:
 		# default — is the free-for-all every ladder number so far was
 		# measured on, and `MatchState.set_team` is lobby-and-admin-only by
 		# design, so without this flag there is no door to a teamed match
-		# that nobody is sitting in. Sides are dealt ROUND-ROBIN rather than
-		# in blocks: it makes an ally the seat two along instead of the seat
-		# next door, so the nearest home is an ENEMY's and an AI that
-		# marches on the nearest thing it knows is marching on the wrong
-		# one for the reason #83 describes rather than by luck of placement.
+		# that nobody is sitting in.
+		#
+		# Sides are dealt round-robin, and that is a convention rather than
+		# a claim: seat order is not map order. Spawn points are scattered
+		# at `min_spawn_spacing` (D-039), so which neighbour a seat gets is
+		# a property of the SEED — no dealing puts an ally reliably nearest,
+		# which is why `just test-ai-teams` plays several worlds instead of
+		# arranging one.
+		#
+		# Refused rather than clamped above MAX_TEAMS: `--ai-teams=9` would
+		# otherwise deal nine sides into four and quietly ally seats the
+		# caller asked to separate — an argument that is not the number it
+		# will be read as, which is the trap
+		# D-20260817-recipe-args-are-positional exists to close.
 		var ai_teams := maxi(0, int(args.get("ai-teams", 0)))
+		if ai_teams > MatchState.MAX_TEAMS:
+			push_error("server: --ai-teams=%d, but a match has at most %d sides"
+				% [ai_teams, MatchState.MAX_TEAMS])
+			get_tree().quit(1)
+			return
 		var random_civs := int(args.get("random-civs", 0)) != 0
 		var civs := CivRoster.ids()
 		for i in range(ai_wanted):

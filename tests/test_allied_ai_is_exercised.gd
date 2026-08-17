@@ -97,6 +97,18 @@ func test_a_teamless_seat_is_unchanged() -> void:
 		"Two seats on team 0 are allies — 0 is FREE-FOR-ALL (D-050)")
 
 
+func test_a_seat_cannot_be_dealt_a_side_that_does_not_exist() -> void:
+	# The backstop, not the check that matters: `server.gd` REFUSES
+	# `--ai-teams` above MAX_TEAMS rather than folding it, because a
+	# silently folded 9 into 4 allies seats the caller asked to separate.
+	# This pins that nothing downstream invents a fifth side either way.
+	var m := _match_for(2)
+	m.add_ai_player(1000, _civ(), MatchState.MAX_TEAMS + 5)
+	m.add_ai_player(1001, _civ(), -3)
+	assert_eq(m.team_map(), {1000: MatchState.MAX_TEAMS, 1001: 0},
+		"A seat was dealt a side the lobby has no such thing as")
+
+
 func test_a_team_of_survivors_ends_the_match() -> void:
 	# The ladder's decided/draw reporting is only honest if a team win is a
 	# win. `MatchState._check_victory` has said so since it was written and
