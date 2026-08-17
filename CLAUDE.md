@@ -16,8 +16,10 @@ change edits `ground-fog.md`, a spawn change edits `spawns.md`); never
 recreate a shared monolith here — that is what made every parallel merge
 conflict (see `decisions/D-20260816-decision-docs-split.md`).
 
-Headline state: M1–M5 and M7 complete; M6 in progress; M8 (Steam) and
-M9 (epochs, six civs) planned but not built. For current test counts or
+Headline state: M1–M5 and M7 complete; M6 in progress; M8 (Steam),
+M9 (epochs, six civs) and M10 (scale optimisation) planned but not built.
+**M10 runs before M8** — the map ladder grew on 2026-08-17 and the client
+does not yet keep up with it. For current test counts or
 performance numbers, run the recipe (`just test-unit`, `just test-load`)
 — a number quoted in prose is stale by construction on a merged tree,
 and measurements belong in the decision entry that took them.
@@ -55,6 +57,8 @@ and measurements belong in the decision entry that took them.
 @docs/status/m8-plan.md
 
 @docs/status/m9-plan.md
+
+@docs/status/m10-plan.md
 
 ## What this project is
 
