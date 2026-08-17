@@ -222,6 +222,18 @@ hud_layout.gd            Where the HUD's pieces go, for a window of any
                         Also owns the HUD's non-obvious arithmetic: the
                         match clock, the n/cap readout, and the compass
                         dial's geometry (D-063).
+lobby_layout.gd          The same, for the LOBBY screen
+                        (D-20260817-lobby-fits-the-window). Its own file
+                        because it answers to its own reference height:
+                        the HUD is magnified against a 1280x720 window,
+                        while the lobby is a full-page document scaled to
+                        FIT `DESIGN_HEIGHT` of content. Sharing the HUD's
+                        720 laid a 1000-tall window out in 720 design
+                        pixels and pushed the last panel off the bottom.
+                        Every size here is a SHARE of the design rect;
+                        a fixed pixel count is the bug. The page also
+                        scrolls (`_lobby_scroll`) — the backstop, not the
+                        plan.
 scoreboard.gd            Who is in this match, and what this player is
                         ENTITLED to see about them (D-102). All-static and
                         pure. Identity (colour, civ, team) is public and

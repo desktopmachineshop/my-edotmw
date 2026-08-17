@@ -67,3 +67,29 @@ adding it to the tree, so `_ready()` does not run) and plays
 match → lobby → match against it. **When a client-side thing is
 lifetime rather than pixels, it is testable — try before assuming
 otherwise.**
+
+**And GEOMETRY is testable too, which the lobby found out the hard way
+(D-20260817-lobby-fits-the-window, #91).** The lobby ran off the bottom of
+a 1920x1000 window — chat clipped, GAME SETTINGS on the window border,
+SANDBOX not on screen, no scrollbar. Its sizes lived in `client.gd` as
+fixed pixels, so nothing covered them; they live in `lobby_layout.gd` now,
+as shares of the design rect, and **`LobbyLayout.DESIGN_HEIGHT` is what
+the lobby is scaled against** — a screen that is a full-page DOCUMENT is
+laid out to fit its own content, where the in-match HUD is magnified
+against `HudLayout.REFERENCE`. Sharing the HUD's 720-tall reference is
+what pinned the lobby's design space at 720 no matter how big the window
+got. Three things worth carrying:
+
+- **A layout test must measure the REAL controls, in a REAL tree.** The
+  same lobby measures 486 off-tree and 896 in one, because theme fonts do
+  not resolve off-tree — and the off-tree number would have declared the
+  bug fixed while it was still on screen. `_ready()` opens a socket, so the
+  test takes the lobby's CanvasLayer out of an un-started client and adds
+  *that* to the tree.
+- **A constant that describes content needs a test that measures the
+  content.** `DESIGN_HEIGHT` is pinned by building the lobby and comparing,
+  so adding two settings rows goes red there rather than off a screen.
+- **`just lobby-shot` takes a RESOLUTION now.** It was pinned to 1280x720,
+  the one size at which this bug does not happen, so the single instrument
+  that could have caught it was aimed away from it — the `test-client`
+  points-at-a-spawn lesson again.

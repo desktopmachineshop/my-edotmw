@@ -1893,15 +1893,21 @@ func _layout_hud() -> void:
 	_hud_scale = _hud_scale_override if _hud_scale_override > 0.0 \
 		else HudLayout.scale_for(viewport)
 	_hud_layer.transform = Transform2D().scaled(Vector2(_hud_scale, _hud_scale))
+	# The lobby takes its OWN scale, against its own reference height — see
+	# `lobby_layout.gd`'s header. Sharing the HUD's laid a 1000-tall window
+	# out against 720 design pixels and pushed the last panel off the
+	# bottom (#91). The two are never on screen together, so they are free
+	# to differ.
 	if _lobby_layer != null:
-		_lobby_layer.transform = _hud_layer.transform
+		var lobby_scale := LobbyLayout.scale_for(viewport, _hud_scale_override)
+		_lobby_layer.transform = Transform2D().scaled(Vector2(lobby_scale, lobby_scale))
+		_layout_lobby(Vector2(maxf(viewport.x, 1.0), maxf(viewport.y, 1.0)) / lobby_scale)
 
 	# Design space is the window divided by the scale ACTUALLY applied
 	# above, not by the automatic one — with an override in force those two
 	# differ, and using the automatic figure would lay the HUD out for a
 	# window shape that is not on screen.
 	var design := Vector2(maxf(viewport.x, 1.0), maxf(viewport.y, 1.0)) / _hud_scale
-	_layout_lobby(design)
 	var at := HudLayout.compute(design, _minimap_size)
 
 	var bar: Rect2 = at["resource_bar"]
@@ -2010,14 +2016,27 @@ func _layout_hud() -> void:
 ## viewport-divided-by-scale space `HudLayout.compute` already lays the
 ## HUD out against — is what makes the two scalings cancel out instead of
 ## compounding.
+##
+## What is sized here is the scrolling PAGE, not the content: `_lobby_root`
+## is a child of `_lobby_scroll` and takes its width from it, so a window
+## too short for the panels scrolls instead of clipping them (#91). Every
+## panel minimum is re-derived from `design` on each call, because they are
+## fractions of it now rather than the fixed pixel counts that overflowed.
 func _layout_lobby(design: Vector2) -> void:
 	if _lobby_backdrop == null:
 		return
 	_lobby_backdrop.size = design
-	_lobby_root.position = LOBBY_MARGIN
-	_lobby_root.size = Vector2(
-		maxf(design.x - LOBBY_MARGIN.x * 2.0, 0.0),
-		maxf(design.y - LOBBY_MARGIN.y * 2.0, 0.0))
+	var page := LobbyLayout.root_rect(design)
+	_lobby_scroll.position = page.position
+	_lobby_scroll.size = page.size
+
+	_lobby_left.custom_minimum_size = Vector2(LobbyLayout.left_column_width(design), 0.0)
+	_lobby_right.custom_minimum_size = Vector2(LobbyLayout.right_column_width(design), 0.0)
+	_lobby_seat_scroll.custom_minimum_size = Vector2(0.0, LobbyLayout.seat_list_height(design))
+	_lobby_help.custom_minimum_size = Vector2(LobbyLayout.help_width(design), 0.0)
+	_chat_log_label.custom_minimum_size = Vector2(0.0, LobbyLayout.chat_log_height(design))
+	_map_preview.custom_minimum_size = Vector2(0.0, LobbyLayout.map_preview_height(design))
+	_map_blurb.custom_minimum_size = Vector2(0.0, LobbyLayout.map_blurb_height(design))
 
 
 ## Where the chip strip (see `_build_chip_pool`) sits, and how many columns
@@ -6301,11 +6320,24 @@ var _lobby_layer: CanvasLayer
 ## cannot be done with anchors), the same reason `_hud_layer`'s own
 ## children are.
 var _lobby_backdrop: ColorRect
+## The whole page scrolls (#91). A backstop, not the plan: `LobbyLayout`
+## sizes the panels so they FIT, and this is what makes a window too short
+## for them cost a scrollbar rather than content nobody can reach. A
+## `VBoxContainer` handed less height than its children's combined minimum
+## does not shrink them and does not scroll — it overflows in silence,
+## which is exactly the picture the bug was reported with.
+var _lobby_scroll: ScrollContainer
 var _lobby_root: VBoxContainer
+## The two columns, kept so `_layout_lobby` can re-derive their widths from
+## the design rect on every resize — they used to be fixed pixel minimums
+## assigned once at build time.
+var _lobby_left: VBoxContainer
+var _lobby_right: VBoxContainer
 var _lobby_seat_rows: VBoxContainer
 ## The seat rows scroll independently of the header/rule above them (see
 ## `_build_lobby_ui`) — a lobby of 20 seats must not push the actions row
 ## and the chat panel below it off the bottom of the screen.
+var _lobby_seat_scroll: ScrollContainer
 var _lobby_seat_list: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
@@ -6460,22 +6492,11 @@ func _styled_button(text: String, accent: Color) -> Button:
 ## rewrite (the keys are read straight from the event in `_handle_key`).
 const SETTINGS_PATH := "user://settings.cfg"
 
-## The margin between the lobby's edge panels and the window's own edge,
-## in design-space units (so it scales with everything else — see
-## `_build_lobby_ui`).
-const LOBBY_MARGIN := Vector2(40.0, 24.0)
-## The right-hand column's width (map preview + generation settings).
-## Fixed, not proportional — the reference design's own
-## `grid-template-columns:1fr 400px`, so growing the window gives the
-## seat list and chat more room rather than stretching a terrain preview
-## into something blurrier.
-const LOBBY_RIGHT_COLUMN_WIDTH := 400.0
-
-## One seat row plus its separation — how tall the seat list's scroll
-## window is sized against (see `_build_lobby_ui`), so "how many rows show
-## before it scrolls" is one number rather than a viewport height nobody
-## chose on purpose.
-const SEAT_ROW_HEIGHT := 44.0
+## The lobby's own geometry — margin, column widths, panel heights — lives
+## in `lobby_layout.gd` now, the way the HUD's lives in `hud_layout.gd`
+## (D-061): every one of these used to be a fixed pixel count written here,
+## which is why the screen overflowed a 1920x1000 window with no test able
+## to see it (#91). `SEAT_ROW_HEIGHT` moved with them.
 
 
 func _build_game_menu() -> void:
@@ -7134,9 +7155,11 @@ func _build_lobby_ui() -> void:
 	_lobby_layer.layer = 10
 	_lobby_layer.visible = false
 	add_child(_lobby_layer)
-	# Scaled with the HUD, and built after it — so it takes the scale here
-	# rather than waiting for the first resize to be laid out correctly.
-	_lobby_layer.transform = Transform2D().scaled(Vector2(_hud_scale, _hud_scale))
+	# Its scale comes from `_layout_hud`, called at the bottom of this
+	# function — so the lobby is laid out against the CURRENT window
+	# immediately rather than waiting for a resize signal. It is the lobby's
+	# OWN scale, not the HUD's; see `lobby_layout.gd`'s header for why they
+	# differ.
 
 	_lobby_backdrop = ColorRect.new()
 	# Fully opaque: there is no world behind the lobby yet, because the
@@ -7156,9 +7179,24 @@ func _build_lobby_ui() -> void:
 	# rect and the real window disagree by exactly the scale factor — which
 	# is invisible at the one size (1280x720) this was first tried at, and
 	# a visible gap or overflow at every other one.
+	#
+	# The page scrolls, and that is the backstop rather than the plan (#91):
+	# `LobbyLayout` sizes every panel below as a fraction of the design rect
+	# so they fit, and this is what makes a window too short for them cost a
+	# scrollbar instead of a GAME SETTINGS panel sitting on the window's
+	# bottom border with a SANDBOX panel below it that nothing can reach.
+	_lobby_scroll = ScrollContainer.new()
+	_lobby_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_lobby_layer.add_child(_lobby_scroll)
+
 	_lobby_root = VBoxContainer.new()
 	_lobby_root.add_theme_constant_override("separation", 12)
-	_lobby_layer.add_child(_lobby_root)
+	# A ScrollContainer sizes its child to the child's own minimum unless
+	# the child asks to fill — without these the page would sit at its
+	# minimum size in the top-left corner of a window with room to spare.
+	_lobby_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lobby_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_lobby_scroll.add_child(_lobby_root)
 
 	_lobby_title = Label.new()
 	_lobby_title.text = "Multiplayer lobby"
@@ -7177,12 +7215,14 @@ func _build_lobby_ui() -> void:
 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_lobby_root.add_child(columns)
 
+	# Widths come from `LobbyLayout` on every layout pass, not from a pixel
+	# count assigned once here (#91).
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(560.0, 0.0)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left.add_theme_constant_override("separation", 10)
 	columns.add_child(left)
+	_lobby_left = left
 	# Expands the same way the chat panel below it does, so the two split
 	# `left`'s leftover height evenly (VBoxContainer gives equal-ratio
 	# expand children equal shares by default) rather than PLAYERS sitting
@@ -7191,15 +7231,16 @@ func _build_lobby_ui() -> void:
 
 	# Seats scroll on their own past a handful of rows, rather than the
 	# panel growing to fit up to twenty of them (D-018) and pushing the
-	# actions row and chat off the bottom of the screen. `custom_minimum_size`
-	# is the floor for a short window; SIZE_EXPAND_FILL is what lets it
-	# actually grow to match chat's height on a tall one, the same pairing
-	# every other expanding panel here uses.
+	# actions row and chat off the bottom of the screen. Its minimum height
+	# is `LobbyLayout.seat_list_height`, applied per layout pass;
+	# SIZE_EXPAND_FILL is what lets it actually grow to match chat's height
+	# on a tall window, the same pairing every other expanding panel here
+	# uses.
 	var seat_scroll := ScrollContainer.new()
-	seat_scroll.custom_minimum_size = Vector2(0.0, SEAT_ROW_HEIGHT * 4.5)
 	seat_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	seat_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_lobby_seat_rows.add_child(seat_scroll)
+	_lobby_seat_scroll = seat_scroll
 	_lobby_seat_list = VBoxContainer.new()
 	_lobby_seat_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lobby_seat_list.add_theme_constant_override("separation", 6)
@@ -7221,7 +7262,6 @@ func _build_lobby_ui() -> void:
 	_lobby_help = Label.new()
 	_lobby_help.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 	_lobby_help.modulate = HudTheme.TEXT_GHOST
-	_lobby_help.custom_minimum_size = Vector2(600.0, 0.0)
 	_lobby_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left.add_child(_lobby_help)
 
@@ -7231,7 +7271,6 @@ func _build_lobby_ui() -> void:
 	var chat_column := _lobby_panel("Chat", left, true)
 	_chat_log_label = Label.new()
 	_chat_log_label.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE + 1)
-	_chat_log_label.custom_minimum_size = Vector2(0.0, 96.0)
 	_chat_log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_chat_log_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_chat_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -7247,18 +7286,17 @@ func _build_lobby_ui() -> void:
 	_chat_entry.text_submitted.connect(_on_chat_submitted)
 	chat_column.add_child(_chat_entry)
 
-	# Fixed width (see `LOBBY_RIGHT_COLUMN_WIDTH`'s doc comment) — no
-	# horizontal expand flag, so `left` absorbs every pixel a wider window
-	# adds instead of the two splitting it.
+	# A share of the design width (`LobbyLayout.right_column_width`), capped
+	# — no horizontal expand flag, so `left` absorbs every pixel a wider
+	# window adds past that cap instead of the two splitting it.
 	var right := VBoxContainer.new()
-	right.custom_minimum_size = Vector2(LOBBY_RIGHT_COLUMN_WIDTH, 0.0)
 	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 12)
 	columns.add_child(right)
+	_lobby_right = right
 
 	var preview_column := _lobby_panel("MAP", right)
 	_map_preview = TextureRect.new()
-	_map_preview.custom_minimum_size = Vector2(0.0, 168.0)
 	_map_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_map_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_map_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
@@ -7267,7 +7305,6 @@ func _build_lobby_ui() -> void:
 	_map_blurb = Label.new()
 	_map_blurb.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 	_map_blurb.modulate = HudTheme.TEXT_FAINT
-	_map_blurb.custom_minimum_size = Vector2(0.0, 32.0)
 	_map_blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	preview_column.add_child(_map_blurb)
 
