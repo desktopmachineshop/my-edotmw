@@ -44,3 +44,35 @@ under that, all the same shape, all invisible to every number:
 ground rank in the fairness pass measured SLOWER than recomputing it, so
 it is not there — the cache ranks every reachable cell where the plain
 loop ranks only free ones.
+
+**How MANY starts there are is the seat count now, not a setting
+(D-20260817-starting-positions-follow-the-seats, #103).**
+`MapSettings.player_slots` is derived by `MatchState._seats_changed()` at
+every site that adds or removes a seat, clamped to [2, 24] and reverted if
+the result is a map the generator refuses. The lobby's "Starting
+positions" spinner is gone with it, and so is the "Seed" row — the seed
+NUMBER is a dev handle (`--seed`, D-100); Reroll, which is what a player
+actually wants from it, stays.
+
+Two things worth carrying:
+
+- **The default was wrong, not just the control.** `player_slots`
+  defaulted to 8 (20 on the shipped map), so a lobby of three generated
+  twenty starts — and because `spawn_points` scatters at
+  `min_spawn_spacing`, three players were flung as far apart as twenty
+  would have been. The number was the seat count all along, written down
+  twice and allowed to disagree.
+- **This changes spawn placement in every match, tests included.** A
+  4-bot `test-load` generates 4 starts where it generated 20, so spawns
+  are closer and armies meet sooner. Any timing tuned against the old
+  spread — bot phases, the load test's fog gates — is measuring a
+  different opening than it was; that is CLAUDE.md's standing
+  "when the opening changes, every timing tuned against the old one is
+  stale" rule applying to the MAP rather than to the build order.
+  Measured at `4 150` (once on `main`, twice on the branch, same host):
+  **`conceal_events` 2 → 16 and 15, `ghosts_peak` 2 → 15**, and the
+  per-squad cost 47.25 → 58.04/62.25 µs at the same 34 squads with the
+  whole delta in vision and combat — armies in contact, not slower code.
+  **`reveal_events` was 1 then 0 against `main`'s 0, so this does NOT
+  fix #69** and one clean verdict out of two is not a measurement; the
+  decision entry has the table and the reasoning.

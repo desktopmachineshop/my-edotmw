@@ -6330,12 +6330,18 @@ var _preview_key := ""
 const MAP_OPTIONS := [
 	{"key": "preset", "label": "Terrain", "kind": "choice"},
 	{"key": "size", "label": "Map size", "kind": "choice"},
-	{"key": "player_slots", "label": "Starting positions", "kind": "int", "min": 2, "max": 24},
-	# `max` comes from MapSettings so the spinner can always show a rolled
-	# seed (D-100), and `reroll` puts a button beside it — the server draws
-	# the number, this only asks for one.
-	{"key": "seed", "label": "Seed", "kind": "int",
-		"min": 0, "max": MapSettings.SEED_MAX, "reroll": true},
+	# No "Starting positions" row: that is the number of seats in the
+	# lobby now, derived by `MatchState._seats_changed` (#103). A spinner
+	# for it asked a player to answer a question they cannot have an
+	# opinion about, and its default answer — twenty starts for a lobby of
+	# three — scattered three players as widely as twenty.
+	#
+	# And no "Seed" row. The NUMBER is a dev handle (`--seed`, D-100);
+	# what a player wants from it is a different map, which is what this
+	# button asks for. The server still draws the number — this only asks
+	# for one, and asking leaves it unpinned so the lobby keeps rolling
+	# between matches.
+	{"key": MatchState.REROLL_OPTION, "label": "Map", "kind": "reroll"},
 	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
 	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
 	# Reads in CELLS, not as the raw parameter (D-105). "Landmass count"
@@ -7879,33 +7885,22 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 				picker.item_selected.connect(_on_map_choice.bind(key))
 			row.add_child(picker)
 
-		"int":
-			var spin := SpinBox.new()
-			spin.min_value = float(option["min"])
-			spin.max_value = float(option["max"])
-			spin.step = 1.0
-			spin.value = float(settings.get(key, 0))
-			spin.custom_minimum_size = Vector2(212.0, 0.0)
-			spin.editable = admin
-			spin.get_line_edit().focus_mode = Control.FOCUS_NONE
+		"reroll":
+			# A button, not a value: the seed it asks for is the server's
+			# to draw (D-100), and a guest gets the same row without the
+			# affordance rather than a disabled control that reads as a
+			# setting they might be able to change.
 			if admin:
-				spin.value_changed.connect(_on_map_value.bind(key))
-			# Typing a seed PINS it; the button beside it asks the server
-			# for a fresh one and leaves it unpinned, so the lobby keeps
-			# rolling between matches (D-100). Only the admin gets either,
-			# so a guest's row keeps the full-width spinner.
-			var rerollable := bool(option.get("reroll", false)) and admin
-			if rerollable:
-				# Narrower, so the row still reads as one control with an
-				# affordance beside it rather than two settings.
-				spin.custom_minimum_size = Vector2(148.0, 0.0)
-			row.add_child(spin)
-
-			if rerollable:
 				var roll := _styled_button("Reroll", HudTheme.ACCENT)
-				roll.tooltip_text = "Draw a new map. Type a seed instead to keep playing this one."
+				roll.tooltip_text = "Draw a new map, with the terrain settings below."
 				roll.pressed.connect(_on_map_reroll)
 				row.add_child(roll)
+			else:
+				var note := Label.new()
+				note.text = "Chosen by the host"
+				note.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+				note.modulate = HudTheme.TEXT_MUTED
+				row.add_child(note)
 
 		"slider":
 			var slider := HSlider.new()
