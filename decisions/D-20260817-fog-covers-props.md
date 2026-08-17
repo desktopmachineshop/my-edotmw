@@ -28,6 +28,24 @@ fully lit forest, a white stone pile and a boulder field on top of it.
 `p31-prop-fog-after.png` is the same camera, the same fog wedge, one
 commit later.
 
+**Those two frames were taken at base `d6a5f9b`, and `test-client` can
+no longer produce their like.** Rebasing onto the map-ladder change
+(#113/#115, same day) moved the client's opening camera close enough to
+its own spawn that the whole visible island is inside the player's own
+vision, and an A/B on the new base is nearly identical by eye. It is not
+identical numerically — 4,395 of 97,500 sampled world pixels change
+strongly, against 14,415 on the old base — and
+`p31-prop-fog-edge-diff.png` is what those pixels are: a rim of tree
+canopies hugging the fog boundary at the north tip and the western
+shore, plus a handful of selection discs that are ordinary
+run-to-run noise. So the fix is confirmed on top of #74, and **the
+instrument is now nearly blind to the defect it just caught**. That is
+the same fact D-097 recorded about `test-client` aiming at a spawn (the
+one place a cliff cannot be) and D-108 recorded about it aiming at open
+ground (the one place a wood cannot be) — a third entry in the same
+list, and a reason `gen-forest-preview`'s deliberate framing is the
+model to copy if this ever needs a picture again.
+
 **Sixth instance of the declared-and-unread family**, and the second in
 two days: nothing failed, every number stayed green (`test-client`
 reported `terrain=true`, 97 distinct colours and a clean verdict both

@@ -78,3 +78,15 @@ Three things to carry forward, none of which are really about fog:
   custom data all read back as their defaults from the dummy RenderingServer,
   so no GUT test can assert per-instance data at all. The half that had to be
   looked at was looked at, in `just test-client`'s rendered frame.
+
+And a fourth, about the instrument rather than the bug: **`test-client`'s
+opening camera no longer frames a fog boundary.** The same-day map-ladder change
+put it close enough to the player's own spawn that the whole visible island sits
+inside their own vision, so the before/after pair above could not be taken again
+today — an A/B on the current base differs in 4,395 of 97,500 sampled world
+pixels against 14,415 on the base the frames were taken from, and
+`p31-prop-fog-edge-diff.png` shows those pixels are a rim of canopies at the
+fog edge. **That is the third thing `test-client`'s framing structurally cannot
+show**, after cliffs (D-097 — a spawn is walkable by construction) and forest
+interiors (D-108 — a spawn is open ground). When a rendered check has to see
+something specific, frame it on purpose, the way `gen-forest-preview` does.
