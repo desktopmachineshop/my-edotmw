@@ -33,11 +33,18 @@ extends RefCounted
 ##
 ## ## The reference window is 1280x720 on purpose
 ##
-## `scale_for` divides by exactly that, so on any 16:9 window the design
-## space comes back to 1280x720 and the layout below reproduces the
-## hand-placed coordinates it replaces, pixel for pixel. The HUD that was
-## looked at and tuned is the HUD you still get; other window shapes are
-## the deviation, and they deviate only by where the edges are.
+## `scale_for` divides by exactly that while the window is SMALLER than it,
+## so a 16:9 window down to the scale floor comes back to a 1280x720 design
+## space and the layout below reproduces the hand-placed coordinates it
+## replaces, pixel for pixel. The HUD that was looked at and tuned is the
+## HUD you still get; other window shapes are the deviation, and they
+## deviate only by where the edges are.
+##
+## A window LARGER than the reference deliberately does not come back to it
+## — magnification is measured against `MAGNIFY_ABOVE`, so the extra pixels
+## are battlefield rather than chrome. See `scale_for`; that identity was
+## the same statement as "the HUD keeps a constant fraction of the window at
+## every size", which is #90.
 
 const REFERENCE := Vector2(1280.0, 720.0)
 
@@ -54,6 +61,12 @@ const REFERENCE := Vector2(1280.0, 720.0)
 ## let itself be squeezed into.
 const MIN_SCALE := 0.9
 const MAX_SCALE := 2.0
+
+## The window size above which the HUD starts being MAGNIFIED — see
+## `scale_for`. 1920x1080, the most common desktop resolution there is:
+## below it a player gets the HUD at the pixel size it was designed at, and
+## only a genuinely bigger monitor than the common one buys magnification.
+const MAGNIFY_ABOVE := Vector2(1920.0, 1080.0)
 
 const MARGIN := 12.0
 const BAR_HEIGHT := 38.0
@@ -210,14 +223,50 @@ static func ring_crop_radius(ring_diameter: float) -> float:
 
 ## How much to magnify the HUD for a window of this size.
 ##
-## `min` of the two ratios rather than either alone: scaling by width on a
-## short window would push the selection panel off the bottom, which is a
-## worse failure than a HUD that is slightly small.
+## `min` of the two ratios rather than either alone, in BOTH branches below:
+## scaling by width on a short window would push the selection panel off the
+## bottom, which is a worse failure than a HUD that is slightly small.
+##
+## ## Two ratios, because shrinking and magnifying answer different questions
+##
+## Below `REFERENCE` the HUD must SHRINK to keep fitting — the window is
+## smaller than the layout below assumes, and the alternative is the bar and
+## the wide command panel walking off their own edges. That is a fit
+## question, and it is measured against `REFERENCE` (floored at `MIN_SCALE`,
+## which `min_window_size` then turns back into real pixels).
+##
+## Above it, nothing needs to fit any more and the question becomes whether
+## a bigger window should buy more BATTLEFIELD or a bigger HUD. This used to
+## be one linear ratio against `REFERENCE` for both, and linear magnification
+## means every element keeps a CONSTANT FRACTION of the window at every
+## resolution: the command panel is 36.7% of the reference's height by
+## construction (see `PANEL_HEIGHT`) and was still 36.7% at 1920x1080 and at
+## 2560x1440. Reported from playtest #30 as a HUD that dominates the screen
+## at 1080p (#90) — correctly: a player who bought a bigger window got no
+## more of the world, only bigger chrome.
+##
+## So magnification is measured against `MAGNIFY_ABOVE` instead. Up to
+## 1920x1080 the HUD is drawn at exactly the pixel size it was designed at
+## and every pixel the window gains is battlefield; past that it grows again,
+## which is the "same PHYSICAL size on a big monitor" intent this file was
+## written with — that intent is right about a 4K screen and was wrong about
+## the step from 720p to 1080p, where it is the same monitor with a bigger
+## window on it. The panel's share of the window falls 36.7% -> 24.4% at
+## 1080p and holds there up to `MAX_SCALE`.
+##
+## The curve is <= the old one at every window size, which is why this
+## needed no re-check of the anchoring above: nothing can overflow anywhere
+## it used to fit. What it does risk is legibility, and the two answers to
+## that are both already here — `MIN_SCALE`'s floor, and the player's own
+## HUD scale slider (D-063), which overrides this entirely.
 static func scale_for(viewport: Vector2) -> float:
 	if viewport.x <= 0.0 or viewport.y <= 0.0:
 		return 1.0
-	return clampf(minf(viewport.x / REFERENCE.x, viewport.y / REFERENCE.y),
-		MIN_SCALE, MAX_SCALE)
+	var fit := minf(viewport.x / REFERENCE.x, viewport.y / REFERENCE.y)
+	if fit < 1.0:
+		return maxf(fit, MIN_SCALE)
+	return clampf(minf(viewport.x / MAGNIFY_ABOVE.x, viewport.y / MAGNIFY_ABOVE.y),
+		1.0, MAX_SCALE)
 
 
 ## The smallest real window this HUD should ever be asked to fit.

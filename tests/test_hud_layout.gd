@@ -67,14 +67,18 @@ func test_nothing_lands_outside_the_window() -> void:
 
 # --- the reference window is reproduced exactly ------------------------
 
-func test_a_16_9_window_reproduces_the_hand_tuned_layout() -> void:
-	# The whole reason REFERENCE is 1280x720: every 16:9 window comes back
-	# to that design space, so the HUD that was looked at and tuned by hand
-	# is the HUD that is still drawn. If this fails, some window shape has
-	# quietly become the odd one out.
+func test_a_16_9_window_at_or_under_the_reference_reproduces_the_hand_tuned_layout() -> void:
+	# The whole reason REFERENCE is 1280x720: a 16:9 window no larger than
+	# it comes back to exactly that design space, so the HUD that was looked
+	# at and tuned by hand is the HUD that is still drawn. If this fails,
+	# some window shape has quietly become the odd one out.
+	#
+	# 16:9 windows LARGER than the reference deliberately no longer
+	# reproduce it — that identity was the same statement as "the HUD keeps
+	# a constant fraction of the window at every size", which is #90. See
+	# `test_a_bigger_window_gives_more_battlefield_not_a_bigger_hud`.
 	var reference := _laid_out(HudLayout.REFERENCE)
-	for viewport in [Vector2(1920.0, 1080.0), Vector2(2560.0, 1440.0),
-			Vector2(1152.0, 648.0)]:
+	for viewport in [Vector2(1152.0, 648.0), Vector2(1280.0, 720.0)]:
 		var at := _laid_out(viewport)
 		for key in reference:
 			assert_eq(at[key], reference[key],
@@ -93,7 +97,11 @@ func test_the_panel_keeps_its_hand_tuned_position_at_the_reference_size() -> voi
 
 func test_scale_grows_with_the_window_but_is_bounded() -> void:
 	assert_almost_eq(HudLayout.scale_for(HudLayout.REFERENCE), 1.0, 0.001)
-	assert_almost_eq(HudLayout.scale_for(Vector2(1920.0, 1080.0)), 1.5, 0.001)
+	# Between the reference and MAGNIFY_ABOVE the HUD is drawn at its
+	# design size — magnification is what #90 was about, and it now starts
+	# where a monitor is genuinely bigger than the common one.
+	assert_almost_eq(HudLayout.scale_for(HudLayout.MAGNIFY_ABOVE), 1.0, 0.001)
+	assert_almost_eq(HudLayout.scale_for(Vector2(2560.0, 1440.0)), 1440.0 / 1080.0, 0.001)
 	# Clamped at both ends: a 4K HUD that keeps growing eats the map, and a
 	# tiny one stops being legible.
 	assert_eq(HudLayout.scale_for(Vector2(7680.0, 4320.0)), HudLayout.MAX_SCALE)
@@ -111,10 +119,74 @@ func test_scale_follows_the_smaller_dimension() -> void:
 	# A short, wide window must not be scaled by its width — that pushes
 	# the selection panel off the bottom, which is worse than a small HUD.
 	var wide := Vector2(3440.0, 1440.0)
-	assert_almost_eq(HudLayout.scale_for(wide), 2.0, 0.001)
+	assert_almost_eq(HudLayout.scale_for(wide),
+		HudLayout.scale_for(Vector2(2560.0, 1440.0)), 0.001,
+		"an ultrawide is scaled by its height, exactly like a 16:9 window of the same height")
 	var short := Vector2(1920.0, 600.0)
 	assert_true(HudLayout.scale_for(short) < 1.0,
 		"a 600px-tall window scales down, not up")
+
+
+# --- a bigger window buys battlefield, not a bigger HUD (#90) ---------
+
+
+## The tallest HUD element, as a fraction of the REAL window's height —
+## design units times the scale actually applied. Design units alone cannot
+## see this bug at all: the panel is 264 of them at every window size, by
+## construction, which is precisely why it went unnoticed.
+func _panel_share(viewport: Vector2) -> float:
+	var panel: Rect2 = _laid_out(viewport)["panel"]
+	return panel.size.y * HudLayout.scale_for(viewport) / viewport.y
+
+
+func test_a_bigger_window_gives_more_battlefield_not_a_bigger_hud() -> void:
+	# THE bug this section exists for (#90, from playtest #30). `scale_for`
+	# was linear in the window, so every element kept a CONSTANT FRACTION of
+	# it at every resolution: the command panel was 36.7% of the height at
+	# the 1280x720 reference and still 36.7% at 1920x1080 and at 2560x1440.
+	# A player who bought a bigger window got no more of the battlefield,
+	# only a bigger HUD — reported as far too big at 1080p.
+	var reference := _panel_share(HudLayout.REFERENCE)
+	for viewport in [Vector2(1600.0, 900.0), Vector2(1920.0, 1000.0),
+			Vector2(1920.0, 1080.0), Vector2(2560.0, 1440.0)]:
+		assert_true(_panel_share(viewport) < reference - 0.05,
+			"the panel takes a smaller share of a %s window than of the reference (%.3f)"
+				% [viewport, reference])
+	# The window it was reported on — a ~1920x1000 client area, where the
+	# panel measured ~357 real pixels of 1000. This is the number a fix has
+	# to move, and it is quoted in real pixels for the same reason
+	# `_panel_share` exists.
+	assert_true(_panel_share(Vector2(1920.0, 1000.0)) <= 0.28,
+		"the command panel is at most about a quarter of the reported window")
+
+
+func test_the_hud_s_share_of_the_window_never_grows_with_the_window() -> void:
+	# The property, rather than one resolution's number: enlarging a window
+	# may give the HUD a smaller share of it or the same share, never a
+	# bigger one. A future scale curve that dips and then rises again would
+	# pass the test above and still surprise a player dragging a window.
+	var previous := 1.0
+	for viewport in [Vector2(1152.0, 648.0), HudLayout.REFERENCE,
+			Vector2(1600.0, 900.0), Vector2(1920.0, 1080.0),
+			Vector2(2560.0, 1440.0), Vector2(3840.0, 2160.0)]:
+		var share := _panel_share(viewport)
+		assert_true(share <= previous + 0.001,
+			"the panel's share does not grow on the way up to %s" % viewport)
+		previous = share
+
+
+func test_the_hud_is_never_magnified_more_than_it_used_to_be() -> void:
+	# The safety half of #90's fix, and the reason it needed no re-check of
+	# every anchoring test: the new curve is <= the old linear one at every
+	# window size, so no element can overflow anywhere it used to fit. The
+	# risk it does carry is legibility, not layout — which is why the floor
+	# and the manual scale slider (D-063) both stay.
+	for viewport in SIZES + [Vector2(1920.0, 1000.0), Vector2(3840.0, 2160.0),
+			Vector2(1920.0, 600.0), Vector2(800.0, 600.0)]:
+		var linear := clampf(minf(viewport.x / HudLayout.REFERENCE.x,
+			viewport.y / HudLayout.REFERENCE.y), HudLayout.MIN_SCALE, HudLayout.MAX_SCALE)
+		assert_true(HudLayout.scale_for(viewport) <= linear + 0.001,
+			"scale at %s is no larger than the old linear rule's %.3f" % [viewport, linear])
 
 
 func test_an_ultrawide_still_reaches_both_edges() -> void:

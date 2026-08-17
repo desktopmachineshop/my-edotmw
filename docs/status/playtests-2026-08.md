@@ -114,3 +114,19 @@ got. Three things worth carrying:
   the one size at which this bug does not happen, so the single instrument
   that could have caught it was aimed away from it — the `test-client`
   points-at-a-spawn lesson again.
+**And one from playtest #30 that is about a NUMBER being a fraction
+(D-20260817-hud-scale-stops-at-1080p, #90): the HUD dominated the screen
+at 1080p, and had done at every resolution equally.** `HudLayout.scale_for`
+magnified the HUD linearly with the window, so every element kept a
+CONSTANT SHARE of it: the command panel is 36.7% of the 720-high reference
+by construction, and was still 36.7% at 1920x1080 and at 2560x1440. A
+player who bought a bigger window got no more battlefield, only bigger
+chrome. Magnification is measured against 1920x1080 now instead of the
+1280x720 layout reference — fit and magnification are different questions
+and were sharing one ratio — which takes the panel to 24.4% at 1080p and
+leaves the reference window and 4K untouched. **The instrument that shows
+it is a picture at 1080p** (`docs/playtest/p30-hud-1080-{before,after}.png`):
+`just test-client` hardcodes 1280x720, which is the one resolution where
+this fix is a deliberate no-op, and in design units the panel is 264 at
+every window size — the bug is only visible in real pixels DIVIDED BY the
+window, which is what the new test measures.
