@@ -223,6 +223,12 @@ world_look.gd            The one definition of the lighting rig — sun,
 hud_layout.gd            Where the HUD's pieces go, for a window of any
                         size (D-061). Scale AND anchoring — either alone
                         looks sufficient and is not. All-static, pure.
+                        Scale is measured against TWO references
+                        (D-20260817-hud-scale-stops-at-1080p): FIT against
+                        1280x720 below it, MAGNIFICATION against 1920x1080
+                        above it. One ratio for both is what made every
+                        element a constant FRACTION of the window at every
+                        resolution — a bigger window bought no battlefield.
                         Also owns the HUD's non-obvious arithmetic: the
                         match clock, the n/cap readout, and the compass
                         dial's geometry (D-063).
