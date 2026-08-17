@@ -374,9 +374,18 @@ func test_an_incremental_bake_matches_one_computed_from_scratch() -> void:
 ## CPU-bound. A generous bound on the small map would have stayed green through
 ## a four-times regression on the big one.
 ##
-## The claim now is stronger than "fast enough": a steady-state refresh costs
-## what the player is LOOKING at, so the two map sizes should cost about the
-## same. That is asserted as a ratio, which no constant threshold can express.
+## The claim is stronger than "fast enough": a steady-state refresh costs what
+## the player is LOOKING at, so the two map sizes should do the SAME AMOUNT OF
+## WORK. That is asserted on `cells_shaded_last_bake` — the work itself — and not
+## on the clock.
+##
+## It was asserted on the clock first, as a ratio of milliseconds, and that gate
+## went red on a loaded host with nothing wrong: the same code measured 2.73 vs
+## 2.61 ms quiet and 7.81 vs 20.61 ms while eleven branches were being built
+## beside it. A tight timing gate on a shared machine gets muted rather than
+## fixed — this file's own comment said so two commits before writing one. The
+## milliseconds are still measured and REPORTED, because the number is worth
+## knowing; they are simply not the assertion.
 func test_a_fog_refresh_costs_the_army_not_the_map() -> void:
 	var wanted := ["Standard", "Huge"]
 	var presets := []
@@ -388,16 +397,24 @@ func test_a_fog_refresh_costs_the_army_not_the_map() -> void:
 			% [wanted] + "on purpose, so re-point it rather than dropping one")
 
 	var costs := {}
+	var shaded := {}
 	for preset in presets:
 		var space := TorusSpace.new(int(preset["width"]), int(preset["height"]))
 		var fog := TerrainFog.new(space)
 
 		# A plausible mid-game player: a dozen seeing things, walking.
+		#
+		# At the SAME coordinates on both maps, and well inside the smaller one,
+		# which is the whole basis of the comparison below. Deriving the
+		# positions from `space.width` instead — as the first version did —
+		# spread the seers further apart on the bigger map, so their vision
+		# disks overlapped less and genuinely covered more distinct cells: 1,092
+		# against 1,176. That is a difference in the ARMY, not in the algorithm,
+		# and it made a correct implementation look like a scaling one.
 		var walk := func(step: int) -> void:
 			fog.forget_visible()
 			for i in range(12):
-				fog.reveal(Vector2i((i * 17 + step) % space.width,
-					(i * 11) % space.height), 7)
+				fog.reveal(Vector2i((i * 7 + step) % 60, (i * 5 + step) % 60), 7)
 
 		# The FIRST bake shades the whole map, necessarily — there is no
 		# previous state to diff against. It happens once, at match start,
@@ -409,6 +426,8 @@ func test_a_fog_refresh_costs_the_army_not_the_map() -> void:
 		walk.call(0)
 		fog.bake()
 		var first_bake := float(Time.get_ticks_usec() - first_started) / 1000.0
+		assert_eq(fog.cells_shaded_last_bake, space.cell_count(),
+			"the first bake has nothing to diff against and must shade the map")
 
 		var refreshes := 8
 		var started := Time.get_ticks_usec()
@@ -418,26 +437,31 @@ func test_a_fog_refresh_costs_the_army_not_the_map() -> void:
 		var per_refresh := float(Time.get_ticks_usec() - started) / (1000.0 * float(refreshes))
 
 		costs[space.cell_count()] = per_refresh
-		gut.p("fog refresh: %.2f ms for %d cells (12 seers, radius 7, walking); "
-			% [per_refresh, space.cell_count()]
-			+ "first bake %.2f ms" % first_bake)
+		shaded[space.cell_count()] = fog.cells_shaded_last_bake
+		gut.p("fog refresh: %d cells re-shaded, %.2f ms, on a %d-cell map "
+			% [fog.cells_shaded_last_bake, per_refresh, space.cell_count()]
+			+ "(12 seers, radius 7, walking); first bake %.2f ms" % first_bake)
 
 	var cells: Array = costs.keys()
 	cells.sort()
-	var small: float = costs[cells[0]]
-	var large: float = costs[cells[cells.size() - 1]]
-	var size_ratio := float(cells[cells.size() - 1]) / float(cells[0])
+	var small_map: int = cells[0]
+	var large_map: int = cells[cells.size() - 1]
 
-	assert_lt(large, 60.0,
+	# THE assertion: identical armies looking at identical amounts of ground do
+	# identical work, whatever the map around them measures.
+	assert_eq(int(shaded[large_map]), int(shaded[small_map]),
+		"the same twelve seers re-shaded %d cells on a %d-cell map and %d on a "
+			% [int(shaded[small_map]), small_map, int(shaded[large_map])]
+			+ "%d-cell one — a refresh is supposed to cost what is being looked "
+			% large_map + "at, not what the map contains")
+	assert_lt(int(shaded[large_map]), large_map / 4,
+		"a steady-state refresh touched %d of %d cells, which is not a diff any more"
+			% [int(shaded[large_map]), large_map])
+	# Wall-clock kept only as a sanity floor, orders of magnitude away from the
+	# measurements above, so host load cannot turn it red on its own.
+	assert_lt(float(costs[large_map]), 60.0,
 		"a fog refresh on the largest shipped map costs %.2f ms, and four of "
-		% large + "those a second is not a frame cost any more")
-	# Loose, because the first full bake is amortised into this and the host is
-	# shared; the failure it is really for is cost tracking cell COUNT, which
-	# would put this at or above the size ratio rather than well under it.
-	assert_lt(large / maxf(small, 0.01), size_ratio * 0.6,
-		"cost grew %.1fx for a %.1fx bigger map — a refresh is supposed to cost "
-		% [large / maxf(small, 0.01), size_ratio]
-		+ "what is being looked at, not what the map contains")
+		% float(costs[large_map]) + "those a second is not a frame cost any more")
 
 
 # --- and is it actually connected ----------------------------------------

@@ -118,6 +118,21 @@ var _previously_stamped := PackedInt32Array()
 ## against and must shade the whole map.
 var _baked := false
 
+## How many cells the last `bake` re-shaded.
+##
+## Exposed because "a refresh costs what the player is LOOKING at, not what the
+## map contains" is a claim about WORK, and the test that first guarded it
+## measured the CLOCK instead: it timed a Standard-map refresh against a Huge one
+## and asserted the ratio. That gate went red with nothing wrong — the same code
+## measured 2.73 vs 2.61 ms on a quiet host and 7.81 vs 20.61 ms while eleven
+## branches were being built beside it.
+##
+## Which is exactly the failure this project's own note warns about, committed by
+## the comment warning about it: a tight timing gate on a shared machine gets
+## muted rather than fixed. So the property is asserted on this counter, which is
+## deterministic, and the milliseconds are reported instead of gated.
+var cells_shaded_last_bake := 0
+
 
 func _init(for_space: TorusSpace) -> void:
 	space = for_space
@@ -293,6 +308,8 @@ func _rebake(changed: PackedInt32Array) -> void:
 		dirty[i] = true
 		for d in range(6):
 			dirty[_neighbours[i * 6 + d]] = true
+
+	cells_shaded_last_bake = dirty.size()
 
 	var total := BLUR_SELF + 6.0
 	for i in dirty:
