@@ -5,11 +5,12 @@ extends GutTest
 ##
 ## `just` takes recipe arguments positionally, so `NAME=value` after a
 ## recipe name binds the whole string to the recipe's FIRST parameter.
-## Every consumer then reads it with `int()`, which is 0 for anything it
-## cannot parse — so `just quick-test SANDBOX=1` launched with
-## `--seed=SANDBOX=1` (seed 0, sandbox off) and `just run-server AI=3`
-## seated zero opponents, both silently, both prescribed by this
-## project's own docs.
+## Every consumer then reads it with `int()`, which STRIPS non-digits
+## rather than failing — so `just quick-test SANDBOX=1`, the form this
+## project's own docs prescribed, launched with sandbox off on world seed
+## 1 instead of 1337, and `just run-server LOBBY=1` starts one AI and no
+## lobby. A plausible small number is worse than a zero: nobody
+## questions it.
 ##
 ## Unlike test_multi_agent_isolation.gd's scans, most of this file
 ## EXECUTES the scripts under test: recipe-arg.sh and instance-id.sh are

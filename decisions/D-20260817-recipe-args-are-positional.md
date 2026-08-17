@@ -25,21 +25,39 @@ Two rules, one root cause (#89, found in the P04 sandbox playtest of
 `just` takes recipe arguments **positionally**. An argument written
 `NAME=value` after a recipe name does not set `NAME` — it binds the
 whole string to that recipe's FIRST parameter. Every consumer downstream
-reads it with `int()`, which is **0** for any string it cannot parse. So
-each of these ran, cleanly, doing something other than what it says:
+reads it with `int()`, and **GDScript's string-to-int conversion strips
+non-digit characters rather than failing** — measured in the shipping
+container, Godot 4.7.1:
+
+```
+int("SANDBOX=1") = 1     int("AI=3") = 3     int("LOBBY=1") = 1
+```
+
+So each of these ran, cleanly, doing something other than what it says:
 
 | typed | actually sent | effect |
 |---|---|---|
-| `just quick-test SANDBOX=1` | `--seed=SANDBOX=1 --sandbox=0` | seed 0, **sandbox off** |
-| `just run-server AI=3` | `--ai=AI=3` | **zero AI opponents** |
-| `just run-server LOBBY=1` | `--ai=LOBBY=1` | no lobby, no AI |
+| `just quick-test SANDBOX=1` | `--seed=SANDBOX=1 --sandbox=0` | **sandbox off**, and the world is seed **1**, not 1337 |
+| `just run-server AI=3` | `--ai=AI=3` | 3 AI seats — right by accident |
+| `just run-server LOBBY=1` | `--ai=LOBBY=1` | **no lobby**, and one AI nobody asked for |
 
 The first two are invocations **this project's own documentation
 prescribed** — `CLAUDE.md`'s multi-agent section ("Pass `SANDBOX=0/1` to
 override either way") and `docs/status/m6.md` (`just run-server AI=3`
-seats opponents). The third is quoted in D-075, which records a server
-found ticking an empty world **for six hours** with no opponent for
-exactly this reason.
+seats opponents).
+
+**That `int()` behaviour makes this worse, not better, and it has
+already misled a decision entry.** A mistyped argument does not produce
+an obviously wrong 0 — it produces a *plausible small number*, which is
+exactly the kind of value nobody questions. D-075 records a server found
+ticking an empty world for six hours after `just run-server AI=1` and
+attributes it to this trap "so `int()` read 0 and it never had an
+opponent either". It read **1**: the seat was there, and the reason it
+did nothing was D-107's — an AI's founding order sent before the match
+was running and dropped. The positional trap is real and was taking the
+blame for a bug it did not cause, which is its own argument for making
+it fail loudly instead of leaving it to be reasoned about after the
+fact.
 
 **The class was known and worked around rather than fixed.** The `lobby`
 recipe has carried a comment describing this trap since D-048 and
@@ -100,14 +118,17 @@ the human's own checkout sits on the default branch.
   visible (`quick-test` prints `sandbox ON (dev build)` — it printed
   nothing at all before), and one positional argument turns it off
   (`just quick-test 1337 0`). The old failure was neither.
-- **Results measured through a mistyped invocation are suspect.**
-  Anything an agent session recorded from `just quick-test SANDBOX=1`
-  ran with sandbox OFF and seed 0 — not 1337 — so it is neither the
-  build nor the world it claims. Anything from `just run-server AI=3`
-  ran with no opponents at all. `just ai-ladder` is unaffected (it
-  builds its flags itself, and D-107 already voided its old numbers);
-  `test-load`, `test-scenario` and `test-client` are unaffected in
-  practice because their arguments have always been typed positionally.
+- **Results measured through a mistyped invocation are suspect, and the
+  suspect set is narrower than it first looked.** Anything an agent
+  session recorded from `just quick-test SANDBOX=1` ran with sandbox
+  **off** and on **seed 1**, not 1337 — a different world, and not the
+  build it claims. Every AO worktree (`ao-*`) running plain
+  `just quick-test` also ran without sandbox, whatever it typed, for as
+  long as that naming convention has been in use. `just run-server AI=3`
+  turns out to have seated its 3 opponents after all. `ai-ladder`,
+  `test-load`, `test-scenario` and `test-client` are unaffected: the
+  first builds its flags itself, and the rest have always been typed
+  positionally.
 - Amends D-095: `instance-id.sh` gains a third mode, and the justfile no
   longer re-derives any part of instance identity — including the
   agent/human distinction, which it had been re-deriving by hand.

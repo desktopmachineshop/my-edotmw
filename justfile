@@ -302,10 +302,13 @@ status:
 # AI is how many computer opponents to seat (D-051). They take ordinary
 # player slots, read the world through a client like you do, and are held
 # to every rule you are. It is POSITIONAL — `run-server 3`, never
-# `run-server AI=3`, which binds the string "AI=3" to AI and seats ZERO
-# opponents (#89). That form was documented in CLAUDE.md for a milestone;
-# it now fails loudly (D-20260817-recipe-args-are-positional).
-# LOBBY=1 holds the server in the lobby (D-048): the world is NOT
+# `run-server AI=3`: that binds the whole string "AI=3" to AI, and it
+# only ever worked because `int()` strips the non-digits. The same typo
+# on the third parameter — `run-server LOBBY=1` — binds to AI instead and
+# gives you one AI and no lobby. Both fail loudly now (#89,
+# D-20260817-recipe-args-are-positional).
+# LOBBY=1 (positionally, the third argument) holds the server in the
+# lobby (D-048): the world is NOT
 # generated until the admin presses start, because its size, seed and
 # shape are all still being chosen (D-049). The first human to connect is
 # admin and adds AI seats there — a lobby of one cannot start a match.
@@ -415,8 +418,9 @@ lobby PLAYERS="1":
 #   {{just_executable()}} quick-test 1337 1     # this seed, sandbox ON
 #   {{just_executable()}} quick-test 1337 0     # this seed, sandbox OFF
 # Writing `SANDBOX=1` binds that whole string to SEED instead, which used
-# to launch with --seed=SANDBOX=1 (seed 0) and sandbox off, silently
-# (#89). Both values are checked below, so it now fails loudly
+# to launch with --seed=SANDBOX=1 and sandbox off, silently — and since
+# `int()` strips the non-digits, on world seed 1 rather than 1337 (#89).
+# Both values are checked below, so it now fails loudly
 # (D-20260817-recipe-args-are-positional).
 [doc("Quick test: you + 3 AI, all random civs, no lobby (agents get sandbox)")]
 quick-test SEED="1337" SANDBOX="auto":

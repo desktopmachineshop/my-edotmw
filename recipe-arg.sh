@@ -5,15 +5,15 @@
 # `just` takes recipe arguments POSITIONALLY. An argument written
 # `NAME=value` after a recipe name does NOT set NAME — it binds to that
 # recipe's FIRST parameter, whatever that is. Every consumer downstream
-# then reads it with `int()`, which is 0 for any string it cannot parse,
-# so the run continues with a silently wrong number and nothing anywhere
-# says a word:
+# then reads it with `int()`, which STRIPS the non-digits rather than
+# failing (measured: int("SANDBOX=1") == 1), so the run continues on a
+# plausible small number nobody questions and nothing says a word:
 #
-#   just quick-test SANDBOX=1   ->  --seed=SANDBOX=1  (seed 0, and the
-#                                   sandbox it asked for stays OFF)
-#   just run-server AI=3        ->  --ai=AI=3         (zero opponents)
+#   just quick-test SANDBOX=1   ->  --seed=SANDBOX=1  (world seed 1, not
+#                                   1337, and sandbox stays OFF)
+#   just run-server LOBBY=1     ->  --ai=LOBBY=1      (one AI, no lobby)
 #
-# Both of those are invocations the project's own docs prescribed (#89).
+# The first is an invocation the project's own docs prescribed (#89).
 # The justfile's `lobby` recipe has carried a comment describing this
 # exact trap since D-048 and worked around it by growing a SECOND recipe
 # — a workaround for one instance of a class. This script is the general

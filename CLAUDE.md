@@ -511,9 +511,10 @@ them — but which must not be undone:
 - **just takes recipe arguments POSITIONALLY** — `just quick-test 1337 1`,
   never `just quick-test SANDBOX=1`. A `NAME=value` written after a
   recipe name binds the whole string to that recipe's FIRST parameter,
-  and `int()` reads it as 0: `SANDBOX=1` launched with `--seed=SANDBOX=1`
-  and sandbox OFF, and `just run-server AI=3` — documented here for a
-  milestone — seated ZERO opponents. Both were silent until
+  and GDScript's `int()` **strips the non-digits** rather than failing,
+  so the recipe gets a plausible small number: `SANDBOX=1` launched with
+  sandbox OFF on seed **1** instead of 1337, and `run-server LOBBY=1`
+  starts one unasked-for AI and no lobby. Silent until
   D-20260817-recipe-args-are-positional; every numeric parameter goes
   through `recipe-arg.sh` now and fails loudly. **Anything measured
   through one of those invocations was measured on a different build or
