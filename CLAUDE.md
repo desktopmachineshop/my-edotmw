@@ -223,6 +223,11 @@ world_look.gd            The one definition of the lighting rig — sun,
 hud_layout.gd            Where the HUD's pieces go, for a window of any
                         size (D-061). Scale AND anchoring — either alone
                         looks sufficient and is not. All-static, pure.
+                        The command panel is THREE COLUMNS and as tall
+                        as the tallest of them, never their sum
+                        (D-20260817-selection-bar-three-columns) — and a
+                        chip strip that cannot show a building's whole
+                        train list hides ORDERS, not labels.
                         Scale is measured against TWO references
                         (D-20260817-hud-scale-stops-at-1080p): FIT against
                         1280x720 below it, MAGNIFICATION against 1920x1080

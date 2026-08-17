@@ -149,7 +149,11 @@ func test_a_bigger_window_gives_more_battlefield_not_a_bigger_hud() -> void:
 	var reference := _panel_share(HudLayout.REFERENCE)
 	for viewport in [Vector2(1600.0, 900.0), Vector2(1920.0, 1000.0),
 			Vector2(1920.0, 1080.0), Vector2(2560.0, 1440.0)]:
-		assert_true(_panel_share(viewport) < reference - 0.05,
+		# A RATIO, not a fixed margin: the panel's own height was cut from
+		# 264 units to 146 by the three-column rework, and a margin
+		# calibrated against the tall panel started reading a real
+		# improvement as a failure at 1600x900.
+		assert_true(_panel_share(viewport) < reference * 0.9,
 			"the panel takes a smaller share of a %s window than of the reference (%.3f)"
 				% [viewport, reference])
 	# The window it was reported on — a ~1920x1000 client area, where the
@@ -426,81 +430,194 @@ func test_the_squad_count_omits_an_unknown_cap_rather_than_printing_zero() -> vo
 	assert_eq(HudLayout.squad_count_text(12, 0), "12 squads")
 
 
-func test_action_buttons_fill_rows_of_three_inside_the_actions_column() -> void:
-	# Relative to the ACTIONS COLUMN's own corner now, not the whole panel's
-	# — the panel grew into a wide bar with a title column and a chip strip
-	# to its left, and the button grid only ever owned a fixed-width slice
-	# of the right-hand end of it (see `actions_column_rect`).
-	#
-	# Only the control segment's own capacity (ACTION_CONTROL_ROWS * 3 = 6)
-	# is checked here — see `test_build_buttons_sit_in_their_own_segment_
-	# below_the_divider` for the segment underneath it.
-	var control_slots := HudLayout.ACTION_CONTROL_ROWS * HudLayout.ACTION_COLUMNS
-	for i in range(control_slots):
-		var slot := HudLayout.action_slot(i)
-		assert_true(slot.x + HudLayout.ACTION_BUTTON.x
-			<= HudLayout.ACTIONS_COLUMN_WIDTH + HudLayout.PANEL_PAD + 0.01,
-			"button %d fits the actions column's width" % i)
-		assert_true(slot.y + HudLayout.ACTION_BUTTON.y <= HudLayout.BUILD_DIVIDER_Y,
-			"button %d stays above the divider" % i)
-	assert_almost_eq(HudLayout.action_slot(0).y, HudLayout.action_slot(2).y, 0.01,
+func test_action_buttons_fill_rows_of_three_inside_their_own_column() -> void:
+	# Relative to a COLUMN's own corner, not the whole panel's: the panel is
+	# a wide bar whose middle and right columns each own a grid (see
+	# `commands_column_rect` / `build_column_rect`), and the same grid
+	# function serves both.
+	for viewport in SIZES:
+		var panel: Rect2 = _laid_out(viewport)["panel"]
+		var button := HudLayout.action_button_size(panel)
+		var width := HudLayout.actions_column_width(panel)
+		for i in range(HudLayout.ACTION_ROWS * HudLayout.ACTION_COLUMNS):
+			var slot := HudLayout.action_slot(i, button)
+			assert_true(slot.x + button.x <= width - HudLayout.PANEL_PAD + 0.01,
+				"button %d fits its column's width at %s" % [i, viewport])
+			assert_true(slot.y + button.y <= HudLayout.PANEL_HEIGHT - HudLayout.PANEL_PAD_Y + 0.01,
+				"button %d fits the panel's height at %s" % [i, viewport])
+			assert_true(slot.y >= HudLayout.ACTIONS_Y - 0.01,
+				"button %d sits below its column's caption at %s" % [i, viewport])
+	var button := HudLayout.action_button_size(_laid_out(HudLayout.REFERENCE)["panel"])
+	assert_almost_eq(HudLayout.action_slot(0, button).y, HudLayout.action_slot(2, button).y, 0.01,
 		"the first three buttons share a row")
-	assert_true(HudLayout.action_slot(3).y > HudLayout.action_slot(0).y,
+	assert_true(HudLayout.action_slot(3, button).y > HudLayout.action_slot(0, button).y,
 		"the fourth button starts a new row")
 
 
-func test_build_buttons_sit_in_their_own_segment_below_the_divider() -> void:
-	# Formation/behaviour and building were split into two visually
-	# distinct segments on request — a shared grid where "Build Barracks"
-	# happened to be ordered after "Stop" read as one undifferentiated
-	# list rather than two different KINDS of order.
-	var divider := HudLayout.build_divider_rect()
-	assert_almost_eq(divider.position.y, HudLayout.BUILD_DIVIDER_Y, 0.01)
-	assert_almost_eq(divider.size.x, HudLayout.ACTIONS_COLUMN_WIDTH, 0.01,
-		"the divider spans the actions column's width")
-
-	for i in range(6):
-		var slot := HudLayout.build_slot(i)
-		assert_true(slot.y >= HudLayout.BUILD_ACTIONS_Y - 0.01,
-			"build button %d sits at or below where the build segment starts" % i)
-		assert_true(slot.y > divider.position.y,
-			"build button %d sits below the divider" % i)
-		assert_true(slot.x + HudLayout.ACTION_BUTTON.x
-			<= HudLayout.ACTIONS_COLUMN_WIDTH + HudLayout.PANEL_PAD + 0.01,
-			"build button %d fits the actions column's width" % i)
-
-	var last_control := HudLayout.action_slot(
-		HudLayout.ACTION_CONTROL_ROWS * HudLayout.ACTION_COLUMNS - 1)
-	assert_true(HudLayout.build_slot(0).y > last_control.y + HudLayout.ACTION_BUTTON.y,
-		"the build segment starts below the last control row, not overlapping it")
+func test_the_button_grid_grows_with_the_panel_between_two_bounds() -> void:
+	# Button width is a function of the panel now, because two grids side by
+	# side cannot share one width across a 1280-to-1920 design space. Both
+	# clamps are real: the floor is what keeps the chip strip wide enough to
+	# reach a building's whole train list on the smallest window (see
+	# `test_every_building_s_train_list_fits_at_the_smallest_window`), and
+	# the ceiling is where a button stops growing rather than sprawling.
+	var narrow := HudLayout.action_button_size(_laid_out(Vector2(1280.0, 720.0))["panel"])
+	var wide := HudLayout.action_button_size(_laid_out(Vector2(1920.0, 1080.0))["panel"])
+	assert_true(wide.x > narrow.x, "a wider panel buys wider buttons")
+	for viewport in SIZES + [Vector2(7680.0, 4320.0), Vector2(640.0, 480.0)]:
+		var button := HudLayout.action_button_size(_laid_out(viewport)["panel"])
+		assert_true(button.x <= HudLayout.ACTION_BUTTON_MAX_WIDTH + 0.01,
+			"buttons stop growing at %s" % viewport)
+		assert_eq(button.y, HudLayout.ACTION_BUTTON_HEIGHT,
+			"button height is fixed, so the grid's row count is too")
 
 
-func test_the_build_segment_fits_inside_the_panel() -> void:
-	var last_row := HudLayout.build_slot(HudLayout.ACTION_COLUMNS - 1)
-	assert_true(last_row.y + HudLayout.ACTION_BUTTON.y <= HudLayout.PANEL_HEIGHT,
-		"a single row of build buttons fits inside PANEL_HEIGHT")
+# --- the wide panel's three columns ------------------------------------
 
-
-# --- the wide panel's columns (chips) ----------------------------------
-
-func test_the_title_and_actions_columns_do_not_overlap() -> void:
+func test_the_panel_is_three_columns_left_to_right() -> void:
+	# Selection, then what you can ORDER it to do, then what you can BUILD —
+	# in that order, never overlapping, all inside the panel. Requested from
+	# playtest #30: the two action grids used to be STACKED in one right-hand
+	# column, which is what made the panel tall.
 	for viewport in SIZES:
 		var panel: Rect2 = _laid_out(viewport)["panel"]
 		var title := HudLayout.title_column_rect(panel)
-		var actions := HudLayout.actions_column_rect(panel)
-		assert_true(title.position.x + title.size.x <= actions.position.x + 0.01,
-			"title column ends before the actions column starts at %s" % viewport)
+		var strip := HudLayout.chip_strip_rect(panel)
+		var commands := HudLayout.commands_column_rect(panel)
+		var build := HudLayout.build_column_rect(panel)
+		assert_true(title.position.x + title.size.x <= strip.position.x + 0.01,
+			"the title column ends before the chips at %s" % viewport)
+		assert_true(strip.position.x + strip.size.x <= commands.position.x + 0.01,
+			"the chips end before the orders column at %s" % viewport)
+		assert_almost_eq(commands.position.x + commands.size.x, build.position.x, 0.01,
+			"the orders column meets the build column at %s" % viewport)
+		assert_almost_eq(build.position.x + build.size.x,
+			panel.position.x + panel.size.x, 0.01,
+			"the build column ends at the panel's right edge at %s" % viewport)
+		assert_true(commands.position.x >= title.position.x + title.size.x - 0.01,
+			"the orders column never runs back over the title at %s" % viewport)
 
 
-func test_the_chip_strip_fills_the_gap_between_the_other_two_columns() -> void:
+func test_the_panel_is_only_as_tall_as_its_tallest_column() -> void:
+	# THE reason this rework exists (#90's follow-up, "even less room"). The
+	# stacked layout paid for the title stack AND the commands grid AND the
+	# build grid, one under the other; three columns pay for the worst of
+	# the three. Asserted as the relationship, not as the number, so a
+	# column that grows a row takes the panel with it — and a second grid
+	# added back UNDER the first would fail this immediately.
+	assert_eq(HudLayout.PANEL_HEIGHT,
+		maxf(HudLayout.TITLE_COLUMN_HEIGHT,
+			maxf(HudLayout.CHIP_STRIP_HEIGHT, HudLayout.ACTION_GRID_HEIGHT)))
+	assert_true(HudLayout.PANEL_HEIGHT
+		< HudLayout.TITLE_COLUMN_HEIGHT + HudLayout.ACTION_GRID_HEIGHT,
+		"the panel is not the sum of two columns")
+	# Every column's own content still fits inside it. The selection column
+	# is a TABLE now (two sub-columns), so this walks every entry in it
+	# rather than trusting the lowest one to be the one that was moved.
+	for at in [HudLayout.TITLE_AT, HudLayout.DETAIL_AT, HudLayout.HEALTH_AT,
+			HudLayout.PROGRESS_CAPTION_AT, HudLayout.PROGRESS_AT,
+			HudLayout.QUEUE_CAPTION_AT, HudLayout.QUEUE_SWATCH_AT]:
+		assert_true(at.y + HudLayout.QUEUE_SWATCH_SIZE <= HudLayout.TITLE_COLUMN_HEIGHT + 0.01,
+			"the selection column's row at %s fits its own height" % at)
+		assert_true(at.x + HudLayout.PROGRESS_BAR_WIDTH
+			<= HudLayout.TITLE_COLUMN_WIDTH + 0.01,
+			"the selection column's row at %s fits its own width" % at)
+	assert_true(HudLayout.CHIP_STRIP_HEIGHT >= float(HudLayout.CHIP_ROWS) * HudLayout.CHIP_SIZE.y,
+		"the chip rows fit the strip")
+
+
+func test_the_bar_is_half_the_height_the_three_column_rework_started_at() -> void:
+	# Playtest #30, in order: 264 units (two grids stacked under a title
+	# stack) -> 146 (three columns, tallest wins) -> "50% shorter". The
+	# number is pinned because it is what was ASKED for; the arithmetic
+	# above is what makes it hold together.
+	assert_almost_eq(HudLayout.PANEL_HEIGHT, 73.0, 1.5,
+		"the bar is half of the 146 the three-column rework landed at")
+	# At the window this came from, that is the difference between a bar
+	# you look past and a bar you look at.
+	assert_true(_panel_share(Vector2(1920.0, 1000.0)) <= 0.08,
+		"the bar is under a twelfth of the reported window")
+
+
+func test_a_column_rule_separates_the_columns_without_leaving_the_panel() -> void:
+	# The vertical rules replace the horizontal divider the stacked
+	# segments needed — same visual break between two KINDS of order, no
+	# height spent on it.
+	var panel: Rect2 = _laid_out(Vector2(1920.0, 1080.0))["panel"]
+	for column in [HudLayout.commands_column_rect(panel), HudLayout.build_column_rect(panel)]:
+		var rule := HudLayout.column_rule_rect(column)
+		assert_almost_eq(rule.position.x, column.position.x, 0.01,
+			"the rule sits on the column's leading edge")
+		assert_true(rule.position.y >= panel.position.y
+			and rule.position.y + rule.size.y <= panel.position.y + panel.size.y + 0.01,
+			"the rule stays inside the panel")
+		assert_true(rule.size.y > 0.0, "the rule is visible at all")
+
+
+func test_the_chip_strip_fills_the_gap_between_the_title_and_the_orders() -> void:
 	var panel: Rect2 = _laid_out(HudLayout.REFERENCE)["panel"]
 	var title := HudLayout.title_column_rect(panel)
 	var strip := HudLayout.chip_strip_rect(panel)
-	var actions := HudLayout.actions_column_rect(panel)
+	var commands := HudLayout.commands_column_rect(panel)
 	assert_almost_eq(strip.position.x, title.position.x + title.size.x + HudLayout.PANEL_PAD,
 		0.01)
-	assert_almost_eq(strip.position.x + strip.size.x, actions.position.x - HudLayout.PANEL_PAD,
+	assert_almost_eq(strip.position.x + strip.size.x, commands.position.x - HudLayout.PANEL_PAD,
 		0.01)
+
+
+func test_no_chip_is_ever_drawn_outside_the_panel() -> void:
+	# The strip is two rows deep now, so its capacity is a real bound rather
+	# than a formality — and a chip past the end does not vanish, it draws
+	# over the battlefield looking entirely deliberate. `chip_capacity` is
+	# what a caller must respect; this is the check that respecting it is
+	# sufficient.
+	for viewport in SIZES:
+		var panel: Rect2 = _laid_out(viewport)["panel"]
+		var strip := HudLayout.chip_strip_rect(panel)
+		var columns := HudLayout.chip_columns(strip.size.x)
+		var capacity := HudLayout.chip_capacity(strip)
+		assert_true(capacity >= 1, "at least one chip is always showable at %s" % viewport)
+		for i in range(capacity):
+			var at := strip.position + HudLayout.chip_slot(i, columns)
+			assert_true(at.y + HudLayout.CHIP_SIZE.y
+				<= panel.position.y + panel.size.y + 0.01,
+				"chip %d of %d stays inside the panel at %s" % [i, capacity, viewport])
+
+
+func test_every_building_s_train_list_fits_at_the_smallest_window() -> void:
+	# The train tiles ARE the train controls (Client._show_train_chips), so
+	# a chip strip too narrow for a building's whole `produces` list does
+	# not crop a display — it makes an ORDER unreachable, which is this
+	# project's oldest defect family. Checked against the shipped defs, so
+	# a civ that gains a fifth trainable unit fails here rather than in a
+	# match, and at the SMALLEST window the HUD allows, which is the worst
+	# case by construction.
+	var widest := 0
+	for def in BuildingSim.all_defs():
+		widest = maxi(widest, def.produces.size())
+	assert_true(widest > 0, "the shipped roster has something to train at all")
+
+	# On a window anyone actually plays on, the whole list is on screen at
+	# once — no paging to reach a unit you can already see the building for.
+	# The strip a BUILDING gets takes the build column's width, because a
+	# building builds nothing (see `HudLayout.chip_strip_rect`).
+	for viewport in [Vector2(1600.0, 900.0), Vector2(1920.0, 1080.0)]:
+		var roomy := HudLayout.chip_strip_rect(_laid_out(viewport)["panel"], false)
+		assert_true(HudLayout.chip_capacity(roomy) >= widest,
+			"a %d-unit train list fits at %s without paging (capacity %d)"
+				% [widest, viewport, HudLayout.chip_capacity(roomy)])
+
+	# At the SMALLEST window the HUD allows it does not fit, and that is
+	# what `Client._chip_window`'s pager is for — but paging only reaches
+	# the rest if a page can hold at least one real tile beside the pager
+	# itself. Two is therefore the floor everywhere, and a capacity of one
+	# would be a strip that pages forever without ever showing anything.
+	for viewport in SIZES + [Vector2(640.0, 480.0)]:
+		for in_use in [true, false]:
+			var strip := HudLayout.chip_strip_rect(_laid_out(viewport)["panel"], in_use)
+			assert_true(HudLayout.chip_capacity(strip) >= 2,
+				"a page holds a tile as well as the pager at %s (build column in use: %s)"
+					% [viewport, in_use])
 
 
 func test_chip_columns_is_never_zero() -> void:
