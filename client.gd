@@ -2127,21 +2127,7 @@ func _layout_hud() -> void:
 		_queue_swatches[i].position = title_col.position + HudLayout.QUEUE_SWATCH_AT \
 			+ Vector2(float(i) * HudLayout.QUEUE_SWATCH_PITCH, 0.0)
 
-	# The two action grids, side by side: orders in the middle, build at the
-	# right (see `HudLayout.ACTION_ROWS`' doc comment). Button SIZE is set
-	# here too, not once at build time — it is a function of the panel's
-	# width now, so a resize that changes the column width and leaves the
-	# buttons at their old size would tile them over each other.
-	var button_size := HudLayout.action_button_size(_panel_rect)
-	var commands_col := HudLayout.commands_column_rect(_panel_rect)
-	var build_col := HudLayout.build_column_rect(_panel_rect)
-	_place_action_grid(_action_buttons, commands_col, button_size)
-	_place_action_grid(_build_action_buttons, build_col, button_size)
-
-	_place_rule(_commands_rule, commands_col)
-	_place_rule(_build_column_rule, build_col)
-
-	_layout_chips()
+	_layout_panel_columns()
 
 	# `_minimap_bounds` stays the ONE definition of where the minimap is,
 	# because it is also the hit-test rect — reading the size back off the
@@ -2216,13 +2202,27 @@ func _place_rule(rule: ColorRect, column: Rect2) -> void:
 ## Where the chip strip (see `_build_chip_pool`) sits, and how many columns
 ## it has — both re-derived on every resize, since the strip's width (and
 ## therefore its column count) depends on the window.
-func _layout_chips() -> void:
-	# The strip takes the build column's width when nothing in the
-	# selection can build — which is exactly when a BUILDING is selected
-	# and the strip is holding its train tiles, the one chip list where a
-	# tile that does not fit is an order that cannot be given. See
-	# `HudLayout.chip_strip_rect`.
-	_chip_strip_rect = HudLayout.chip_strip_rect(_panel_rect, not _build_actions.is_empty())
+func _layout_panel_columns() -> void:
+	# ONE function for all three columns, because they share one input: an
+	# empty build column takes no width, so the orders column slides right
+	# and the chip strip takes what both of them vacate (see
+	# `HudLayout.commands_column_rect`). Laid out separately, the strip
+	# widened and the orders column did not — which drew a squad's chips
+	# across its own formation buttons, twice.
+	#
+	# Button SIZE is set here too, not once at build time: it is a function
+	# of the panel's width, so a resize that changes the column width and
+	# leaves the buttons at their old size tiles them over each other.
+	var in_use := not _build_actions.is_empty()
+	var button_size := HudLayout.action_button_size(_panel_rect)
+	var commands_col := HudLayout.commands_column_rect(_panel_rect, in_use)
+	var build_col := HudLayout.build_column_rect(_panel_rect)
+	_place_action_grid(_action_buttons, commands_col, button_size)
+	_place_action_grid(_build_action_buttons, build_col, button_size)
+	_place_rule(_commands_rule, commands_col)
+	_place_rule(_build_column_rule, build_col)
+
+	_chip_strip_rect = HudLayout.chip_strip_rect(_panel_rect, in_use)
 	_chip_columns = HudLayout.chip_columns(_chip_strip_rect.size.x)
 	var label_width := HudLayout.CHIP_SIZE.x - 16.0
 	# Measured from the font's own metrics, not hand-tuned pixel offsets —
@@ -4107,13 +4107,13 @@ func _update_selection_panel() -> void:
 ## `HudLayout.CHIP_COLLAPSE_THRESHOLD`'s doc comment for why a chip per
 ## individual squad stops being legible at that point).
 func _show_chips(counts: Dictionary) -> void:
-	# Re-measured, never inherited: the strip's WIDTH depends on the
-	# selection now (it takes the build column when nothing selected can
-	# build), so a rect laid out at the last window resize is stale the
-	# moment the selection changes. That is exactly what shipped in the
-	# first three-column build — six squads drew six chips measured against
-	# the wide strip and landed on top of the formation buttons.
-	_layout_chips()
+	# Re-measured, never inherited: where all three columns sit depends on
+	# the selection now (an empty build column takes no width), so a layout
+	# from the last window resize is stale the moment the selection
+	# changes. That is exactly what shipped in the first three-column
+	# build — six squads drew six chips measured against a strip that had
+	# been laid out for a different selection.
+	_layout_panel_columns()
 	# Informational only in this mode — see `_on_chip_input`.
 	_chip_train_ids.clear()
 	# Collapsed by what FITS as well as by what is legible (see
@@ -4196,7 +4196,7 @@ func _show_chips(counts: Dictionary) -> void:
 func _show_train_chips(def: BuildingDef) -> void:
 	# Re-measured for the reason `_show_chips` is, and this is the side
 	# that needs the width: a building's tiles are its train orders.
-	_layout_chips()
+	_layout_panel_columns()
 	var entries := []
 	_chip_train_ids.clear()
 	if def != null:

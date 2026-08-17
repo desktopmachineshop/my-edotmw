@@ -149,6 +149,35 @@ Three parts to the fix:
   rule already existed — it was capped at a legibility threshold of 8 set
   when the strip was four rows deep.
 
+### The same overlap again, and the rule that actually fixed it
+
+The staleness fix was necessary and not sufficient: it shipped, and a
+playtest reported the identical picture — six squads' chips drawn across
+the formation buttons.
+
+The second cause was the geometry itself. "The strip takes the build
+column's width" was implemented as *the strip's right edge is the build
+column's left edge* — and the build column is the FAR side of the orders
+column, so the widened strip covered the orders column entirely. It only
+showed for a selection with nothing to build, which is why the first
+playtest (gatherers, who build) did not reproduce it and the second
+(raiders, who do not) did.
+
+**The rule that holds is: an empty column takes no width.** The strip's
+extra room comes from the ORDERS column sliding right into the space the
+build column vacated — never from the strip growing over it. Both halves
+move together or neither may, so `commands_column_rect` takes the same
+flag `chip_strip_rect` does, and the strip's right edge is now *always*
+the orders column's, in both modes.
+
+Two guards, because the bug had two halves. `test_hud_layout.gd` checks
+the three columns do not overlap **in both modes** — the original version
+checked only the default one, which is exactly the mode that worked. And
+the source scan now also asserts that ONE client function places both
+action grids and measures the strip: laid out separately, the strip
+widened while the orders column stayed put, which is this bug stated as a
+code shape rather than as a picture.
+
 The guard is a SOURCE SCAN (`test_hud_layout.gd`), the same shape
 `test_terrain_fog.gd` uses and for the same reason: the rule lives in
 `client.gd`, which needs a GPU, and every other check in the file passes

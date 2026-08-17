@@ -482,20 +482,40 @@ func test_the_panel_is_three_columns_left_to_right() -> void:
 	for viewport in SIZES:
 		var panel: Rect2 = _laid_out(viewport)["panel"]
 		var title := HudLayout.title_column_rect(panel)
-		var strip := HudLayout.chip_strip_rect(panel)
-		var commands := HudLayout.commands_column_rect(panel)
+		# BOTH modes. The strip widens when the build column is unused, and
+		# the first version of that rule widened it over the ORDERS column —
+		# which is a squad's formation buttons, drawn under its chips, and
+		# was reported from a playtest twice. The rule only holds if the
+		# orders column moves as well, so both are checked together.
+		for in_use in [true, false]:
+			var strip := HudLayout.chip_strip_rect(panel, in_use)
+			var commands := HudLayout.commands_column_rect(panel, in_use)
+			assert_true(title.position.x + title.size.x <= strip.position.x + 0.01,
+				"the title column ends before the chips at %s (build: %s)"
+					% [viewport, in_use])
+			assert_true(strip.position.x + strip.size.x <= commands.position.x + 0.01,
+				"the chips end before the orders column at %s (build: %s)"
+					% [viewport, in_use])
+			assert_true(commands.position.x + commands.size.x
+				<= panel.position.x + panel.size.x + 0.01,
+				"the orders column ends inside the panel at %s (build: %s)"
+					% [viewport, in_use])
+			assert_true(commands.position.x >= title.position.x + title.size.x - 0.01,
+				"the orders column never runs back over the title at %s (build: %s)"
+					% [viewport, in_use])
 		var build := HudLayout.build_column_rect(panel)
-		assert_true(title.position.x + title.size.x <= strip.position.x + 0.01,
-			"the title column ends before the chips at %s" % viewport)
-		assert_true(strip.position.x + strip.size.x <= commands.position.x + 0.01,
-			"the chips end before the orders column at %s" % viewport)
-		assert_almost_eq(commands.position.x + commands.size.x, build.position.x, 0.01,
+		assert_almost_eq(HudLayout.commands_column_rect(panel).position.x
+			+ HudLayout.commands_column_rect(panel).size.x, build.position.x, 0.01,
 			"the orders column meets the build column at %s" % viewport)
 		assert_almost_eq(build.position.x + build.size.x,
 			panel.position.x + panel.size.x, 0.01,
 			"the build column ends at the panel's right edge at %s" % viewport)
-		assert_true(commands.position.x >= title.position.x + title.size.x - 0.01,
-			"the orders column never runs back over the title at %s" % viewport)
+		# An unused build column gives its width to the CHIPS, and the
+		# orders column slides right into the space it vacated.
+		assert_almost_eq(HudLayout.commands_column_rect(panel, false).position.x
+			+ HudLayout.commands_column_rect(panel, false).size.x,
+			panel.position.x + panel.size.x, 0.01,
+			"with no build column the orders column takes the right edge at %s" % viewport)
 
 
 func test_the_panel_is_only_as_tall_as_its_tallest_column() -> void:
@@ -577,8 +597,8 @@ func test_the_strip_is_wider_when_the_build_column_is_free() -> void:
 		assert_true(wide.size.x > narrow.size.x,
 			"a free build column widens the strip at %s" % viewport)
 		assert_almost_eq(wide.position.x + wide.size.x,
-			HudLayout.build_column_rect(panel).position.x - HudLayout.PANEL_PAD, 0.01,
-			"the wide strip stops where the build column starts at %s" % viewport)
+			HudLayout.commands_column_rect(panel, false).position.x - HudLayout.PANEL_PAD, 0.01,
+			"the wide strip stops where the orders column starts at %s" % viewport)
 		assert_true(HudLayout.chip_capacity(wide) > HudLayout.chip_capacity(narrow),
 			"the two strips do not hold the same number of chips at %s" % viewport)
 
@@ -599,13 +619,27 @@ func test_the_client_re_measures_the_strip_whenever_it_fills_it() -> void:
 	# pass while the client measures a rect it laid out a minute ago.
 	var source := FileAccess.get_file_as_string("res://client.gd")
 	assert_false(source.is_empty(), "client.gd is readable")
+	# All three columns move together or none may (see
+	# `HudLayout.commands_column_rect`), so one function places the two
+	# action grids AND measures the strip. Splitting them is what let the
+	# strip widen while the orders column stayed put.
+	var one_place := source.find("func _layout_panel_columns(")
+	assert_true(one_place >= 0, "the panel's columns are laid out in one place")
+	var columns_end := source.find("
+func ", one_place + 1)
+	var columns := source.substr(one_place,
+		(columns_end if columns_end > one_place else source.length()) - one_place)
+	for placed in ["_place_action_grid(_action_buttons", "_place_action_grid(_build_action_buttons",
+			"chip_strip_rect("]:
+		assert_true(columns.contains(placed),
+			"the one layout function places %s" % placed)
 	for fill in ["_show_chips", "_show_train_chips"]:
 		var at := source.find("func %s(" % fill)
 		assert_true(at >= 0, "%s exists" % fill)
 		var ends := source.find("\nfunc ", at + 1)
 		var body := source.substr(at, (ends if ends > at else source.length()) - at)
-		assert_true(body.contains("_layout_chips()"),
-			"%s re-measures the chip strip before filling it" % fill)
+		assert_true(body.contains("_layout_panel_columns()"),
+			"%s re-lays the panel's columns before filling it" % fill)
 
 
 func test_a_per_squad_chip_list_collapses_before_it_stops_fitting() -> void:

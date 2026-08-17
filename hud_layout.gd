@@ -592,11 +592,24 @@ static func build_column_rect(panel: Rect2) -> Rect2:
 		Vector2(w, panel.size.y))
 
 
-## The COMMANDS column (formation and movement), immediately left of build.
-static func commands_column_rect(panel: Rect2) -> Rect2:
+## The COMMANDS column (formation and movement).
+##
+## Immediately left of the build column while there IS one — and at the
+## panel's right edge when there is not. **An empty column takes no width**,
+## which is the whole of the rule: the chip strip's extra room comes from
+## the orders column sliding right, never from the strip growing over it.
+##
+## Reported twice from playtests before it was stated this way. The first
+## version widened the strip to the BUILD column's left edge, which is the
+## far side of the orders column — so a squad with nothing to build (and a
+## building, which never builds) drew its chips straight across its own
+## formation buttons. Both halves have to move together, or neither may.
+static func commands_column_rect(panel: Rect2, building_column_in_use := true) -> Rect2:
 	var w := actions_column_width(panel)
-	return Rect2(Vector2(build_column_rect(panel).position.x - w, panel.position.y),
-		Vector2(w, panel.size.y))
+	var right := panel.position.x + panel.size.x
+	if building_column_in_use:
+		right = build_column_rect(panel).position.x
+	return Rect2(Vector2(right - w, panel.position.y), Vector2(w, panel.size.y))
 
 
 ## What is left in the middle, for chips — between the selection column and
@@ -612,12 +625,13 @@ static func commands_column_rect(panel: Rect2) -> Rect2:
 ## exactly when the build column is empty, because a building builds
 ## nothing. The two facts are the same fact, which is what makes this an
 ## invariant rather than a special case.
+## The right edge is ALWAYS the orders column's, in either mode — see
+## `commands_column_rect`, which is the half that moves. Measuring against
+## the build column instead is what drew chips over the formation buttons.
 static func chip_strip_rect(panel: Rect2, building_column_in_use := true) -> Rect2:
 	var title := title_column_rect(panel)
 	var left := title.position.x + title.size.x + PANEL_PAD
-	var edge := commands_column_rect(panel) if building_column_in_use \
-		else build_column_rect(panel)
-	var right := edge.position.x - PANEL_PAD
+	var right := commands_column_rect(panel, building_column_in_use).position.x - PANEL_PAD
 	return Rect2(Vector2(left, panel.position.y),
 		Vector2(maxf(right - left, 0.0), panel.size.y))
 
