@@ -2619,8 +2619,13 @@ func _seat_ai(player: int, civ: StringName) -> void:
 	_civs[player] = civ
 
 	# Registered with the match like any player, so elimination and
-	# victory count an AI exactly as they count a human (D-033).
-	var started := _match.add_player(player)
+	# victory count an AI exactly as they count a human (D-033) — but
+	# through `add_ai_player`, not `add_player`. `add_player` seats a
+	# HUMAN: it labelled every command-line AI `kind: "human"` and handed
+	# the first of them the lobby admin badge, which is a lobby no human
+	# can ever start a second match from
+	# (D-20260817-an-ai-never-holds-the-lobby).
+	var started := _match.add_ai_player(player, civ)
 	_ai_clients[peer] = {"player": player, "visible": {}}
 	_ai_players.append(brain)
 	_admit_player(peer, player)

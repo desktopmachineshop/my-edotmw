@@ -177,8 +177,9 @@ func test_an_ai_seat_counts_toward_starting() -> void:
 func test_seating_ai_before_players_expected_accounts_for_them_leaves_later_seats_unresolved() -> void:
 	# Documents the failure mode behind a real bug: server.gd's no-lobby
 	# quick-start (`run-server AI=N`) seats AI opponents through
-	# add_player, exactly like a human join (D-051, see server.gd's
-	# _seat_ai). If players_expected is not adjusted for them, the FIRST
+	# add_ai_player, which registers exactly as a human join does (D-051,
+	# see server.gd's _seat_ai). If players_expected is not adjusted for
+	# them, the FIRST
 	# seat alone satisfies _start_if_ready and locks phase RUNNING before
 	# the rest — including the human who plays — has joined. Every later
 	# seat's civ choice is then never resolved and stays the literal
@@ -190,8 +191,10 @@ func test_seating_ai_before_players_expected_accounts_for_them_leaves_later_seat
 	m.require_admin_start = false
 	m.civ_rng.seed = 7
 	m.players_expected = 1  # the bug: not widened for the AI seats about to join
-	m.add_player(1000)  # first AI — this alone starts the match
-	m.add_player(1001)  # second AI — joins after start, never resolved
+	# Random, so the resolution assertions below still mean something —
+	# the real CLI path deals each brain a concrete civ.
+	m.add_ai_player(1000, CivRoster.RANDOM)  # first AI — this alone starts the match
+	m.add_ai_player(1001, CivRoster.RANDOM)  # second AI — joins after start, never resolved
 	m.add_player(5)  # the human — same fate
 
 	assert_eq(m.phase, MatchState.Phase.RUNNING, "the first seat alone started the match")
@@ -208,8 +211,8 @@ func test_players_expected_counting_every_seat_resolves_them_all() -> void:
 	m.require_admin_start = false
 	m.civ_rng.seed = 7
 	m.players_expected = 3  # 2 AI + the human
-	m.add_player(1000)
-	m.add_player(1001)
+	m.add_ai_player(1000, CivRoster.RANDOM)
+	m.add_ai_player(1001, CivRoster.RANDOM)
 	m.add_player(5)
 
 	for player in [1000, 1001, 5]:
@@ -245,6 +248,105 @@ func test_nothing_can_be_changed_once_the_match_is_running() -> void:
 	assert_false(m.set_civ(2, m.seat_of(2), CivRoster.ids()[0]),
 		"A civ was changed mid-match")
 	assert_eq(m.add_ai(1, CivRoster.ids()[0], 4), -1, "An AI was seated mid-match")
+
+
+# --- an AI never holds the lobby (D-20260817-an-ai-never-holds-the-lobby)
+#
+# The two ways of seating an AI have to produce the SAME seat record.
+# They did not: the lobby's own "add AI player" command went through
+# `add_ai` and got `kind: "ai"`, while every command-line AI (`--ai=N`:
+# `quick-test`, `run-server AI=3`) went through `_seat_ai` -> `add_player`
+# and got `kind: "human"` — plus, because those seats exist before any
+# human connects, the lobby admin badge.
+#
+# Nothing failed. The match played. The lobby it came back to (D-075) was
+# held by a computer, so the start button read "Waiting for host" forever.
+# Every assertion below is one of the four consequences in #92.
+
+
+func test_a_command_line_ai_is_seated_as_an_ai() -> void:
+	var m := MatchState.new()
+	m.players_expected = 2
+	m.add_ai_player(1000, CivRoster.ids()[0])
+	assert_eq(String(m.seats[0]["kind"]), "ai",
+		"An AI seat labelled 'human' hides every control that keys off is_ai")
+
+
+func test_an_ai_never_takes_the_lobby_admin() -> void:
+	# The reported bug, in the order the server does it: AI seats are
+	# created at startup, the human connects afterwards.
+	var m := _lobby()
+	m.players_expected = 4
+	for i in range(3):
+		m.add_ai_player(1000 + i, CivRoster.ids()[0])
+	assert_eq(m.admin_player, 0,
+		"An AI held the lobby — it will never press start, so nobody can")
+
+	m.add_player(1)
+	assert_true(m.is_admin(1), "The human who joined should hold the lobby")
+	assert_true(m.request_start(1), "…and be able to start a match with it")
+
+
+func test_the_first_human_repairs_a_lobby_already_held_by_an_ai() -> void:
+	# Admin is claimable only by a HUMAN seat, which is a stronger rule
+	# than "the chair is empty" — and the stronger one is what rescues a
+	# session that is already running with an AI in the chair.
+	var m := _lobby()
+	m.players_expected = 2
+	m.add_ai_player(1000, CivRoster.ids()[0])
+	m.admin_player = 1000  # as a pre-fix server left it
+
+	m.add_player(1)
+	assert_true(m.is_admin(1), "The first human should have taken the chair back")
+	assert_false(m.is_admin(1000))
+
+
+func test_a_command_line_ai_seat_carries_the_civ_its_brain_was_built_with() -> void:
+	# `_seat_ai` constructs the brain with a civ and records it in `_civs`,
+	# then the SEAT resolved a different one and `_on_match_started` wrote
+	# that back over it. The AI reported one civilisation in AI_STATS and
+	# fielded another's troops — the exact defect `_seat_ai`'s own comment
+	# says it fixed, reachable again through the seat.
+	var ids := CivRoster.ids()
+	assert_gt(ids.size(), 1, "Setup: this needs two civs to tell apart")
+	var m := _lobby()
+	m.players_expected = 2
+	m.add_ai_player(1000, ids[1])
+	assert_eq(String(m.civ_of(1000)), String(ids[1]),
+		"The seat forgot the civ the brain was constructed with")
+
+	m.add_player(1)
+	m.request_start(1)
+	assert_eq(String(m.civ_of(1000)), String(ids[1]),
+		"Starting the match rerolled a civ that was never Random")
+
+
+func test_an_ai_cannot_acquire_a_second_seat_beside_itself() -> void:
+	# `_on_match_started` re-seats every AI seat when a second match starts
+	# (D-075), so this runs again for a brain that already has a seat.
+	var m := _lobby()
+	m.players_expected = 2
+	m.add_ai_player(1000, CivRoster.ids()[0])
+	m.add_ai_player(1000, CivRoster.ids()[0])
+	assert_eq(m.seats.size(), 1, "Re-seating an AI should not seat it twice")
+
+
+func test_the_server_seats_command_line_ai_through_the_ai_door() -> void:
+	# The half no MatchState test can see: which door server.gd knocks on.
+	# Every rule above was already true of `add_ai` and still shipped
+	# broken, because `_seat_ai` called `add_player` instead — the
+	# "grep for the caller" rule (D-106) written down as a test.
+	var source := FileAccess.get_file_as_string("res://server.gd")
+	assert_false(source.is_empty(), "Setup: could not read server.gd")
+	var start := source.find("func _seat_ai(")
+	assert_gt(start, 0, "server.gd no longer has a _seat_ai — rename this test with it")
+	var end := source.find("\nfunc ", start + 1)
+	var body := source.substr(start, end - start)
+
+	assert_true(body.contains("_match.add_ai_player("),
+		"_seat_ai must register its brain through the AI door")
+	assert_false(body.contains("_match.add_player("),
+		"_seat_ai registered an AI through add_player, which seats a HUMAN")
 
 
 # --- teams (D-050) ----------------------------------------------------

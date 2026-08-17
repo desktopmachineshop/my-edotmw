@@ -52,6 +52,27 @@ quote it with the count, as ever). The pieces:
   none of these, and the building pass eight lines above it in the same
   function had been resolving `colour_of` correctly all along.
 
+- **And the leave-to-lobby path was a dead end in the one session a solo
+  player uses** (D-20260817-an-ai-never-holds-the-lobby, #92, from
+  playtest #30). `server.gd`'s `_seat_ai` registered every command-line AI
+  (`--ai=N`: `quick-test`, `run-server AI=3`) through `MatchState.
+  add_player` — which seats a **human**, and a human seat with nobody yet
+  in the chair takes `admin_player`. So all three AI seats read `human` in
+  the lobby, **the first AI held the Admin badge**, and after ESC → leave
+  to lobby the human's start button read "Waiting for host" forever.
+  Three more consequences rode on the same mislabel, none of them visible
+  to any check: the next match would have rebuilt **no AI brains at all**
+  (`_on_match_started` only re-seats `kind == "ai"`, and the seat still
+  counts for elimination), and the seat's civ overwrote the brain's, which
+  is the AI-fields-another-civ's-troops defect reachable through a second
+  door. **This is the declared-and-misread variant of the family**: `kind`
+  is read everywhere — wire, client, lobby rules, match start — and one of
+  the two writers simply set it wrong, so nothing failed. `add_ai` had
+  been correct the whole time, and every lobby test went through it. There
+  is one seating function now, two doors onto it, and admin is claimable
+  only by a human seat — which also repairs a session already running with
+  an AI in the chair.
+
 **"`client.gd` is unreachable from GUT" is only true of what it DRAWS**
 (D-075's 2026-08-16 amendment). Its node LIFETIME needs neither a GPU nor
 a window, and reading the claim as covering all of it is how the second

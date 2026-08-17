@@ -117,12 +117,37 @@ func active_players() -> Array:
 
 ## Register a joining player. Returns true if this join started the match.
 func add_player(player: int) -> bool:
+	_register(player)
+	_seat_human(player)
+	return _start_if_ready()
+
+
+## Register an AI participant and give it an AI SEAT. Returns true if this
+## seating started the match.
+##
+## The AI twin of `add_player`, and it exists because there was only one
+## door. `server.gd`'s `_seat_ai` registered every command-line AI
+## (`--ai=N`: `quick-test`, `run-server AI=3`) through `add_player`, which
+## seats a *human* — so a seat that was an AI in every other respect
+## carried `kind: "human"`, and because those seats are created before any
+## human connects, the FIRST AI also took `admin_player`. Nothing failed:
+## the match played, and the lobby it came back to (D-075) was held by a
+## computer that will never press start.
+##
+## `add_ai` below is the lobby COMMAND — the same seating plus a
+## permission check. The check belongs on the command, not on the seating,
+## which is why the two are separate and why this one has no `by_player`.
+func add_ai_player(player: int, civ: StringName) -> bool:
+	_register(player)
+	_seat_ai(player, civ)
+	return _start_if_ready()
+
+
+func _register(player: int) -> void:
 	if not _players.has(player):
 		_players[player] = {"eliminated": false, "connected": true}
 	else:
 		_players[player]["connected"] = true
-	_seat_human(player)
-	return _start_if_ready()
 
 
 func _start_if_ready() -> bool:
@@ -197,28 +222,57 @@ func _seat_human(player: int) -> void:
 		"civ": CivRoster.RANDOM, "team": 0, "name": "Player %d" % player,
 	})
 	_seats_changed()
-	if admin_player <= 0:
-		admin_player = player
+	# Not `if admin_player <= 0`. That asked "is the chair empty", which is
+	# the same question as "is anybody in it who can actually use it" only
+	# for as long as nothing but a human can sit down — and an AI seated
+	# from the command line did, for four milestones. This asks the
+	# question that was meant, through the one function that answers it, so
+	# a lobby already held by an AI is repaired by the first human to
+	# arrive rather than stuck for the life of the server.
+	_reassign_admin_if_needed()
+
+
+## Seat an AI. Idempotent on `player`, like `_seat_human` and for the same
+## reason: the same brain must not acquire a second seat beside itself.
+##
+## Deliberately does NOT touch `admin_player`. An AI never presses start,
+## so a lobby it holds is a lobby nobody can leave — which is exactly what
+## `add_player`-seated AI produced.
+##
+## `_seats_changed` fires HERE rather than at each caller (#103): both
+## doors onto AI seating go through this function, so starting positions
+## following the seats is structural for the command-line path and the
+## lobby command alike, rather than a call each of them has to remember.
+func _seat_ai(player: int, civ: StringName) -> void:
+	for seat in seats:
+		if int(seat["player"]) == player:
+			return
+	seats.append({
+		"kind": "ai", "player": player,
+		"civ": civ, "team": 0, "name": "AI %d" % player,
+	})
+	_seats_changed()
 
 
 func is_admin(player: int) -> bool:
 	return player > 0 and player == admin_player
 
 
-## Seat an AI. Returns the new seat index, or -1 if refused.
+## The lobby's "add AI player" command. Returns the seat index, or -1 if
+## refused.
 ##
 ## Only the admin may do this, and the check lives here rather than in the
 ## server so it is testable without a socket — the same reason the rest of
 ## MatchState does (see this file's header).
+##
+## The SEATING is `_seat_ai`, shared with `add_ai_player`, because the two
+## ways of seating an AI producing different seat records is precisely the
+## bug this pair replaced.
 func add_ai(by_player: int, civ: StringName, player_id: int) -> int:
 	if phase != Phase.LOBBY or not is_admin(by_player):
 		return -1
-	seats.append({
-		"kind": "ai", "player": player_id,
-		"civ": civ, "team": 0, "name": "AI %d" % player_id,
-	})
-	_seats_changed()
-	return seats.size() - 1
+	_seat_ai(player_id, civ)
+	return seat_of(player_id)
 
 
 ## Remove an AI seat. Humans cannot be removed this way — a player leaves
