@@ -6772,6 +6772,11 @@ var _lobby_help: Label
 var _map_rows: VBoxContainer
 var _map_preview: TextureRect
 var _map_blurb: Label
+## Why the settings the sliders currently describe would not generate a
+## map (#125). Rebuilt with the rows above it, which is also what clears
+## it: a refusal survives exactly as long as the settings that caused it,
+## because a refused change is one the server never echoes back.
+var _map_warning: Label
 var _start_button: Button
 var _add_ai_button: Button
 
@@ -6802,8 +6807,15 @@ const MAP_OPTIONS := [
 	# for one, and asking leaves it unpinned so the lobby keeps rolling
 	# between matches.
 	{"key": MatchState.REROLL_OPTION, "label": "Map", "kind": "reroll"},
-	{"key": "sea_level", "label": "Sea level", "kind": "slider", "min": 0.05, "max": 0.9},
-	{"key": "mountain_level", "label": "Mountain line", "kind": "slider", "min": 0.1, "max": 0.98},
+	# No ranges here any more (#125). How far a slider may travel is
+	# `MapSettings.slider_bounds`, which the SERVER clamps against too —
+	# this table held one copy and `MatchState.set_map_option` another,
+	# and neither knew about the coupled thresholds `MapSettings.validate`
+	# enforces. So the sea-level slider was drawn to 0.90 while the beach
+	# line the chosen preset had set, which nothing here exposes, made
+	# anything past 0.27 unacceptable on `plains`.
+	{"key": "sea_level", "label": "Sea level", "kind": "slider"},
+	{"key": "mountain_level", "label": "Mountain line", "kind": "slider"},
 	# Reads in CELLS, not as the raw parameter (D-105). "Landmass count"
 	# was the bug stated out loud: it sat at 2.50 on every map size
 	# because the terrain was defined in fractions of the map, so picking
@@ -6811,8 +6823,8 @@ const MAP_OPTIONS := [
 	# Now the parameter is a density and the readout is the size it
 	# produces — the same at every size, which is the fix made visible.
 	{"key": "elevation_frequency", "label": "Landmass size", "kind": "slider",
-		"min": 0.5, "max": 8.0, "readout": "cells"},
-	{"key": "height_scale", "label": "Relief", "kind": "slider", "min": 0.5, "max": 20.0},
+		"readout": "cells"},
+	{"key": "height_scale", "label": "Relief", "kind": "slider"},
 ]
 
 
@@ -8219,7 +8231,24 @@ func _on_map_choice(choice: int, key: String) -> void:
 	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%d" % [key, choice])
 
 
+## The same `MapSettings` the server will judge this against, judged here
+## first (#125), so a combination it will not accept says so at the moment
+## the handle moves rather than when somebody presses start.
+##
+## Not a substitute for the server's own check — a slider is a suggestion
+## from an untrusted client (D-002) and `set_map_option` validates again.
+## It is here because the one refusal the bounds cannot express is whether
+## the WORLD comes out with ground on it, which depends on the seed and on
+## the other sliders and so cannot be drawn as a range.
 func _on_map_value(value: float, key: String) -> void:
+	var candidate := MapSettings.from_dict(_state.lobby.get("settings", {}))
+	if candidate.set_slider(key, value):
+		var problem := candidate.validate()
+		if is_instance_valid(_map_warning):
+			_map_warning.text = problem
+			_map_warning.visible = problem != ""
+		if problem != "":
+			return
 	_send_lobby(NetProtocol.LOBBY_SET_OPTION, 0, "%s=%f" % [key, value])
 
 
@@ -8312,6 +8341,13 @@ func _refresh_map_panel() -> void:
 		note.text = "Only the host can change these."
 		_map_rows.add_child(note)
 
+	_map_warning = Label.new()
+	_map_warning.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
+	_map_warning.modulate = HudTheme.WARNING
+	_map_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_map_warning.visible = false
+	_map_rows.add_child(_map_warning)
+
 
 func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 	var key := String(option["key"])
@@ -8368,10 +8404,16 @@ func _map_row(option: Dictionary, settings: Dictionary, admin: bool) -> Control:
 				row.add_child(note)
 
 		"slider":
+			# Bounds from the settings themselves, so sea level and the
+			# mountain line each stop where the other is (#125) — the two
+			# are one ordering with two handles, and the ends MOVING is
+			# what makes that coupling visible instead of leaving a player
+			# to find it by being refused.
+			var bounds := MapSettings.from_dict(settings).slider_bounds(key)
 			var slider := HSlider.new()
-			slider.min_value = float(option["min"])
-			slider.max_value = float(option["max"])
-			slider.step = 0.01
+			slider.min_value = bounds.x
+			slider.max_value = bounds.y
+			slider.step = MapSettings.SLIDER_STEP
 			slider.value = float(settings.get(key, 0.0))
 			slider.custom_minimum_size = Vector2(150.0, 18.0)
 			slider.focus_mode = Control.FOCUS_NONE
