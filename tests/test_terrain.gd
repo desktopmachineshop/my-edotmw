@@ -301,16 +301,29 @@ func test_a_bigger_map_holds_more_features_rather_than_bigger_ones() -> void:
 
 
 func test_the_reference_width_leaves_shipped_presets_meaning_what_they_did() -> void:
-	# Every /terrain preset was tuned at the Standard size, so the size
-	# term must be exactly 1 there or all four need re-tuning. This is the
+	# Every /terrain preset was tuned at a width of 84, so the size term
+	# must be exactly 1 THERE or all four need re-tuning. This is the
 	# clause that let D-105 land without touching a .tres.
-	var standard: Dictionary = MapSettings.sizes()[1]
-	assert_eq(int(standard["width"]), int(TerrainGen.REFERENCE_WIDTH),
-		"REFERENCE_WIDTH must be the Standard map's width, or presets silently change meaning")
-	assert_almost_eq(TerrainGen.effective_frequency(_sized(standard), 2.5), 2.5, 1e-6)
+	#
+	# 84 was the Standard size when that was written and is the smallest
+	# shipped size now (the ladder moved up a rung on 2026-08-17). The
+	# constant deliberately did NOT follow: it is a calibration reference,
+	# and re-pointing it at whatever is currently called "Standard" would
+	# halve every preset's effective frequency without anyone editing a
+	# preset — precisely the silent drift it exists to stop. So this
+	# asserts against a literal, not against a lineup position.
+	assert_eq(int(TerrainGen.REFERENCE_WIDTH), 84,
+		"REFERENCE_WIDTH is the width the shipped presets were tuned at; moving "
+		+ "it changes what every /terrain preset means")
+	var reference := TorusSpace.new(84, 96, 1.0)
+	assert_almost_eq(TerrainGen.effective_frequency(reference, 2.5), 2.5, 1e-6)
 
-	# And it is genuinely proportional either side of that.
-	assert_almost_eq(TerrainGen.effective_frequency(_sized(MapSettings.sizes()[3]), 2.5),
+	# And it is genuinely proportional either side of that. The default map
+	# is twice the reference width, so it samples at twice the frequency —
+	# more features of the same size, which is D-105's whole point.
+	var default_size: Dictionary = MapSettings.sizes()[1]
+	assert_eq(int(default_size["width"]), 168, "the default size moved; check this")
+	assert_almost_eq(TerrainGen.effective_frequency(_sized(default_size), 2.5),
 		5.0, 1e-6, "A double-width map must sample at double the frequency")
 
 	# The readout the lobby shows, which is the inverse and therefore does

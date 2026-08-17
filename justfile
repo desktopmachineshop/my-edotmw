@@ -701,8 +701,9 @@ test-load N DURATION:
 # This is NOT a replacement for `test-load`, and must never become one. A
 # scenario hands out finished buildings and adjacent armies, so it cannot
 # see a bug in founding, in production, or in spawn placement — the very
-# things it skips. `just test-load 4 120` stays the gate a change passes
-# before it is called done; this is the loop you iterate in.
+# things it skips. `just test-load` stays the gate a change passes before
+# it is called done (its DURATION lives in docs/status/load-testing.md,
+# because it scales with map size); this is the loop you iterate in.
 #
 # The checks follow test-load's shape, plus one this recipe needs and
 # test-load does not: the server must confirm IN ITS LOG that it actually

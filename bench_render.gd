@@ -174,11 +174,12 @@ func _build_terrain() -> void:
 			if mesh != null:
 				meshes.append(mesh)
 
-	var step_q := Vector3(float(_space.width) * _space.hex_size * TorusSpace.SQRT_3, 0.0, 0.0)
-	var step_r := Vector3(
-		float(_space.height) * 0.5 * _space.hex_size * TorusSpace.SQRT_3,
-		0.0,
-		float(_space.height) * 1.5 * _space.hex_size)
+	# `lattice_steps()`, matching client.gd — this benchmark exists to
+	# reproduce the client's draw-call count, so a private copy of the
+	# tiling arithmetic is the one thing it must not have.
+	var steps := _space.lattice_steps()
+	var step_q := steps[0]
+	var step_r := steps[1]
 
 	for i in [-1, 0, 1]:
 		for j in [-1, 0, 1]:

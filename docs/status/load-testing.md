@@ -30,8 +30,24 @@ more than once.
 `4 120` is stale regardless: three runs there reported `conceal_events=2`,
 which is the fog half barely running at all.
 
-- Spawns are far apart on a 128×64 map, so four armies cannot reach each
-  other quickly. A short run fails with `casualties_applied=0
+- **`4 300` measured clean on the new default map, 2026-08-17**, one run:
+  0 desyncs, 0 dropped ticks, worst tick 44.9 ms, `conceal_events=63
+  reveal_events=63 casualties_applied=36 nodes_felled=135`. Note
+  `reveal_events` — the gate that has been failing intermittently on
+  `main` (issue #69) — is now satisfied by a factor of 60, because a
+  bigger map means squads actually leave and re-enter vision. One run is
+  not a measurement (see above), but it is the number to start from.
+- **The default map doubled on 2026-08-17 (84×96 → 168×194), so every
+  duration on this page is now a floor rather than a recommendation.**
+  Marching time scales with LINEAR size, not area, so the ~150 s that was
+  marginal before is roughly 300 s of equivalent marching now. The gates
+  that get harder are the contact-dependent ones —
+  `casualties_applied`, `conceal_events`, `reveal_events`; the fog
+  coverage gates get *easier*, because more of a bigger map goes unseen.
+  Re-measure before writing a number here, and read the "a single green
+  run is not a measurement" paragraph above first.
+- Spawns are far apart even on the old map, so four armies cannot reach
+  each other quickly. A short run fails with `casualties_applied=0
   conceal_events=0 reveal_events=0` — the verdict correctly reporting
   that combat and fog never happened rather than passing vacuously.
 - **A reveal needs a conceal AND a return.** `reveal_events` counts a
