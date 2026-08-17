@@ -16,9 +16,25 @@ class_name GroundCover
 ## | | Resource nodes (D-087) | Ground cover (this) |
 ## |---|---|---|
 ## | Owned by | the server; simulation entities | the client; cosmetic only |
-## | Fog | gated, with felling events on the wire | NOT gated — a grass tuft leaks nothing |
+## | Fog on the WIRE | gated, with felling events | NOT gated — a grass tuft leaks nothing |
+## | Fog on SCREEN | dimmed with the ground it stands on | owed the same, and nothing draws it yet |
 ## | Wire cost | reveal and depletion events | ZERO; nothing goes on the wire |
 ## | Determinism | server-authoritative | a pure hash of the cell |
+##
+## The fog row was one row until D-20260817-fog-covers-props, and it read "NOT
+## gated". That was true of the wire and it is still true of the wire — but the
+## GROUND acquired fog of war a day earlier (D-106), and cover is derived from
+## terrain every client generates for itself. So a client that drew cover
+## unfogged would paint a complete, fully lit map of ferns and boulders on top of
+## country it has never scouted, and forests and rock fields are exactly the
+## terrain read a player scouts FOR. The wire argument does not carry the screen.
+##
+## Nothing draws cover today — `cover_preview.gd` and `forest_preview.gd` are its
+## only callers, and neither has a player whose knowledge could be asked about.
+## When `client.gd` grows a cover pass it owes `PropFog.instance_data` per
+## instance and `PropFog.shaded` on its meshes, exactly as the resource-node pass
+## does; unlike the nodes, nothing upstream would catch a miss, because there is
+## no wire gate behind it.
 ##
 ## Nothing here is replicated, and nothing here should ever become replicated.
 ## A prop is derived from terrain every client already generated for itself, so

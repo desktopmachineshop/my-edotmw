@@ -292,6 +292,13 @@ func _flush(groups: Dictionary) -> void:
 		if mesh == null:
 			push_warning("forest_preview: no mesh for %s; skipped" % model)
 			continue
+		# Through `PropFog.shaded`, which is what the client draws with (#81).
+		# Nothing is bound here — there is no player whose knowledge could be
+		# asked about — so every tree comes out fully lit, and the picture stays
+		# a picture of the FOREST. It goes through the shaded path anyway so
+		# that this preview and the game cannot drift on the one thing it is
+		# looked at for: the trees' colour.
+		mesh = PropFog.shaded(mesh)
 		var multimesh := MultiMesh.new()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		multimesh.mesh = mesh

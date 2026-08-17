@@ -662,7 +662,7 @@ func _build_terrain() -> void:
 	# Bound before the first frame is drawn rather than at the first
 	# throttled update: the shader's default is fully lit, so a material
 	# with no fog yet would flash the whole unexplored map for a frame.
-	_push_fog_to_terrain()
+	_push_fog_to_world()
 
 	var meshes := []
 	for cy in range(grid.y):
@@ -744,8 +744,9 @@ func _build_terrain() -> void:
 	var shaded := _terrain_material as ShaderMaterial
 	var fogged := shaded != null \
 		and shaded.get_shader_parameter(TerrainFog.SHADER_PARAM) != null
-	print("client: built %d terrain chunks — textured=%s fogged=%s" % [
-		_terrain_root.get_child_count(), TerrainChunk.has_atlas(), fogged])
+	print("client: built %d terrain chunks — textured=%s fogged=%s props_fogged=%s" % [
+		_terrain_root.get_child_count(), TerrainChunk.has_atlas(), fogged,
+		PropFog.is_bound()])
 
 
 ## The D-006 payoff, once per frame: for every squad the client knows
@@ -3083,7 +3084,13 @@ func _place_node(cell: int, kind: int) -> void:
 		var basis := Basis(Vector3.UP, float(tree["yaw"])) \
 			.scaled(Vector3.ONE * float(tree["scale"]))
 		entries.append({"model": model,
-			"xform": Transform3D(basis, at + Vector3(0.0, lift, 0.0))})
+			"xform": Transform3D(basis, at + Vector3(0.0, lift, 0.0)),
+			# Where this tree reads the fog field, from its CELL and not from
+			# `at` (#81). The chunk root swings to a different torus copy every
+			# frame, so a world-derived lookup would fog forests correctly
+			# mid-map and wrongly at a seam — D-035's rule, which the terrain
+			# UVs already obey.
+			"fog": PropFog.instance_data(space, coord)})
 		models.append(model)
 
 	var key := Vector2i(coord.x / NODE_CHUNK, coord.y / NODE_CHUNK)
@@ -3146,10 +3153,15 @@ func _node_trees_for(cell: int, coord: Vector2i, kind: int) -> Array[Dictionary]
 ## art build is missing. The stand-in keeps the old marker's readability
 ## rules: node colour from the same table as the minimap, slight emission
 ## so it reads against similar-hued terrain.
+##
+## Everything here goes out through `PropFog.shaded` (#81): a forest is drawn
+## as dim as the ground it grows in, which the imported glTF materials have no
+## way to express. `UnitMesh`'s own cache is left holding the authored mesh —
+## the previews and `tests/test_ground_cover.gd` read exactly those materials.
 func _node_mesh_for(model: StringName, kind: int) -> Mesh:
 	var authored: Mesh = UnitMesh.mesh_for(model)
 	if authored != null:
-		return authored
+		return PropFog.shaded(authored)
 	var cached: Mesh = _node_fallback_meshes.get(kind, null)
 	if cached != null:
 		return cached
@@ -3163,8 +3175,9 @@ func _node_mesh_for(model: StringName, kind: int) -> Mesh:
 	material.emission_enabled = true
 	material.emission = material.albedo_color * 0.35
 	primitive.material = material
-	_node_fallback_meshes[kind] = primitive
-	return primitive
+	var shaded := PropFog.shaded(primitive)
+	_node_fallback_meshes[kind] = shaded
+	return shaded
 
 
 ## Repack one chunk's trees into its MultiMeshes: one per model actually
@@ -3178,7 +3191,7 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 			var model: StringName = entry["model"]
 			if not groups.has(model):
 				groups[model] = []
-			groups[model].append(entry["xform"])
+			groups[model].append(entry)
 
 	var multis: Dictionary = chunk["multis"]
 	for model in multis.keys():
@@ -3192,6 +3205,11 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 			instance = MultiMeshInstance3D.new()
 			var multimesh := MultiMesh.new()
 			multimesh.transform_format = MultiMesh.TRANSFORM_3D
+			# Which cell's fog each tree reads (#81), one vec4 per instance.
+			# Set here, before `instance_count` is ever assigned: the format
+			# flags decide how the buffer is laid out, and Godot reallocates
+			# rather than reinterprets when they change afterwards.
+			multimesh.use_custom_data = true
 			var kind := Economy.ResourceKind.WOOD
 			for cell in chunk["cells"]:
 				if _node_placed.has(cell) \
@@ -3202,10 +3220,11 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 			instance.multimesh = multimesh
 			(chunk["root"] as Node3D).add_child(instance)
 			multis[model] = instance
-		var transforms: Array = groups[model]
-		instance.multimesh.instance_count = transforms.size()
-		for i in range(transforms.size()):
-			instance.multimesh.set_instance_transform(i, transforms[i])
+		var entries: Array = groups[model]
+		instance.multimesh.instance_count = entries.size()
+		for i in range(entries.size()):
+			instance.multimesh.set_instance_transform(i, entries[i]["xform"])
+			instance.multimesh.set_instance_custom_data(i, entries[i]["fog"])
 	chunk["dirty"] = false
 
 
@@ -5028,19 +5047,31 @@ func _update_fog() -> void:
 	# with allied BUILDINGS excluded while allied squads were included,
 	# and no test could have been written against it in this file.
 	_fog.rebuild(_state, _now)
-	_push_fog_to_terrain()
+	_push_fog_to_world()
 
 
-## Hand the field to the terrain material. The half of this feature that
-## was missing entirely: `_explored` was correct, documented and read by
+## Hand the field to everything that draws with it. The half of this feature
+## that was missing entirely: `_explored` was correct, documented and read by
 ## nothing but the minimap for six milestones (#58).
-func _push_fog_to_terrain() -> void:
-	if _fog == null or _terrain_material == null:
+##
+## TWO surfaces, and the second one was missing for a day (#81): the ground,
+## and everything standing on it. The texture object is created once and
+## `update()`d in place afterwards, so both bindings happen exactly once and
+## a refresh costs the upload alone.
+func _push_fog_to_world() -> void:
+	if _fog == null:
 		return
 	var image := _fog.bake()
 	if _fog_texture == null:
 		_fog_texture = ImageTexture.create_from_image(image)
-		TerrainChunk.set_fog(_terrain_material, _fog_texture)
+		if _terrain_material != null:
+			TerrainChunk.set_fog(_terrain_material, _fog_texture)
+		# Forests, stone piles and the primitive stand-ins (D-087). Bound
+		# through PropFog rather than per chunk, because a chunk is built
+		# minutes later — when the server first reveals the node — and a
+		# binding that only walked what already existed would leave every
+		# forest scouted after the first frame fully lit.
+		PropFog.set_fog(_fog_texture)
 	else:
 		_fog_texture.update(image)
 
@@ -7365,6 +7396,11 @@ func _teardown_match() -> void:
 	_fog_texture = null
 	_terrain_material = null
 	_fog_updated_at = -1.0
+	# The prop materials outlive the match — they are cached per model, and the
+	# next match's forests wear the same ones — so the field they point at has
+	# to be released explicitly. Left bound, the next match would open drawing
+	# its trees through the last match's map of who had been where.
+	PropFog.set_fog(null)
 	_camera_homed = false
 	_scout_home.clear()
 	_control_groups.clear()
