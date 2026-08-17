@@ -139,6 +139,39 @@ static func building_marks(buildings: Dictionary) -> Array:
 	return marks
 
 
+## The marks the minimap paints for a client's live squads, in paint order
+## (by squad id, for the same stability reason `building_marks` sorts).
+##
+## Reports the OWNER and nothing else about allegiance, exactly as
+## `building_marks` does. The minimap painted squads from a hardcoded pair
+## — cyan if the viewer owned it, red otherwise — since the wrap-aware
+## minimap landed in M3, which predates per-player colours (D-052) by a
+## milestone: so a player's own army was cyan whatever colour the rest of
+## the game drew it, and an ALLY was painted in the enemy tone. D-050 gives
+## teammates shared vision, so an ally's army is precisely the thing a
+## player sees on the minimap and nowhere else, and it read as a threat.
+## Owner in, colour out through `ClientState.colour_of` — one colour
+## source for buildings, squads and the 3D world.
+##
+## Reads `ClientState.composition` rather than `curves`, which is what
+## excludes ghosts here BY CONSTRUCTION rather than by remembering a check:
+## conceal moves an entry out of `composition` into `_ghosts` (D-025), and
+## a ghost is data the client keeps, not a picture on screen (D-099). It is
+## also what makes the owner knowable at all — `curves` carry position and
+## say nothing about whose army it is.
+static func squad_marks(composition: Dictionary) -> Array:
+	var marks := []
+	var ids := composition.keys()
+	ids.sort()
+	for id in ids:
+		var entry: Dictionary = composition[id]
+		marks.append({
+			"squad": int(id),
+			"owner": int(entry.get("owner", 0)),
+		})
+	return marks
+
+
 ## The image pixels a mark of `size` cells covers, wrapped onto the torus:
 ## a blob on the right edge belongs on the left one too (D-008's tax,
 ## cheap for once). Odd sizes centre on the cell; even sizes start at it,

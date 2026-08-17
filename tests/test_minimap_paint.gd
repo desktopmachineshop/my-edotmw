@@ -163,6 +163,112 @@ func test_the_client_paints_buildings_on_the_minimap() -> void:
 		"and paints them from replicated building state")
 
 
+# --- squads, in their owner's colour (D-20260817-minimap-squad-colours) ------
+#
+# The same defect as the buildings above, one pass further down the same
+# function and four milestones older: `_update_minimap` painted a squad cyan
+# if the viewer owned it and red if not, a scheme written in M3 before
+# per-player colours (D-052) existed. Nothing failed — a minimap with two
+# colours on it looks like a working minimap — and the cost is that an ALLY,
+# whose army D-050's shared vision puts on your minimap and nowhere else, was
+# drawn in the enemy tone.
+#
+# Observed to fail before the fix: with `_update_minimap` still holding the
+# two hardcoded colours, the two source scans below go red.
+
+
+func _squad(owner: int) -> Dictionary:
+	return {"def_id": "legion_militia", "alive": 30, "shape": "line",
+		"spacing": 1.0, "owner": owner, "tier": 0}
+
+
+func test_a_squad_is_painted_in_its_owners_colour() -> void:
+	# THE case. The mark carries an OWNER, so the client resolves it through
+	# `colour_of` exactly as it already does for a building — rather than
+	# through a viewer-relative "mine or not" question that per-player
+	# colours made meaningless.
+	var marks := MinimapPaint.squad_marks({
+		7: _squad(3),
+	})
+	assert_eq(marks.size(), 1, "the squad is painted")
+	assert_eq(int(marks[0]["squad"]), 7)
+	assert_eq(int(marks[0]["owner"]), 3, "in its owner's colour, not the viewer's")
+
+
+func test_three_owners_produce_three_distinct_marks() -> void:
+	# The reported symptom in one assertion: an ally and an enemy must not
+	# come out the same. Under the old scheme every squad the viewer did not
+	# own — player 2's and player 3's alike — was one red dot.
+	var owners := []
+	for mark in MinimapPaint.squad_marks({1: _squad(1), 2: _squad(2), 3: _squad(3)}):
+		owners.append(int(mark["owner"]))
+	assert_eq(owners, [1, 2, 3],
+		"each squad reports its own owner, so an ally is not drawn as an enemy")
+
+
+func test_squad_marks_come_out_in_a_stable_order() -> void:
+	# Same reason as the building pass: two dots overlapping must not swap
+	# which is on top between repaints, or the minimap flickers at 4 Hz.
+	var marks := MinimapPaint.squad_marks({9: _squad(1), 4: _squad(2)})
+	assert_eq(int(marks[0]["squad"]), 4, "lowest squad id paints first")
+	assert_eq(int(marks[1]["squad"]), 9)
+
+
+func test_a_ghost_is_not_painted() -> void:
+	# D-099: a concealed squad is drawn nowhere, minimap included. That is
+	# structural here rather than a check — conceal moves the entry out of
+	# `composition` into `_ghosts` (D-025), so a module reading composition
+	# cannot paint one however hard it tries. Pinned so a future change that
+	# routed this through `curves` instead (which DO survive concealment)
+	# would have to argue with a test.
+	var live := {5: _squad(1)}
+	var concealed := {}
+	assert_eq(MinimapPaint.squad_marks(concealed).size(), 0,
+		"nothing is painted for a client whose squads are all ghosts")
+	assert_eq(MinimapPaint.squad_marks(live).size(), 1)
+
+
+func test_the_client_paints_squads_in_their_owners_colour() -> void:
+	# The check that catches the reported bug, and the only one here that
+	# could: everything above passes with `_update_minimap` still painting
+	# cyan-or-red, which is exactly the state the game shipped in for four
+	# milestones. Source-level, like the building scan above, because the
+	# client cannot be run headless (D-014).
+	var handle := FileAccess.open(CLIENT_SCRIPT, FileAccess.READ)
+	assert_not_null(handle, "client.gd is readable")
+	var source := handle.get_as_text()
+	handle.close()
+
+	var start := source.find("func _update_minimap")
+	assert_gt(start, -1, "_update_minimap still exists")
+	var end := source.find("\nfunc ", start + 1)
+	var body := source.substr(start, end - start if end > start else -1)
+
+	assert_true(body.contains("MinimapPaint.squad_marks"),
+		"_update_minimap asks MinimapPaint which squads to paint")
+	assert_true(body.contains("colour_of"),
+		"and resolves each one's colour through the one per-player source (D-052)")
+	assert_false(body.contains("_state.owns("),
+		"ownership is not what decides a dot's colour — every ally would be an enemy")
+
+
+func test_no_view_invents_a_colour_beside_the_per_player_one() -> void:
+	# The wider rule the bug broke, and the one worth pinning: D-052 has ONE
+	# definition of what colour a player is. A second scheme living in a
+	# drawing function is how the minimap and the world came to disagree in
+	# the first place, and how the scoreboard (D-102) that finally tells a
+	# player which colour is whose came to be contradicted by the map beside
+	# it. Same idiom as `world_look.gd`'s stray-light scan.
+	var handle := FileAccess.open(CLIENT_SCRIPT, FileAccess.READ)
+	assert_not_null(handle, "client.gd is readable")
+	var source := handle.get_as_text()
+	handle.close()
+
+	for literal in ["Color(0.35, 0.95, 1.0)", "Color(1.0, 0.35, 0.28)"]:
+		assert_false(source.contains(literal),
+			"the pre-D-052 minimap squad palette %s is gone, not merely unused" % literal)
+
+
 # --- three fog tones (D-20260817) --------------------------------------------
 #
 # The minimap drew TWO states while `TerrainFog` (D-106) computed three, so

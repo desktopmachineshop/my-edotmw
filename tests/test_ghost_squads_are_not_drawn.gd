@@ -129,9 +129,46 @@ func test_the_three_d_pass_hides_a_concealed_squad() -> void:
 		"_refresh_squads must set a ghost's node invisible (D-099)")
 
 
+## The minimap skips a ghost STRUCTURALLY now, which is a stronger property
+## than the `is_ghost(` check this test used to demand and is why the check
+## changed rather than being dropped. Conceal moves a squad's entry out of
+## `composition` into `_ghosts` (D-025), so a pass driven by `composition`
+## has no mark to paint for one. The old pass walked `_state.curves`, which
+## a ghost's curve SURVIVES in — hence the explicit skip it needed.
+##
+## Asserting the route rather than the skip keeps the rule real: a future
+## edit that went back to `curves` would silently draw ghosts again, and
+## that is exactly what this fails on.
 func test_the_minimap_skips_a_concealed_squad() -> void:
 	var code := _function_code(_read(CLIENT), "_update_minimap")
 	assert_ne(code, "", "client.gd has no _update_minimap — this test is stale")
-	assert_true(code.contains("is_ghost("),
-		"the minimap must ask whether a squad is a ghost before plotting it "
-		+ "(D-099) — the 3D view and the minimap agree or fog leaks on one")
+	assert_true(code.contains("MinimapPaint.squad_marks(_state.composition)"),
+		"the minimap must paint squads from composition, which conceal removes "
+		+ "an entry from (D-025) — so a ghost has no dot by construction (D-099)")
+	assert_false(code.contains("for squad in _state.curves"),
+		"walking curves puts a ghost back on the minimap: a concealed squad's "
+		+ "curve survives concealment, its composition entry does not")
+
+
+func test_a_concealed_squad_has_no_minimap_mark() -> void:
+	# The behavioural half of the above, through the real wire rather than a
+	# fixture: a client told about two squads and then told one of them is
+	# concealed must be left with a mark for exactly the survivor. The source
+	# scan catches the caller drifting; this catches the rule itself.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, 32, 16, [7]))
+	var def_id := UnitRoster.first().id
+	state.handle_packet(NetProtocol.encode_squad_info([
+		{"id": 7, "def_id": String(def_id), "alive": 30, "shape": "line",
+			"owner": 1, "tier": 0},
+		{"id": 8, "def_id": String(def_id), "alive": 24, "shape": "line",
+			"owner": 2, "tier": 0},
+	]))
+	assert_eq(MinimapPaint.squad_marks(state.composition).size(), 2,
+		"both squads are painted while both are in sight")
+
+	state.handle_packet(NetProtocol.encode_squad_conceal(10, [8]))
+	var marks := MinimapPaint.squad_marks(state.composition)
+	assert_eq(marks.size(), 1, "the concealed squad leaves the minimap (D-099)")
+	assert_eq(int(marks[0]["squad"]), 7, "and the one still in sight stays")
+	assert_true(state.is_ghost(8), "the ghost itself is still held (D-025), just not drawn")

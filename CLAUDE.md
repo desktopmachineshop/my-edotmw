@@ -250,6 +250,15 @@ minimap_paint.gd         What the minimap paints over the terrain, and how
                         1px-per-cell image. Fog only ever subtracts, so
                         VISIBLE is biome_color untouched and the minimap
                         cannot invent a colour the 3D ground lacks.
+                        `squad_marks` is the same shape for ARMIES
+                        (D-20260817-minimap-squad-colours): owner in,
+                        colour out through ClientState.colour_of, because
+                        there is ONE definition of a player's colour
+                        (D-052) and a drawing function may not keep its
+                        own. It reads `composition`, never `curves` —
+                        that is where the owner lives, and it is what
+                        makes "a ghost is drawn nowhere" (D-099)
+                        structural rather than a remembered check.
 ground_cover.gd          Which decorative props dress a cell (D-100).
                         Same shape as resource_visuals.gd and the exact
                         OPPOSITE of what it dresses: cover is client-
