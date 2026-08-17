@@ -613,6 +613,158 @@ func test_desync_check_catches_a_wrong_formation_shape() -> void:
 	assert_eq(state.desync_count, 1, "A wrong formation shape must be detected")
 
 
+# --- surfacing a desync where a human can see it ----------------------
+#
+# The counters above were counted correctly and then read by nobody
+# outside `client.gd`'s VERDICT line — and that line lives in the
+# screenshot path, which ends in `get_tree().quit()`. An interactive
+# session never reaches it, so the GUI client printed exactly the same
+# thing (nothing) through zero desyncs and through a thousand, while
+# playtest issues instructed testers to judge "zero desyncs across the
+# session" by watching that console.
+#
+# That is D-022's audit finding again: a check whose only outcome is
+# silence cannot fail. These tests exist so the surfacing path is one
+# that can be exercised headless, rather than one only a human at a
+# keyboard could ever notice missing.
+
+
+## The wrong-squad-size assumption the regression test above reproduces,
+## which is simply the cheapest genuine desync to manufacture.
+func _client_that_will_desync(sim: SquadSim) -> ClientState:
+	var def := _roster_def()
+	var id := sim.add_squad(def, 1, Vector2i(3, 3))
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, [id]))
+	state.composition[id] = {
+		"def_id": String(def.id), "alive": 40, "shape": "line", "spacing": 1.0,
+	}
+	return state
+
+
+func _send_state_hash(sim: SquadSim, state: ClientState) -> void:
+	state.handle_packet(NetProtocol.encode_state_hash(
+		sim.tick_count, sim.composition_hash(sim.visible_to(1))))
+
+
+func test_a_desync_queues_a_report_for_a_client_to_print() -> void:
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var state := _client_that_will_desync(sim)
+	_send_state_hash(sim, state)
+
+	var reports := state.take_desync_reports()
+	assert_eq(reports.size(), 1,
+		"A detected desync must leave something for the client to say out loud")
+	assert_string_contains(String(reports[0]), "DESYNC")
+	assert_string_contains(String(reports[0]), "composition hash")
+
+	assert_eq(state.take_desync_reports(), [],
+		"Draining hands the reports over — a drained report must not print again next frame")
+
+
+func test_a_building_desync_queues_a_report_too() -> void:
+	# Counted since D-030 and, until now, read by nothing anywhere: the
+	# bots gate on it, the GUI client did not even print it.
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_building_state_hash(12, 987654321))
+
+	assert_eq(state.building_desync_count, 1)
+	var reports := state.take_desync_reports()
+	assert_eq(reports.size(), 1, "A building desync must surface like a squad one")
+	assert_string_contains(String(reports[0]), "building hash")
+
+
+func test_a_healthy_client_queues_nothing_to_report() -> void:
+	# The other half of the property, and the more important one: a
+	# diagnostic that cries wolf on a working system gets muted, which is
+	# how the original "0 desyncs" log scan was lost.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	for i in range(5):
+		sim.add_squad(_roster_def(), 1, Vector2i(i * 3, 4))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	_pump(sim, state, 1, 30)
+
+	assert_gt(state.state_hash_checks, 0, "The checks must actually have run")
+	assert_eq(state.take_desync_reports(), [],
+		"A correctly-informed client must print nothing at all")
+
+
+func test_desync_reports_are_capped_but_the_counter_is_not() -> void:
+	# A client desyncing on every state-hash message would otherwise print
+	# ~10 lines a second for the rest of the match, and would grow an
+	# unbounded array in a headless consumer that never drains.
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var state := _client_that_will_desync(sim)
+	for _i in range(20):
+		_send_state_hash(sim, state)
+
+	var reports := state.take_desync_reports()
+	assert_eq(reports.size(), ClientState.DESYNC_REPORT_LIMIT + 1,
+		"The cap is the limit plus the one line that says the cap was hit")
+	assert_string_contains(String(reports[-1]), "capped",
+		"A console that goes quiet must say why, or the silence reads as the desyncs stopping")
+	assert_eq(state.desync_count, 20,
+		"The counter is the source of truth and must keep counting past the report cap")
+
+
+func test_desync_summary_says_what_was_checked_not_merely_that_nobody_complained() -> void:
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	for i in range(4):
+		sim.add_squad(_roster_def(), 1, Vector2i(i * 3, 4))
+
+	var state := ClientState.new()
+	_connect(sim, state, 1)
+	_pump(sim, state, 1, 12)
+
+	var summary := state.desync_summary()
+	assert_string_contains(summary, "0 desyncs",
+		"The readout must state the result, not leave it to be inferred from silence")
+	assert_string_contains(summary, str(state.state_hash_checks),
+		"Zero desyncs in zero checks is not a pass — the summary must carry the check count")
+
+	var broken := _client_that_will_desync(SquadSim.new(_space(), CurveReplicator.new()))
+	broken.handle_packet(NetProtocol.encode_state_hash(3, 4242))
+	assert_string_contains(broken.desync_summary(), "1 desync ")
+
+
+## The structural half, in the shape of test_world_look_is_the_only_light:
+## the rule is only real if breaking it fails.
+##
+## `client.gd` cannot be run headless (D-014), so this reads its source
+## instead and asks the one question the defect turned on — is any read of
+## the desync counters reachable from an ordinary frame, or do they all
+## live in `_finish_capture`, which quits the process?
+func test_the_client_reads_the_desync_counters_outside_the_capture_path() -> void:
+	var handle := FileAccess.open("res://client.gd", FileAccess.READ)
+	assert_not_null(handle, "client.gd must be readable for this scan to mean anything")
+	var text := handle.get_as_text()
+	handle.close()
+
+	var reader := RegEx.new()
+	reader.compile("_state\\.(desync_count|building_desync_count|desync_summary|take_desync_reports)")
+
+	var current := ""
+	var readers: Array = []
+	for raw_line in text.split("\n"):
+		var line := String(raw_line)
+		if line.begins_with("func "):
+			current = line.substr(5).split("(")[0]
+		# Comments talk about desyncs all over this file; only code counts.
+		if line.strip_edges().begins_with("#"):
+			continue
+		if reader.search(line) != null and not readers.has(current):
+			readers.append(current)
+
+	assert_true(readers.has("_finish_capture"),
+		"Scan is broken, not the code — the capture verdict has always read these")
+	readers.erase("_finish_capture")
+	assert_ne(readers, [],
+		"Every read of the desync counters is inside _finish_capture, which ends in "
+		+ "get_tree().quit() — so an interactive session can never see one")
+
+
 func test_sim_and_client_agree_on_the_hash_for_the_same_state() -> void:
 	# Both sides must compute the hash identically from their own storage.
 	var sim := SquadSim.new(_space(), CurveReplicator.new())
