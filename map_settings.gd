@@ -27,15 +27,27 @@ var width: int = 84
 var height: int = 96
 
 ## How many starting positions the map offers (D-039).
+##
+## In a lobby this is DERIVED, not chosen: `MatchState._seats_changed()`
+## sets it to the seat count on every join and leave
+## (D-20260817-starting-positions-follow-the-seats). This default is what
+## the seedless headless flows start from before anybody is seated, and
+## what a `.tres` MapConfig contributes; it is not a preference the lobby
+## can express, and there is no setter for it on the wire.
 var player_slots: int = 8
 
 ## The seed used when nobody has rolled or pinned one.
 const DEFAULT_SEED := 1337
 
-## The largest seed a roll may produce. Also the lobby spinner's ceiling
-## (`client.gd`'s MAP_OPTIONS reads it from here), so a rolled seed is
-## always a number the admin can read off the screen and type back in —
-## a roll the UI could not represent would be unpinnable.
+## The largest seed a roll may produce — six digits, so a seed stays a
+## number a person can read out of a log or type after `--seed`.
+##
+## This used to double as the lobby spinner's ceiling, on the reasoning
+## that a roll the UI could not represent would be unpinnable. There is no
+## spinner any more (D-20260817-starting-positions-follow-the-seats): the
+## number is a dev handle rather than a lobby control, and what the lobby
+## offers instead is Reroll. The ceiling stays for the readability half of
+## that argument, which did not depend on the UI.
 const SEED_MAX := 999_999
 
 ## Terrain noise seed. Rolled per match unless someone pins it, so two

@@ -196,6 +196,7 @@ func _seat_human(player: int) -> void:
 		"kind": "human", "player": player,
 		"civ": CivRoster.RANDOM, "team": 0, "name": "Player %d" % player,
 	})
+	_seats_changed()
 	if admin_player <= 0:
 		admin_player = player
 
@@ -216,6 +217,7 @@ func add_ai(by_player: int, civ: StringName, player_id: int) -> int:
 		"kind": "ai", "player": player_id,
 		"civ": civ, "team": 0, "name": "AI %d" % player_id,
 	})
+	_seats_changed()
 	return seats.size() - 1
 
 
@@ -230,6 +232,7 @@ func remove_ai(by_player: int, seat_index: int) -> bool:
 	if seats[seat_index]["kind"] != "ai":
 		return false
 	seats.remove_at(seat_index)
+	_seats_changed()
 	return true
 
 
@@ -410,6 +413,7 @@ func remove_human_seat(player: int) -> void:
 	for i in range(seats.size()):
 		if seats[i]["kind"] == "human" and int(seats[i]["player"]) == player:
 			seats.remove_at(i)
+			_seats_changed()
 			break
 	_reassign_admin_if_needed()
 
@@ -582,6 +586,37 @@ var map_settings := MapSettings.new()
 ## nothing, which is the failure mode D-065 records.
 const REROLL_OPTION := "reroll_seed"
 
+## What `player_slots` is allowed to be, whoever is deriving it. Two is
+## `MapSettings.validate`'s own floor; the ceiling is D-018's 20-player
+## target with room above it.
+const MIN_PLAYER_SLOTS := 2
+const MAX_PLAYER_SLOTS := 24
+
+
+## Starting positions follow the SEATS (#103): a map is generated for the
+## players who are actually in the lobby, not for a number somebody set.
+##
+## Called from every site that adds or removes a seat, which is the whole
+## of the derivation — there is no setter for `player_slots` any more, so
+## a stale value cannot survive a seat change and there is no UI control
+## whose answer disagrees with the seat list.
+##
+## Clamped rather than trusted: `MapSettings.validate` refuses fewer than
+## two starts, and a one-seat lobby is an ordinary state on the way to a
+## match. A change that leaves the map unable to seat everyone is REVERTED
+## instead of applied — the same rollback `set_map_option` does, and the
+## same tolerance the server already has for a short-seated map (it warns
+## and plays on, sharing starts). Refusing to seat a player because the
+## map is small would be a worse answer than a warning.
+func _seats_changed() -> void:
+	var wanted := clampi(seats.size(), MIN_PLAYER_SLOTS, MAX_PLAYER_SLOTS)
+	if map_settings.player_slots == wanted:
+		return
+	var before := map_settings.player_slots
+	map_settings.player_slots = wanted
+	if not map_settings.is_valid():
+		map_settings.player_slots = before
+
 
 
 ## Adjust one setting. Returns true if anything actually changed.
@@ -606,8 +641,10 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 			var index := clampi(int(value), 0, sizes.size() - 1)
 			map_settings.width = int(sizes[index]["width"])
 			map_settings.height = int(sizes[index]["height"])
-		"player_slots":
-			map_settings.player_slots = clampi(int(value), 2, 24)
+		# No "player_slots" case: starting positions are DERIVED from the
+		# seat list (`_seats_changed`), not chosen. A setter here would be
+		# a knob whose value the next join silently overwrote, which is
+		# the declared-and-unread family with the reads and writes swapped.
 		"seed":
 			map_settings.pin_seed(int(value))
 		REROLL_OPTION:
