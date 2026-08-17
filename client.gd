@@ -375,6 +375,10 @@ func _process(delta: float) -> void:
 	# invalidates every id below this line, and refreshing squads against
 	# a torn-down match would draw one frame of the dead one.
 	_sync_match_lifecycle()
+	# Before anything reads the selection: the packets serviced above are
+	# what kills a squad, and everything below counts, draws or orders
+	# whatever `_selected` holds (#88).
+	_prune_selection()
 	_pan_camera(delta)
 
 	if _state.welcomed and _state.has_map() and not _terrain_built:
@@ -5124,6 +5128,50 @@ func _select_within(rect: Rect2) -> void:
 			_selected.append(squad)
 
 
+## Drop squads this client can no longer command out of the live selection
+## and out of every stored control group (#88).
+##
+## Once per frame, immediately after the packets that could have killed
+## one, because EVERY reader below is wrong while a corpse is in the array:
+## the panel counts `_selected.size()` for its title and sums `alive_of()`
+## for its detail, so a wiped squad reads as "2 squads / 0 soldiers" and a
+## chip sits at 0/36. The groups are pruned on the same pass rather than
+## only on recall — a group is a selection a player stored, and it has no
+## business ageing differently from the one on screen.
+##
+## The ranking is SelectionRoster's, which is pure and tested; this is only
+## the wiring, for the reason `_select_nearest` hands its comparison to
+## `SelectionPick`.
+func _prune_selection() -> void:
+	if _selected.size() > 0:
+		var living := SelectionRoster.living(_selected, _state)
+		if living.size() != _selected.size():
+			_selected = living
+	if _control_groups.size() > 0:
+		_control_groups = SelectionRoster.living_groups(_control_groups, _state)
+
+
+## Ctrl+N: store the current selection as control group `group`.
+##
+## Stored already-pruned rather than trusting `_prune_selection` to have
+## run this frame — input is delivered before `_process`, so a squad that
+## died in the packets serviced last frame is still in `_selected` here.
+func _store_control_group(group: int) -> void:
+	_control_groups[group] = SelectionRoster.living(_selected, _state)
+	print("client: control group %d = %d squad(s)" % [
+		group, (_control_groups[group] as Array).size()])
+
+
+## N: recall control group `group`.
+##
+## Filtered again on the way out for the same reason the store is. This is
+## where the bug was VISIBLE — the old line was a verbatim
+## `_control_groups.get(group, []).duplicate()`, which handed the panel
+## whatever the group held when it was stored, dead squads included.
+func _recall_control_group(group: int) -> void:
+	_selected = SelectionRoster.living(_control_groups.get(group, []) as Array, _state)
+
+
 func _handle_key(event: InputEventKey) -> void:
 	if event.keycode == KEY_X:
 		_stop_selected()
@@ -5188,10 +5236,9 @@ func _handle_key(event: InputEventKey) -> void:
 	if event.keycode >= KEY_1 and event.keycode <= KEY_9:
 		var group: int = event.keycode - KEY_0
 		if event.ctrl_pressed:
-			_control_groups[group] = _selected.duplicate()
-			print("client: control group %d = %d squad(s)" % [group, _selected.size()])
+			_store_control_group(group)
 		else:
-			_selected = (_control_groups.get(group, []) as Array).duplicate()
+			_recall_control_group(group)
 
 
 ## Screen point to torus cell. Returns (-1, -1) when the ray never meets

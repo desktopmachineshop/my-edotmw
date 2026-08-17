@@ -73,6 +73,21 @@ quote it with the count, as ever). The pieces:
   only by a human seat — which also repairs a session already running with
   an AI in the chair.
 
+- **And selection kept its dead** (D-20260817-selection-drops-the-dead,
+  #88, from playtest P03 step 6). A wiped squad stayed in `_selected` and
+  in any control group it belonged to, so recalling the group read
+  "2 squads / 0 soldiers" with a chip at 0/36. `ClientState` has pruned a
+  wiped squad out of `squads` since M1 under a comment naming this exact
+  consequence — *"the GUI offers a dead squad for selection"* — and
+  `client.gd` never read it. **The declared-and-unread family with the
+  READER missing rather than the writer**, and invisible to every counter
+  because nothing was wrong: the order paths already refuse a squad the
+  client does not own, and the server refuses again. The selection and
+  every stored group are filtered against `ClientState.owns` once per
+  frame now, through a pure `SelectionRoster` — one writer rather than a
+  filter at each of eight readers, since the defect *was* a reader nobody
+  wrote.
+
 **"`client.gd` is unreachable from GUT" is only true of what it DRAWS**
 (D-075's 2026-08-16 amendment). Its node LIFETIME needs neither a GPU nor
 a window, and reading the claim as covering all of it is how the second
