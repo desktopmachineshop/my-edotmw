@@ -102,8 +102,15 @@ func test_client_titles_itself_with_its_instance() -> void:
 
 
 func test_agent_quick_launch_defaults_to_sandbox() -> void:
+	# The rule is real; where it LIVES moved. This used to assert the
+	# justfile contained `claude-*) sandbox=1` — a whitelist of agent
+	# branch prefixes, which silently stopped matching when the harness
+	# started branching `ao/<project>/<session>` and left every agent
+	# worktree without its dev tools (#89). The resolution is
+	# `instance-id.sh agent` now, so it is executed rather than scanned:
+	# see tests/test_recipe_args.gd.
 	var justfile := _read("res://justfile")
-	assert_true(justfile.contains("claude-*) sandbox=1"),
-		"quick-test must default agent worktrees (claude-*) into sandbox mode")
+	assert_true(justfile.contains("bash instance-id.sh agent"),
+		"quick-test must resolve SANDBOX=auto through instance-id.sh, not its own pattern match")
 	assert_true(justfile.contains("--sandbox=$sandbox"),
 		"quick-test must pass the resolved sandbox flag to the server")

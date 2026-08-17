@@ -504,9 +504,20 @@ them — but which must not be undone:
   test windows apart. Launch clients only through the recipes so the
   `--instance` flag is always passed.
 - **An agent's quick launch is the dev build:** `just quick-test`
-  resolves `SANDBOX=auto` to on for `claude-*` instances (D-077's
-  sandbox mode, cheats panel included) and off for the owner's own
-  checkout. Pass `SANDBOX=0/1` to override either way.
+  resolves `SANDBOX=auto` through `instance-id.sh agent` — on for any
+  checkout that is not the owner's own default branch (D-077's sandbox
+  mode, cheats panel included), off for `main`. It prints which it
+  resolved, because both halves used to fail silently.
+- **just takes recipe arguments POSITIONALLY** — `just quick-test 1337 1`,
+  never `just quick-test SANDBOX=1`. A `NAME=value` written after a
+  recipe name binds the whole string to that recipe's FIRST parameter,
+  and `int()` reads it as 0: `SANDBOX=1` launched with `--seed=SANDBOX=1`
+  and sandbox OFF, and `just run-server AI=3` — documented here for a
+  milestone — seated ZERO opponents. Both were silent until
+  D-20260817-recipe-args-are-positional; every numeric parameter goes
+  through `recipe-arg.sh` now and fails loudly. **Anything measured
+  through one of those invocations was measured on a different build or
+  a different world than it claims.**
 
 ## Testing — use the justfile, and use it before claiming something works
 
