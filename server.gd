@@ -203,7 +203,19 @@ var _reported_drop := false
 
 
 func _ready() -> void:
-	var args := _parse_args(OS.get_cmdline_user_args())
+	var args := CmdArgs.parse(OS.get_cmdline_user_args())
+	# Refuse an argument that is not the number it will be read as, before
+	# any of it chooses a world (D-20260817-recipe-args-are-positional).
+	# `int()` strips non-digits rather than failing, so `--seed=SANDBOX=1`
+	# is seed 1 — a plausible, reproducible, entirely wrong map, with no
+	# value in the log that looks wrong enough to notice (#89, #98).
+	var bad_args := CmdArgs.invalid_integers(args,
+		["port", "seed", "ai", "players", "lobby", "sandbox", "random-civs"])
+	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds", "height_scale"]))
+	if not bad_args.is_empty():
+		push_error(CmdArgs.complaint("server", bad_args))
+		get_tree().quit(1)
+		return
 	_port = int(args.get("port", DEFAULT_PORT))
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	var map_path := String(args.get("map", DEFAULT_MAP))
@@ -2387,16 +2399,6 @@ func _replicate() -> void:
 
 	# Delivered to every client above, so they are no longer pending.
 	_pending_events.clear()
-
-
-func _parse_args(raw_args: PackedStringArray) -> Dictionary:
-	var parsed := {}
-	for arg in raw_args:
-		if arg.begins_with("--"):
-			var kv := arg.substr(2).split("=", true, 1)
-			if kv.size() == 2:
-				parsed[kv[0]] = kv[1]
-	return parsed
 
 
 # --- lobby (D-048) ----------------------------------------------------

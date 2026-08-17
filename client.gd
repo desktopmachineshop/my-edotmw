@@ -259,7 +259,18 @@ var _trained_at := 0.0
 
 
 func _ready() -> void:
-	var args := _parse_args(OS.get_cmdline_user_args())
+	var args := CmdArgs.parse(OS.get_cmdline_user_args())
+	# Same refusal the server makes (D-20260817-recipe-args-are-positional):
+	# `int()` strips non-digits, so a mistyped --port or --lobby-ai reads
+	# as a plausible number and the capture recipes photograph the wrong
+	# thing (#89, #98).
+	var bad_args := CmdArgs.invalid_integers(args,
+		["port", "lobby-ai", "lobby-preset-steps"])
+	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
+	if not bad_args.is_empty():
+		push_error(CmdArgs.complaint("client", bad_args))
+		get_tree().quit(1)
+		return
 	# Inside the compose network the server is a hostname, not localhost,
 	# so the address is overridable by env as well as by flag — same
 	# convention as bot_client.gd.
@@ -6262,16 +6273,6 @@ func _update_camera() -> void:
 	_camera.look_at(_camera_target, Vector3.UP)
 	if _nav_ring_frame != null:
 		_nav_ring_frame.queue_redraw()
-
-
-func _parse_args(raw_args: PackedStringArray) -> Dictionary:
-	var parsed := {}
-	for arg in raw_args:
-		if arg.begins_with("--"):
-			var kv := arg.substr(2).split("=", true, 1)
-			if kv.size() == 2:
-				parsed[kv[0]] = kv[1]
-	return parsed
 
 
 # --- lobby screen (D-048, D-049) --------------------------------------

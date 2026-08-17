@@ -18,6 +18,10 @@ extends GutTest
 ## rather than assert that some text is present in the justfile. The one
 ## scan here is the "assert the caller exists" check D-106 wrote down —
 ## a guard nothing calls is the defect it is guarding against.
+##
+## The last section guards the FAR side of the same boundary (#98): the
+## server, client and bots can be launched by hand, without a recipe, and
+## `--seed=oops` must not quietly become a plausible world.
 
 
 ## Runs a line of shell and returns {"code": int, "out": String}.
@@ -219,6 +223,51 @@ func test_the_dev_build_can_be_overridden_explicitly() -> void:
 	assert_eq(str(off["out"]).strip_edges(), "0", "EDOTMW_AGENT=0 must force the plain build")
 	var on := _bash("EDOTMW_INSTANCE=main EDOTMW_AGENT=1 bash '%s' agent" % path)
 	assert_eq(str(on["out"]).strip_edges(), "1", "EDOTMW_AGENT=1 must force the dev build")
+
+
+# --- the far side of the boundary: a hand-launched binary (#98) -------
+
+func test_parsing_keeps_the_whole_value_including_its_own_equals() -> void:
+	var args := CmdArgs.parse(PackedStringArray(
+		["--seed=SANDBOX=1", "--ai=3", "bare", "--novalue"]))
+	assert_eq(args.get("seed"), "SANDBOX=1",
+		"the value must survive intact — splitting on every = would hide the mistake")
+	assert_eq(args.get("ai"), "3")
+	assert_false(args.has("novalue"), "a flag with no value is not an argument here")
+	assert_eq(args.size(), 2, "a bare word is not an argument: %s" % args)
+
+
+func test_a_number_that_is_not_a_number_is_named() -> void:
+	var args := CmdArgs.parse(PackedStringArray(
+		["--seed=SANDBOX=1", "--ai=3", "--players=1.5", "--lobby="]))
+	# int("SANDBOX=1") is 1 and int("1.5") is 1: both are plausible, and
+	# neither is what was typed. That is the whole defect.
+	assert_eq(Array(CmdArgs.invalid_integers(args, ["seed", "ai", "players", "lobby", "absent"])),
+		["seed", "players", "lobby"],
+		"every unusable integer must be named, and only those")
+	assert_eq(Array(CmdArgs.invalid_integers(args, ["ai"])), [],
+		"a usable integer must not be flagged")
+
+
+func test_a_float_argument_accepts_a_decimal_and_rejects_prose() -> void:
+	var args := CmdArgs.parse(PackedStringArray(
+		["--run-seconds=1.5", "--duration=-1", "--height_scale=tall"]))
+	assert_eq(Array(CmdArgs.invalid_numbers(args, ["run-seconds", "duration"])), [],
+		"a decimal and a negative integer are both usable numbers")
+	assert_eq(Array(CmdArgs.invalid_numbers(args, ["height_scale"])), ["height_scale"])
+
+
+func test_every_binary_that_takes_arguments_checks_them() -> void:
+	# The "assert the caller exists" rule again: CmdArgs could be perfect
+	# and called by nothing, which is this project's most-repeated defect.
+	for path in ["res://server.gd", "res://client.gd", "res://bot_client.gd"]:
+		var source := _read(path)
+		assert_true(source.contains("CmdArgs.parse("),
+			"%s must parse its arguments through the one definition" % path)
+		assert_true(source.contains("CmdArgs.invalid_integers("),
+			"%s must reject an argument it cannot use as a number" % path)
+		assert_false(source.contains("func _parse_args("),
+			"%s must not keep its own copy of the parser" % path)
 
 
 func test_quick_test_resolves_sandbox_through_the_one_definition() -> void:
