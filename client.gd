@@ -4546,16 +4546,29 @@ func _update_minimap() -> void:
 		_plot_minimap(image, _state.space.from_index(int(mark["cell"])),
 			_state.colour_of(int(mark["owner"])), int(mark["size"]))
 
-	for squad in _state.curves:
-		# Ghosted squads are not drawn at all here either — the same
-		# decision `_refresh_squads` makes for the 3D view (D-099), and the
-		# two must agree or a squad missing from the world would still be a
-		# dot on the map. The underlying ghost data/hash mechanism (D-025)
-		# is untouched; this just stops painting a dot for it.
-		if _state.is_ghost(squad):
+	# Squads, in their owner's colour (D-052) — the same resolution the
+	# building pass above and the 3D world (`_owner_colour_of`) already make.
+	# This pass painted cyan-if-mine and red-otherwise from M3 until
+	# D-20260817-minimap-squad-colours, a scheme written a milestone before
+	# per-player colours existed: a player's own army was cyan whatever the
+	# rest of the game drew it, and an ALLY — whose army D-050's shared
+	# vision puts on the minimap and nowhere else — was painted in the enemy
+	# tone.
+	#
+	# Ghosted squads are not drawn at all, the same decision
+	# `_refresh_squads` makes for the 3D view (D-099) — and here it comes
+	# free rather than as a check, because conceal moves a squad out of
+	# `composition` (D-025). The underlying ghost data/hash mechanism is
+	# untouched; there is simply no mark for one.
+	for mark in MinimapPaint.squad_marks(_state.composition):
+		var squad := int(mark["squad"])
+		# Composition can arrive before the curve that says where the squad
+		# is. Skipping is right where a dot at `squad_cell`'s Vector2i.ZERO
+		# fallback would plant an army in the map's corner.
+		if not _state.curves.has(squad):
 			continue
-		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
-		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
+		_plot_minimap(image, _state.squad_cell(squad, _now),
+			_state.colour_of(int(mark["owner"])))
 
 	# Resource nodes, but only where this player has actually been. Fog
 	# governs what you know about the map, and that includes what is on it —

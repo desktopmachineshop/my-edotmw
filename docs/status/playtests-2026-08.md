@@ -41,6 +41,16 @@ quote it with the count, as ever). The pieces:
   army size is derived from what the server already sent (own and ally
   only, D-050), never asked for, so an enemy's total is a dash and there
   is no packet a future caller could leak one from.
+- **And the other half of that same criterion, found by the same playtest
+  (D-20260817-minimap-squad-colours, #82):** the minimap painted squad
+  dots cyan-if-mine and red-otherwise — the two-colour scheme M3 wrote
+  when there were no per-player colours to read — so an ALLY, whose army
+  D-050's shared vision puts on your minimap and nowhere else, was drawn
+  in the enemy tone. **The rule was correct when written and nobody
+  re-read it after D-052 changed what it depended on**, which is the
+  declared-and-unread family inverted: a grep for uncalled members finds
+  none of these, and the building pass eight lines above it in the same
+  function had been resolving `colour_of` correctly all along.
 
 **"`client.gd` is unreachable from GUT" is only true of what it DRAWS**
 (D-075's 2026-08-16 amendment). Its node LIFETIME needs neither a GPU nor
