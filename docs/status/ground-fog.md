@@ -32,3 +32,21 @@ Three things to carry forward:
 Also: the camera opens on the player's spawn rather than the map's centre,
 which was harmless while the whole map was lit and is an empty black screen
 now.
+
+**Two more, from the review of that work (D-106's 2026-08-17 amendment).** Both
+are worth knowing because neither is really about fog:
+
+- **Allied BUILDINGS lit nothing** — allied squads were team-aware and the
+  buildings loop written directly beneath them still compared owners, so the
+  client's fog was strictly narrower than the coverage the server gates on. The
+  fix was to move the stamping out of `client.gd`, which needs a scene tree and
+  a GPU, into `TerrainFog.rebuild(ClientState)`, which a GUT test can drive.
+  **When a rule cannot be tested where it lives, that is a fact about where it
+  lives.**
+- **A "cost does not scale with the map" test must assert WORK, not
+  milliseconds.** The first version compared wall-clock between map sizes and
+  went red on a loaded host with nothing wrong — this project's own warning about
+  timing gates, ignored two commits after writing it. `TerrainFog` counts the
+  cells each bake re-shades and the test compares those counts; the milliseconds
+  are printed, not gated. A refresh now touches 977 cells on both an 8,064-cell
+  map and a 32,592-cell one.
