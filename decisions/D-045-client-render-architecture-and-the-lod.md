@@ -146,3 +146,160 @@ the capture scenario: the gate needs to distinguish casualties inflicted
 by combat from soldiers spent on construction.
 
 ---
+
+**Amendment — 2026-08-16 — culling a thing that has SIZE, and what a
+cull miss is allowed to mean (issue #62).**
+
+Reported from playtest P12 as *"the field of view doesn't gradually fade
+out, it snaps large chunks of resources and units in and out of view"* —
+two screenshots seconds apart at almost the same camera position, a
+forest filling the middle of one and simply gone from the other.
+
+Two faults, both in the same three lines. Neither is new; this is the
+**third** appearance of the first and the second has been sitting under
+it the whole time.
+
+1. **A 16x16-cell forest chunk was culled as a single POINT.** Trees
+   batch into one MultiMesh per (chunk, model), and the chunk root was
+   placed or not placed on where its centre projected, with a flat
+   `CULL_MARGIN_PIXELS`. The block is ~48 world units across, so its
+   trees reach ~24 units past the point deciding for all of them. Squads
+   were fixed this way in an earlier playtest, and `_select_nearest`
+   before that ("a forty-man line... clicking a soldier you could plainly
+   see selected nothing"). The chunks — far bigger than any formation —
+   got neither half.
+2. **A cull miss RELOCATED the chunk instead of hiding it.** It fell
+   through to `RenderCull.nearest_offset`, which answers "which lattice
+   copy is nearest the look-at point" — a different question from "which
+   copy is on screen". When the two rules disagree the block jumps a
+   whole map period in one frame. That is what made it read as *snapping*
+   rather than as the honest disappearance it was standing in for.
+
+`RenderCull.visible_offset_of_extent` is now the one definition of both
+halves, shared by squads and forests, and `null` from it means **draw
+nowhere**. `nearest_offset` keeps its own callers — a rally marker, a
+placement ghost, a build preview must always be drawn *somewhere*, and
+for those it is still the right rule. The distinction is the point:
+**always-visible and being-culled are different jobs and no longer share
+a helper.**
+
+**The projected radius is computed from the projection matrix and the
+depth, not by projecting an edge point.** Projecting an edge is the
+obvious version and was written first; it is wrong twice, and both only
+show at the screen edge, which is the one place the number is consulted.
+It depends on which axis the edge was taken along — and the camera turns
+(D-063), so the same chunk was two widths depending on which way the
+player faced — and an edge taken *toward* the camera climbs the
+perspective curve, so a chunk 24 units across at 23 units' distance
+projected a margin of **two full screens**. A margin wider than the
+screen culls nothing, which is D-045's entire saving silently undone. The
+margin is also worked out **per lattice copy**: it falls off as 1/depth,
+so one borrowed from a copy near the camera is enormous by the time it
+reaches a copy near the horizon, and a test caught exactly that pulling
+an invisible copy into view.
+
+**The bound is drawn round the STAND, not round the cell centres**
+(added on rebase, after D-108 landed in parallel). A node cell grows
+several trees on their own offsets inside it now, rather than one tree on
+the lattice point, so a chunk's outermost trees hang up to
+`ResourceVisuals.MAX_OFFSET` of a hex past the block of cell centres.
+The chunk radius is `RenderCull.block_radius(...) + MAX_OFFSET *
+hex_size` for that reason. It is a small number — 0.78 against 24 on the
+shipped map — and that is exactly why it is worth writing down: a bound
+taken round the centres alone would clip the outer row of every forest a
+fraction early, which is a quieter instance of the very defect this
+amendment exists to fix, and no counter anywhere would move. **When a
+thing's contents change shape, every bound drawn round it is stale** —
+the same rule D-031's timings taught about the opening.
+
+**And the fault one level up, found in review: the chunk's own centre was
+in a different lattice copy from its trees.** A chunk's nominal centre is
+`key * NODE_CHUNK + NODE_CHUNK / 2`, which is only on the map when the
+map is a whole number of chunks wide — the shipped default is 84 and the
+chunk is 16, so the last column owns cells 80-83 and took centre 88.
+`TorusSpace.to_world` normalizes, so that came back at q = 4: **145.49
+world units away, one exact x period.** Culling then chose the offset
+that put *the centre* on screen and the *trees* were drawn at it, so
+those six chunks were placed off screen whatever the camera did — the
+reported bug still reproducing on about 5% of the map after the fix
+above. It is not a regression (the old `_lattice_offset_for` path had the
+same fault) but this change is what made the centre load-bearing for
+visibility, which is what turned a harmless inaccuracy into the bug.
+
+`RenderCull.block_centre` is the fix and it lives in `render_cull.gd`
+precisely so a test can reach it. Two things at once:
+`axial_offset_to_world` is the linear map WITHOUT the wrap — identical to
+`to_world` whenever the centre is in range, and in the same copy as the
+contents when it is not — and the centre is taken from the cells the
+block ACTUALLY OWNS, because that last column owns four cells rather than
+sixteen and the nominal centre sat 6.5 cells (~11.3 units) outside them,
+spending nearly half the radius on the side away from every tree.
+
+**`maps/ladder.tres` escapes it** — 42/16 leaves its last block centred
+at 40, still on the map — so a test on the ladder map would have proved
+nothing. This is the general shape worth carrying: **an edge case that
+one shipped map happens to dodge is not tested by that map.**
+
+**What was NOT fixed, and why.** The report also mentions units popping.
+The squad path already had the radius margin and already hid rather than
+relocated, so this mechanism does not explain it; the likelier cause is
+the trade-off `render_cull.gd` documents in `max_camera_height` —
+terrain is drawn nine times and every entity once, so near maximum zoom
+a band of the screen can legitimately be bare ground. That is accepted
+behaviour, not a defect, and it needs confirming at a fixed camera
+height rather than fixing blind.
+
+**Testability, stated honestly.** The decision half lives in
+`render_cull.gd` and has eight new tests, each observed red against the
+pre-fix behaviour before being trusted (CLAUDE.md's standing rule): the
+chunk radius, the extent margin as a projected size, a forest culled by
+its trees rather than its middle, a forest with no visible copy
+reporting nowhere, the two stand-geometry ones above, and the two
+block-centre ones below. **The client-side plumbing that acts on `null`
+by setting `root.visible = false` cannot be tested** — `client.gd` needs
+a GPU (D-014) — and was verified by looking at `just test-client`'s
+frame.
+Note the first of those tests had to be strengthened after its first
+perturbation run: it asserted only the returned offset, which the old
+fallback also produced, at the same value, for the opposite reason. Same
+answer, different meaning — a vacuous check of exactly the kind D-022's
+audit exists to catch, and it was caught only by watching the
+perturbation NOT go red.
+
+Measured on this branch, 2026-08-17: `just test-unit` green at 795 tests
+across 51 scripts, and `just test-load 4 120` clean with 0 desyncs at
+83.41 µs/squad — **quoted with its squad count, 28**, which is low
+enough that per-tick fixed overhead inflates it and makes it
+incomparable to any figure taken at 48 or 120. That load figure predates
+the last three rebases; nothing since touched the server path, so it was
+not re-taken. Recorded here rather than in `CLAUDE.md` per this
+directory's rule 5 — a global count in a shared file is stale by
+construction on a merged tree, and the one I was maintaining conflicted
+on every single rebase of this branch, which is that rule earning itself
+in miniature.
+
+**A finding this change does NOT fix, measured while chasing a playtest
+report that forests still snap in and out.** A sweep of a realistic
+camera over the shipped map found **0 wrongly-culled chunks in 36,288
+tests** at six camera heights — so culling is not the cause any more.
+What the same sweep did find is that `max_camera_height` no longer
+delivers what its own header promises:
+
+| camera height | poses spanning >1 lattice copy | worst |
+|---|---|---|
+| 20 | 223 of 340 | 4 copies |
+| 30 | 304 of 340 | 4 |
+| 40 (the default) | 340 of 340 | 4 |
+| 47.5 (the cap) | 340 of 340 | 5 |
+
+Terrain draws nine times and every entity ONCE, so every copy past the
+first is real ground with no trees, no buildings and no units on it. The
+cap's "on-screen z span is ~2.6h" derivation was measured on the old
+**128x64** map at 1280x720; the maps were later reshaped to roughly
+square (84x96) and the factor never followed. The sweep does not model
+depth fog, which will hide the most distant copies, so the visible
+severity is lower than 340/340 suggests — but this is the leading
+explanation for the report and it needs its own decision, not an
+amendment here.
+
+---

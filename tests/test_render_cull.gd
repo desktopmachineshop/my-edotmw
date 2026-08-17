@@ -305,3 +305,273 @@ func test_the_shipped_map_files_are_square_too() -> void:
 			/ minf(float(config.width) * TorusSpace.SQRT_3, float(config.height) * 1.5)
 		assert_lt(ratio, 1.15,
 			"%s is %.2f:1 on the ground" % [path, ratio])
+
+
+# --- culling a thing with real EXTENT ----------------------------------
+#
+# Playtest #62: whole blocks of forest snapped in and out of view on
+# small camera moves, the terrain under them unchanged. Trees batch into
+# one MultiMesh per (16-cell chunk, model) and the chunk was culled as a
+# single POINT with a flat pixel margin — so a block ~48 world units
+# across lived or died on where its middle projected — and on a miss it
+# fell through to `nearest_offset`, which relocated it a whole map period
+# instead of hiding it. Third instance of the same defect: squads got the
+# radius-aware margin in an earlier playtest fix, and `_select_nearest`
+# got it before that. This is the shared rule all of them go through now.
+
+## Cells per side of a forest chunk (client.gd's NODE_CHUNK). Named here
+## because client.gd needs a GPU and cannot be loaded (D-014).
+const NODE_CHUNK := 16
+
+## client.gd's CULL_MARGIN_PIXELS as a FRACTION of viewport width — 192
+## of 1280. `unproject_position` answers in the viewport's OWN pixels and
+## headless renders into a 64x64 one, so a literal 192 here would be three
+## screens of slack and every one of these would pass vacuously.
+const CULL_MARGIN_FRACTION := 192.0 / 1280.0
+
+
+## The SHIPPED map, not this file's 128x64 constants. Those are the old
+## oblong shape, whose z period is only four chunk-radii deep — close
+## enough that a lattice copy sits near the horizon of any view, which is
+## the condition `max_camera_height` and
+## `test_every_shipped_map_is_roughly_square_in_world_units` exist to rule
+## out. Culling with extent has to be judged on a map that obeys them.
+func _shipped_space() -> TorusSpace:
+	var config := load("res://maps/default.tres") as MapConfig
+	return TorusSpace.new(config.width, config.height, config.hex_size)
+
+
+## The viewport `unproject_position` is actually answering in. Passing
+## anything else compares projected coordinates against a rectangle in a
+## different space.
+func _screen_size(camera: Camera3D) -> Vector2:
+	return camera.get_viewport().get_visible_rect().size
+
+
+func test_a_chunks_radius_accounts_for_the_row_shear() -> void:
+	# 3 x half the chunk, not the half-diagonal of a rectangle: axial rows
+	# shear half a column per row, so two of the four corners run with the
+	# shear and reach much further than the naive answer.
+	var space := _shipped_space()
+	var radius := RenderCull.block_radius(space, NODE_CHUNK)
+
+	assert_almost_eq(radius, 24.0, 0.001,
+		"a 16-cell chunk at hex_size 1.0 reaches 24 world units from its centre")
+
+	var naive := Vector2(float(NODE_CHUNK) / 2.0 * TorusSpace.SQRT_3,
+		float(NODE_CHUNK) / 2.0 * 1.5).length()
+	assert_gt(radius, naive * 1.2,
+		"treating the chunk as an unsheared rectangle understates it, which is "
+		+ "the direction that culls trees the player can still see")
+
+
+func test_the_chunk_bound_covers_the_stand_not_just_the_cell_centres() -> void:
+	# D-108: a node cell is a STAND of several trees on their own offsets
+	# inside it, not one tree on the lattice point. So the outermost trees
+	# of a chunk hang past the block of CELL CENTRES `block_radius`
+	# measures, and the cull bound the client stores is that plus
+	# `ResourceVisuals.MAX_OFFSET`.
+	#
+	# Small — 0.78 against 24 — and that is the point: without it the
+	# outer row of every forest is culled a fraction early, which is a
+	# quieter instance of the defect this whole section exists to fix, and
+	# no counter anywhere would move.
+	var space := _shipped_space()
+	var centres := RenderCull.block_radius(space, NODE_CHUNK)
+	var bound := centres + ResourceVisuals.MAX_OFFSET * space.hex_size
+
+	# The worst case, built from the shipped geometry rather than asserted
+	# as a number: the furthest corner cell of the block, with a tree
+	# standing at the furthest offset ResourceVisuals allows, pointing
+	# directly away from the chunk centre.
+	var half := float(NODE_CHUNK) / 2.0
+	var corner := space.axial_offset_to_world(Vector2(-half, -half))
+	var tree := corner + corner.normalized() * ResourceVisuals.MAX_OFFSET * space.hex_size
+
+	assert_gt(tree.length(), centres,
+		"setup: a tree at the worst stand offset should reach past the block of "
+		+ "cell centres — if it does not, MAX_OFFSET stopped meaning what this "
+		+ "test assumes and the bound below is free")
+	assert_almost_eq(bound, tree.length(), 0.001,
+		"the chunk's cull bound does not reach its outermost tree, so the outer "
+		+ "row of every forest is culled early")
+
+
+func test_a_tree_never_leaves_the_cell_the_bound_was_derived_from() -> void:
+	# The other side of it. The bound above is only correct while a tree
+	# stays inside its own cell — if a stand could spill into a
+	# neighbouring cell, one MAX_OFFSET of slack would stop covering it.
+	# ResourceVisuals guarantees this for its own reasons (a tree must not
+	# wander onto water or over a cliff); this records that the cull
+	# depends on it too, so the two cannot drift apart silently.
+	assert_lt(ResourceVisuals.MAX_OFFSET, TorusSpace.SQRT_3 / 2.0,
+		"a tree can stand outside its own cell, so a chunk bound grown by one "
+		+ "MAX_OFFSET no longer covers the stand")
+
+func test_a_block_centre_stays_in_the_same_lattice_copy_as_its_cells() -> void:
+	# THE bug this pair exists to catch, and it needs the DEFAULT map:
+	# 84 is not a whole number of 16-cell blocks, so the last column owns
+	# cells 80-83 while its nominal centre is 88 — off the map. `to_world`
+	# normalizes, so that centre came back at q = 4, one whole x period
+	# from the trees it stands for. Culling reads the centre and the
+	# CONTENTS are drawn at the offset it chose, so the entire strip was
+	# placed a map away. `maps/ladder.tres` escapes it (42/16 leaves the
+	# last block centred at 40, still in range), which is exactly why a
+	# test on that map would prove nothing.
+	var space := _shipped_space()
+	var last := Vector2i((space.width - 1) / NODE_CHUNK, 0)
+	var centre := RenderCull.block_centre(space, last, NODE_CHUNK)
+
+	var nominal := Vector2i(last.x * NODE_CHUNK + NODE_CHUNK / 2, NODE_CHUNK / 2)
+	assert_gt(nominal.x, space.width - 1,
+		"setup: the last block's nominal centre should be off the map — if it is "
+		+ "not, the map width became a multiple of NODE_CHUNK and this test is "
+		+ "no longer testing anything")
+
+	# Every cell the block actually owns must be inside the radius culling
+	# will use, measured from the centre culling will use. That is the
+	# whole contract between the two, and a wrapped centre fails it by a
+	# map period rather than by a little.
+	var radius := RenderCull.block_radius(space, NODE_CHUNK)
+	for q in range(last.x * NODE_CHUNK, space.width):
+		for r in range(0, NODE_CHUNK):
+			var at := space.axial_offset_to_world(Vector2(float(q), float(r)))
+			assert_lt(at.distance_to(centre), radius,
+				"cell (%d,%d) is %.1f from its own chunk's centre, outside the "
+				% [q, r, at.distance_to(centre)]
+				+ "%.1f radius culling uses" % radius)
+
+
+func test_a_block_centre_is_the_plain_answer_when_the_block_fits() -> void:
+	# The other side of the boundary. Fixing the edge case must not move
+	# any of the blocks that were always fine, or every forest on the map
+	# shifts to fix six chunks.
+	var space := _shipped_space()
+	for key in [Vector2i(0, 0), Vector2i(1, 2), Vector2i(2, 3)]:
+		var nominal := Vector2i(key.x * NODE_CHUNK + NODE_CHUNK / 2,
+			key.y * NODE_CHUNK + NODE_CHUNK / 2)
+		assert_lt(nominal.x, space.width, "setup: block %s should fit" % key)
+		assert_lt(nominal.y, space.height, "setup: block %s should fit" % key)
+		# A full block's owned cells run lo..lo+15, so their midpoint is
+		# lo + 7.5 — half a cell short of the nominal lo + 8. Compare
+		# against the midpoint, which is what "the middle of the cells it
+		# owns" means, not against the nominal corner-biased centre.
+		var mid := Vector2(float(key.x * NODE_CHUNK) + (NODE_CHUNK - 1) * 0.5,
+			float(key.y * NODE_CHUNK) + (NODE_CHUNK - 1) * 0.5)
+		assert_almost_eq(
+			RenderCull.block_centre(space, key, NODE_CHUNK).distance_to(
+				space.axial_offset_to_world(mid)),
+			0.0, 0.001,
+			"a block that fits on the map moved")
+
+func test_a_forest_is_culled_by_its_trees_not_by_the_point_at_its_middle() -> void:
+	# THE reported bug, as geometry. Pan until the chunk's centre leaves
+	# the viewport while most of its trees are still well inside it.
+	var space := _shipped_space()
+	var offsets := space.lattice_offsets()
+	var radius := RenderCull.block_radius(space, NODE_CHUNK)
+
+	var target := space.to_world(Vector2i(space.width / 2, space.height / 2))
+	var camera := _camera_looking_at(target, 20.0)
+	var size := _screen_size(camera)
+	var margin := size.x * CULL_MARGIN_FRACTION
+
+	# Walk the chunk out to the left, half a unit at a time, and stop the
+	# frame its centre crosses the margin — which is the frame the shipped
+	# point test used to blink the whole 16x16 block out.
+	var centre := target
+	for _step in range(400):
+		if not RenderCull.is_on_screen(camera, centre, margin, size):
+			break
+		centre.x -= 0.5
+
+	assert_false(RenderCull.is_on_screen(camera, centre, margin, size),
+		"setup: the chunk centre never left the viewport")
+	assert_true(RenderCull.is_on_screen(camera, centre + Vector3(radius, 0.0, 0.0),
+		margin, size),
+		"setup: the chunk's near edge should still be plainly on screen")
+
+	assert_null(RenderCull.visible_offset(camera, offsets, centre, margin, size),
+		"setup: the point test should still be culling this — if it is not, the "
+		+ "walk above stopped reproducing the defect and the assertions below are free")
+
+	# The margin itself, before the offset. Asserting only on the combined
+	# call would pass vacuously against the old code, which returned the
+	# canonical offset here too — as a FALLBACK, having culled the chunk.
+	# Same answer, opposite meaning.
+	var scale := RenderCull.extent_scale(camera, radius, size)
+	assert_true(RenderCull.is_on_screen(camera, centre,
+		RenderCull.extent_margin(camera, centre, scale, margin), size),
+		"the chunk's own on-screen radius does not reach its trees, so the "
+		+ "block is still being culled on the point at its middle")
+
+	assert_eq(RenderCull.visible_offset_of_extent(camera, offsets, centre,
+		radius, margin, size), Vector3.ZERO,
+		"a forest whose trees are on screen was culled by the point at its middle")
+
+
+func test_the_extent_margin_is_a_projected_size() -> void:
+	# It must not depend on which way the camera is facing (D-063 made the
+	# camera turn), and it must fall off with distance. The version this
+	# replaces projected an edge point along world x — the axis running
+	# away from the viewer at 90 degrees of yaw, foreshortened to a
+	# fraction of its true width.
+	var space := _shipped_space()
+	var target := space.to_world(Vector2i(space.width / 2, space.height / 2))
+	var radius := RenderCull.block_radius(space, NODE_CHUNK)
+
+	var north := _camera_looking_at(target, 20.0)
+	var east := _camera_looking_at(target, 20.0)
+	east.position = target + Vector3(20.0 * 0.6, 20.0, 0.0)
+	east.look_at(target, Vector3.UP)
+
+	var size := _screen_size(north)
+	var scale := RenderCull.extent_scale(north, radius, size)
+	var facing_north := RenderCull.extent_margin(north, target, scale, 0.0)
+	var facing_east := RenderCull.extent_margin(east, target,
+		RenderCull.extent_scale(east, radius, size), 0.0)
+
+	assert_gt(facing_north, 0.0, "the margin should grow by something")
+	assert_almost_eq(facing_east, facing_north, facing_north * 0.05,
+		"turning the camera changed how wide the same chunk is considered to be")
+
+	# A chunk twice as deep covers half as much screen, or this is not a
+	# projected size at all — and a margin that does not shrink with
+	# distance is what drags a far lattice copy into view.
+	var forward := -north.global_transform.basis.z
+	var far_off := target + forward * forward.dot(target - north.global_position)
+	assert_almost_eq(RenderCull.extent_margin(north, far_off, scale, 0.0),
+		facing_north * 0.5, facing_north * 0.02,
+		"doubling the depth should halve the margin")
+
+
+func test_a_forest_with_no_visible_copy_is_hidden_rather_than_relocated() -> void:
+	# The other half of the fix. `nearest_offset` answers "which copy is
+	# closest to the look-at point", which is the right rule for a thing
+	# that must always be drawn somewhere — a rally marker, a placement
+	# ghost — and the wrong rule for something being culled.
+	var space := _shipped_space()
+	var offsets := space.lattice_offsets()
+	var radius := RenderCull.block_radius(space, NODE_CHUNK)
+
+	var target := space.to_world(Vector2i(0, space.height / 2))
+	var camera := _camera_looking_at(target, 20.0)
+	var size := _screen_size(camera)
+	var margin := size.x * CULL_MARGIN_FRACTION
+	# Half a map away in q, so the canonical copy and the wrapped one are
+	# both as far from the camera as this torus allows.
+	var centre := space.to_world(Vector2i(space.width / 2, space.height / 2))
+
+	assert_null(RenderCull.visible_offset_of_extent(camera, offsets, centre,
+		radius, margin, size),
+		"a forest on the far side of the map must report nowhere, so the client "
+		+ "can hide it — falling through to a fallback is what teleports it")
+
+	# And the fallback must be shown to be a genuinely different answer,
+	# or the assertion above is describing nothing.
+	var fallback := RenderCull.nearest_offset(offsets, centre, target)
+	assert_gt(fallback.length(), 100.0,
+		"setup: the nearest copy should be most of a map period from the canonical one")
+	assert_false(RenderCull.is_on_screen(camera, centre + fallback, margin, size),
+		"the fallback copy is off screen too, so relocating the block buys "
+		+ "nothing and costs a map-wide jump the frame it flips")

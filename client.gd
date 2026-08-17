@@ -813,24 +813,20 @@ func _refresh_squads() -> void:
 		# by the formation's own on-screen radius, exactly the fix
 		# selection already got (see `_screen_radius_of`) — a wide "Sparse"
 		# or "Ring" formation is a wide target for culling too, not just
-		# for a click.
-		var cull_margin := CULL_MARGIN_PIXELS
-		if not _camera.is_position_behind(centre):
-			var comp_info: Dictionary = _state.composition.get(squad_id, {})
-			var world_radius: float = Formation.footprint(
-				String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
-				float(comp_info.get("spacing", 1.0)))["radius"]
-			var edge := centre + Vector3(world_radius, 0.0, 0.0)
-			if world_radius > 0.0 and not _camera.is_position_behind(edge):
-				cull_margin += _camera.unproject_position(centre).distance_to(
-					_camera.unproject_position(edge))
+		# for a click. `RenderCull.visible_offset_of_extent` is the one
+		# definition of that rule now, shared with the forest chunks,
+		# which had the identical defect at four times the size.
+		var comp_info: Dictionary = _state.composition.get(squad_id, {})
+		var world_radius: float = Formation.footprint(
+			String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
+			float(comp_info.get("spacing", 1.0)))["radius"]
 
 		# Every lattice copy, not just the nearest to the look-at point.
 		# The torus is shallower in z than it is wide, so more than one
 		# copy is routinely on screen and "nearest" picks the wrong one —
 		# which showed up in play as half the screen rendering no units.
-		var offset = RenderCull.visible_offset(
-			_camera, offsets, centre, cull_margin, viewport_size)
+		var offset = RenderCull.visible_offset_of_extent(
+			_camera, offsets, centre, world_radius, CULL_MARGIN_PIXELS, viewport_size)
 		if offset == null:
 			unit.visible = false
 			continue
@@ -2187,15 +2183,19 @@ func _derived_progress(wire_id: int, info: Dictionary) -> float:
 const NODE_CHUNK := 16
 
 ## chunk key (cell region) -> { "root": Node3D, "centre": Vector3,
-##   "multis": {model_id: MultiMeshInstance3D},
+##   "radius": float, "multis": {model_id: MultiMeshInstance3D},
 ##   "cells": {cell: [{"model": StringName, "xform": Transform3D}, ...]},
 ##   "dirty": bool }
 ## A cell holds a LIST: a node cell grows several trees, each on its own
 ## offset inside the cell, which is what stops a forest reading as the hex
 ## lattice it stands on (ResourceVisuals.trees_for).
-## The root is repositioned every frame to the lattice copy nearest the
-## camera (D-035) — per CHUNK, not per tree, which is what keeps the
-## torus tax off the per-tree path.
+## The root is repositioned every frame to whichever lattice copy is on
+## screen, and hidden when none is (D-035) — per CHUNK, not per tree,
+## which is what keeps the torus tax off the per-tree path. `radius` is
+## how far the chunk's TREES reach from its centre, so culling can ask
+## about the stand rather than about the single point at the middle of it
+## — the block of cell centres plus the furthest a tree may stand from
+## the one it belongs to (`ResourceVisuals.MAX_OFFSET`).
 var _tree_chunks := {}
 
 ## cell -> {"chunk": Vector2i, "world": Vector3, "kind": int,
@@ -2835,11 +2835,29 @@ func _refresh_resource_nodes() -> void:
 	# Rebuild only chunks whose membership changed, then swing every chunk
 	# to its lattice copy — per chunk, never per tree (D-035's tax, paid
 	# wholesale).
+	#
+	# NOT `_lattice_offset_for`, which is the rule for something that must
+	# always be drawn SOMEWHERE (a rally marker, a placement ghost): on a
+	# miss it falls through to the copy nearest the look-at point, a
+	# different question from "which copy is on screen". A chunk is 16x16
+	# cells — ~48 world units across, wider than any formation — so it
+	# crossed that boundary constantly, and each crossing teleported a
+	# whole block of forest a map period sideways in one frame. Reported
+	# from playtest as forests snapping in and out on small camera moves.
+	# A chunk with no visible copy is drawn NOWHERE.
+	var offsets := _state.space.lattice_offsets()
+	var viewport_size := get_viewport().get_visible_rect().size
 	for key in _tree_chunks:
 		var chunk: Dictionary = _tree_chunks[key]
 		if bool(chunk["dirty"]):
 			_rebuild_tree_chunk(chunk)
-		(chunk["root"] as Node3D).position = _lattice_offset_for(chunk["centre"])
+		var root := chunk["root"] as Node3D
+		var offset = RenderCull.visible_offset_of_extent(_camera, offsets,
+			chunk["centre"], float(chunk["radius"]), CULL_MARGIN_PIXELS,
+			viewport_size)
+		root.visible = offset != null
+		if offset != null:
+			root.position = offset
 
 	_advance_fallings()
 
@@ -2884,9 +2902,32 @@ func _place_node(cell: int, kind: int) -> void:
 	if chunk.is_empty():
 		var root := Node3D.new()
 		add_child(root)
-		var centre_cell := Vector2i(key.x * NODE_CHUNK + NODE_CHUNK / 2,
-			key.y * NODE_CHUNK + NODE_CHUNK / 2)
-		chunk = {"root": root, "centre": space.to_world(centre_cell),
+		# `RenderCull.block_centre`, NOT `to_world(key * NODE_CHUNK +
+		# NODE_CHUNK / 2)`. The map's width need not be a whole number of
+		# chunks — the shipped 84 is not — so the nominal centre can be
+		# off the map, and `to_world` normalizes: the last chunk column
+		# took centre 88, wrapped to q = 4, and stood a full x period
+		# (145.49 units) from its own trees. Culling on a point a map away
+		# from the thing being culled placed that whole strip of forest
+		# off screen whatever the camera did. See `block_centre` for the
+		# second fault it fixes at the same time.
+		chunk = {"root": root, "centre": RenderCull.block_centre(space, key, NODE_CHUNK),
+			# The block of CELL CENTRES, plus how far a tree may stand
+			# from the one it belongs to. A cell is a STAND now, not one
+			# tree on the lattice point (`ResourceVisuals.trees_for`), so
+			# an edge cell's trees hang up to MAX_OFFSET past the block —
+			# and a bound drawn round the centres alone would cull the
+			# outermost row of every forest a fraction early, which is a
+			# smaller version of the very defect this radius exists to
+			# fix.
+			#
+			# Horizontal only. Trees also stand a few units above the
+			# ground plane, and CULL_MARGIN_PIXELS covers that with room
+			# to spare — being generous costs a chunk of forest derived
+			# just off screen, being mean costs the snapping this path
+			# exists to stop.
+			"radius": RenderCull.block_radius(space, NODE_CHUNK)
+				+ ResourceVisuals.MAX_OFFSET * space.hex_size,
 			"multis": {}, "cells": {}, "dirty": true}
 		_tree_chunks[key] = chunk
 	chunk["cells"][cell] = entries
