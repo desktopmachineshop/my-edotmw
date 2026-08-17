@@ -540,12 +540,18 @@ func _finish_capture() -> void:
 	# (D-099), so it is deliberately not a claim about the frame. It is still
 	# worth printing — a run in which nothing was ever hidden proves nothing
 	# about fog, which is why `conceal_events` gates the verdict below.
-	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d state_hash_checks=%d building_desyncs=%d building_state_hash_checks=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d" % [
+	print("client: VERDICT %s — terrain=%s connected=%s squads_drawn=%d live_squads=%d ghosts=%d soldiers=%d curves=%d desyncs=%d state_hash_checks=%d building_desyncs=%d building_state_hash_checks=%d distinct_colours=%d casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d nodes_known=%d nodes_grown=%d nodes_queued=%d node_grow_worst_ms=%.1f" % [
 		"ok" if ok else "failed",
 		str(_terrain_built), str(_state.welcomed), squads_drawn, live_squads, ghosts, soldiers,
 		_state.curves.size(), _state.desync_count, _state.state_hash_checks,
 		_state.building_desync_count, _state.building_state_hash_checks, distinct,
-		_state.casualties_applied, _state.conceal_events, _state.reveal_events, _state.ghosts_peak])
+		_state.casualties_applied, _state.conceal_events, _state.reveal_events, _state.ghosts_peak,
+		# Metrics, not gates — a run whose squads never reach a wood grows
+		# nothing, exactly as `nodes_felled` is a metric in test-load's
+		# verdict for the same reason (D-087). What they are for is telling
+		# the two candidate causes of "the forests arrived late" apart.
+		_state.nodes.size(), _nodes_grown, _node_queue.pending_count(),
+		_node_place_worst_usec / 1000.0])
 
 	get_tree().quit(0 if ok else 1)
 
@@ -2395,6 +2401,22 @@ var _tree_chunks := {}
 ## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
 
+## Cells the server has revealed and this client has not grown yet, and the
+## per-frame budget that drains them (`node_placement.gd`). Growing a cell
+## costs ~87 us — a terrain sample, a biome classification, its six
+## neighbours' biomes and a stand of trees with a sample each — and the
+## whole batch used to be grown in the frame it arrived, so walking into
+## unexplored woodland dropped a frame. Issue #109.
+var _node_queue := NodePlacement.new()
+
+## Microseconds the worst single frame has spent growing nodes, and how many
+## cells have been grown all told. Read by the sandbox panel and printed in
+## the capture verdict: this whole issue was filed with TWO candidate causes
+## (a placement hitch, or D-025's reveal pop-in working as designed), and
+## neither is decidable without a number.
+var _node_place_worst_usec := 0
+var _nodes_grown := 0
+
 ## Fellings mid-animation: {"node": MeshInstance3D, "kind": int,
 ## "axis": Vector3, "age": float, "base": Transform3D}. A felled cell's
 ## trees leave its chunk's MultiMesh and become short-lived individual
@@ -3010,16 +3032,34 @@ func _refresh_resource_nodes() -> void:
 		return
 
 	# Fellings first: the felled cell leaves its chunk in the same frame
-	# the wire said so, whether or not anything new arrived.
+	# the wire said so, whether or not anything new arrived. A cell still
+	# waiting its turn to be grown leaves the QUEUE instead — the tree it
+	# would have grown is one the server has already reported gone, and no
+	# second depletion event is coming to take it back down.
 	for felled in _state.take_felled():
+		_node_queue.forget(int(felled["cell"]))
 		_begin_felling(felled)
 
-	# Place nodes the server newly revealed. Additions only — the diff is
-	# cheap because both sides shrink together on a felling.
-	if _state.nodes.size() != _node_placed.size():
-		for cell in _state.nodes:
-			if not _node_placed.has(cell):
-				_place_node(int(cell), int(_state.nodes[cell]))
+	# Grow newly revealed cells, a bounded slice per frame
+	# (`node_placement.gd`, D-20260818-node-placement-is-budgeted). The whole
+	# batch used to be grown here in one go, and a squad walking into
+	# unexplored woodland reveals a great many cells at once.
+	#
+	# The reveals come off the wire's own drain (`ClientState.take_revealed`)
+	# rather than from a diff against `_state.nodes`: the old guard compared
+	# the two dictionaries' SIZES, which was already a size comparison
+	# standing in for set equality, and a budget makes drawn lag known by
+	# construction so it would now scan all 7,664 of the map's nodes every
+	# frame while catching up.
+	_node_queue.reveal_all(_state.take_revealed())
+	var grow_started := Time.get_ticks_usec()
+	for cell in _node_queue.take(NodePlacement.PER_FRAME):
+		if not _state.nodes.has(cell):
+			continue  # felled between the reveal and its turn
+		_place_node(cell, int(_state.nodes[cell]))
+		_nodes_grown += 1
+	_node_place_worst_usec = maxi(_node_place_worst_usec,
+		Time.get_ticks_usec() - grow_started)
 
 	# Rebuild only chunks whose membership changed, then swing every chunk
 	# to its lattice copy — per chunk, never per tree (D-035's tax, paid
@@ -7342,6 +7382,7 @@ func _teardown_match() -> void:
 		(_tree_chunks[key]["root"] as Node3D).queue_free()
 	_tree_chunks.clear()
 	_node_placed.clear()
+	_node_queue.clear()
 	for fall in _fallings:
 		(fall["node"] as MeshInstance3D).queue_free()
 	_fallings.clear()
@@ -7895,6 +7936,10 @@ var _debug_status_label: Label
 ## desync count that an "Armed: 3 x militia" message could wipe would be
 ## readable only until the next click.
 var _debug_sync_label: Label
+## The resource-node readout: how many nodes this client knows about, how
+## many it has grown, how many are still queued, and the worst frame the
+## growing has cost (#109).
+var _debug_nodes_label: Label
 var _debug_visible_last := false
 
 ## "" (off), "unit", or "building" — which cheat, if any, the next left
@@ -8023,6 +8068,17 @@ func _build_debug_panel() -> void:
 	_debug_sync_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_debug_sync_label)
 
+	# What the world still owes the wire, in forests (#109). The reason it
+	# is here rather than in a log line: the question this readout answers
+	# — "did the trees arrive late because drawing them is expensive, or
+	# because the server only just said they were there?" — is asked WHILE
+	# looking at the trees arrive, and a print from nine seconds ago cannot
+	# answer it. Same argument as the sync label above.
+	_debug_nodes_label = Label.new()
+	_debug_nodes_label.add_theme_font_size_override("font_size", 12)
+	_debug_nodes_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(_debug_nodes_label)
+
 
 ## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
 ## COUNT enforces — kept as its own constant here (not shared across the
@@ -8081,6 +8137,13 @@ func _refresh_debug_panel() -> void:
 		_debug_sync_label.text = "State sync: %s" % _state.desync_summary()
 		_debug_sync_label.modulate = (
 			Color(0.9, 0.4, 0.4) if desyncs > 0 else Color(0.55, 0.8, 0.55))
+	if showing and _debug_nodes_label != null:
+		_debug_nodes_label.text = "Nodes: %d known / %d grown / %d queued — worst frame %.1f ms" % [
+			_state.nodes.size(), _nodes_grown, _node_queue.pending_count(),
+			_node_place_worst_usec / 1000.0]
+		_debug_nodes_label.modulate = (
+			Color(0.55, 0.8, 0.55) if _node_queue.is_settled()
+			else Color(0.85, 0.8, 0.45))
 	if showing and not _debug_visible_last:
 		# Sandbox mode just turned on (or a match just started with it
 		# already on) — open automatically. Does NOT run every frame
