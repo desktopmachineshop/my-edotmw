@@ -1288,8 +1288,15 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
 # who never presses start) and a client that renders the seat list rather
 # than a battlefield. Docker only, same software-GL reasoning as
 # test-client.
+#
+# RESOLUTION is a parameter because the lobby's whole reported failure was
+# resolution-dependent (#91): it fit the 1280x720 this recipe was pinned
+# to and ran off the bottom of the ~1920x1000 window the playtest used, so
+# the one instrument that could have shown it was aimed at the one size
+# where it did not happen. Same lesson as `test-client` aiming its camera
+# at a spawn.
 [doc("Screenshot the lobby screen into artifacts/lobby.png")]
-lobby-shot SECONDS="8" AI="2" PRESET="0": _import
+lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "{{runtime}}" != "docker" ]; then
@@ -1311,7 +1318,7 @@ lobby-shot SECONDS="8" AI="2" PRESET="0": _import
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
-        --resolution 1280x720 \
+        --resolution {{RESOLUTION}} \
         -- --address={{compose_project}}-lobby-server --run-seconds={{SECONDS}} \
         --lobby-ai={{AI}} \
         --lobby-preset-steps={{PRESET}} \
