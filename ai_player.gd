@@ -831,7 +831,7 @@ func _record_stats() -> void:
 			continue
 		if int(info["owner"]) == player:
 			mine += 1
-		else:
+		elif _hostile(int(info["owner"])):
 			theirs += 1
 	buildings_raised = maxi(buildings_raised, mine)
 
@@ -842,6 +842,14 @@ func _record_stats() -> void:
 	# measurement that says whether that is because it never finds one.
 	# Buildings are persistent-explored (D-030), so once seen this only
 	# ever grows and a peak is the honest summary.
+	#
+	# Counted through `_hostile`, because the instrument built to diagnose
+	# the targeting shared the targeting's blind spot: every non-own
+	# building was `theirs`, so an ally's town — the nearest known building
+	# a teamed AI has, and the one it was marching on — reported as an
+	# opponent's base FOUND. `mine` stays an ownership test on purpose:
+	# `buildings_raised` counts what this seat put up, not what its team
+	# did.
 	peak_enemy_buildings_known = maxi(peak_enemy_buildings_known, theirs)
 
 	var stockpile := 0
@@ -938,6 +946,12 @@ func _forget_dead_assignments() -> void:
 ## ends a match on squads AND buildings. Marching at one engages whatever
 ## defends it on the way, because this is an attack-MOVE — the skirmishers
 ## still get fought, they just stop setting the agenda.
+##
+## ## What counts as an enemy
+##
+## Both scans go through `_hostile`, not through an ownership test. They
+## used to compare owners, which reads "not mine" as "theirs" — and a
+## TEAMMATE is neither. See `_hostile` for what that cost.
 func _enemy_target() -> Vector2i:
 	var from := state.spawn_cell_of(player)
 
@@ -945,7 +959,7 @@ func _enemy_target() -> Vector2i:
 	var best_distance := 1 << 30
 	for wire_id in state.buildings:
 		var info: Dictionary = state.buildings[wire_id]
-		if int(info["owner"]) == player or bool(info["destroyed"]):
+		if not _hostile(int(info["owner"])) or bool(info["destroyed"]):
 			continue
 		var cell := state.space.from_index(int(info["cell"]))
 		var d := state.space.distance(from, cell)
@@ -956,7 +970,7 @@ func _enemy_target() -> Vector2i:
 		return best
 
 	for id in state.composition:
-		if int(state.composition[id].get("owner", 0)) == player:
+		if not _hostile(int(state.composition[id].get("owner", 0))):
 			continue
 		if state.alive_of(id) <= 0:
 			continue
@@ -968,17 +982,46 @@ func _enemy_target() -> Vector2i:
 	return best
 
 
+## Somebody this AI may actually fight (D-050).
+##
+## THE one definition, asked by every scan that used to compare owners.
+## `ClientState.are_allied` is the client's mirror of the simulation's own
+## rule, and it answers true for a player against itself — so this single
+## test replaces the ownership check rather than sitting beside it, and
+## there is no second condition left to drift out of agreement with the
+## first.
+##
+## This file contained no reference to teams at all until the fix, which
+## is the declared-and-unread family CLAUDE.md warns about wearing its
+## other face: the RULE was written, tested and enforced everywhere it
+## mattered — `combat.gd` gates all three damage paths on it — and the AI
+## was simply never told. What that looked like from a chair: an allied
+## AI marching its whole army onto a teammate's town centre and milling
+## there for the rest of the match, because friendly fire is correctly
+## refused, so the objective never clears and the nearest-first scan
+## re-picks the same one forever. A livelock, not a mis-click, and the
+## symptom of the correct rule meeting the incorrect targeting.
+func _hostile(who: int) -> bool:
+	return not state.are_allied(who, player)
+
+
 ## Somewhere it has not looked. Other players' starting cells first —
 ## that is where an opponent's town is, and it was told them all at join
 ## (D-036) — then a wander so it does not stall if those are cleared.
+##
+## Its OWN TEAM's homes are skipped, not just its own. With shared vision
+## (D-050) a teammate's start is the one place on the map guaranteed to
+## hold nothing the AI has not already been shown, so a leg spent there is
+## a leg spent by construction learning nothing.
 func _next_place_to_look() -> Vector2i:
 	if state.space == null or state.spawn_cells.is_empty():
 		return Vector2i(-1, -1)
 
+	var friendly := _friendly_homes()
 	for i in range(state.spawn_cells.size()):
 		var index := (i + _look_at) % state.spawn_cells.size()
 		var cell := state.space.from_index(state.spawn_cells[index])
-		if cell == state.spawn_cell_of(player) or _looked.has(index):
+		if friendly.has(cell) or _looked.has(index):
 			continue
 		_looked[index] = true
 		_look_at = index + 1
@@ -988,6 +1031,29 @@ func _next_place_to_look() -> Vector2i:
 	# because what it saw is now stale rather than wrong.
 	_looked.clear()
 	return Vector2i(-1, -1)
+
+
+## The starting cells of this AI and its teammates, as a set.
+##
+## Read off the SEAT LIST through `spawn_cell_of`, never by repeating the
+## seat-index arithmetic here — that copy is exactly what sent every AI to
+## found its capital on somebody else's spawn (see
+## `ClientState.spawn_cell_of`). Its own home comes back from the same
+## call, so an AI with no teammates gets precisely the set this used to
+## test for.
+func _friendly_homes() -> Dictionary:
+	var out := {}
+	var home := state.spawn_cell_of(player)
+	if home.x >= 0:
+		out[home] = true
+	for seat in state.lobby.get("seats", []):
+		var who := int(seat["player"])
+		if not state.are_allied(who, player):
+			continue
+		var cell := state.spawn_cell_of(who)
+		if cell.x >= 0:
+			out[cell] = true
+	return out
 
 
 ## Spawn cells already visited, so it does not march on the same empty

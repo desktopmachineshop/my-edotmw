@@ -356,3 +356,147 @@ func test_a_loopback_peer_delivers_bytes_to_its_client_state() -> void:
 	peer.send(0, NetProtocol.encode_welcome(7, W, H, []), 0)
 	assert_true(state.welcomed, "A packet sent to the loopback peer never reached the client")
 	assert_eq(state.player, 7)
+
+
+# --- alliances: what an AI may march on (D-050) -----------------------
+#
+# `ai_player.gd` held no reference to teams at all, so "not mine" meant
+# "hostile" and a TEAMMATE was a valid attack objective — the nearest one,
+# usually, since allies start close and D-050's shared vision makes their
+# buildings known without scouting. Combat is what made it visible rather
+# than merely wrong: it refuses to let allies damage each other (D-024),
+# so the objective never clears, the nearest-first scan re-picks it every
+# time, and the army parks on its teammate for the rest of the match.
+#
+# Nothing in the test estate could see it. `just ai-ladder` is a
+# free-for-all, and every fixture above seats its AI on team 0 — which is
+# explicitly NOT a team (D-050), so `are_allied` was false for every pair
+# every fixture ever built.
+
+const ALLY := 1001
+const FOE := 1002
+
+
+## An AI (1000) with a teammate and an enemy, told its seats and its spawn
+## points exactly as the server tells them. One `BuildingSim`, because two
+## would both mint id 0 and collide on the wire.
+func _teamed_world() -> Dictionary:
+	var space := _space()
+	var spawns := [Vector2i(8, 8), Vector2i(14, 8), Vector2i(36, 8)]
+	var spawn_indices := []
+	for cell in spawns:
+		spawn_indices.append(space.index(cell))
+
+	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
+	var civ := String(ai.civ)
+	var seats := [
+		{"kind": "ai", "player": 1000, "civ": civ, "team": 1, "name": "AI 1000"},
+		{"kind": "ai", "player": ALLY, "civ": civ, "team": 1, "name": "AI 1001"},
+		{"kind": "ai", "player": FOE, "civ": civ, "team": 2, "name": "AI 1002"},
+	]
+	ai.state.handle_packet(NetProtocol.encode_lobby(0, seats, {}, 1))
+	ai.state.handle_packet(NetProtocol.encode_welcome(1000, W, H, [], spawn_indices))
+	assert_true(ai.state.are_allied(1000, ALLY),
+		"Setup: the fixture's teams never reached the AI")
+	assert_false(ai.state.are_allied(1000, FOE),
+		"Setup: the fixture has no enemy in it")
+	return {"space": space, "ai": ai, "spawns": spawns,
+		"buildings": BuildingSim.new(space)}
+
+
+func _tell_about_building(world: Dictionary, owner: int, cell: Vector2i) -> void:
+	var buildings: BuildingSim = world["buildings"]
+	var id := buildings.add_building(
+		BuildingSim.def_by_id(&"town_centre"), owner, cell, true)
+	var ai: AiPlayer = world["ai"]
+	ai.state.handle_packet(NetProtocol.encode_building_info(
+		buildings.info_entries([id])))
+
+
+func test_an_ai_does_not_march_on_its_teammates_town() -> void:
+	# The ally's town is NEARER, which is the ordinary case rather than a
+	# contrived one: teammates start beside each other and buildings are
+	# picked nearest-first.
+	var world := _teamed_world()
+	var ai: AiPlayer = world["ai"]
+	_tell_about_building(world, ALLY, Vector2i(12, 8))
+	_tell_about_building(world, FOE, Vector2i(36, 8))
+
+	assert_eq(ai._enemy_target(), Vector2i(36, 8),
+		"The AI picked its teammate's town as the attack objective")
+
+
+func test_an_ai_that_can_see_only_allies_has_nothing_to_attack() -> void:
+	# The livelock itself. An allied building is never destroyed, so a
+	# target that names one is re-picked forever — "no target" is the only
+	# honest answer, and it is what sends the army out to LOOK instead.
+	var world := _teamed_world()
+	var ai: AiPlayer = world["ai"]
+	_tell_about_building(world, ALLY, Vector2i(12, 8))
+	_tell_about_building(world, ALLY, Vector2i(13, 9))
+
+	assert_eq(ai._enemy_target(), Vector2i(-1, -1),
+		"The AI found an attack objective in a world containing only its own team")
+
+
+func test_an_ai_does_not_march_on_a_teammates_army() -> void:
+	# The squad half of the same scan, reached only once no building is
+	# known — so it needs its own test or the building fix hides it.
+	var world := _teamed_world()
+	var ai: AiPlayer = world["ai"]
+	var space: TorusSpace = world["space"]
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.add_squad(_def(12.0), 1000, Vector2i(8, 8))
+	sim.add_squad(_def(4.0), ALLY, Vector2i(10, 8))
+	sim.add_squad(_def(4.0), FOE, Vector2i(13, 8))
+	sim.tick()
+
+	var visible := sim.visible_to(1000)
+	ai.state.handle_packet(NetProtocol.encode_squad_info(
+		sim.squad_info_entries(visible)))
+	for packet in sim.replicator.collect_for_client(1000, sim.time, visible):
+		ai.state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+	ai.set_time(sim.time)
+
+	assert_eq(ai.state.composition.size(), 3,
+		"Setup: the AI cannot see all three armies, so this proves nothing")
+	assert_eq(ai._enemy_target(), Vector2i(13, 8),
+		"The AI picked its teammate's army as the attack objective")
+
+
+func test_the_enemy_buildings_seen_metric_does_not_count_allies() -> void:
+	# The instrument built to answer "did it ever find an opponent's base"
+	# shared the targeting's blind spot, so it would report a found base
+	# when what was found was a teammate's.
+	var world := _teamed_world()
+	var ai: AiPlayer = world["ai"]
+	_tell_about_building(world, 1000, Vector2i(8, 8))
+	_tell_about_building(world, ALLY, Vector2i(12, 8))
+	ai._record_stats()
+	assert_eq(ai.peak_enemy_buildings_known, 0,
+		"An ally's town was counted as an enemy base")
+
+	_tell_about_building(world, FOE, Vector2i(36, 8))
+	ai._record_stats()
+	assert_eq(ai.peak_enemy_buildings_known, 1,
+		"…and a real enemy's town was then not counted, so the check above is vacuous")
+
+
+func test_an_ai_does_not_go_looking_at_a_teammates_home() -> void:
+	# The third site, and the one the issue did not name. With shared
+	# vision (D-050) an ally's start is the one place on the map guaranteed
+	# to hold nothing the AI has not already been shown, so marching the
+	# army there is a wasted leg every time the cycle comes round.
+	var world := _teamed_world()
+	var ai: AiPlayer = world["ai"]
+	var spawns: Array = world["spawns"]
+
+	var looked := []
+	for _i in range(4):
+		var cell := ai._next_place_to_look()
+		if cell.x < 0:
+			break
+		looked.append(cell)
+
+	assert_eq(looked, [spawns[2]],
+		"The AI went looking at its own team's homes")
