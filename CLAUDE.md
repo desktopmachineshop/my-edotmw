@@ -612,8 +612,11 @@ Three rules come with it:
   Never add a faster path that builds the world its own way; that is the
   `profile`-sweep blind spot with a new name.
 - **A scenario cannot see founding, production or spawn placement**,
-  because it skips them. `just test-load 4 120` still plays the real
-  opening and is still the gate a change passes before it is called done.
+  because it skips them. `just test-load` still plays the real opening
+  and is still the gate a change passes before it is called done — take
+  its DURATION from `docs/status/load-testing.md` rather than from here,
+  since marching distance scales with map size and a number written into
+  prose goes stale the next time the map ladder moves.
 - **`_import` is now skipped when nothing changed.** It prints when it
   skips; `EDOTMW_FORCE_IMPORT=1` forces it. If you ever suspect a stale
   cache, that flag is the first thing to try.

@@ -23,8 +23,8 @@ class_name MapSettings
 
 ## Torus dimensions. Height must stay even (D-008's row parity), which
 ## `sizes()` guarantees and `validate()` rechecks.
-var width: int = 84
-var height: int = 96
+var width: int = 168
+var height: int = 194
 
 ## How many starting positions the map offers (D-039).
 ##
@@ -96,33 +96,51 @@ var moisture_frequency: float = 4.0
 var height_scale: float = 15.0
 
 
-## The map sizes the lobby offers. Every height is even (D-008), and the
-## cell counts span the range M4 measured: 2,048 through 32,768, where
-## the worst tick stayed flat once field building was amortised (D-040).
-## Every size is roughly SQUARE IN WORLD UNITS, which is not the same as
-## square in cells.
+## The map sizes the lobby offers. Every height is even (D-008), and every
+## size is roughly SQUARE IN WORLD UNITS, which is not the same as square
+## in cells.
 ##
 ## A hex column is `SQRT_3` (~1.732) wide and a hex row is 1.5 deep, so a
-## W x H cell grid measures `W * 1.732` by `H * 1.5`. These were all 2:1
-## in cells, which is 2.31:1 on the ground — and the shallow axis is what
-## bounds how far the camera may zoom before a second terrain copy enters
-## view (RenderCull.max_camera_height). On the old Standard map that
-## capped zoom at 31 against a possible 47.
+## W x H cell grid measures `W * 1.732` by `H * 1.5`. The sizes were once
+## all 2:1 in cells, which is 2.31:1 on the ground — and the shallow axis
+## bounds how far the camera may zoom before the same ground appears
+## twice (`RenderCull.max_camera_height`). Hence `height ~ width * 1.155`.
 ##
-## So `height ~ width * 1.155`. Heights stay EVEN for D-008's row parity,
-## and cell counts are close to what they replaced so spawn density,
-## match pacing and the D-038/D-043 performance figures stay comparable.
+## ## Why the whole ladder moved up a rung (2026-08-17)
 ##
-##   Skirmish  42 x 48  =  2,016 cells   (was 64 x 32  =  2,048)
-##   Standard  84 x 96  =  8,064 cells   (was 128 x 64 =  8,192)
-##   Large    126 x 146 = 18,396 cells   (was 192 x 96 = 18,432)
-##   Huge     168 x 194 = 32,592 cells   (was 256 x 128 = 32,768)
+## The zoom cap is `period / 5.90` — you may zoom out until you can see
+## exactly ONE whole world, and no further, because terrain is drawn nine
+## times and every entity once. That is a fixed FRACTION of the map, so a
+## small map is one you can take in at a glance: at 42 x 48 the cap is
+## 12.3 and the entire world is on screen at it. Fog and scouting are
+## most of this game's information model (D-004/D-025), and a world you
+## can see all of at once has neither. D-056 wants matches an order of
+## magnitude longer than today's ~200 s, and marching distance is the
+## cheapest honest lever on that.
+##
+## So the floor rose to what was Standard, and the default to what was
+## Huge. Cell counts now run 8,064 to 130,368; M4 measured worst tick flat
+## in map size from 2,048 to 32,768 once field building was amortised
+## (D-040), so the top two entries are extrapolation, not measurement —
+## `field_cells_per_tick` is budgeted per TICK, so a bigger map costs
+## pathing LATENCY rather than a spike (D-040), which is the trade that
+## makes them tolerable at all.
+##
+##   Skirmish  84 x 96  =   8,064 cells   (was 42 x 48   =  2,016)
+##   Standard 168 x 194 =  32,592 cells   (was 84 x 96   =  8,064)
+##   Large    252 x 290 =  73,080 cells   (was 126 x 146 = 18,396)
+##   Huge     336 x 388 = 130,368 cells   (was 168 x 194 = 32,592)
+##
+## `maps/ladder.tres` deliberately stays at 42 x 48 and is NOT in this
+## list: `just ai-ladder` picks it precisely because four spawns close
+## together let AI meet inside a match, and first contact there is already
+## ~326 s against a 600 s cap.
 static func sizes() -> Array:
 	return [
-		{"width": 42, "height": 48, "name": "Skirmish"},
-		{"width": 84, "height": 96, "name": "Standard"},
-		{"width": 126, "height": 146, "name": "Large"},
-		{"width": 168, "height": 194, "name": "Huge"},
+		{"width": 84, "height": 96, "name": "Skirmish"},
+		{"width": 168, "height": 194, "name": "Standard"},
+		{"width": 252, "height": 290, "name": "Large"},
+		{"width": 336, "height": 388, "name": "Huge"},
 	]
 
 

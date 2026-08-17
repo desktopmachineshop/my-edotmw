@@ -67,7 +67,7 @@ const TONEMAP_EXPOSURE := 1.1
 const TONEMAP_WHITE := 1.0
 
 ## Depth fog. Aerial perspective is a strong depth cue at RTS zoom
-## (camera height 8-31 on the shipped Standard map, D-045's
+## (camera height 12-49 on the shipped default map, D-045's
 ## `max_camera_height`), and tying its colour to the sky horizon rather
 ## than a separate flat fog colour is what makes it read as haze rather
 ## than a grey wall.
@@ -86,10 +86,22 @@ const TONEMAP_WHITE := 1.0
 ## Ground the camera can see extends about `FORWARD_REACH_FACTOR` times
 ## its own height forward (measured — see client.gd's `_camera_max_height`
 ## doc). `TARGET_HORIZON_FOG` is that original ~30%-at-the-far-edge feel.
-## `DEFAULT_CAMERA_MAX_HEIGHT` is the Standard map's `max_camera_height`
-## (RenderCull.max_camera_height on an 84x96 map) — the default so a
-## caller that doesn't know a specific map's bounds (bench_render.gd,
-## model_preview.gd) reproduces the exact density this was tuned at.
+## `DEFAULT_CAMERA_MAX_HEIGHT` is the fallback for a caller that does not
+## know a specific map's bounds (bench_render.gd, model_preview.gd).
+##
+## **It is not, and never was, any map's `max_camera_height`** — that
+## claim sat here until 2026-08-17 and was false in two directions at
+## once: 31.6 is `min(period) * 0.33` for the OLD 128x64 map, the shape
+## reads "84x96", and the live figure on the default map is 49.4. It is
+## the number that reproduces the original hand-tuned `FOG_DENSITY` of
+## 0.006, which is a legitimate thing to want (previews should not drift
+## every time the map ladder moves) and a different thing from what the
+## comment said. `tests/test_world_look_fog.gd` pins that intent, so the
+## value is load-bearing — do not "correct" it to a derived cap without
+## deciding that previews should follow the shipping rig instead.
+##
+## The shipping client never uses it: `client.gd` passes THIS map's real
+## ceiling, which is the whole point of `fog_density_for`.
 const FORWARD_REACH_FACTOR := 1.9
 const TARGET_HORIZON_FOG := 0.30
 const DEFAULT_CAMERA_MAX_HEIGHT := 31.6
