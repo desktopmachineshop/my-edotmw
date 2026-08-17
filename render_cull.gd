@@ -266,37 +266,124 @@ static func block_radius(space: TorusSpace, cells_per_side: int) -> float:
 	return radius
 
 
-## How far the camera may zoom out before a SECOND terrain copy enters
-## the view — the actual fix for "half the screen will not render units".
+## How far behind what it looks at the camera sits, as a fraction of its
+## height — the ONE definition of the rig's pitch, shared with
+## `client.gd`'s `_update_camera`.
+##
+## It lives here because `max_camera_height` below is entirely a statement
+## about this angle, and the two were separate numbers in separate files
+## until the cap was found to be wrong. A camera that tilts without the
+## cap following would put the world back on screen twice.
+const PITCH_RUN := 0.6
+
+
+## How far the camera may zoom out before a SECOND copy of the same ground
+## enters the view — the actual fix for "half the screen will not render
+## units".
 ##
 ## Terrain is drawn nine times (D-035) but every squad, building and
-## resource node is drawn ONCE. So the moment the view spans a second
-## copy, that copy is bare ground: real terrain, no units on it. It is not
-## a culling bug and no choice of lattice offset addresses it.
+## resource node is drawn ONCE. So the moment the view shows the same cell
+## at two lattice copies, one of them is bare ground: real terrain, no
+## units on it. It is not a culling bug and no choice of lattice offset
+## addresses it.
 ##
-## Derived from the SHALLOWER of the two lattice periods. The previous
-## version used a quarter of the map's WIDTH, and the binding dimension is
-## depth: a 128x64 map sounds like 2:1 and in world units is 221 x 96,
-## because a hex row is 1.5 deep and a column SQRT_3 (~1.73) wide.
+## ## Derived, not measured — and the measured version was wrong
 ##
-## The 0.33 is measured, not chosen. On 128x64 at 1280x720 the forward
-## ground reach is ~1.9x camera height, and the camera sits 0.6h behind
-## what it looks at, so the on-screen z span is ~2.6h. The old cap of 55
-## showed 106 units of a 96-unit period.
+## This used to be `min(x_period, z_period) * 0.33`, where 0.33 came from
+## a ruler held against a 128x64 map at 1280x720: forward ground reach
+## ~1.9h, camera 0.6h behind its target, so an on-screen z span of ~2.6h.
+## The z span was right. **It was the wrong axis.**
 ##
-## The cost is real and worth stating: max zoom-out on the shipped map
-## drops from ~55 to ~31. Buying it back means drawing entities at every
-## visible copy — up to nine times the per-entity work D-045 exists to
-## cut — or making maps less oblong, since height * 1.5 = width * SQRT_3
-## needs height ~ 1.155 * width and the shipped map is half that.
+## The frame is a truncated pyramid, so its widest ground line is the FAR
+## edge, and its width there is set by the HORIZONTAL half-angle — which
+## on a `KEEP_HEIGHT` camera is `atan(tan(fov/2) * aspect)`, 53.75 degrees
+## at 16:9 against the 37.5 the vertical gives. Working it through the rig
+## below: the on-screen x span is **5.90h**, against 2.65h for z. So x is
+## more than twice as binding, and the old cap modelled only z. Measured
+## consequence on the shipped 84x96 map at the default height of 40: the
+## far band of the frame was 236 world units wide against a 145.5-unit x
+## period — **1.6 periods, the same ground drawn twice**, one copy
+## carrying the forests and its sibling bare. Reported from playtest as
+## whole sections of forest appearing and disappearing while panning.
+##
+## Note the ratio `k_x * cap / x_period` is **scale-invariant** under the
+## old formula: 1.93 on every map size, because the cap was itself a
+## fraction of the period. Bigger maps could never have fixed it.
+##
+## ## The geometry
+##
+## With the camera at `target + (0, h, PITCH_RUN * h)` looking at
+## `target`, the view axis is `pitch = atan(1 / PITCH_RUN)` below
+## horizontal. The frame's top edge is `pitch - fov/2` below horizontal
+## and its bottom edge `pitch + fov/2` (which exceeds 90 degrees on this
+## rig — the near edge of the frame is ground BEHIND the camera, which is
+## why the z span is a difference of cotangents rather than a sum).
+##
+##     k_z = cot(pitch - fov/2) - cot(pitch + fov/2)          ~ 2.65
+##     k_x = 2 * sin(fov/2) * aspect / sin(pitch - fov/2)     ~ 5.90
+##
+## and the cap is whichever period runs out first. `aspect` and `fov` are
+## parameters rather than constants because the answer genuinely depends
+## on the window: an ultrawide monitor fans the far edge out further and
+## earns a lower cap. Defaults reproduce 16:9 at Godot's default fov, so
+## a caller without a camera to hand gets the documented numbers.
+##
+## ## What it costs, honestly: nothing you could see
+##
+## The cap now stops you at the point where you can see **exactly one
+## whole world**, because that is what "no cell twice" means. The zoom it
+## takes away only ever showed repeats. On 84x96 it falls 47.5 -> 24.7 and
+## the entire map is still on screen at that height; on 168x194 it rises
+## to 49.4. What a small map loses is not view but *secrecy* — being able
+## to see the whole world at once trivialises scouting, which is an
+## argument about map SIZE (see `MapSettings.sizes`) and not about zoom.
+##
+## Buying more zoom than this means drawing entities at every visible copy
+## — up to nine times the per-entity work D-045 exists to cut — and that
+## remains the one alternative on the table if the cap ever becomes a
+## design constraint someone wants to break.
 ##
 ## Lives here rather than in client.gd so it can be tested at all: the
 ## client needs a GPU and cannot be (D-014).
 static func max_camera_height(space: TorusSpace, floor_height: float,
-		ceiling_height: float) -> float:
+		ceiling_height: float, aspect := 16.0 / 9.0, fov_degrees := 75.0) -> float:
 	var x_period := float(space.width) * space.hex_size * TorusSpace.SQRT_3
 	var z_period := float(space.height) * 1.5 * space.hex_size
-	return clampf(minf(x_period, z_period) * 0.33, floor_height, ceiling_height)
+	return clampf(
+		minf(x_period / span_x_per_height(aspect, fov_degrees),
+			z_period / span_z_per_height(fov_degrees)),
+		floor_height, ceiling_height)
+
+
+## On-screen ground width, at the frame's far edge, per unit of camera
+## height. See `max_camera_height` for the derivation.
+##
+## Returns `INF` when the frame's top edge reaches the horizon
+## (`fov/2 >= pitch`), because the view then runs to the far plane and NO
+## camera height keeps one copy on screen. `INF` makes the cap collapse to
+## its floor, which is the honest answer rather than a silent overflow.
+static func span_x_per_height(aspect: float, fov_degrees: float) -> float:
+	var half_fov := deg_to_rad(fov_degrees) * 0.5
+	var top := atan2(1.0, PITCH_RUN) - half_fov
+	if top <= 0.0:
+		return INF
+	return 2.0 * sin(half_fov) * aspect / sin(top)
+
+
+## On-screen ground depth per unit of camera height, the span the previous
+## cap modelled — kept because it is still a real constraint, just never
+## the binding one on any shipped map.
+static func span_z_per_height(fov_degrees: float) -> float:
+	var half_fov := deg_to_rad(fov_degrees) * 0.5
+	var pitch := atan2(1.0, PITCH_RUN)
+	var top := pitch - half_fov
+	if top <= 0.0:
+		return INF
+	return _cot(top) - _cot(pitch + half_fov)
+
+
+static func _cot(angle: float) -> float:
+	return cos(angle) / sin(angle)
 
 
 ## Whether `point` is on screen, with `margin` extra pixels of slack.

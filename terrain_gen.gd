@@ -43,10 +43,19 @@ class_name TerrainGen
 
 ## The map width every shipped frequency is calibrated against (D-105).
 ##
-## 84 is the Standard lobby size (`MapSettings.sizes()`), chosen so every
+## 84 was the Standard lobby size when D-105 landed, chosen so every
 ## preset's tuned numbers keep exactly the meaning they were authored
-## with — `continents` at Standard is bit-identical before and after
-## D-105, which is what let the change land without re-tuning /terrain.
+## with — `continents` at 84 wide is bit-identical before and after D-105,
+## which is what let the change land without re-tuning /terrain.
+##
+## **It stays 84 now that the size ladder has moved up** (84 is the
+## smallest shipped size rather than the default). This is a calibration
+## constant, not a description of the lineup: retargeting it at whatever
+## is currently called "Standard" would silently halve the effective
+## frequency of every `/terrain` preset — the exact "presets change
+## meaning without anyone editing them" failure D-105 exists to prevent.
+## The larger sizes therefore hold MORE features, not bigger ones, which
+## is D-105's whole point.
 const REFERENCE_WIDTH := 84.0
 
 ## How many times the field repeats along each axis (D-036).

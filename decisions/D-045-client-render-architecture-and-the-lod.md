@@ -302,4 +302,26 @@ severity is lower than 340/340 suggests — but this is the leading
 explanation for the report and it needs its own decision, not an
 amendment here.
 
+**Correction, same day — that table counts the wrong thing, and its
+headline number is wrong.** It asked "does any cell appear at more than
+one offset anywhere in this sweep", which conflates two conditions:
+
+- **seam-straddling** — the view crosses the canonical boundary while
+  each cell is still on screen at exactly one copy. Benign, and most of
+  the 340/340;
+- **true duplication** — the same cell on screen twice, which is the
+  bare-ground defect.
+
+The conclusion happened to survive the error (the cap IS broken, at every
+size), but the reasoning did not, and the diagnosis it points at is the
+wrong axis. The z span was never the binding constraint: the frame is a
+truncated pyramid, so its widest ground line is the FAR edge, whose width
+comes from the horizontal half-angle — 5.90h against 2.65h for z at 16:9.
+See **D-20260817-the-zoom-cap-was-modelling-the-wrong-axis**, which
+derives the cap instead of measuring it, and moves the map ladder up a
+rung so the honest cap is a generous zoom rather than a cramped one.
+Recorded rather than edited away, because "a sweep that measured
+something adjacent to the question and agreed with the answer anyway" is
+worth one entry in this project's list of ways to be confidently wrong.
+
 ---

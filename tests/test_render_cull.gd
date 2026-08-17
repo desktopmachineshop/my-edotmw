@@ -270,6 +270,101 @@ func test_the_zoom_cap_keeps_a_second_terrain_copy_off_screen() -> void:
 		+ "the map shape changed and this test is no longer testing anything")
 
 
+# --- the cap's actual promise: never the same ground twice --------------
+#
+# The old cap was `min(period) * 0.33`, from a ruler held against a
+# 128x64 map at 1280x720. It modelled the on-screen Z span and nothing
+# else, and z is not the binding axis: the frame is a truncated pyramid,
+# so its widest ground line is the FAR edge, whose width comes from the
+# HORIZONTAL half-angle (the vertical one times the aspect). Measured at
+# 16:9 that is 5.90h against 2.65h for z, so the cap was out by more than
+# a factor of two on the axis that mattered, and the shipped 84x96 map at
+# the default height showed a 236-unit band against a 145.5-unit x
+# period. Playtest report: forests appearing and disappearing while
+# panning.
+
+
+func test_the_far_edge_is_wider_than_the_view_is_deep() -> void:
+	# The finding in one line. If this ever inverts, the rig's pitch or fov
+	# changed enough that the binding axis moved, and `max_camera_height`
+	# needs re-deriving rather than re-tuning.
+	var k_x := RenderCull.span_x_per_height(16.0 / 9.0, 75.0)
+	var k_z := RenderCull.span_z_per_height(75.0)
+
+	assert_almost_eq(k_z, 2.65, 0.01,
+		"the z span is the one number the old cap got right; it should not move")
+	assert_almost_eq(k_x, 5.90, 0.01, "the far edge spans 5.9x the camera height")
+	assert_gt(k_x, k_z * 2.0,
+		"x is the binding axis by more than a factor of two — this is why a "
+		+ "z-derived cap was not merely imprecise but wrong")
+
+
+func test_a_wider_window_earns_a_lower_cap() -> void:
+	# The aspect is a parameter, not a constant, because it genuinely
+	# changes the answer — an ultrawide monitor fans the far edge out
+	# further and must be allowed to zoom less. The old constant was
+	# measured at one window size and applied to every window.
+	var space := _shipped_space()
+	var wide := RenderCull.max_camera_height(space, 12.0, 90.0, 21.0 / 9.0, 75.0)
+	var normal := RenderCull.max_camera_height(space, 12.0, 90.0, 16.0 / 9.0, 75.0)
+
+	assert_lt(wide, normal,
+		"an ultrawide window sees more ground across and must cap zoom lower")
+
+
+func test_the_zoom_cap_never_shows_the_same_ground_twice() -> void:
+	# THE property the cap exists to guarantee, asserted by projection
+	# rather than by arithmetic — so it cannot pass by agreeing with the
+	# formula it is checking. At the cap, on every shipped map size, no
+	# cell may be on screen at two lattice offsets at once.
+	#
+	# Sampled on a fixed ~50x50 grid rather than every cell, to stay inside
+	# a unit test's budget on the largest map. Safe because duplication is
+	# never a stray cell: it is a band across the whole far edge of the
+	# frame, hundreds of cells wide.
+	var camera := Camera3D.new()
+	add_child_autofree(camera)
+	var size := camera.get_viewport().get_visible_rect().size
+	var aspect := size.x / size.y
+
+	for entry in MapSettings.sizes():
+		var space := TorusSpace.new(int(entry["width"]), int(entry["height"]), 1.0)
+		var offsets := space.lattice_offsets()
+		var cap := RenderCull.max_camera_height(space, 12.0, 90.0, aspect, camera.fov)
+		var step := maxi(1, space.width / 50)
+
+		var worst := 0
+		for tq in [0, space.width / 3, 2 * space.width / 3]:
+			for tr in [0, space.height / 3, 2 * space.height / 3]:
+				var target := space.to_world(Vector2i(tq, tr))
+				camera.position = target + Vector3(
+					0.0, cap, cap * RenderCull.PITCH_RUN)
+				camera.look_at(target, Vector3.UP)
+				worst = maxi(worst, _most_copies_on_screen(
+					camera, space, offsets, size, step))
+
+		assert_eq(worst, 1,
+			"%s (%dx%d) at its cap of %.1f shows some ground %d times — every copy "
+			% [entry["name"], space.width, space.height, cap, worst]
+			+ "past the first is real terrain with no units, buildings or trees on it")
+
+
+## The largest number of lattice copies any sampled cell is on screen at.
+## 1 is correct (you can see the world); 0 means the sampling missed the
+## view entirely and the caller should treat that as a broken setup.
+func _most_copies_on_screen(camera: Camera3D, space: TorusSpace,
+		offsets: Array[Vector3], size: Vector2, step: int) -> int:
+	var worst := 0
+	for q in range(0, space.width, step):
+		for r in range(0, space.height, step):
+			var at := space.axial_offset_to_world(Vector2(float(q), float(r)))
+			var seen := 0
+			for off in offsets:
+				if RenderCull.is_on_screen(camera, at + off, 0.0, size):
+					seen += 1
+			worst = maxi(worst, seen)
+	return worst
+
 func test_every_shipped_map_is_roughly_square_in_world_units() -> void:
 	# A map that is much wider than it is deep forces the zoom cap down,
 	# because the cap is bounded by the SHALLOWER lattice period — and
@@ -422,11 +517,24 @@ func test_a_block_centre_stays_in_the_same_lattice_copy_as_its_cells() -> void:
 	var last := Vector2i((space.width - 1) / NODE_CHUNK, 0)
 	var centre := RenderCull.block_centre(space, last, NODE_CHUNK)
 
+	# The property the whole test rests on, asserted directly rather than
+	# left to the shipped width's good luck: the default map's width mod
+	# NODE_CHUNK must land in 1..8, or the last block's nominal centre is
+	# ON the map and there is nothing here to catch. 84 gave 4; 168 gives
+	# 8, which is the last value that still works. A map change to 160,
+	# 176 or anything from 169 to 175 would defuse this test silently, and
+	# `maps/ladder.tres` at 42 already does (42 mod 16 = 10) — which is
+	# why this loads the default map and not that one.
+	var overhang := space.width % NODE_CHUNK
+	assert_between(overhang, 1, NODE_CHUNK / 2,
+		"setup: default map width %d mod %d = %d, so the last block's nominal "
+		% [space.width, NODE_CHUNK, overhang]
+		+ "centre is on the map and this test no longer tests anything — pick a "
+		+ "width whose remainder is 1..%d" % (NODE_CHUNK / 2))
+
 	var nominal := Vector2i(last.x * NODE_CHUNK + NODE_CHUNK / 2, NODE_CHUNK / 2)
 	assert_gt(nominal.x, space.width - 1,
-		"setup: the last block's nominal centre should be off the map — if it is "
-		+ "not, the map width became a multiple of NODE_CHUNK and this test is "
-		+ "no longer testing anything")
+		"setup: the last block's nominal centre should be off the map")
 
 	# Every cell the block actually owns must be inside the radius culling
 	# will use, measured from the centre culling will use. That is the

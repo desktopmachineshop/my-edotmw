@@ -292,6 +292,9 @@ func _ready() -> void:
 	_camera.current = true
 	add_child(_camera)
 	_update_camera()
+	# The zoom ceiling depends on the window's aspect, so it has to follow
+	# the window. See `_refresh_camera_cap`.
+	get_viewport().size_changed.connect(_refresh_camera_cap)
 
 	add_child(WorldLook.make_sun())
 
@@ -666,11 +669,14 @@ func _build_terrain() -> void:
 	# height*1.5*hex_size *and* x by height/2*SQRT_3*hex_size, because x
 	# depends on r/2. Offsetting by (x, 0, z) rectangles instead would look
 	# correct straight ahead and tear at the diagonal seams.
-	var step_q := Vector3(float(space.width) * space.hex_size * TorusSpace.SQRT_3, 0.0, 0.0)
-	var step_r := Vector3(
-		float(space.height) * 0.5 * space.hex_size * TorusSpace.SQRT_3,
-		0.0,
-		float(space.height) * 1.5 * space.hex_size)
+	# `lattice_steps()`, not a copy of that arithmetic — it is the one
+	# definition, shared with culling and the camera wrap, and this file
+	# had been re-deriving it inline. Two spellings of the same geometry is
+	# how the terrain and the things standing on it drift apart, which is
+	# the failure D-035 exists to prevent.
+	var steps := space.lattice_steps()
+	var step_q := steps[0]
+	var step_r := steps[1]
 
 	for i in [-1, 0, 1]:
 		for j in [-1, 0, 1]:
@@ -700,41 +706,18 @@ func _build_terrain() -> void:
 		for x in range(space.width):
 			_minimap_base.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
 
-	# Derived from the SHALLOWER of the two lattice periods, not from
-	# width — and this is the fix for "half the screen will not render
-	# units as visible".
+	# How far out this map may be zoomed before the same ground appears
+	# twice. Terrain is drawn nine times (D-035) but every squad, building
+	# and resource node is drawn ONCE, so a second copy on screen is real
+	# terrain with nothing standing on it — it reads exactly like a
+	# rendering failure, and did.
 	#
-	# Terrain is drawn nine times (D-035) but every squad, building and
-	# resource node is drawn ONCE. So the moment the view spans a second
-	# terrain copy, that copy is bare ground: real terrain, no units. It
-	# reads exactly like a rendering failure.
-	#
-	# The old cap took a quarter of the map's WIDTH. A 128x64 map sounds
-	# like 2:1 and in WORLD units is 221 x 96 — 2.3:1 — because a hex row
-	# is 1.5 deep and a column SQRT_3 ~ 1.73 wide. So the binding
-	# dimension is depth and the cap was computed from the other one.
-	#
-	# Measured, on 128x64 at 1280x720: forward ground reach is about 1.9x
-	# camera height, and the camera also sits 0.6h behind its target, so
-	# the on-screen z span is roughly 2.6h. The old cap of 55 showed 106
-	# units of a 96-unit period — comfortably more than one copy.
-	#
-	# 0.33 keeps 2.6h inside the period with margin. Raising it back is
-	# not a free win: it needs entities drawn at every visible copy, which
-	# is up to nine times the per-entity work D-045 exists to cut.
-	_camera_max_height = RenderCull.max_camera_height(
-		space, CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT)
-	_camera_height = minf(_camera_height, _camera_max_height)
-
-	# Playtest fix: WorldLook's depth fog was tuned once, against the
-	# Standard map's ~31-unit max_camera_height, and never revisited once
-	# _camera_max_height became per-map. A Huge map reaches D-045's 90-unit
-	# ceiling, and the SAME density at that height fogs out most of the
-	# view — reported as "just a grey landscape". Re-derived here, now that
-	# THIS map's actual ceiling is known, rather than the startup default.
-	if _world_environment != null and _world_environment.environment != null:
-		_world_environment.environment.fog_density = \
-			WorldLook.fog_density_for(_camera_max_height)
+	# The whole derivation lives in RenderCull.max_camera_height, which
+	# takes THIS window's aspect: the frame is a truncated pyramid, so the
+	# widest ground line is the far edge and its width is set by the
+	# horizontal half-angle, which is the vertical one times the aspect. An
+	# ultrawide monitor genuinely earns a lower cap.
+	_refresh_camera_cap()
 
 	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
 	_update_camera()
@@ -1049,7 +1032,11 @@ func _issue_scenario_rally() -> void:
 		# BECAUSE nodes were drawn where they should not have been.
 		var centre := _state.space.to_world(Vector2i(_state.space.width / 2, _state.space.height / 2))
 		_camera_target = rendezvous.lerp(centre, 0.2)
-		_camera_height = clampf(42.0, CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT)
+		# _camera_max_height, not the 90-unit CAMERA_MAX_HEIGHT: that is the
+		# absolute ceiling across all maps, and clamping the capture height
+		# against it let this one path zoom past THIS map's cap and frame
+		# the same ground twice.
+		_camera_height = clampf(42.0, CAMERA_MIN_HEIGHT, _camera_max_height)
 		_update_camera()
 
 
@@ -4587,16 +4574,29 @@ func _update_minimap() -> void:
 		_plot_minimap(image, _state.space.from_index(int(mark["cell"])),
 			_state.colour_of(int(mark["owner"])), int(mark["size"]))
 
-	for squad in _state.curves:
-		# Ghosted squads are not drawn at all here either — the same
-		# decision `_refresh_squads` makes for the 3D view (D-099), and the
-		# two must agree or a squad missing from the world would still be a
-		# dot on the map. The underlying ghost data/hash mechanism (D-025)
-		# is untouched; this just stops painting a dot for it.
-		if _state.is_ghost(squad):
+	# Squads, in their owner's colour (D-052) — the same resolution the
+	# building pass above and the 3D world (`_owner_colour_of`) already make.
+	# This pass painted cyan-if-mine and red-otherwise from M3 until
+	# D-20260817-minimap-squad-colours, a scheme written a milestone before
+	# per-player colours existed: a player's own army was cyan whatever the
+	# rest of the game drew it, and an ALLY — whose army D-050's shared
+	# vision puts on the minimap and nowhere else — was painted in the enemy
+	# tone.
+	#
+	# Ghosted squads are not drawn at all, the same decision
+	# `_refresh_squads` makes for the 3D view (D-099) — and here it comes
+	# free rather than as a check, because conceal moves a squad out of
+	# `composition` (D-025). The underlying ghost data/hash mechanism is
+	# untouched; there is simply no mark for one.
+	for mark in MinimapPaint.squad_marks(_state.composition):
+		var squad := int(mark["squad"])
+		# Composition can arrive before the curve that says where the squad
+		# is. Skipping is right where a dot at `squad_cell`'s Vector2i.ZERO
+		# fallback would plant an army in the map's corner.
+		if not _state.curves.has(squad):
 			continue
-		var colour := Color(0.35, 0.95, 1.0) if _state.owns(squad) else Color(1.0, 0.35, 0.28)
-		_plot_minimap(image, _state.squad_cell(squad, _now), colour)
+		_plot_minimap(image, _state.squad_cell(squad, _now),
+			_state.colour_of(int(mark["owner"])))
 
 	# Resource nodes, but only where this player has actually been. Fog
 	# governs what you know about the map, and that includes what is on it —
@@ -6281,10 +6281,52 @@ func _wrap_camera_target() -> void:
 ## `unproject_position` and therefore follows the rotation for free. That
 ## is the whole reason rotation could be added without touching selection,
 ## culling or terrain tiling: none of them ever assumed a fixed heading.
+## Re-derive this map's zoom ceiling, and everything downstream of it.
+##
+## Called when the map is built AND whenever the window changes size,
+## because the cap depends on the viewport's ASPECT: the frame's widest
+## ground line is its far edge, and that width is the vertical half-angle
+## times the aspect (see `RenderCull.max_camera_height`). Resize a 16:9
+## window to ultrawide and the same camera height starts showing the world
+## twice — so a cap computed once at startup is a cap that goes wrong the
+## first time somebody drags a window edge.
+##
+## Fog rides along because `fog_density_for` is derived from this ceiling
+## and nothing else. It was a separate re-derivation, in one place, which
+## is how it went stale once already (a Huge map reaching the 90-unit
+## ceiling fogged out most of the view — reported as "just a grey
+## landscape").
+func _refresh_camera_cap() -> void:
+	if _state == null or _state.space == null:
+		return
+	# 16:9 when there is no viewport to ask. `test_return_to_lobby` builds
+	# terrain on a client that was never added to a tree — the same
+	# headless path D-014 says cannot render — and a cap is still wanted
+	# there, just not one derived from a window that does not exist.
+	var aspect := 16.0 / 9.0
+	var viewport := get_viewport()
+	if viewport != null:
+		var size := viewport.get_visible_rect().size
+		if size.y > 0.0:
+			aspect = size.x / size.y
+	_camera_max_height = RenderCull.max_camera_height(
+		_state.space, CAMERA_MIN_HEIGHT + CAMERA_ZOOM_STEP, CAMERA_MAX_HEIGHT,
+		aspect, _camera.fov if _camera != null else 75.0)
+	_camera_height = minf(_camera_height, _camera_max_height)
+	if _world_environment != null and _world_environment.environment != null:
+		_world_environment.environment.fog_density = \
+			WorldLook.fog_density_for(_camera_max_height)
+	_update_camera()
+
+
 func _update_camera() -> void:
 	if _camera == null:
 		return
-	var offset := Vector3(0.0, _camera_height, _camera_height * 0.6) \
+	# RenderCull.PITCH_RUN, not a literal 0.6: `max_camera_height` is
+	# entirely a statement about this angle, and the two were separate
+	# numbers in separate files right up until the cap was found to be
+	# modelling the wrong axis.
+	var offset := Vector3(0.0, _camera_height, _camera_height * RenderCull.PITCH_RUN) \
 		.rotated(Vector3.UP, _camera_yaw)
 	_camera.position = _camera_target + offset
 	_camera.look_at(_camera_target, Vector3.UP)
