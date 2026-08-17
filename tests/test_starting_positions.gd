@@ -36,6 +36,24 @@ func test_starting_positions_follow_the_seat_count() -> void:
 	assert_eq(_slots(m), 4, "so does a human joining")
 
 
+func test_a_command_line_ai_seat_asks_for_a_start_too() -> void:
+	# The OTHER door onto AI seating (D-20260817-an-ai-never-holds-the-
+	# lobby): `--ai=N` seats its brains through `add_ai_player` before any
+	# human connects, where the lobby's "Add AI player" button goes through
+	# `add_ai`. Both are one `_seat_ai` underneath precisely so a rule like
+	# this one cannot hold on a door somebody remembered and not on the
+	# other — every test above uses the lobby door alone.
+	var m := MatchState.new()
+	m.require_admin_start = false
+	m.players_expected = 4
+	for i in range(3):
+		m.add_ai_player(1000 + i, CivRoster.ids()[0])
+	assert_eq(_slots(m), 3, "three command-line AI seats, three starting positions")
+
+	m.add_player(1)
+	assert_eq(_slots(m), 4, "and the human who joins them gets one")
+
+
 func test_a_leaving_seat_gives_its_start_back() -> void:
 	var m := _lobby()
 	m.add_player(1)

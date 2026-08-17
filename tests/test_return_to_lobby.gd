@@ -61,6 +61,60 @@ func test_a_second_match_can_be_started() -> void:
 	assert_eq(m.phase, MatchState.Phase.RUNNING)
 
 
+# --- the session a human actually plays (#92) --------------------------
+#
+# `quick-test` and `run-server AI=3` are no-lobby starts: the AI seats are
+# created from the command line before anybody connects, and the match
+# begins the moment the human arrives. That is the session this whole
+# feature exists to serve, and it was the one session leave-to-lobby did
+# not work in — see the AI-never-holds-the-lobby section of test_lobby.gd
+# for why.
+
+
+## A `--players=1 --ai=3` server, seated exactly as server.gd seats one.
+func _command_line_ai_match() -> MatchState:
+	var m := MatchState.new()
+	m.require_admin_start = false
+	m.civ_rng.seed = 42
+	m.players_expected = 4
+	var civs := CivRoster.ids()
+	for i in range(3):
+		m.add_ai_player(1000 + i, civs[i % civs.size()])
+	m.add_player(1)
+	assert_eq(m.phase, MatchState.Phase.RUNNING,
+		"Setup: the human's arrival should have started the match")
+	return m
+
+
+func test_a_human_can_start_the_second_match_of_an_ai_session() -> void:
+	# The reported symptom: ESC -> leave to lobby, and the start button
+	# reads "Waiting for host" with the Admin badge on an AI.
+	var m := _command_line_ai_match()
+	assert_true(m.is_admin(1), "The human should hold the lobby, not an AI")
+
+	assert_true(m.return_to_lobby())
+	assert_true(m.request_start(1),
+		"The human could never start another match — the admin was a computer")
+	assert_eq(m.phase, MatchState.Phase.RUNNING)
+
+
+func test_the_ai_seats_of_that_session_are_still_ai_in_the_second_match() -> void:
+	# `_return_to_lobby` drops every brain on purpose and `_on_match_started`
+	# rebuilds them from the seats whose kind is "ai". A seat mislabelled
+	# "human" takes the `_peer_of` branch instead, finds no socket and is
+	# skipped — leaving a player that still counts for elimination and
+	# victory (D-033) and can never be defeated by anything but the cap.
+	var m := _command_line_ai_match()
+	m.return_to_lobby()
+
+	var ai_seats := 0
+	for seat in m.seats:
+		if String(seat["kind"]) == "ai":
+			ai_seats += 1
+	assert_eq(ai_seats, 3,
+		"The next match would seat no AI brains at all — three inert players")
+
+
 # --- what a match writes on the lobby, and must not keep ---------------
 
 func test_a_random_seat_draws_again_for_the_second_match() -> void:
