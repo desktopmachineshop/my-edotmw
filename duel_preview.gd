@@ -109,9 +109,12 @@ func _build_environment() -> void:
 	# at eye level, the same lesson as forest_preview's lattice.
 	var focus := _centre
 	focus.y = _ground(focus.x, focus.z)
-	camera.position = focus + Vector3(9.0, 4.2, 7.0)
+	# Nearly down the CONTACT SEAM (the lines run along x and meet near
+	# z=0), so the frame shows two distinct bodies of men with a fight
+	# between them — the diagonal first framing read as one clump.
+	camera.position = focus + Vector3(11.0, 3.6, 2.6)
 	add_child(camera)
-	camera.look_at(focus + Vector3(0.0, 0.8, 0.0))
+	camera.look_at(focus + Vector3(0.0, 0.9, 0.0))
 	camera.fov = 55.0
 	camera.make_current()
 
@@ -128,16 +131,24 @@ func _ground(x: float, z: float) -> float:
 ## Two authored infantry lines, facing each other a stride apart, with
 ## the duel pass applied exactly as client.gd applies it per frame.
 func _build_melee() -> void:
-	# The first two authored archetypes the roster offers, NOT named ones:
-	# unit ids are civ-prefixed (D-047) and no .gd may name a civ.
+	# Two authored MELEE archetypes, NOT named ones: unit ids are
+	# civ-prefixed (D-047) and no .gd may name a civ. The second is the
+	# first fighter from a DIFFERENT civ than the first (a field
+	# comparison, which names nothing) — the first version took the same
+	# civ's first two entries and the picture was one red blob fighting
+	# itself.
 	var defs: Array = []
 	for candidate in UnitRoster.load_all():
-		if candidate.model_id != &"" and candidate.damage > 0.0:
+		if candidate.model_id == &"" or candidate.damage <= 0.0 \
+				or candidate.armour_class == "missile":
+			continue
+		if defs.is_empty():
 			defs.append(candidate)
-		if defs.size() == 2:
+		elif candidate.civ != defs[0].civ:
+			defs.append(candidate)
 			break
 	if defs.size() < 2:
-		push_error("duel_preview: needs two authored fighting archetypes")
+		push_error("duel_preview: needs two authored melee archetypes")
 		get_tree().quit(1)
 		return
 
@@ -165,7 +176,11 @@ func _build_melee() -> void:
 
 	_spawn_squad(defs[0], 0, drawn_a)
 	_spawn_squad(defs[1], 1, drawn_b)
-	_report(line_a, engaged_a, line_b, paired_a)
+	# Gaps are measured DRAWN man to DRAWN man — both sides step, and the
+	# first version measured against the enemy's authoritative slots,
+	# reporting "swinging at the air" about men the picture showed nose
+	# to nose.
+	_report(line_a, engaged_a, engaged_b, paired_a)
 	_time_the_duel(line_a, line_b)
 
 

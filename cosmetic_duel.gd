@@ -62,6 +62,14 @@ const MAX_STEP := 1.1
 ## braced toward the enemy), they just hold formation exactly.
 const ENGAGE_RANGE := 6.0
 
+## A man who cannot actually REACH contact — even with both sides paying
+## half the gap — takes this short lean-in instead of his full step. The
+## first preview picture showed why the full step is wrong for him: a
+## second-rank man walking MAX_STEP forward arrives inside his own front
+## rank, and two squads read as one blob. Rear ranks queue behind the
+## fight; they do not pile into it.
+const REAR_LEAN := 0.3
+
 
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer
@@ -123,10 +131,19 @@ static func engage(attackers: Array[Transform3D],
 
 		var origin := mine.origin
 		if gap <= ENGAGE_RANGE:
-			# Stand CONTACT_GAP short of the opponent, moving at most
-			# MAX_STEP from the slot. A man already inside the gap steps
-			# BACK to it — men stand toe to toe, not inside each other.
-			var step := clampf(gap - CONTACT_GAP, -MAX_STEP, MAX_STEP)
+			# Close HALF the excess gap, moving at most MAX_STEP from the
+			# slot. Half, because the other side is running this same
+			# function toward THIS man's authoritative slot — each pays
+			# half and two mutually paired men meet exactly CONTACT_GAP
+			# apart. Closing the full gap would double-count the approach
+			# and stand them inside each other. A man already too close
+			# steps back — men fight toe to toe, not model-in-model.
+			var step := clampf((gap - CONTACT_GAP) / 2.0, -MAX_STEP, MAX_STEP)
+			# A man whose half-share cannot reach contact takes REAR_LEAN
+			# instead: he is a rear rank queued behind the fight, and his
+			# full step would put him inside his own front rank.
+			if gap - 2.0 * MAX_STEP > CONTACT_GAP:
+				step = REAR_LEAN
 			var direction := toward / gap
 			origin.x += direction.x * step
 			origin.z += direction.y * step

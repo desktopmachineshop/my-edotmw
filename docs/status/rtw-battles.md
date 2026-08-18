@@ -38,11 +38,16 @@ Three things worth knowing:
   visibly re-target in play, that is the trigger firing; report it
   against the decision, do not add a cache.
 - **The duel can never scatter a formation.** A man steps at most
-  `MAX_STEP` (1.1) from his authoritative slot, stands `CONTACT_GAP`
-  (0.7) short of his opponent, and past `ENGAGE_RANGE` (6.0) holds his
-  slot exactly while still bracing toward the enemy. Selection,
-  culling, separation and the composition hash all still read the
-  derived transforms.
+  `MAX_STEP` (1.1) from his authoritative slot, closes HALF his excess
+  gap (both sides step, so mutual pairs meet exactly `CONTACT_GAP`
+  apart — closing the full gap double-counts and stands men inside
+  each other), and past `ENGAGE_RANGE` (6.0) holds his slot exactly
+  while still bracing toward the enemy. A man who cannot REACH contact
+  takes a short `REAR_LEAN` instead of his full step — the first
+  preview picture showed second-rank men walking `MAX_STEP` into their
+  own front rank, two squads reading as one blob, with every number
+  green. Selection, culling, separation and the composition hash all
+  still read the derived transforms.
 - **`just gen-duel-preview` is the instrument.** Two authored squads,
   real `Formation.slot_offset` lines, the real three-call pipeline
   client.gd runs per frame, screenshot to `artifacts/duel-godot.png` —

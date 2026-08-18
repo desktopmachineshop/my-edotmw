@@ -54,22 +54,43 @@ func test_engage_faces_the_opponent() -> void:
 
 
 func test_engage_steps_into_contact_and_no_further() -> void:
-	# Within one step of contact: he closes to exactly CONTACT_GAP.
-	var near := CosmeticDuel.engage(
-		_line([Vector3(0, 0, 0)]), _line([Vector3(0, 0, 1.5)]),
-		PackedInt32Array([0]))
-	assert_almost_eq(near[0].origin.distance_to(Vector3(0, 0, 1.5)),
+	# BOTH sides run engage against the other's authoritative slots, so
+	# each man closes half the excess and a mutually paired pair meets
+	# exactly CONTACT_GAP apart. That is the contract — asserting one
+	# side alone was how the first version of this file passed while two
+	# whole squads stopped 2.5 apart, swinging at the air.
+	var a := _line([Vector3(0, 0, 0)])
+	var b := _line([Vector3(0, 0, 1.5)])
+	var paired := PackedInt32Array([0])
+	var engaged_a := CosmeticDuel.engage(a, b, paired)
+	var engaged_b := CosmeticDuel.engage(b, a, paired)
+	assert_almost_eq(
+		engaged_a[0].origin.distance_to(engaged_b[0].origin),
 		CosmeticDuel.CONTACT_GAP, EPS,
-		"a front-rank man stands toe to toe, CONTACT_GAP from his opponent")
+		"a mutually paired pair of men stands toe to toe, CONTACT_GAP apart")
 
-	# In range but deep in the formation: he advances at most MAX_STEP,
-	# because the duel may never scatter the squad's true footprint.
+	# Close enough that his half-share reaches contact, but only just —
+	# 2.89 rather than the exact REACH boundary of 2.9, which float
+	# arithmetic tips into the rear-lean branch. He takes very nearly his
+	# full clamped step, because the duel may never scatter the squad's
+	# true footprint.
+	var pressing := CosmeticDuel.engage(
+		_line([Vector3(0, 0, 0)]), _line([Vector3(0, 0, 2.89)]),
+		PackedInt32Array([0]))
+	assert_almost_eq(pressing[0].origin.distance_to(Vector3.ZERO),
+		(2.89 - CosmeticDuel.CONTACT_GAP) / 2.0, EPS,
+		"a man on the edge of the fight steps his full half-share")
+
+	# Deep in the formation, in range but unable to REACH contact even
+	# with both sides paying half: he leans in a short step and queues.
+	# The first preview picture is why — his full step arrived inside
+	# his own front rank and two squads read as one blob.
 	var deep := CosmeticDuel.engage(
-		_line([Vector3(0, 0, 0)]), _line([Vector3(0, 0, 5.0)]),
+		_line([Vector3(0, 0, 0)]), _line([Vector3(0, 0, 4.0)]),
 		PackedInt32Array([0]))
 	assert_almost_eq(deep[0].origin.distance_to(Vector3.ZERO),
-		CosmeticDuel.MAX_STEP, EPS,
-		"a rear-rank man steps toward the fight but holds near his slot")
+		CosmeticDuel.REAR_LEAN, EPS,
+		"a rear-rank man queues behind the fight instead of piling into it")
 
 	# Beyond ENGAGE_RANGE: he faces the enemy and does not move — the far
 	# end of a long line walking sideways at nothing reads as the
@@ -84,11 +105,14 @@ func test_engage_steps_into_contact_and_no_further() -> void:
 		"but he still braces toward the enemy")
 
 
-func test_a_crowded_man_steps_back_to_the_gap() -> void:
-	var out := CosmeticDuel.engage(
-		_line([Vector3(0, 0, 0)]), _line([Vector3(0, 0, 0.2)]),
-		PackedInt32Array([0]))
-	assert_almost_eq(out[0].origin.distance_to(Vector3(0, 0, 0.2)),
+func test_a_crowded_pair_steps_back_to_the_gap() -> void:
+	var a := _line([Vector3(0, 0, 0)])
+	var b := _line([Vector3(0, 0, 0.2)])
+	var paired := PackedInt32Array([0])
+	var engaged_a := CosmeticDuel.engage(a, b, paired)
+	var engaged_b := CosmeticDuel.engage(b, a, paired)
+	assert_almost_eq(
+		engaged_a[0].origin.distance_to(engaged_b[0].origin),
 		CosmeticDuel.CONTACT_GAP, EPS,
 		"men fight toe to toe, not inside each other's models")
 
