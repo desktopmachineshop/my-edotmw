@@ -389,6 +389,17 @@ instance-id.sh           THE definition of this checkout's dev-instance
                         derives its per-worktree compose project, ports
                         and container names from this — nothing may
                         re-derive it. See "Multi-agent isolation" below.
+gate-check.sh            THE log comparisons a real multi-client run must
+                        survive (D-20260818-the-fast-loop-carries-the-
+                        gate): fog gating of squads and of resource
+                        positions, and both civs having fielded
+                        something. `test-load` AND `test-scenario` both
+                        call it, so the loop people iterate in cannot
+                        assert less than the five-minute gate — it
+                        asserted three fewer things for three
+                        milestones. A missing marker FAILS the check; a
+                        comparison that silently skips is the vacuous
+                        pass D-022's audit was written against.
 scenario.gd              Applies a mid-game world (D-098). ALL-STATIC,
                         like formation.gd: a scenario is an opening
                         position, not a participant. Goes through the
