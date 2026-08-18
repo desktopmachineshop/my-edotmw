@@ -168,3 +168,47 @@ measures a corner and measure nothing**: a wall of constant q does not
 block a torus at all, so the first corner fixture had the squad walk the
 other way round the world and arrive on a dead straight path, reporting
 two formations taking identical times because neither ever turned.
+
+**And what the wheel cost when it was rebased onto the three rules that
+landed while it sat** (#135 soldiers stand where their squad could walk,
+#146 squads separate by their footprint, #133 pathing knows only what the
+player knows). The three structural claims above are unchanged; three
+other things are not, and none of them is really about turning:
+
+- **The smoothing guard tested the wrong thing, and a decision entry said
+  it did not.** The entry's own Consequences list claimed a smoothed
+  squad's cell "is always one the flow field itself walked". It tested
+  the smoothed POINT, and a squad's authoritative cell is
+  `curve.sample_cell()` — a point BETWEEN two keyframes far more often
+  than one of them. Two vertices could each sit on open ground with the
+  line between them clipping a rock. #133's own
+  `test_a_blind_squad_still_never_stands_in_a_wall` went red on the
+  rebase and said so. **The D-058/D-065 family again: a decision entry
+  asserting an invariant is not evidence the invariant holds.** Smoothing
+  now keeps a move only if the squad could WALK both segments it leaves
+  behind.
+- **Refusing a point while its neighbours move puts a SPIKE in the
+  path** — 82.9 degrees measured, on a lattice whose sharpest genuine
+  corner is 60. A guard that makes the thing it guards worse is worth
+  looking for whenever a per-item veto sits inside a smoothing loop.
+- **And underneath it, `StateCurve.sample_cell` was rounding to the wrong
+  shape** (`D-20260818-a-curve-samples-the-hex-not-the-rhombus`): `roundi`
+  per component partitions the plane into rhombi, `TorusSpace.round_axial`
+  into hexagons, and they disagree over about a quarter of a cell. Nothing
+  had ever sampled a curve anywhere but on a lattice line, where they
+  agree except at one point. **Smoothing a path is what took a squad off
+  those lines**, and the wrong answer became a squad reading as standing
+  inside a rock its own line was a clear cell away from.
+
+**One thing the rebase could not resolve, and it is a design call.**
+D-067's shipped rule — two squads of any line troop but light skirmishers
+can take a tower — now fails for northmen_spearmen, who are wiped with
+the tower on 86 of 1700 HP where they used to raze it at 52.6 s with 31
+men left. Nothing hits differently: a LONE spearman squad is
+bit-for-bit unaffected, and a straight 10-cell march costs exactly what it
+did (4.80 s). What costs more is a bent reposition — **1.30 s -> 2.00 s
+for two cells** — and a siege where two squads are sent to the same cell
+is nothing else, under fire, with routs and returns. **Wheeling favours
+the side that does not have to move.** The decision entry has the numbers,
+why tuning `TURN_SWEEP` to fix it would be fitting a constant to a
+fixture, and the two candidate resolutions.

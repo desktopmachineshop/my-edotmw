@@ -57,6 +57,33 @@ const PATH_SMOOTHING_PASSES := 4
 ## paths that actually need it — a straight march never reaches it.
 const PATH_REFINEMENTS := 3
 
+## How many times the clearance repair may sweep a smoothed path before it
+## gives up and takes the flow field's own line whole
+## (D-20260818, amended for #133/#135).
+##
+## Putting one vertex back changes what its NEIGHBOURS' segments cross, so
+## one sweep is not always enough. Three is well past anything a measured
+## path has needed, and what it falls back to is safe rather than merely
+## better.
+const PATH_CLEARANCE_ROUNDS := 3
+
+## How far a path point is pushed away from ground the squad cannot walk
+## on, in cells, before the smoothing runs
+## (D-20260818, amended for #133/#135).
+##
+## Binomial smoothing rounds a corner by pulling the path toward the
+## INSIDE of the bend, and the inside of a bend the flow field made is
+## usually the obstacle that caused it. Refusing those points (which is
+## all the original guard did) leaves a route that hugs a wall with 60
+## degree vertices in it and no room to be rounded at all — and a vertex
+## that concentrated is one no pace can wheel through, because the whole
+## turn has to happen while the squad crosses a single point.
+##
+## So the path is given the room first. Under half a cell, because that is
+## what keeps a pushed point inside its own cell or a walkable neighbour;
+## the point is passability-tested afterwards regardless.
+const PATH_CLEARANCE := 0.45
+
 ## A vertex turning less than this is treated as straight when deciding
 ## whether a path needs splitting finer (D-20260818). Smoothing leaves a
 ## little residue everywhere, and refining for a tenth of a degree would
@@ -1656,7 +1683,14 @@ func _path_curve(squad: int, cells: PackedInt32Array, speed: float) -> StateCurv
 		lever = Formation.turn_lever(
 			_shape[squad], _alive[squad], _spacing[squad]) / hex_width
 
-	points = _smooth_path(points, _tier[squad])
+	# The field's own line, carried alongside at whatever resolution the
+	# refinement loop below reaches. Every point on it is a cell centre or
+	# a point between two ADJACENT cell centres, so the whole of it is
+	# ground the field itself walked — which is what makes it the line
+	# _walkable_line can always retreat to.
+	var raw := points.duplicate()
+
+	points = _smooth_path(_pushed_clear(points, _tier[squad]), _tier[squad])
 
 	# The facing chord spans Formation.HEADING_ARC of path, so a bend
 	# packed into a shorter stretch than that gets swept in one go rather
@@ -1669,7 +1703,10 @@ func _path_curve(squad: int, cells: PackedInt32Array, speed: float) -> StateCurv
 	for _round in range(PATH_REFINEMENTS):
 		if _bends_are_resolved(points):
 			break
+		raw = _subdivided(raw)
 		points = _smooth_path(_subdivided(points), _tier[squad])
+
+	points = _walkable_line(points, raw, _tier[squad])
 
 	var lengths := _segment_lengths(points)
 	var paces := _segment_paces(points, lengths, speed, lever)
@@ -1758,10 +1795,164 @@ func _subdivided(points: PackedVector2Array) -> PackedVector2Array:
 	return out
 
 
+## The field's path, with every interior point nudged away from the
+## blocked cells beside it (D-20260818, amended for #133/#135).
+##
+## This is what buys the smoothing its room. A flow-field route that
+## rounds an obstacle runs along the obstacle's edge, so every point of
+## the interesting stretch has the blockage on the inside of its own bend
+## — which is exactly where a binomial pass wants to pull it. Without the
+## push, every one of those points is refused, the route keeps the
+## lattice's 60 degree vertices, and a turn concentrated at one vertex is
+## one no pace can wheel through: `MIN_TURNING_SPEED` floors the crawl
+## long before the outermost soldier is inside his own move_speed.
+##
+## Direction is summed in WORLD space, not in axial: the six neighbours
+## are a regular hexagon on the ground and a skewed one in axial
+## coordinates, so summing axial offsets would push hardest along the
+## lattice's long diagonal. `axial_offset_to_world` is linear, so the sum
+## can still be carried in axial and only its LENGTH measured in world —
+## which is D-008's tax paid the cheap way.
+##
+## Endpoints are pinned for the same reason `_smooth_path` pins them: the
+## squad is standing on the first point and arrival is tested against the
+## last. And a pushed point that would round onto blocked ground is
+## dropped rather than clamped, because `_walkable_line` is the guarantee
+## and this is only the room-making.
+func _pushed_clear(points: PackedVector2Array, tier: int) -> PackedVector2Array:
+	if points.size() < 3:
+		return points
+	var hex_width := maxf(space.hex_size * TorusSpace.SQRT_3, 0.0001)
+	var out := points.duplicate()
+	for i in range(1, points.size() - 1):
+		var cell := space.normalize(space.round_axial(points[i]))
+		var away := Vector2.ZERO
+		for d in TorusSpace.DIRECTIONS:
+			if not is_passable(space.normalize(cell + d), tier):
+				away -= Vector2(float(d.x), float(d.y))
+		if away == Vector2.ZERO:
+			continue
+		var reach := space.axial_offset_to_world(away).length()
+		if reach <= 0.0:
+			continue
+		var moved := points[i] + away * (PATH_CLEARANCE * hex_width / reach)
+		if is_passable(space.normalize(space.round_axial(moved)), tier):
+			out[i] = moved
+	return out
+
+
+## The smoothed path, with any vertex whose line of travel would cross
+## ground the squad could not walk on put back where the flow field had
+## it (D-20260818, amended for #133/#135).
+##
+## ## Why testing the VERTEX is not enough
+##
+## `_smooth_path` already refuses to MOVE a point onto a blocked cell, and
+## that was the whole guard when this was written. It is not sufficient,
+## and the two rules that landed while this branch sat say so from
+## opposite ends:
+##
+##  * A squad's authoritative cell is `curve.sample_cell()`, which is a
+##    point BETWEEN two keyframes far more often than it is one of them.
+##    Two vertices can each sit on open ground with the straight line
+##    between them clipping the corner of a rock, and the squad is then
+##    standing in the rock for as long as it takes to cross.
+##    `test_a_blind_squad_still_never_stands_in_a_wall`
+##    (D-20260818-pathing-knows-only-what-the-player-knows) is what caught
+##    it: discovery-by-touch checks the CELLS the field steps through, and
+##    a line drawn between two of them is not one of those cells.
+##  * Soldier offsets are pulled back onto walkable ground about the
+##    squad's own cell (D-20260818-a-soldier-stands-where-his-squad-could-
+##    walk), and that clamp's guaranteed fallback is "the squad's own
+##    cell, which is passable by construction". Smoothing is the one thing
+##    that could make that sentence false, so it is smoothing's job to
+##    keep it true.
+##
+## `_subdivided` compounds it, because a midpoint it inserts is a point
+## nothing has ever tested.
+##
+## ## Why it retreats to the field's line rather than searching
+##
+## `raw` is the same polyline at the same resolution with none of the
+## smoothing applied — cell centres, and midpoints between ADJACENT cell
+## centres. Every point of it is walkable and so is every point between
+## two consecutive ones, so reverting always terminates somewhere legal. A
+## nudge would have to search, and a search here would be a second router
+## quietly disagreeing with the flow field.
+func _walkable_line(points: PackedVector2Array, raw: PackedVector2Array,
+		tier: int) -> PackedVector2Array:
+	if points.size() < 3 or raw.size() != points.size():
+		return points
+
+	var out := points.duplicate()
+	for _round in range(PATH_CLEARANCE_ROUNDS):
+		var reverted := false
+		for i in range(1, out.size() - 1):
+			if out[i] == raw[i]:
+				continue
+			if (_segment_clear(out[i - 1], out[i], tier)
+					and _segment_clear(out[i], out[i + 1], tier)):
+				continue
+			out[i] = raw[i]
+			reverted = true
+		if not reverted:
+			return out
+
+	# Still crossing something after the bounded repair: take the field's
+	# line whole. A squad snapping round a corner is a worse picture than
+	# one wheeling; a squad standing inside a mountain is not a picture
+	# problem at all.
+	return raw
+
+
+## Whether a squad walking straight from `a` to `b` in continuous axial
+## space stays on ground it could stand on the whole way.
+##
+## Sampled rather than rasterised, at `TorusSpace.round_axial` — the
+## project's ONE answer to "which hex is this fractional axial coordinate
+## in", and the one `world_to_cell` goes through. Four samples per cell of
+## travel; after refinement these segments are a fraction of a cell long,
+## so it is two or three lookups each.
+##
+## **Not `roundi` per component, which is what `StateCurve.sample_cell`
+## does.** The two agree everywhere except on exact half-coordinates,
+## where naive rounding lands on a cell that is a NEIGHBOUR OF BOTH the
+## cells the step runs between — and `_subdivided` manufactures exactly
+## those coordinates, because the midpoint of a step along the (1,-1)
+## lattice direction is a pair of halves. Asking the naive question there
+## declared the flow field's own line unwalkable, and the repair below
+## then reverted a run of points beside an already-smoothed neighbour,
+## putting a **78.4 degree** spike in a path whose sharpest genuine corner
+## is 60. That the two roundings differ at all is a real inconsistency and
+## is not this change's to fix: `sample_cell` disagrees with
+## `world_to_cell` on a set of measure zero, which is why nothing has ever
+## caught it.
+func _segment_clear(a: Vector2, b: Vector2, tier: int) -> bool:
+	var d := b - a
+	var steps := maxi(1, ceili(d.length() * 4.0))
+	for i in range(steps + 1):
+		var at := a + d * (float(i) / float(steps))
+		if not is_passable(space.normalize(space.round_axial(at)), tier):
+			return false
+	return true
+
+
 ## PATH_SMOOTHING_PASSES binomial passes with both endpoints pinned. See
 ## _path_curve() for why. `previous` carries the pre-pass value of the
 ## neighbour already overwritten, so a pass filters the path it was handed
 ## rather than half-filtering its own output.
+##
+## A move is kept only if the squad could WALK both of the segments it
+## leaves behind, not merely stand on the point itself
+## (D-20260818, amended for #133/#135). The point test was the original
+## guard and it is wrong twice over: the squad's own cell is
+## `curve.sample_cell()` at any time at all, so the line between two
+## keyframes is as authoritative as the keyframes; and refusing a single
+## point while its neighbours move puts a SPIKE in the path — measured at
+## 82.9 degrees on a lattice whose sharpest genuine corner is 60, which is
+## a worse turn than the one the smoothing was called to soften. Testing
+## the segments makes a refused point hold its neighbours back with it, so
+## the path stays a path.
 func _smooth_path(points: PackedVector2Array, tier: int) -> PackedVector2Array:
 	if points.size() < 3:
 		return points
@@ -1771,7 +1962,8 @@ func _smooth_path(points: PackedVector2Array, tier: int) -> PackedVector2Array:
 		for i in range(1, out.size() - 1):
 			var moved := previous * 0.25 + out[i] * 0.5 + out[i + 1] * 0.25
 			previous = out[i]
-			if is_passable(space.normalize(Vector2i(roundi(moved.x), roundi(moved.y))), tier):
+			if (_segment_clear(out[i - 1], moved, tier)
+					and _segment_clear(moved, out[i + 1], tier)):
 				out[i] = moved
 	return out
 

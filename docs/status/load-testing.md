@@ -162,6 +162,13 @@ resources by `tests/test_bot_patrol.gd`.
   move that duration, so read a `conceal_events` failure as a question
   about DURATION before reading it as a fault in the change under test.
 
+  **Those two numbers were taken BEFORE that branch was rebased**, on a
+  tree whose smoothed paths cut the corners of obstacles
+  (`D-20260818-a-squad-wheels-it-does-not-snap`'s rebase amendment). The
+  direction is unchanged — wheeling slows an army that turns, so a fixed
+  window holds fewer vision crossings — but treat `480` as the shape of
+  the answer rather than a measurement until it is re-run.
+
 **The bots field an ARMY now** (D-20260818-load-test-bots-must-field-an-army,
 #123), and the verdict gates on their having used it. Until this landed,
 `raid_pool` — the squads free to be sent anywhere — was empty on every tick

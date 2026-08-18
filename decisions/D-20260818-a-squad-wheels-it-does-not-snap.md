@@ -240,3 +240,177 @@ which is a simulation change — exactly the split #101 predicted.
   is the place to start.
 - Turn cost showing up as a balance problem — armies arriving late enough
   to matter to D-054's ladder or D-056's match-length work.
+
+## Amendment, 2026-08-18 — rebased onto `main`, and what that cost
+
+This branch sat while three things landed, and it conflicts with all
+three on purpose: each of them is about where a squad or a soldier may
+be, and this change is the first one that ever moves a squad off the
+lattice.
+
+- `D-20260818-a-soldier-stands-where-his-squad-could-walk` (#135)
+- `D-20260818-squads-separate-by-their-footprint` (#146)
+- `D-20260818-pathing-knows-only-what-the-player-knows` (#133)
+
+The three structural claims above survive unchanged — the arc-length
+chord, the smoothing, and `move_speed / (1 + lever x curvature)`. What
+did not survive was a sentence in the Consequences list, and the guard it
+described.
+
+### The claim that was false: "that cell is always one the flow field itself walked"
+
+It said so above, and it was not true, and nothing in the suite could
+see it. `_smooth_path` tested the smoothed POINT for passability. A
+squad's authoritative cell is `curve.sample_cell()` at any time at all —
+between two keyframes far more often than on one — so two vertices could
+each sit on open ground with the straight line between them clipping the
+corner of a rock. That is the D-058/D-065 family again: **a decision
+entry asserting an invariant is not evidence the invariant holds.**
+
+On the rebased tree it was not subtle. `test_a_blind_squad_still_never_
+stands_in_a_wall` (#133's own check, which did not exist when this branch
+was written) went red, and so did this branch's own
+`test_smoothing_never_puts_a_squad_on_impassable_ground` — the tick-rate
+version of the same question, which passes or fails on where the flow
+field happens to put a corner.
+
+Three things now hold it:
+
+1. **`_smooth_path` keeps a move only if the squad could WALK both
+   segments it leaves behind**, not merely stand on the point. That also
+   removes a failure the point test created: refusing one point while its
+   neighbours move puts a SPIKE in the path, measured at **82.9 degrees**
+   on a lattice whose sharpest genuine corner is 60. Testing segments
+   makes a refused point hold its neighbours back with it.
+2. **`_pushed_clear` gives the smoothing room** before it runs. A route
+   that rounds an obstacle runs along the obstacle's edge, so every point
+   of the interesting stretch has the blockage on the inside of its own
+   bend — exactly where a binomial pass wants to pull it. Refusing all of
+   them leaves the lattice's 60 degree vertices with nothing to spread
+   them into, and a turn concentrated at one vertex is one **no pace can
+   wheel through**: the whole rotation has to happen while the squad
+   crosses a single point, so `MIN_TURNING_SPEED` floors the crawl long
+   before the outermost soldier is inside his own `move_speed`.
+3. **`_walkable_line` is the backstop**, reverting a vertex to the field's
+   own line and, failing that, taking the field's line whole. A squad
+   snapping round a corner is a worse picture than one wheeling; a squad
+   standing inside a mountain is not a picture problem at all.
+
+### And underneath all of it, one wrong line in `state_curve.gd`
+
+The first working version of the repair above still measured **21.23**
+against a `move_speed` of 3.30, and the reason was not the repair.
+`StateCurve.sample_cell` rounded each axial component with `roundi`,
+which partitions the plane into rhombi rather than hexagons, so it
+disagreed with `TorusSpace.round_axial` — the project's one definition,
+and `world_to_cell`'s — over about a quarter of every cell. Asked that
+way, the flow field's OWN line is unwalkable at a subdivided midpoint,
+the repair reverted a run of points, and the spike above is what came
+out. `D-20260818-a-curve-samples-the-hex-not-the-rhombus` has the whole
+of it. With the two agreeing, this fixture reverts nothing.
+
+### The numbers, re-measured on the rebased tree
+
+Same fixtures, same shipped `legion_militia`, printed by
+`tests/test_squad_turning.gd`:
+
+| | before | this branch, pre-rebase | rebased |
+|---|---|---|---|
+| peak soldier speed, tight corner | 266.71 (81x) | 3.31 (1.003x) | **3.30 (1.000x)** |
+| peak soldier speed, open march | 3.59 (1.09x) | 3.30 | **3.30** |
+| facing step per 20 ms at a corner | 90.00 deg | 0.57 deg | **0.27 deg** |
+| that corner journey, line / column | 9.6 / 9.6 s | 15.2 / 17.2 s | 14.4 / 15.6 s |
+| keyframes, open march | 7 | 7 | **7** |
+| keyframes, round the obstacle | 7 | 25 | **25** |
+
+The middle column is quoted for the record and should not be trusted as
+a measurement of anything: it was taken with a path that cut the corner
+of the obstacle, which is the defect this amendment exists to fix. **The
+headline 1.003x was bought partly by walking through the rock.**
+
+### The other two, and why neither needed code
+
+- **#135 (a soldier stands where his squad could walk).** This entry's
+  own revisit trigger named "#97, per-man passability" and #97 has since
+  landed, so the trigger has fired and the answer is that the pace stands.
+  `Formation.turn_lever` measures the UNCLAMPED slot, so where the clamp
+  bites, the man it moves walks a shorter arc than the pace was budgeted
+  for — the allowance is conservative, never short. The clamp's own step
+  is #135's accepted cost and is not a rotation.
+  The dependency that does matter runs the other way: that clamp's
+  guaranteed fallback is "the squad's own cell, which is passable by
+  construction", and smoothing is the one thing that could have made that
+  sentence false. It cannot now.
+- **#146 (squads separate by their footprint).** `turn_lever` reads the
+  same `Formation.footprint` dictionary and the same cached loop that
+  `SquadSim.footprint_cells` reads for separation; it adds a key and
+  changes no existing one. Separation runs on ARRIVAL and pace is set
+  when a curve is built, so the two never touch.
+- **#133 (pathing knows only what the player knows).** The cell walk is
+  unchanged: discovery-by-touch and the `stale` re-route happen exactly
+  where they did, and `_path_curve` is handed the cells that survive
+  them. The one deliberate asymmetry is that `_smooth_path`,
+  `_pushed_clear` and `_segment_clear` all ask `is_passable` — GROUND
+  TRUTH — rather than the mover's belief. That is right and it is not a
+  leak: none of them chooses a route or refuses an order, they only
+  decline to cut a corner, which is the same standing the entry already
+  gives `_approachable`. Asking belief instead would let a smoothed line
+  run through a mountain nobody has scouted, which is the one thing
+  #133's discovery-by-touch net exists to prevent.
+
+### What the room-making is worth, measured
+
+`PATH_CLEARANCE` is not a tidiness constant. Set to 0 — smoothing still
+constrained by segment clearance, everything else unchanged — the same
+corner fixture measures **25.82** against a `move_speed` of 3.30, and the
+facing steps 4.33 degrees per 20 ms. At 0.45 it is 3.30 and 0.27. The
+whole of the difference is whether the smoothing has anywhere to spread a
+60 degree lattice vertex into.
+
+### The one thing this rebase could NOT resolve: a shipped balance rule moved
+
+`test_buildings.gd`'s `test_two_squads_of_any_line_troop_but_light_
+skirmishers_can_take_a_tower` — D-067's shipped rule — **fails on this
+branch for exactly one pairing**, northmen_spearmen against a tower.
+Measured on the same fixture, same seed:
+
+| | `main` | this branch |
+|---|---|---|
+| outcome | razed at 52.6 s, 31 men left | **wiped**, tower on 86 of 1700 HP |
+| squad-ticks within 2 cells of the tower | 74% | 59% |
+| squad-ticks routed | 8% | 14% |
+
+Every other troop and both buildings still pass, and a LONE squad of
+spearmen is bit-for-bit unaffected (wiped at 42.1 s with the tower on
+1220 HP either way), so this is not a change to how hard anything hits.
+
+**The mechanism is the mechanic.** A straight march costs nothing — a
+10-cell march measures 4.80 s on both trees — while a two-cell
+reposition with a bend in it goes **1.30 s -> 2.00 s**. A siege where two
+squads are ordered onto the same cell is nothing but bent repositions,
+under fire, with routs and returns; 50% more time on each of them is
+where the 5% went. That is #101's rule being charged, not a defect: a
+36-strong line pivoting takes time now, and static defences are the thing
+that does not have to pay it.
+
+**It is also a knife-edge, and must not be tuned away.** Sweeping
+`TURN_SWEEP` — a constant that has nothing to do with towers — flips the
+outcome without a trend: 1.0 razes, 1.2 does not, 1.5 razes, 2.0 does
+not. A constant chosen to make that fixture pass would be fitted to the
+fixture, which is the trap this entry already documents from the other
+direction. `TURN_SWEEP` stays at 2.0, which is what puts the outermost
+soldier at 1.000x his own speed; at 1.5 he runs at 1.10x.
+
+Two candidate resolutions, both DESIGN calls and neither taken here:
+
+1. **Accept it** and record spearmen-against-a-tower as a second measured
+   exception beside northmen_skirmishers, the way D-067 already carries
+   one.
+2. **Restore the margin in the tower's data**, which is the lever D-067
+   itself swept — but the tower is `neutral` and shared, so it moves the
+   AI ladder and every playtest with it.
+
+Ruled out, and worth saying: **exempting a ROUTED squad from the turn
+pacing does not fix it** (measured: byte-identical outcome, tower still on
+86 HP), so "routers should not have to hold formation" is not the missing
+rule here.

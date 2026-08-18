@@ -246,6 +246,48 @@ func test_smoothing_never_puts_a_squad_on_impassable_ground() -> void:
 			break
 
 
+func test_the_line_between_two_keyframes_stays_on_walkable_ground() -> void:
+	# The check above samples once per TICK, and a squad's authoritative
+	# position is `curve.sample_cell()` at any time at all — the client
+	# derives soldiers at frame rate, between keyframes far more often than
+	# on one. Two smoothed vertices can each sit on open ground with the
+	# straight line between them clipping the corner of the blob, and then
+	# the squad is inside the blob for as long as it takes to cross.
+	#
+	# Two rules that landed after this branch was written say the same
+	# thing from opposite ends, which is why it is asserted at this
+	# resolution rather than the tick's:
+	#
+	#  * D-20260818-a-soldier-stands-where-his-squad-could-walk (#97/#135)
+	#    pulls a slot back toward the squad's own cell and calls that
+	#    fallback safe "because the squad's own cell is passable by
+	#    construction". Smoothing is the one thing that could make that
+	#    sentence false.
+	#  * D-20260818-pathing-knows-only-what-the-player-knows (#133) makes
+	#    discovery-by-touch the net that keeps optimism from ever putting
+	#    soldiers inside a mountain. It checks the CELLS the field steps
+	#    through; a line drawn between them is not one of those cells.
+	var sim := _sim()
+	var passable := _barrier(sim)
+	sim.set_passable(passable)
+	var squad := sim.add_squad(_militia(), 1, FROM)
+	sim.order_move(squad, TO)
+
+	# A frame, not a tick: the resolution somebody actually looks at.
+	var frame := 1.0 / 60.0
+	for _i in range(400):
+		sim.tick()
+		var curve := sim.curve_of(squad)
+		var t := sim.time
+		while t <= curve.end_time():
+			var cell := curve.sample_cell(t, sim.space)
+			assert_true(passable[sim.space.index(cell)] != 0,
+				"the squad's own curve crosses impassable ground at %s" % cell)
+			t += frame
+		if sim.cell_of(squad) == TO:
+			break
+
+
 # --- what it costs the wire -------------------------------------------
 
 func test_a_straight_march_buys_no_extra_keyframes() -> void:
