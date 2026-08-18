@@ -194,16 +194,33 @@ var total_field_usec: int = 0
 var curves_rebuilt: int = 0
 var vision_rebuilds: int = 0
 
-## Vision and combat as identifiable COMPONENTS of last_tick_usec/
+## Every phase of the tick as an identifiable COMPONENT of last_tick_usec/
 ## total_tick_usec (D-026 criterion 10, D-020, D-012) — same accounting
-## style, just scoped to the one phase each measures rather than the whole
-## tick. `total_tick_usec` already includes both; these do not double the
-## cost, they name a slice of it so a run can report "vision costs this
-## much, combat costs this much" instead of only the tick's grand total.
+## style, just scoped to one region of `tick()` each rather than the whole
+## tick. `total_tick_usec` already includes them all; these do not double
+## the cost, they name slices of it.
+##
+## The phases PARTITION the tick, and that is the point of them
+## (D-20260818): vision and combat were the only two ever reported, so a
+## rise that landed anywhere else had nowhere to be seen. Whatever the
+## named phases do not account for is reported as `other` — a residual
+## that is computed, not assumed to be small, so the next unexplained
+## number has a place to show up rather than hiding inside a total.
+##
+## `total_field_usec` cuts ACROSS this partition and is left alone: it
+## counts BFS solving wherever it happens, which is the expansion phase
+## below plus the field a curve rebuild starts inline. Divide it by
+## `fields_built` for the cost of a field; use `total_fields_usec` for the
+## cost of a tick's expansion slice.
+var last_fields_usec: int = 0
+var total_fields_usec: int = 0
 var last_vision_usec: int = 0
 var total_vision_usec: int = 0
-var last_combat_usec: int = 0
+var total_curves_usec: int = 0
 var total_combat_usec: int = 0
+var total_buildings_usec: int = 0
+var total_production_usec: int = 0
+var total_economy_usec: int = 0
 
 var _validated := false
 
@@ -1004,10 +1021,10 @@ var _pending_fields: Array[int] = []
 var _field_cells_this_tick: int = 0
 
 ## Per-phase cost of the LAST tick, for attributing a spike to a phase
-## instead of guessing at one. `last_combat_usec` covers combat, building
-## advance/production and hauling together; `last_economy_usec` is the
-## hauling part of that, broken out separately because it is the phase
-## most likely to scale with something nobody budgeted.
+## instead of guessing at one. Same regions as the run totals above, so
+## the two lines a server prints — the over-budget spike and the final
+## summary — name the same phases. `last_production_usec` is a slice of
+## `last_buildings_usec`, not a phase beside it.
 var last_curves_usec: int = 0
 var last_economy_usec: int = 0
 var last_squad_combat_usec: int = 0
@@ -1342,8 +1359,16 @@ func tick() -> void:
 	# Push in-flight BFS solves forward before anything asks a field for a
 	# direction (D-040). Also resets this tick's cell budget, so it must
 	# run even when nothing is pending.
+	#
+	# Timed as a phase of its own, because it is a phase of its own: the
+	# budget is per TICK, so this slice costs what it costs whether one
+	# squad or fifty is waiting on it, and until D-20260818 it was charged
+	# to nothing at all.
+	var fields_started := Time.get_ticks_usec()
 	_expand_pending_fields()
 	_expand_pending_fields_top()  # D-076: its own budget, see that function
+	last_fields_usec = Time.get_ticks_usec() - fields_started
+	total_fields_usec += last_fields_usec
 
 	time += 1.0 / TICK_HZ
 	tick_count += 1
@@ -1378,6 +1403,7 @@ func tick() -> void:
 	_advance_tier_transitions()
 
 	last_curves_usec = Time.get_ticks_usec() - curves_started
+	total_curves_usec += last_curves_usec
 
 	# Vision (D-025) recomputes against THIS tick's freshly-derived
 	# positions, at its own slower cadence — see
@@ -1399,7 +1425,6 @@ func tick() -> void:
 	# dressed up as a message.
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
-	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
 
 	# Idle combat squads chase a nearby enemy rather than waiting for one to
 	# walk all the way into attack_range — the default "for now" stance
@@ -1408,6 +1433,10 @@ func tick() -> void:
 	# where they stand, and reuses resolve()'s bucket map rather than
 	# rebuilding one.
 	combat.assign_idle_engagements(self, tick_count)
+	# Both halves of the combat phase, not just resolve(): the assignment
+	# scan is combat work and would otherwise land in the residual.
+	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
+	total_combat_usec += last_squad_combat_usec
 
 	var buildings_started := Time.get_ticks_usec()
 
@@ -1442,6 +1471,7 @@ func tick() -> void:
 			if rally != door:
 				order_move(spawned, rally)
 		last_production_usec = Time.get_ticks_usec() - production_started
+		total_production_usec += last_production_usec
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
@@ -1464,13 +1494,14 @@ func tick() -> void:
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).
 	last_buildings_usec = Time.get_ticks_usec() - buildings_started
+	total_buildings_usec += last_buildings_usec
+
 	last_wallet_changes = []
 	var economy_started := Time.get_ticks_usec()
 	if economy != null:
 		last_wallet_changes = economy.tick(self, buildings, 1.0 / TICK_HZ)
 	last_economy_usec = Time.get_ticks_usec() - economy_started
-	last_combat_usec = Time.get_ticks_usec() - combat_started
-	total_combat_usec += last_combat_usec
+	total_economy_usec += last_economy_usec
 	_log_combat_events(last_combat_events)
 
 	last_tick_usec = Time.get_ticks_usec() - started
@@ -1496,18 +1527,52 @@ func mean_usec_per_squad_update() -> float:
 ## rebuild phase so it's identifiable as a component rather than folded
 ## into the tick's grand total.
 func mean_vision_usec_per_squad_update() -> float:
-	if _cell.is_empty() or tick_count <= 0:
-		return 0.0
-	return float(total_vision_usec) / float(tick_count * _cell.size())
+	return _mean_usec_per_squad_update(total_vision_usec)
 
 
 ## Combat's own slice of mean_usec_per_squad_update (D-026 criterion 10) —
 ## see mean_vision_usec_per_squad_update's comment; same reasoning, scoped
-## to Combat.resolve() instead of Vision.rebuild().
+## to the combat phase (Combat.resolve plus the idle-engagement scan)
+## instead of Vision.rebuild().
+##
+## It covered building advance, production and hauling too until
+## D-20260818, which is how a run could report "combat=32.7" for a tick in
+## which combat was a third of that: the phases now partition the tick
+## instead of two of them overlapping the rest.
 func mean_combat_usec_per_squad_update() -> float:
+	return _mean_usec_per_squad_update(total_combat_usec)
+
+
+## THE breakdown of mean_usec_per_squad_update, phase by phase, in tick
+## order (D-20260818). Keys sum to that figure exactly, because `other` is
+## the difference rather than an estimate — so a rise always lands on a
+## named phase or on the residual, and never simply vanishes into the
+## total the way M6's 40.8 -> ~77 and M10's 83 -> 167.7 both did.
+##
+## `production` is a slice of `buildings` and is reported alongside rather
+## than summed; everything else is disjoint.
+func phase_usec_per_squad_update() -> Dictionary:
+	var named := (total_fields_usec + total_curves_usec + total_vision_usec
+		+ total_combat_usec + total_buildings_usec + total_economy_usec)
+	return {
+		"fields": _mean_usec_per_squad_update(total_fields_usec),
+		"curves": _mean_usec_per_squad_update(total_curves_usec),
+		"vision": _mean_usec_per_squad_update(total_vision_usec),
+		"combat": _mean_usec_per_squad_update(total_combat_usec),
+		"buildings": _mean_usec_per_squad_update(total_buildings_usec),
+		"production": _mean_usec_per_squad_update(total_production_usec),
+		"economy": _mean_usec_per_squad_update(total_economy_usec),
+		"other": _mean_usec_per_squad_update(total_tick_usec - named),
+	}
+
+
+## Shared divisor for every per-squad-update figure above: no squads means
+## an honest zero, not the tick's fixed overhead reported as if it were
+## per-squad cost.
+func _mean_usec_per_squad_update(total: int) -> float:
 	if _cell.is_empty() or tick_count <= 0:
 		return 0.0
-	return float(total_combat_usec) / float(tick_count * _cell.size())
+	return float(total) / float(tick_count * _cell.size())
 
 
 ## Soldier transforms for a squad, derived not stored (D-006).

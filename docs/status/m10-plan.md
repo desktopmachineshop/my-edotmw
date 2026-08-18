@@ -31,11 +31,19 @@ server was down.
 
 **Three things to know before picking up any of it:**
 
-- **Attribute the per-squad rise first (#105).** 83 -> 167.7 µs while vision and
-  combat both *fell*, so the cost moved somewhere unnamed. Until that is
-  explained no other optimisation here can be shown to have worked — and
-  M6's older, still-unattributed 40.8 -> ~77 rise is the standing proof
-  that unexplained numbers do not explain themselves later.
+- **The per-squad rise is attributed (#105, done):** it is the
+  **flow-field expansion slice** (D-040), and the reason no reported phase
+  moved is that the tick had only two reported phases. Every region of
+  `SquadSim.tick()` is timed and printed now, with a computed residual —
+  `decisions/D-20260818-every-microsecond-of-a-tick-has-a-phase.md` has
+  the A/B (same squads, same orders, only the map changes: field expansion
+  52.5 -> 453.1 µs/squad on 4x the cells, every other phase FELL, residual
+  0.03%). The mechanism is a per-TICK cell budget divided by a squad
+  count, which is D-040 working as designed — spending it better is #107,
+  not this. **M6's older 40.8 -> ~77 rise is declared SEPARATE** in the
+  same entry: those two numbers were taken at 120 and ~52 squads on builds
+  with no breakdown, so no attribution can be recovered from them, only
+  invented.
 - **`just profile` currently cannot see the shipped ladder (#108).** Its sweep
   tops out at 32,768 cells, which is now the *default* map; the largest
   size is 130,368. The sweep is this project's authority on scaling, so
