@@ -175,10 +175,31 @@ const ACTION_GAP := Vector2(8.0, 6.0)
 const ACTION_COLUMNS := 3
 ## Two rows in EACH column, where it was two stacked segments of two and
 ## three. What actually fills them, counted rather than assumed: the
-## commands grid holds three formations plus Stop plus Gather, five of six;
+## commands grid's row 0 is the FORMATION STRIP (see
+## `formation_icon_size`) and row 1 holds Stop plus Gather, two of three;
 ## the build grid's worst single screen is a category's own group picker,
 ## four of six (Back, two groups, plus the one ungrouped defensive def).
 ## So both keep genuine slack.
+##
+## Formations stopped being ordinary buttons in this grid when D-058 was
+## revisited for the RTW target and all six became player-choosable. Six
+## text buttons plus Stop plus Gather is eight, and this grid holds six —
+## `action_slot` clamps nothing, so buttons seven and eight would have been
+## positioned below the panel's own bottom edge and drawn over the world.
+##
+## Widening the grid to four columns was tried and reverted: it looks free
+## but is not, because `ACTIONS_COLUMN_MIN_WIDTH`/`_MAX_WIDTH` are derived
+## FROM `ACTION_COLUMNS`, so the column's own clamp moves with it and the
+## eighth button gets paid for out of the chip strip — which can already
+## come out zero-width on a narrow window. A third row costs bar height
+## the 73 units do not have.
+##
+## So formations are ICONS instead, one square per shape on row 0, and six
+## of them fit the width three text buttons had. That is the owner's call
+## from playtest P09 (#35) and it is a better button besides: the icon is a
+## top-down plot of the formation's own `Formation.slot_offset` output, so
+## a shape is recognised rather than read, and a seventh formation costs
+## nothing but a narrower square.
 const ACTION_ROWS := 2
 ## 26, not the 38 a button was: two rows of 38 plus their gap is 82 units
 ## and the whole bar is 73 now. What 12 units of button height cost is the
@@ -680,6 +701,42 @@ static func chip_slot(index: int, columns: int) -> Vector2:
 	var col := index % columns
 	return Vector2(float(col) * (CHIP_SIZE.x + CHIP_GAP),
 		float(row) * (CHIP_SIZE.y + CHIP_GAP))
+
+
+## Gap between formation icons. Tighter than `ACTION_GAP.x`, because
+## these are squares in a strip rather than labelled buttons in a grid,
+## and the strip has to seat six where the grid seated three.
+const FORMATION_ICON_GAP := 4.0
+
+
+## One formation icon's size, for a strip of `count` of them across the
+## commands column. Square-ish by construction: the height is a button's
+## height and the width is what is left after the gaps, so six icons fit
+## the width three text buttons had.
+##
+## `count` is passed in rather than read from `FormationRoster` so this
+## file stays pure arithmetic with no data dependency — the same split
+## every other function here makes.
+static func formation_icon_size(panel: Rect2, count: int) -> Vector2:
+	var n := maxi(count, 1)
+	var gaps := FORMATION_ICON_GAP * float(n - 1)
+	var inner := actions_column_width(panel) - PANEL_PAD * 2.0 - gaps
+	return Vector2(maxf(inner / float(n), 1.0), ACTION_BUTTON_HEIGHT)
+
+
+## Where the `index`-th formation icon sits, in commands-column space.
+## Row 0 of the column, which is why `action_slot` callers start the rest
+## of their actions at `ACTION_COLUMNS` (see `ACTION_ROWS`).
+static func formation_icon_slot(index: int, icon: Vector2) -> Vector2:
+	return Vector2(PANEL_PAD + float(index) * (icon.x + FORMATION_ICON_GAP),
+		ACTIONS_Y)
+
+
+## The first `action_slot` index left free by the formation strip. Callers
+## add this rather than hardcoding a row, so moving the strip moves
+## everything that follows it.
+static func actions_start_index() -> int:
+	return ACTION_COLUMNS
 
 
 ## Where the i'th button of an action grid sits, relative to ITS OWN

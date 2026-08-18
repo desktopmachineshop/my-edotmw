@@ -56,3 +56,41 @@ that `SQUAD_INFO` resends show up in the bandwidth figures (D-041's
 one.
 
 ---
+
+---
+
+**Amended 2026-08-18 — all six shapes are offered.** The owner set the
+project's formation target explicitly during playtest P09 (#35): *"I want
+Rome Total War formation behaviours. Sacrifice some performance now to get
+it."* Choosing line versus column versus wedge is core to that game, so
+the clause above — "`line`, `column` and `wedge` remain implemented for
+.tres defaults; they are simply not offered in the UI" — is superseded.
+All six `.tres` now carry `offered = true`.
+
+**What this does and does not buy.** It makes the six shapes *choosable*;
+it does not make them behave as RTW's do. Wedge without a charge mechanic
+is a triangle that walks, and line without adjustable width is one fixed
+frontage. Those are rows A9/A10 of #35's gap table and need the D-006
+amendment, not a data flag. This change is worth making on its own only
+because the shapes were already implemented, already replicated and
+already validated server-side — nothing was built for it.
+
+**It was not the one-line data change it looked like.** The commands grid
+is `ACTION_COLUMNS × ACTION_ROWS` and held three formations plus Stop plus
+Gather, five of six. Six formations is eight buttons, and `action_slot`
+clamps nothing — buttons seven and eight would have been positioned below
+the panel's own bottom edge, drawn over the world. `ACTION_COLUMNS` is 4
+now, which seats eight WITHOUT moving `actions_column_width`: that width
+is bounded by the chip strip's reservation and can already reach zero on a
+narrow window, so widening the column would have taken the eighth button
+out of a squad's order chips. The cost is button width instead. See
+`hud_layout.gd`'s note above `ACTION_ROWS` for why a third row was not the
+answer either.
+
+**The general shape of that, which is why it is written down:** a flag
+whose name says "is this offered to the player" had a layout constant
+sized around its current value, in another file, with no link between
+them. Nothing asserted the two agreed, and the failure would have been
+invisible to every test — two buttons drawn off the bottom of a panel are
+exactly the "numbers right, picture wrong" class this project has now hit
+in terrain, in unit colour and in box winding.

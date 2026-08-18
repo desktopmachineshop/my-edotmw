@@ -675,6 +675,32 @@ quick-test SEED="1337" SANDBOX="auto":
 # run-client` from a worktree connects to that worktree's server and no
 # other. To look at a different instance's server, pass its port
 # explicitly (`just instance` in that worktree prints it).
+# Every formation icon, magnified AND at the size the button really is.
+#
+# It exists because `test-client`'s capture scenario never selects a squad,
+# so the panel it photographs has no formation buttons in it and
+# structurally cannot show whether these read as the right shapes — the
+# same blind spot `gen-terrain-shot` was added for. The second row is at
+# true button size on purpose: an icon that reads at 96 px can be mush at
+# 26, which is how the first version (24 dots on a shared scale) shipped
+# looking like six identical blobs.
+#
+# Software-rasterised, no GPU needed. LOOK at artifacts/formation-icons.png.
+[doc("Render every formation icon to artifacts/formation-icons.png")]
+gen-formation-icons: _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    "$godot" --headless --path . --import > /dev/null 2>&1 || true
+    "$godot" --headless --path . --script formation_icon_preview.gd
+    echo "look at {{artifacts_dir}}/formation-icons.png"
+
+
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash
