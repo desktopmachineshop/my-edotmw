@@ -1374,8 +1374,8 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
 #
 # This is CLAUDE.md's standing rule biting again: when the opening
 # changes, every timing tuned against the old one is stale. If crew size,
-# TRAIN_COOLDOWN or the town hall's build time move, re-derive this
-# before believing a run that says the AI never fought.
+# the profile's train cooldown or the town hall's build time move,
+# re-derive this before believing a run that says the AI never fought.
 #
 # TEAMS defaults to 0 — a free-for-all, which is what every ladder number
 # recorded before #119 was measured on, so the default run stays
@@ -1385,8 +1385,22 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
 # milestone, and the ladder — a free-for-all — could not have noticed on
 # any map, at any cap, for any number of matches. Arguments are POSITIONAL
 # (D-20260817-recipe-args-are-positional): `just ai-ladder 3 600 4 2`.
+#
+# PROFILES pairs difficulties against each other
+# (D-20260818-ai-profiles-are-data): a comma-separated list of AI profile
+# ids, dealt round-robin across the AI seats, e.g.
+# `just ai-ladder 6 600 2 0 cautious,relentless`. Empty — the default —
+# seats every AI on the shipped profile, so an invocation written before
+# profiles existed measures exactly what it measured then. It is the
+# FIFTH argument because TEAMS is the fourth: two branches each adding
+# "one more positional argument" is how a run silently measures a pairing
+# nobody asked for.
+#
+# QUOTE ANY RESULT FROM THIS RECIPE WITH ITS CAP. A stronger opponent
+# lengthens matches and a truncated match reads as a draw, so "2 of 3
+# decided" means nothing without the seconds beside it.
 [doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
-ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
+ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int MATCHES "{{MATCHES}}"
@@ -1397,7 +1411,8 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
     log="{{artifacts_dir}}/ai-ladder.log"
     : > "$log"
 
-    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder"
+    profiles="{{PROFILES}}"
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
@@ -1412,13 +1427,15 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --seed=$i --run-seconds={{SECONDS}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --seed=$i --run-seconds={{SECONDS}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         fi
         printf '.'
@@ -1480,17 +1497,20 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
             match($0, /player=([0-9]+)/, p)
             match($0, /civ=([a-z_]+)/, c)
             match($0, / team=([0-9]+)/, t)
+            match($0, /profile=([a-z_]+)/, pr)
             match($0, /squads_peak=([0-9]+)/, s)
             match($0, /workers_peak=([0-9]+)/, wk)
             match($0, / buildings=([0-9]+)/, b)
             match($0, /allies_seen=([0-9]+)/, al)
             match($0, /ally_objectives=([0-9]+)/, ao)
             match($0, /first_attack=(-?[0-9.]+)/, fa)
+            match($0, /first_attack_soldiers=([0-9]+)/, fs)
             civ[p[1]] = c[1]
             team[p[1]] = t[1] + 0
+            prof[p[1]] = pr[1]
             sq[p[1]] += s[1]; wkr[p[1]] += wk[1]; bld[p[1]] += b[1]; n[p[1]]++
             allies[p[1]] += al[1]; ally_obj[p[1]] += ao[1]; ally_obj_total += ao[1]
-            if (fa[1] >= 0) { atk[p[1]] += fa[1]; atkn[p[1]]++ }
+            if (fa[1] >= 0) { atk[p[1]] += fa[1]; atkn[p[1]]++; men[p[1]] += fs[1] }
         }
         END {
             if (matches == 0) { print "  no matches completed — see the log"; exit 1 }
@@ -1500,12 +1520,25 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
             }
             printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
             for (k in n) {
-                printf "  player %-5s civ=%-10s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
-                    k, civ[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]
-                if (atkn[k] > 0) printf "  first_attack~%.0fs", atk[k]/atkn[k]
+                printf "  player %-5s civ=%-10s ai=%-11s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
+                    k, civ[k], prof[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]
+                if (atkn[k] > 0) printf "  first_attack~%.0fs with ~%.0f men", atk[k]/atkn[k], men[k]/atkn[k]
                 else printf "  first_attack=never"
                 printf "\n"
+                # Per PROFILE, which is the number a pairing was run to
+                # get: seats are dealt round-robin, so several seats can
+                # share a difficulty, and a per-player line cannot answer
+                # "did the harder one win".
+                pwins[prof[k]] += wins[k] + 0
+                pplayed[prof[k]] += n[k]
+                if (atkn[k] > 0) { patk[prof[k]] += atk[k]; patkn[prof[k]] += atkn[k]; pmen[prof[k]] += men[k] }
             }
+            for (k in pplayed) {
+                printf "  profile %-11s wins %d of %d seats played", k, pwins[k], pplayed[k]
+                if (patkn[k] > 0) printf "   first_attack~%.0fs with ~%.0f men", patk[k]/patkn[k], pmen[k]/patkn[k]
+                printf "\n"
+            }
+            print "  (quote a pairing WITH its cap: a stronger opponent lengthens matches, and a truncated match reads as a draw)"
             for (k in team_wins) printf "  team %-2s wins=%d of %d\n", k, team_wins[k], matches
             # An objective on a friend is #83 coming back, and a ladder
             # measuring an AI parked on its own ally is measuring nothing.
@@ -1571,8 +1604,39 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
 # this recipe reports ally objectives on every seat. See
 # decisions/D-20260818-allied-ai-is-exercised-by-something.md for the two
 # runs.
+# PROFILES is the LAST argument and defaults to empty, which seats every
+# AI on the shipped default — so with no argument this recipe measures
+# exactly the match #119 measured. Given a list
+# (`just test-ai-teams 3 90 4 2 siege cautious,relentless`) it deals
+# difficulties across the seats and then ASSERTS THEY ARRIVED: every seat
+# must report the profile it was dealt, and a list naming more than one
+# must produce more than one at the table.
+#
+# That check is here rather than in a harness of its own for the reason
+# this recipe exists at all. #119's finding was that the one configuration
+# which breaks a thing is very often the one nothing runs; a difficulty
+# that is real in a unit test and silently lost on the way to a seat is
+# the same defect wearing D-20260818-ai-profiles-are-data's clothes. The
+# unit tests prove a profile field changes a DECISION. Only a real match
+# proves it survives the seating path — and this is already the one path
+# that deals a seat something per-seat.
+#
+# PAIR PROFILES ON A SCENARIO WHOSE STARTING ARMY EVERY PROFILE CAN
+# COMMIT, which is `clash` and not the default `siege`. Measured: `siege`
+# hands each seat TWO military squads, and a profile whose
+# `attack_squads_minimum` is 4 therefore never attacks inside a short cap
+# — so this recipe fails on its own vacuity gate ("2 AI seat-match(es)
+# never attacked anything"), correctly and confusingly. `clash` starts
+# five squads a seat, which clears the highest threshold that ships.
+#
+# The gate is right and neither side of it should be tuned to fit the
+# other: a seat that never committed proves nothing about what it would
+# have aimed at, and a difficulty must not be watered down to suit a
+# harness. This is CLAUDE.md's standing "when the opening changes, every
+# timing tuned against the old one is stale" rule arriving from a new
+# direction — the opening a HARNESS hands out is an opening too.
 [doc("Teamed all-AI matches that fail if an AI attacks its own ally (#119)")]
-test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _import
+test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege" PROFILES="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int MATCHES "{{MATCHES}}"
@@ -1583,7 +1647,12 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
     log="{{artifacts_dir}}/test-ai-teams.log"
     : > "$log"
 
-    echo "test-ai-teams: {{MATCHES}} matches, {{AI}} AI across {{TEAMS}} teams, scenario={{SCENARIO}}, {{SECONDS}}s cap, map=ladder"
+    profiles="{{PROFILES}}"
+    # How many difficulties were ASKED for, so the verdict can tell "one
+    # profile played because one was wanted" from "one played because the
+    # rest were lost on the way to a seat".
+    wanted_profiles=$(printf '%s' "$profiles" | tr ',' '\n' | grep -c '[^[:space:]]' || true)
+    echo "test-ai-teams: {{MATCHES}} matches, {{AI}} AI across {{TEAMS}} teams, scenario={{SCENARIO}}, profiles=${profiles:-<default>}, {{SECONDS}}s cap, map=ladder"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match, for the reason the ladder gives: the
         # same seed every time measures one world repeatedly. Here it is
@@ -1592,14 +1661,14 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --scenario={{SCENARIO}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" --scenario={{SCENARIO}} \
                 --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --scenario={{SCENARIO}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" --scenario={{SCENARIO}} \
                 --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         fi
@@ -1627,7 +1696,7 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
         exit 1
     fi
 
-    awk -v want_teams={{TEAMS}} -v want_matches={{MATCHES}} '
+    awk -v want_teams={{TEAMS}} -v want_matches={{MATCHES}} -v want_profiles="$wanted_profiles" '
         /SIM_TEAMS/ {
             markers++
             fields = split($0, f, /[ ,]+/)
@@ -1642,6 +1711,7 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
         /AI_STATS/ {
             match($0, /player=([0-9]+)/, p)
             match($0, / team=([0-9]+)/, t)
+            match($0, /profile=([a-z_]+)/, pr)
             match($0, /allies_seen=([0-9]+)/, al)
             match($0, /ally_objectives=([0-9]+)/, ao)
             match($0, /attacks=([0-9]+)/, at)
@@ -1649,6 +1719,9 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
             if (!(who in n)) order[++seats] = who
             n[who]++
             team[who] = t[1] + 0
+            prof[who] = pr[1]
+            if (pr[1] == "") profileless++
+            else played_profile[pr[1]] = 1
             allies[who] += al[1]; attacks[who] += at[1]; ally_obj[who] += ao[1]
             if (t[1] + 0 == 0) teamless++
             # Per SEAT PER MATCH, not per seat: an AI that saw an ally in
@@ -1667,8 +1740,9 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
             }
             for (i = 1; i <= seats; i++) {
                 who = order[i]
-                printf "  player %-5s team=%-2d matches=%-2d allies_seen~%.1f attacks=%-3d ally_objectives=%d\n",
-                    who, team[who], n[who], allies[who]/n[who], attacks[who], ally_obj[who]
+                printf "  player %-5s ai=%-11s team=%-2d matches=%-2d allies_seen~%.1f attacks=%-3d ally_objectives=%d\n",
+                    who, (prof[who] == "" ? "?" : prof[who]), team[who], n[who],
+                    allies[who]/n[who], attacks[who], ally_obj[who]
             }
             side_count = 0
             for (s in sides) side_count++
@@ -1695,6 +1769,25 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _impor
             if (idle > 0) {
                 printf "  FAILED: %d AI seat-match(es) never attacked anything — an AI that picked no objective cannot have picked a bad one\n", idle
                 fail = 1
+            }
+            # A difficulty that is real in a unit test and lost on the way
+            # to a seat would leave every profile-shaped assertion in the
+            # estate passing while every AI played the same way
+            # (D-20260818-ai-profiles-are-data). This is the only place a
+            # real match says otherwise.
+            if (profileless > 0) {
+                printf "  FAILED: %d AI seat-match(es) reported no profile at all — the difficulty never reached the seat\n", profileless
+                fail = 1
+            }
+            distinct = 0
+            for (k in played_profile) distinct++
+            if (want_profiles > 1 && distinct < 2) {
+                printf "  FAILED: %d difficulties were dealt and only %d reached the table — a pairing that never happened\n", want_profiles, distinct
+                fail = 1
+            } else if (distinct > 0) {
+                line = ""
+                for (k in played_profile) line = line (line == "" ? "" : ", ") k
+                printf "  difficulties that actually played: %s\n", line
             }
             if (ally_obj_total > 0) {
                 printf "  FAILED: %d attack objective(s) landed on a friend — #83 is back\n", ally_obj_total

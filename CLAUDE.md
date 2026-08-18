@@ -38,6 +38,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m6.md
 
+@docs/status/ai-opponent.md
+
 @docs/status/m7.md
 
 @docs/status/terrain.md
@@ -736,7 +738,7 @@ Dev loop and tests:
   success, failure, and Ctrl-C. Prints the per-squad update cost — the
   number to watch — plus how many client/server state-hash comparisons
   ran and how many desynced.
-- `just ai-ladder [MATCHES] [SECONDS] [AI] [TEAMS]` — headless AI-vs-AI
+- `just ai-ladder [MATCHES] [SECONDS] [AI] [TEAMS] [PROFILES]` — headless AI-vs-AI
   matches on `maps/ladder.tres`, to make "smarter" a measurement (D-054).
   Runs a genuinely all-AI server (`--players=0`); **fails** unless every
   match is observed to leave the lobby, which for three milestones it did
@@ -744,7 +746,11 @@ Dev loop and tests:
   matches, and a truncated one reads as a draw. TEAMS defaults to 0, a
   free-for-all, so every number recorded before
   D-20260818-allied-ai-is-exercised-by-something stays comparable.
-- `just test-ai-teams [MATCHES] [SECONDS] [AI] [TEAMS] [SCENARIO]` — real
+  PROFILES pairs DIFFICULTIES (D-20260818-ai-profiles-are-data) — a
+  comma-separated list of `/ai/*.tres` ids dealt round-robin across the
+  seats, empty meaning the shipped default, so a run written before
+  profiles existed measures what it measured then.
+- `just test-ai-teams [MATCHES] [SECONDS] [AI] [TEAMS] [SCENARIO] [PROFILES]` — real
   teamed all-AI matches that **fail if an AI aims its army at a friend**
   (#83, #119). The one thing in the estate that exercises an allied AI:
   the ladder is a free-for-all, every AI fixture seats on team 0 (not a
@@ -753,7 +759,9 @@ Dev loop and tests:
   (D-098) rather than an opening. It fails on `ally_objectives > 0` —
   and first on every way that zero could be vacuous: a match that never
   started, a simulation with no sides, a seat that saw no ally, a seat
-  that never attacked.
+  that never attacked. Given PROFILES it also fails if a difficulty was
+  dealt and did not ARRIVE — the same "the one configuration nothing
+  runs" rule applied to D-20260818-ai-profiles-are-data.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost, and the count of cliff faces the shipped map draws.
   Vary CHUNK_SIZE to settle D-017 with data. The PNG is **top-down biome
