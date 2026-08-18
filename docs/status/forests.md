@@ -49,3 +49,38 @@ it, and `test-client` aims its camera at a spawn — open ground by
 construction, the one place a wood cannot be. `just gen-forest-preview`
 is the instrument that can, and it frames the densest wood on the map
 from a low angle for exactly that reason.
+
+**And growing a revealed forest was unbudgeted
+(D-20260818-node-placement-is-budgeted, 2026-08-18, issue #109).** Every
+node cell the server had revealed since the last frame was grown in the
+frame it arrived. Measured on the shipped map: **87 us a cell, 666 ms for
+all 7,664 of them** — a terrain height sample, `biome_at`, `moisture_at`,
+six neighbour `biome_at` calls, then `trees_for` with a further sample per
+tree, and that is before the MultiMesh repack. So **192 revealed cells is
+a dropped frame**, and a squad walking into unexplored woodland reveals
+cells by the ring. `NodePlacement` is a queue with a per-frame budget
+(24 cells, ~2.1 ms), the same shape as D-040's flow-field fix: budget the
+work unit, keep partial progress.
+
+Three things worth carrying:
+
+- **The issue was filed with two candidate causes and the instrument that
+  could tell them apart did not exist.** A placement hitch and D-025's
+  truthful pop-in produce the same complaint — "the forests arrived all at
+  once" — and want opposite fixes, a budget or a fade-in. The measurement
+  says the hitch is real; the sandbox panel now reports `known / grown /
+  queued` and the worst frame so the other one stays separable. **A report
+  still arriving with `queued = 0` is the pop-in, and a smaller budget
+  would do nothing for it.**
+- **A budget makes drawn lag known ON PURPOSE, which retired a guard that
+  was sound until it wasn't.** The client found new cells by comparing
+  `_state.nodes.size()` with `_node_placed.size()` — a size comparison
+  standing in for set equality, harmless while the two moved together, and
+  a full 7,664-entry rescan on every frame spent catching up once they do
+  not. Reveals arrive as news on `ClientState.take_revealed()` now, the
+  sibling of the `felled` drain D-087 already had.
+- **Being deliberately behind creates a state that did not exist before:**
+  a node felled between the packet that revealed it and the frame that
+  would have grown it. The server reports that felling once, for a tree
+  this client never drew, so the queued cell has to be dropped or the
+  stand grows on a stump and nothing ever takes it down.
