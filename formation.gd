@@ -39,10 +39,38 @@ class_name Formation
 const LINE_RANKS := 3
 const COLUMN_FILES := 4
 
-# Facing derivation looks this far along the curve to find travel
-# direction. Small enough to track turns, large enough to survive
-# float noise on a 10 Hz tick (D-020).
-const HEADING_EPSILON := 0.05
+# Facing derivation looks this far ALONG THE PATH to find travel
+# direction — a chord of fixed ARC LENGTH from where the squad is to
+# where it will be, in continuous axial units.
+#
+# Two things hang on this being a length rather than a span of time
+# (D-20260818):
+#
+#  * A hex flow field can only step in six directions, so a march that is
+#    "north-east" in world terms is walked as a run of one lattice
+#    direction and then a run of another. An instantaneous difference
+#    reads every junction between runs as a real 60 degree turn and flips
+#    the whole formation with it in one frame; a chord spanning a stretch
+#    of path rounds it into the direction the squad is actually
+#    travelling.
+#
+#  * A chord measured in TIME rotates faster when the squad walks slower,
+#    because it spans less path — so slowing a squad down to wheel it
+#    safely made its facing whip round harder, and the fix fought itself.
+#    Measured in path, the facing turns at (curvature x speed) whatever
+#    the speed is, which is exactly what SquadSim's pace arithmetic
+#    assumes.
+#
+# Bounded ABOVE by how much curve a client actually holds: its copy is
+# clipped to [now, now + CurveReplicator.horizon_seconds], and at the
+# slowest pace SquadSim will ever set (its MIN_TURNING_SPEED, on the
+# slowest shipped unit) that window is only so many cells long. Reaching
+# past it would derive one facing on the server and another on the
+# client. test_the_facing_chord_fits_in_what_a_client_holds pins it.
+#
+# It stays a pure function of (curve, time) — D-006 clause 1 is
+# untouched, there is still nowhere for a turn rate to accumulate.
+const HEADING_ARC := 0.4
 
 # Fallback facing for a squad that has never moved. Arbitrary but fixed —
 # it must be deterministic, because client and server both derive it.
@@ -145,24 +173,48 @@ static func footprint(shape: String, alive: int, spacing: float) -> Dictionary:
 	if _footprint_cache.has(key):
 		return _footprint_cache[key]
 
-	var result := {"centre": Vector2.ZERO, "radius": maxf(spacing, 0.5)}
+	var result := {"centre": Vector2.ZERO, "radius": maxf(spacing, 0.5),
+		"lever": maxf(spacing, 0.5)}
 	if alive > 0:
 		var min_p := Vector2(INF, INF)
 		var max_p := Vector2(-INF, -INF)
+		# The rotation lever arm is measured from the CURVE POINT, not from
+		# the footprint centre, because that is what the formation rotates
+		# about — soldier_transform() rotates every slot offset about the
+		# origin of formation-local space. See turn_lever().
+		var lever := 0.0
 		for slot in range(alive):
 			var p := slot_offset(shape, slot, alive, spacing)
 			min_p = Vector2(minf(min_p.x, p.x), minf(min_p.y, p.y))
 			max_p = Vector2(maxf(max_p.x, p.x), maxf(max_p.y, p.y))
+			lever = maxf(lever, p.length())
 		var centre := (min_p + max_p) * 0.5
 		# Half the diagonal, so the circle contains the whole extent
 		# whichever way the squad is facing. Plus a soldier's own width, so
 		# the edge of the marker sits just outside the outermost man rather
 		# than bisecting him.
 		var half := (max_p - min_p) * 0.5
-		result = {"centre": centre, "radius": half.length() + spacing * 0.5}
+		result = {"centre": centre, "radius": half.length() + spacing * 0.5,
+			"lever": lever}
 
 	_footprint_cache[key] = result
 	return result
+
+
+## How far the outermost soldier stands from the point the formation
+## rotates about, in world units.
+##
+## This is the number that turns a squad's TURN into a soldier's WALK:
+## where the path bends, that man covers `1 + lever * curvature` times the
+## distance the squad centre does. SquadSim divides its pace by exactly
+## that, so no soldier is ever asked to outrun his own move_speed to keep
+## his place (D-20260818).
+##
+## Shares footprint()'s cache and its loop — it is the same scan over the
+## same slots, and a second cache keyed the same way would only be another
+## thing to keep in step.
+static func turn_lever(shape: String, alive: int, spacing: float) -> float:
+	return float(footprint(shape, alive, spacing)["lever"])
 
 
 static func _grid_offset(index: int, alive: int, files: int, spacing: float) -> Vector2:
@@ -310,23 +362,29 @@ static func _hash_unit(n: int) -> float:
 
 ## Squad facing at `time`, in continuous axial space.
 ##
-## Derived entirely from the curve: forward difference while moving,
-## backward difference just after stopping, and failing both, a scan back
-## through the keyframes for the last real displacement. A stopped squad
-## therefore keeps the facing it arrived with WITHOUT anyone storing it.
+## Derived entirely from the curve: a chord of HEADING_ARC along the path
+## ahead while moving, the same chord backwards just after stopping, and
+## failing both, a scan back through the keyframes for the last real
+## displacement. A stopped squad therefore keeps the facing it arrived
+## with WITHOUT anyone storing it.
+##
+## Forward rather than centred, and that is not a preference: the server
+## rebuilds a squad's curve from its CURRENT cell, so neither side holds
+## any history to look back into, and the client's copy is clipped to
+## [now, now + horizon] on top of that. Looking ahead is the only
+## direction with curve in it — which is also how a real formation
+## wheels, beginning the turn before the corner rather than at it.
 static func heading(curve: StateCurve, time: float) -> Vector2:
 	if curve == null or curve.is_empty():
 		return DEFAULT_HEADING
 
-	var here := curve.sample_axial(time)
-
-	var forward := curve.sample_axial(time + HEADING_EPSILON) - here
+	var forward := _chord(curve, time, HEADING_ARC, 1)
 	if forward.length_squared() > 1e-8:
 		return forward.normalized()
 
-	var backward := here - curve.sample_axial(time - HEADING_EPSILON)
+	var backward := _chord(curve, time, HEADING_ARC, -1)
 	if backward.length_squared() > 1e-8:
-		return backward.normalized()
+		return (-backward).normalized()
 
 	# Stationary at `time`: find the most recent segment that moved.
 	for i in range(curve.key_count() - 1, 0, -1):
@@ -394,6 +452,42 @@ static func _stands_on_passable(at: Vector3, space: TorusSpace,
 		passable: PackedByteArray) -> bool:
 	var index := space.index(space.world_to_cell(at))
 	return index >= 0 and index < passable.size() and passable[index] != 0
+
+
+## The vector from the curve point at `time` to the point `arc` further
+## along it, walking in `step` direction (+1 ahead, -1 back). Shorter than
+## `arc` when the curve runs out, which is what a squad about to stop
+## gets.
+##
+## Cut at exactly `arc` rather than at the next keyframe, because a chord
+## that ended on a keyframe would jump from one segment's direction to the
+## next as the squad crossed it — the stepping this exists to remove,
+## reintroduced at keyframe granularity.
+static func _chord(curve: StateCurve, time: float, arc: float, step: int) -> Vector2:
+	var start := curve.sample_axial(time)
+	var here := start
+	var remaining := arc
+
+	var count := curve.key_count()
+	var i := 0
+	if step > 0:
+		while i < count and curve.time_at(i) <= time:
+			i += 1
+	else:
+		i = count - 1
+		while i >= 0 and curve.time_at(i) >= time:
+			i -= 1
+
+	while i >= 0 and i < count:
+		var leg := curve.point_at(i) - here
+		var span := leg.length()
+		if span > 0.0:
+			if span >= remaining:
+				return here + leg * (remaining / span) - start
+			remaining -= span
+			here = curve.point_at(i)
+		i += step
+	return here - start
 
 
 ## World transform for a single soldier.

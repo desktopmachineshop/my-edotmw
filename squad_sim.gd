@@ -37,6 +37,54 @@ const SEPARATION_SEARCH := 2
 ## than by scanning a quarter of the map.
 const SEPARATION_MAX_RINGS := 16
 
+## Smoothing passes applied to a flow-field path before it is written into
+## the curve (D-20260818).
+##
+## A flow field can only step in six directions, so the path to anywhere
+## that is not one of those six is a zigzag alternating every cell — the
+## highest frequency the lattice can express. A binomial [1,2,1] pass has
+## exactly ZERO gain at that frequency, so one pass removes it outright
+## and the second takes the harmonics with it. Genuine corners survive as
+## corners, merely rounded.
+const PATH_SMOOTHING_PASSES := 4
+
+## How many times a path may be split finer when a corner is still too
+## sharp for any pace to wheel through (D-20260818). Each round doubles
+## the keyframes on that squad's curve, so it is bounded and only spent on
+## paths that actually need it — a straight march never reaches it.
+const PATH_REFINEMENTS := 3
+
+## A vertex turning less than this is treated as straight when deciding
+## whether a path needs splitting finer (D-20260818). Smoothing leaves a
+## little residue everywhere, and refining for a tenth of a degree would
+## buy keyframes on every march for nothing anyone could see.
+const STRAIGHT_ENOUGH := 0.02
+
+## Margin on the turning pace for the facing chord sweeping unevenly
+## rather than at its average rate (D-20260818).
+##
+## The chord runs from where the squad is to a fixed distance further
+## along its path, so its two ends do not contribute equally as it crosses
+## a bend and the swing is a little faster in the middle than across the
+## whole of it. 2.0 is what that peak measured on the shipped militia
+## rounding a tight obstacle: without it the outermost soldier ran 19%
+## over his move_speed at the sharpest moment, with it 0.3%. The pace
+## budget carries it so the allowance covers the WORST instant of a turn
+## rather than its mean.
+const TURN_SWEEP := 2.0
+
+## The slowest a squad may walk while wheeling, as a fraction of its
+## move_speed (D-20260818).
+##
+## Not a comfort setting: a squad that crawls covers less path inside the
+## replication horizon than Formation.HEADING_ARC needs, and then the
+## client — which holds only that window — would derive its facing from a
+## SHORTER chord than the server does. So this floor is what keeps the two
+## sides agreeing, and it is also the one place the "nobody outruns his
+## own move_speed" rule is approximate rather than exact: a corner tight
+## enough to need less than this pace gets it anyway.
+const MIN_TURNING_SPEED := 0.3
+
 ## How far ahead a squad's path is written into its curve. Must exceed
 ## the replicator's horizon, or clients run out of curve between updates.
 ## Kept modest so a re-path discards little work.
@@ -1415,12 +1463,14 @@ func _expand_pending_fields_top() -> void:
 
 
 ## Write the squad's planned path into its curve, starting from where it
-## is *now*. Keyframes are one per cell, timed by the squad's speed.
+## is *now*. One keyframe per cell the flow field walks; where they end up
+## and how long each takes is _path_curve()'s business.
 func _rebuild_curve(squad: int) -> void:
-	var curve := StateCurve.new()
 	var current := _cell[squad]
-	var at := time
-	curve.append_cell(at, space.from_index(current), space)
+	# The cell path first, the curve second. Timing a path needs to know
+	# where it turns, and a turn is only visible once the step after it
+	# exists — so the walk cannot also be the emit (D-20260818).
+	var cells := PackedInt32Array([current])
 
 	var speed := _speed[squad]
 	# Set when a planned step turns out to cross ground this side now knows
@@ -1455,7 +1505,6 @@ func _rebuild_curve(squad: int) -> void:
 			field_waits += 1
 			return
 
-		var seconds_per_cell := 1.0 / speed
 		var max_steps := maxi(1, ceili(curve_lookahead_seconds * speed))
 
 		for _i in range(max_steps):
@@ -1492,8 +1541,7 @@ func _rebuild_curve(squad: int) -> void:
 					stale = true
 					break
 
-			at += seconds_per_cell
-			curve.append_cell(at, space.from_index(next), space)
+			cells.append(next)
 			current = next
 
 		if stale:
@@ -1504,6 +1552,8 @@ func _rebuild_curve(squad: int) -> void:
 			# against what this side knows NOW, and every squad sharing the
 			# field gets the corrected route with it.
 			_fields.erase(Vector2i(_destination[squad], knower))
+
+	var curve := _path_curve(squad, cells, speed)
 
 	# If the field could not take the squad a single step, the destination
 	# is unreachable RIGHT NOW — walled off by water or mountains, or
@@ -1548,6 +1598,179 @@ func _rebuild_curve(squad: int) -> void:
 	replicator.set_curve(squad, curve)
 	_log_curve(squad, curve)
 	curves_rebuilt += 1
+
+
+## Turn a flow-field cell path into the squad's replicated curve
+## (D-20260818). Two jobs, and they only work together:
+##
+##  1. **Smooth the lattice out of the path.** A flow field steps between
+##     hex centres, so it walks a route off the six lattice directions as
+##     a run of one direction and then a run of another. Facing is derived
+##     from the curve, so every junction between runs reads as a real 60
+##     degree turn — that is most of the "formations jump around", and it
+##     is not a turn at all. Smoothing is binomial and pins both ends: the
+##     squad is standing on the first point and arrival is tested against
+##     the last, so neither may move. A smoothed point that would round
+##     onto impassable ground is left where the field put it — the field's
+##     cells are the ones proven walkable, and this is a nicer line
+##     through them, not a new route.
+##
+##  2. **Give the outermost soldier a pace he can walk.** The formation
+##     rotates with the squad's facing, so where the path bends, the man
+##     on the outside covers `1 + lever * curvature` times the distance
+##     the centre does. Dividing the centre's speed by exactly that puts
+##     HIM on his own move_speed — and the men on the inside of the turn
+##     cover less ground in the same time, without anything anywhere being
+##     told to slow them down. That is the whole of #101's rule.
+##
+## The squad is already at the turning pace as it APPROACHES a bend,
+## because facing is derived by looking ahead (Formation.HEADING_ARC):
+## the block wheels into a corner and is square to the new direction by
+## the time it gets there.
+func _path_curve(squad: int, cells: PackedInt32Array, speed: float) -> StateCurve:
+	var curve := StateCurve.new()
+	if cells.is_empty():
+		return curve
+
+	# Unwrapped continuous axial space, exactly as StateCurve.append_cell
+	# maintains it — done here rather than through append_cell because the
+	# points are about to be moved off their cell centres (D-008's tax).
+	var points := PackedVector2Array()
+	var first := space.normalize(space.from_index(cells[0]))
+	points.append(Vector2(float(first.x), float(first.y)))
+	for i in range(1, cells.size()):
+		var d := space.delta(space.from_index(cells[i - 1]), space.from_index(cells[i]))
+		points.append(points[i - 1] + Vector2(float(d.x), float(d.y)))
+
+	if cells.size() == 1:
+		curve.append_axial(time, points[0])
+		return curve
+
+	var hex_width := space.hex_size * TorusSpace.SQRT_3
+	# Formation offsets are world units; `speed` is cells per second.
+	var lever := 0.0
+	if hex_width > 0.0:
+		lever = Formation.turn_lever(
+			_shape[squad], _alive[squad], _spacing[squad]) / hex_width
+
+	points = _smooth_path(points, _tier[squad])
+
+	# The facing chord spans Formation.HEADING_ARC of path, so a bend
+	# packed into a shorter stretch than that gets swept in one go rather
+	# than followed round — the snap again, at keyframe granularity.
+	# Halving the spacing is the only lever that reaches it: a longer chord
+	# is capped by the replication horizon, and more smoothing pulls the
+	# route off the cells the flow field proved walkable. A straight march
+	# has no bend to resolve and never enters the loop, so it buys no
+	# keyframes for this.
+	for _round in range(PATH_REFINEMENTS):
+		if _bends_are_resolved(points):
+			break
+		points = _smooth_path(_subdivided(points), _tier[squad])
+
+	var lengths := _segment_lengths(points)
+	var paces := _segment_paces(points, lengths, speed, lever)
+
+	var at := time
+	curve.append_axial(at, points[0])
+	for i in range(lengths.size()):
+		at += lengths[i] / paces[i]
+		curve.append_axial(at, points[i + 1])
+	return curve
+
+
+## Length of each segment of `points`, in cells.
+func _segment_lengths(points: PackedVector2Array) -> PackedFloat32Array:
+	var hex_width := maxf(space.hex_size * TorusSpace.SQRT_3, 0.0001)
+	var out := PackedFloat32Array()
+	for i in range(points.size() - 1):
+		out.append(
+			space.axial_offset_to_world(points[i + 1] - points[i]).length() / hex_width)
+	return out
+
+
+## How fast the squad may walk each segment, in cells per second.
+##
+## The outermost soldier walks `1 + lever * curvature` times as far as the
+## squad centre does — his own path around the outside of the turn — so
+## dividing the centre's speed by that is exactly what puts HIM on
+## move_speed. That is the whole rule from #101, in one line.
+##
+## Curvature is taken from the sharper of the two vertices bounding the
+## segment, because the facing chord straddles a vertex and the squad has
+## to already be walking at the turning pace when it arrives.
+## TURN_SWEEP is the margin for the chord sweeping unevenly rather than at
+## its average rate, and MIN_TURNING_SPEED the floor under all of it.
+func _segment_paces(points: PackedVector2Array, lengths: PackedFloat32Array,
+		speed: float, lever: float) -> PackedFloat32Array:
+	var turns := PackedFloat32Array()
+	for i in range(lengths.size()):
+		var here := space.axial_offset_to_world(points[i + 1] - points[i])
+		var turn := 0.0
+		if i + 2 < points.size():
+			var onward := space.axial_offset_to_world(points[i + 2] - points[i + 1])
+			if here.length_squared() > 1e-12 and onward.length_squared() > 1e-12:
+				turn = absf(here.signed_angle_to(onward, Vector3.UP))
+		turns.append(turn)
+
+	var floor_speed := speed * MIN_TURNING_SPEED
+	var out := PackedFloat32Array()
+	for i in range(lengths.size()):
+		# The sharper of the two vertices bounding this segment: the chord
+		# straddles a vertex, so the squad has to already be walking at the
+		# turning pace by the time it arrives at one.
+		var curvature := turns[i] / maxf(lengths[i], 0.0001)
+		if i > 0:
+			curvature = maxf(curvature, turns[i - 1] / maxf(lengths[i - 1], 0.0001))
+		out.append(clampf(
+			speed / (1.0 + lever * TURN_SWEEP * curvature), floor_speed, speed))
+	return out
+
+
+## Whether every segment that turns is short enough for the facing chord
+## to span it. A segment that does not turn needs no resolution at all,
+## which is why a straight march buys no extra keyframes here.
+func _bends_are_resolved(points: PackedVector2Array) -> bool:
+	for i in range(1, points.size() - 1):
+		var a := points[i] - points[i - 1]
+		var b := points[i + 1] - points[i]
+		if a.length_squared() <= 1e-12 or b.length_squared() <= 1e-12:
+			continue
+		if absf(a.angle_to(b)) <= STRAIGHT_ENOUGH:
+			continue
+		if a.length() > Formation.HEADING_ARC or b.length() > Formation.HEADING_ARC:
+			return false
+	return true
+
+
+## A midpoint inserted in every segment. Geometry unchanged — it is the
+## RESOLUTION that changes, so the smoothing pass after it has somewhere
+## finer to spread a corner into.
+func _subdivided(points: PackedVector2Array) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for i in range(points.size() - 1):
+		out.append(points[i])
+		out.append((points[i] + points[i + 1]) * 0.5)
+	out.append(points[points.size() - 1])
+	return out
+
+
+## PATH_SMOOTHING_PASSES binomial passes with both endpoints pinned. See
+## _path_curve() for why. `previous` carries the pre-pass value of the
+## neighbour already overwritten, so a pass filters the path it was handed
+## rather than half-filtering its own output.
+func _smooth_path(points: PackedVector2Array, tier: int) -> PackedVector2Array:
+	if points.size() < 3:
+		return points
+	var out := points.duplicate()
+	for _pass in range(PATH_SMOOTHING_PASSES):
+		var previous := out[0]
+		for i in range(1, out.size() - 1):
+			var moved := previous * 0.25 + out[i] * 0.5 + out[i + 1] * 0.25
+			previous = out[i]
+			if is_passable(space.normalize(Vector2i(roundi(moved.x), roundi(moved.y))), tier):
+				out[i] = moved
+	return out
 
 
 func _log_curve(squad: int, curve: StateCurve) -> void:

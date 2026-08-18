@@ -116,3 +116,55 @@ Three things worth carrying:
   mechanics whose whole job is to close it — combat range, siege,
   gathering, wall access. Each is a position a squad NEEDS, and a spacing
   rule that does not know about one of them quietly deletes the feature.
+
+**A squad WHEELS now; it does not snap (D-20260818, from playtest P06,
+#101).** The owner's complaint was that formations jump around as corners
+are turned, with the rule attached: *no unit may exceed its individual
+speed, so the inside units must go slower to hold the shape*. On the
+shipped militia an outer soldier was moving at **81x his own move_speed**
+at a tight corner, and the whole block flipped **90 degrees in one 20 ms
+frame**. Both are numbers now (`tests/test_squad_turning.gd` prints
+them); after the change they are **1.003x** and **0.57 degrees**.
+
+Three things had to change together, and the interesting one is the
+third:
+
+- **Facing is a chord of fixed ARC LENGTH along the path ahead**, not an
+  instantaneous difference. Still derived, still pure, still no stored
+  facing anywhere — D-006 clause 1 is untouched.
+- **A flow-field path is smoothed before it goes into the curve**, and
+  split finer where a bend is packed tighter than the chord can span. A
+  hex field can only step six ways, so most of what read as "turns" was
+  the lattice; a binomial pass has zero gain at exactly that frequency.
+  A straight march buys no extra keyframes, so the wire is unaffected
+  where squads spend their time.
+- **A squad's pace is `move_speed / (1 + lever x curvature)`**, where
+  `lever` is how far the outermost slot stands from the point the
+  formation rotates about. That one line IS the owner's rule: the man on
+  the outside walks exactly that much further, so dividing by it puts HIM
+  on his own speed, and the men on the inside slow down without anything
+  being told to slow them.
+
+**The lesson worth carrying is about the chord, and it is a general
+one.** The obvious implementation measures it in SECONDS — and a chord
+that spans a fixed time spans less PATH when the squad walks slower. So
+slowing a squad down to wheel it safely shortened its chord, and a
+shorter chord swung faster through the same bend: the correction fed the
+defect. The peak got *worse* after the first working slowdown (2.0x ->
+2.6x), and tuning the margin was non-monotonic (1.6 -> 3.68, 1.8 -> 3.37,
+2.0 -> 4.12, 2.4 -> 5.45) — a constant fitted to that is fitted to a
+fixture, not to a rule. Measured in PATH the facing turns at
+`curvature x speed` whatever the speed is, the same sweep goes monotone,
+and one honest constant is left. **When a correction's own effect changes
+the quantity it is computed from, re-express it in something the
+correction does not move.**
+
+Two smaller things bought the same way. **Which formation is slowest to
+turn is not the obvious one** — a squad rotates about its curve point,
+which sits at the FRONT rank, so a deep column swings its rear further
+(7.33) than a wide line swings its flank (5.27); the test reads the lever
+rather than assuming which shape wins. And **a fixture can look like it
+measures a corner and measure nothing**: a wall of constant q does not
+block a torus at all, so the first corner fixture had the squad walk the
+other way round the world and arrive on a dead straight path, reporting
+two formations taking identical times because neither ever turned.
