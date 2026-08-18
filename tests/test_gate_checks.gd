@@ -1,0 +1,208 @@
+extends GutTest
+
+## Guards D-20260818-the-fast-loop-carries-the-gate (#112): every log
+## comparison `just test-load` makes, `just test-scenario` makes too.
+##
+## `test-load` costs five minutes a run on the current default map, so
+## the loop anybody iterates in is `test-scenario` (~25 s). That is only
+## honest if the fast loop proves what the gate proves minus the opening
+## it deliberately skips — and it did not. `test-scenario`'s header says
+## "the checks follow test-load's shape"; of test-load's four it had
+## copied one. Fog gating of squads, fog gating of resource positions and
+## both civilisations fielding something were asserted by the five-minute
+## recipe alone, which in practice means by nothing anybody ran.
+##
+## Two halves, and the second is the one with teeth:
+##
+##   - the checks are a plain script, so this file can EXECUTE
+##     gate-check.sh and watch it reject a bad run — the same reason
+##     recipe-arg.sh and instance-id.sh are scripts rather than recipe
+##     bodies, which the test estate cannot reach at all;
+##   - and a scan asserting the CALLER exists in both recipes, which is
+##     D-106's rule written down as a test. Every execution test below
+##     would still pass with the fast loop calling none of them.
+
+
+func _bash(line: String) -> Dictionary:
+	for shell in ["/bin/bash", "bash", "/usr/bin/bash"]:
+		var out := []
+		var code := OS.execute(shell, ["-c", line], out, true)
+		if code != -1:
+			return {"code": code, "out": "\n".join(PackedStringArray(out))}
+	return {"code": -1, "out": ""}
+
+
+func _read(path: String) -> String:
+	var handle := FileAccess.open(path, FileAccess.READ)
+	assert_not_null(handle, "%s must exist and be readable" % path)
+	if handle == null:
+		return ""
+	var text := handle.get_as_text()
+	handle.close()
+	return text
+
+
+## Writes a throwaway log and returns its absolute path.
+func _log(name: String, body: String) -> String:
+	var path := "user://gate-check-%s.log" % name
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(handle, "could not write the fixture log %s" % path)
+	if handle != null:
+		handle.store_string(body)
+		handle.close()
+	return ProjectSettings.globalize_path(path)
+
+
+func _check(args: Array) -> Dictionary:
+	var quoted := PackedStringArray()
+	for arg in args:
+		quoted.append("'%s'" % str(arg))
+	return _bash("bash '%s' %s" % [
+		ProjectSettings.globalize_path("res://gate-check.sh"), " ".join(quoted)])
+
+
+func before_all() -> void:
+	# A shell that cannot be started would make every execution test here
+	# pass vacuously, which is the one failure mode this project has paid
+	# for repeatedly. Fail loudly instead.
+	var probe := _bash("echo alive")
+	assert_eq(probe["code"], 0,
+		"this file needs a POSIX shell — run the suite through `just test-unit` (docker)")
+
+
+# --- the comparisons themselves ---------------------------------------
+
+func test_a_gated_run_passes_and_says_what_it_proved() -> void:
+	# The numbers are a real `test-scenario siege 4 15` run.
+	var bots := _log("ok-bots", "known_squads_max=11 nodes_known_max=128\n")
+	var server := _log("ok-server",
+		"FOG_TOTAL_SQUADS=32\nFOG_TOTAL_NODES=7694\nCIVS_FIELDED 2 of 2 — legion=16, northmen=16\n")
+
+	var result := _check(["fog-squads", bots, server])
+	assert_eq(result["code"], 0, "a gated run must pass: %s" % result["out"])
+	assert_true(str(result["out"]).contains("known_squads_max=11"),
+		"the pass must quote what it compared, not merely say ok: %s" % result["out"])
+
+	assert_eq(_check(["fog-nodes", bots, server])["code"], 0, "resource gating must pass")
+	assert_eq(_check(["civs", server])["code"], 0, "two civs fielded must pass")
+
+
+func test_an_ungated_run_fails() -> void:
+	# The regression this exists to catch is M1's own visible_to() stub:
+	# a client that knows every squad the server simulates.
+	var bots := _log("open-bots", "known_squads_max=32 nodes_known_max=7694\n")
+	var server := _log("open-server", "FOG_TOTAL_SQUADS=32\nFOG_TOTAL_NODES=7694\n")
+
+	assert_eq(_check(["fog-squads", bots, server])["code"], 1,
+		"knowing every simulated squad is not fog gating anything")
+	assert_eq(_check(["fog-nodes", bots, server])["code"], 1,
+		"knowing every resource node is D-061's leak, not a pass")
+
+
+func test_one_civ_fails() -> void:
+	var server := _log("one-civ", "CIVS_FIELDED 1 of 2 — legion=32\n")
+	assert_eq(_check(["civs", server])["code"], 1,
+		"a match in which one roster never played must fail (D-046 criterion 10)")
+
+
+func test_a_missing_marker_is_a_failure_not_a_skip() -> void:
+	# The whole point. A comparison that finds nothing to compare and
+	# says nothing is indistinguishable from one that passed — the
+	# vacuous-pass shape D-022's audit block was written against, and the
+	# reason `test-load`'s verdict fails when zero hash checks ran.
+	var quiet := _log("quiet", "nothing structured in here at all\n")
+	var server := _log("totals", "FOG_TOTAL_SQUADS=32\nFOG_TOTAL_NODES=7694\n")
+
+	assert_eq(_check(["fog-squads", quiet, server])["code"], 1,
+		"no known_squads_max means the comparison never ran")
+	assert_eq(_check(["fog-squads", server, quiet])["code"], 1,
+		"no FOG_TOTAL_SQUADS means the comparison never ran")
+	assert_eq(_check(["fog-nodes", quiet, server])["code"], 1,
+		"no nodes_known_max means the comparison never ran")
+	assert_eq(_check(["civs", quiet])["code"], 1,
+		"no CIVS_FIELDED marker means the comparison never ran")
+
+
+func test_misusing_the_checker_is_its_own_exit_code() -> void:
+	# 2, not 1: a recipe calling this wrongly is a bug in the recipe and
+	# must not read as "the run under test was bad". Same split as
+	# recipe-arg.sh.
+	assert_eq(_check(["fog-squads"])["code"], 2, "too few arguments is a misuse")
+	assert_eq(_check(["what", "a", "b"])["code"], 2, "an unknown check is a misuse")
+
+
+# --- the checks actually being called, in BOTH recipes ----------------
+
+## The body of one recipe, as text. A recipe ends at the next line that
+## starts in column 0 and is not blank — comments included, since a
+## recipe's own trailing comment belongs to whatever comes after it.
+func _recipe_body(justfile: String, declaration: String) -> String:
+	var lines := justfile.split("\n")
+	var body := ""
+	var inside := false
+	for raw in lines:
+		var line := String(raw).replace("\r", "")
+		if not inside:
+			if line.begins_with(declaration):
+				inside = true
+			continue
+		if not line.is_empty() and not line.begins_with(" ") and not line.begins_with("\t"):
+			break
+		body += line + "\n"
+	assert_true(inside, "no recipe declared as `%s` in the justfile" % declaration)
+	return body
+
+
+## Which gate-check.sh checks a recipe body runs.
+##
+## The INVOCATION, not the name: `bash gate-check.sh <check>`. Matching
+## the filename alone picked the word after it out of the prose comment
+## above the calls, which would fail this file for a reason that is not
+## the one it is about.
+func _checks_in(body: String) -> Array:
+	var re := RegEx.new()
+	re.compile("bash gate-check\\.sh ([a-z-]+)")
+	var found: Array = []
+	for m in re.search_all(body):
+		var name := m.get_string(1)
+		if not found.has(name):
+			found.append(name)
+	found.sort()
+	return found
+
+
+func test_the_fast_loop_makes_every_check_the_gate_makes() -> void:
+	var justfile := _read("res://justfile")
+	var gate := _checks_in(_recipe_body(justfile, "test-load "))
+	var loop := _checks_in(_recipe_body(justfile, "test-scenario "))
+
+	assert_gt(gate.size(), 0,
+		"`test-load` runs no gate-check.sh check at all — the gate has lost its comparisons")
+	for check in gate:
+		assert_true(loop.has(check),
+			("`test-load` checks '%s' and `test-scenario` does not. The fast loop is the one "
+			+ "people run between gate runs; a property only the five-minute recipe asserts is "
+			+ "one nothing asserts (#112).") % check)
+
+
+func test_neither_recipe_reimplements_a_shared_comparison() -> void:
+	# Drift back is the failure mode: a copy inline in one recipe passes
+	# the test above while the two answers diverge. The markers belong to
+	# gate-check.sh alone.
+	var justfile := _read("res://justfile")
+	for marker in ["FOG_TOTAL_SQUADS", "FOG_TOTAL_NODES", "CIVS_FIELDED",
+			"known_squads_max", "nodes_known_max"]:
+		# Naming a marker in a comment is fine; GREPPING for it is the
+		# copy. Reading one is what the recipes must not do themselves.
+		# `.` does not match a newline in Godot's RegEx, so this cannot
+		# reach across lines into an unrelated recipe.
+		var re := RegEx.new()
+		re.compile("grep.*%s" % marker)
+		assert_null(re.search(justfile),
+			("the justfile greps %s itself — that comparison lives in gate-check.sh, "
+			+ "so both recipes get the same answer") % marker)
+	var script := _read("res://gate-check.sh")
+	for marker in ["FOG_TOTAL_SQUADS", "FOG_TOTAL_NODES", "CIVS_FIELDED",
+			"known_squads_max", "nodes_known_max"]:
+		assert_true(script.contains(marker),
+			"gate-check.sh must be the one place %s is read" % marker)

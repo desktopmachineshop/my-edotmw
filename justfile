@@ -585,9 +585,13 @@ test-unit FILTER="" TEST="": _import
 #                                  verify its state against the server's,
 #                                  AND (M2) actually observe a casualty, a
 #                                  conceal, and a reveal (D-026 criterion 9)?
-#   3. fog-gating comparison     — did the bots collectively know FEWER
-#                                  squads than the server actually
-#                                  simulated (D-026 criterion 6's load half)?
+#   3. log comparisons           — did fog gate squads and resource
+#                                  positions from even the best-informed
+#                                  bot (D-026 criterion 6's load half,
+#                                  D-061), and did both civs field
+#                                  something (D-046 criterion 10)? They
+#                                  live in gate-check.sh so the FAST
+#                                  loop makes them too.
 #   4. diagnostic log scan       — did anything complain along the way?
 #
 # Check 2 is the one that makes this a test rather than a smoke run: a bot
@@ -638,69 +642,18 @@ test-load N DURATION:
         exit 1
     fi
 
-    # D-026 criterion 6's load half: fog must be shown gating a REAL
-    # multi-client run, not a test fixture — even the single MOST-INFORMED
-    # bot must know FEWER squads than the server actually simulated. This
-    # is deliberately per-bot, not a sum/union across every bot: every
-    # squad belongs to exactly one connected player, and an owner always
-    # sees its own squads regardless of vision, so a union across ALL bots
-    # would equal the server's total on every run whether fog gates
-    # anything or not — see bot_client.gd's _max_known_squads() for why.
-    # Compared via two distinct, structured key=value markers (never a
-    # substring of unrelated prose, per the rule below) rather than
-    # inferred from prose. Absence of either marker is itself a failure —
-    # a check that silently skips because it found nothing to compare is
-    # exactly the "passes vacuously" shape D-022's audit was written
-    # against.
-    known_squads_max="$(grep -oE 'known_squads_max=[0-9]+' "$bots_log" | tail -1 | cut -d= -f2)"
-    total_squads="$(grep -oE 'FOG_TOTAL_SQUADS=[0-9]+' "$server_log" | tail -1 | cut -d= -f2)"
-    if [ -z "${known_squads_max:-}" ] || [ -z "${total_squads:-}" ]; then
-        echo "test-load: could not find known_squads_max (bots log) or FOG_TOTAL_SQUADS (server log) — can't check fog gating" >&2
-        exit 1
-    fi
-    if [ "$known_squads_max" -ge "$total_squads" ]; then
-        echo "test-load: fog did not gate anything at load — the most-informed bot knew $known_squads_max of $total_squads simulated squads (expected fewer)" >&2
-        exit 1
-    fi
-    echo "test-load: fog gated at least $((total_squads - known_squads_max)) of $total_squads simulated squads even from the most-informed bot (known_squads_max=$known_squads_max)"
-
-    # The same check for RESOURCE POSITIONS (D-061). Every node on the map
-    # used to be sent to every client at join, so a player knew where each
-    # opponent had to expand and where to raid without scouting for any of
-    # it — and a modified client could read it straight out of the packet.
-    #
-    # Checked here rather than only in a unit test for the reason the
-    # squad gate is: a per-client filter can be correct in isolation and
-    # still be bypassed by some other send path, and only a live run with
-    # real clients exercises all of them.
-    nodes_known_max="$(grep -oE 'nodes_known_max=[0-9]+' "$bots_log" | tail -1 | cut -d= -f2)"
-    total_nodes="$(grep -oE 'FOG_TOTAL_NODES=[0-9]+' "$server_log" | tail -1 | cut -d= -f2)"
-    if [ -z "${nodes_known_max:-}" ] || [ -z "${total_nodes:-}" ]; then
-        echo "test-load: could not find nodes_known_max or FOG_TOTAL_NODES — can't check resource gating" >&2
-        exit 1
-    fi
-    if [ "$nodes_known_max" -ge "$total_nodes" ]; then
-        echo "test-load: resource positions are NOT gated — the most-informed bot knew $nodes_known_max of $total_nodes nodes (expected fewer)" >&2
-        exit 1
-    fi
-    echo "test-load: fog gated $((total_nodes - nodes_known_max)) of $total_nodes resource nodes from the most-informed bot (nodes_known_max=$nodes_known_max)"
-
-    # Both civilisations must actually have fielded something (D-046
-    # criterion 10). A run where everyone happened to draw the same civ
-    # exercises half the roster and proves nothing about the other half —
-    # and it would pass every other check in this recipe, which is exactly
-    # the vacuous-pass shape D-022's audit exists to catch.
-    civs_fielded="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $2}')"
-    civs_total="$(grep -oE 'CIVS_FIELDED [0-9]+ of [0-9]+' "$server_log" | tail -1 | awk '{print $4}')"
-    if [ -z "${civs_fielded:-}" ]; then
-        echo "test-load: no CIVS_FIELDED marker in the server log — can't check both civs played" >&2
-        exit 1
-    fi
-    if [ "$civs_fielded" -lt 2 ]; then
-        echo "test-load: only $civs_fielded of $civs_total civilisations ever fielded a squad — the match exercised one roster (D-046 criterion 10)" >&2
-        exit 1
-    fi
-    echo "test-load: $civs_fielded of $civs_total civilisations fielded squads"
+    # The three comparisons that need BOTH logs, in gate-check.sh rather
+    # than inline (D-20260818-the-fast-loop-carries-the-gate): fog gating
+    # of squads (D-026 criterion 6's load half), fog gating of resource
+    # positions (D-061), and both civilisations having fielded something
+    # (D-046 criterion 10). They were written here and copied nowhere, so
+    # `test-scenario` — the loop people iterate in, because this one is
+    # five minutes — asserted none of them. The reasoning for each lives
+    # in the script; a test fails if this recipe makes a check the fast
+    # loop does not.
+    bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    bash gate-check.sh fog-nodes "$bots_log" "$server_log"
+    bash gate-check.sh civs "$server_log"
 
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
@@ -737,8 +690,8 @@ test-load N DURATION:
 # it is called done (its DURATION lives in docs/status/load-testing.md,
 # because it scales with map size); this is the loop you iterate in.
 #
-# The checks follow test-load's shape, plus one this recipe needs and
-# test-load does not: the server must confirm IN ITS LOG that it actually
+# The checks ARE test-load's, plus one this recipe needs and test-load
+# does not: the server must confirm IN ITS LOG that it actually
 # played the scenario. A --scenario typo, or a stray server without the
 # flag, would otherwise produce a fast, clean, entirely ordinary run — a
 # pass that means nothing, which is the exact shape D-022's audit exists
@@ -800,7 +753,19 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
         exit 1
     fi
 
-    # 4. Engine diagnostics, by line PREFIX rather than by scary word.
+    # 4. The same three log comparisons the GATE makes, from the same
+    #    script (D-20260818-the-fast-loop-carries-the-gate). This recipe
+    #    said "the checks follow test-load's shape" and had copied one of
+    #    four; the missing three cost nothing here, because a scenario
+    #    run already prints every marker they read. Fog gating is if
+    #    anything HARDER to satisfy mid-game than during the opening —
+    #    armies are in reach, so more of the board is visible — which is
+    #    what makes it worth asserting on the loop that actually runs.
+    bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    bash gate-check.sh fog-nodes "$bots_log" "$server_log"
+    bash gate-check.sh civs "$server_log"
+
+    # 5. Engine diagnostics, by line PREFIX rather than by scary word.
     if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' \
             "$bots_log" "$server_log"; then
         echo "test-scenario: engine errors or warnings found" >&2
@@ -925,9 +890,8 @@ test-client SECONDS="60" BOTS="3": _import
     fi
 
     # Structured key=value markers (per the standing "scary words vs
-    # structured markers" rule — test-load's own known_squads_max/
-    # FOG_TOTAL_SQUADS check follows the same shape), not an inference from
-    # prose. Absence of any of these, or a zero value, means M2 was not
+    # structured markers" rule — gate-check.sh's comparisons follow the
+    # same shape), not an inference from prose. Absence of any of these, or a zero value, means M2 was not
     # actually exercised by this run even if everything else looks clean.
     casualties="$(grep -oE 'casualties_applied=[0-9]+' "$log" | tail -1 | cut -d= -f2)"
     conceals="$(grep -oE 'conceal_events=[0-9]+' "$log" | tail -1 | cut -d= -f2)"
