@@ -16,7 +16,7 @@ against the `M10 — scale optimisation` milestone.
 
 | | measured | how |
 |---|---|---|
-| terrain meshing at client start | **5,071 ms**, 143 chunks | `just gen-terrain-preview` |
+| terrain meshing at client start | **5,071 ms**, 143 chunks — *sliced, see below* | `just gen-terrain-preview` |
 | flow-field waits | **2,968 of 3,005 ticks** — *fixed, see below* | `just test-load 4 300` |
 | per-squad update | **167.7 µs at 48 squads** (was ~83 at 28) | same run |
 | worst tick | 44.9 ms, **0 dropped** | same run |
@@ -27,7 +27,8 @@ The **server is fine** — the tick budget is met with 55 ms of headroom.
 What is not fine is the **client**: five seconds of blocking terrain
 meshing before a match is playable. That is the one a player feels first,
 and it was found by a human closing the window and asking whether the
-server was down.
+server was down. **That freeze is gone (#106, done)** — see the bullet
+below.
 
 **Three things to know before picking up any of it:**
 
@@ -65,6 +66,19 @@ server was down.
   tops out at 32,768 cells, which is now the *default* map; the largest
   size is 130,368. The sweep is this project's authority on scaling, so
   re-basing it is a prerequisite for trusting anything it says.
+- **The client's start-up freeze is gone (#106, done).** The ground is built
+  in slices budgeted in CELLS — D-040's flow-field amortisation pointed at
+  the other side of the wire — and the player watches a **loading bar** until
+  the last chunk is in the tree.
+  `decisions/D-20260818-terrain-builds-a-slice-at-a-time.md` has the
+  measurements. Three of them are worth knowing before touching this again:
+  slicing costs **nothing** (streamed vs one pass, same process, same host:
+  41.4 s vs ~41.0 s on a badly loaded host); **D-017's chunk size survives its
+  own re-measurement**, because total meshing cost is FLAT in chunk size and
+  the knob only buys granularity; and the accepted budget is now the owner's
+  **30 seconds behind a bar**, which `client.gd` warns about exceeding rather
+  than merely quoting. The remaining lever is a worker thread — it is the only
+  one that reduces total wall clock rather than spreading it.
 - **The biggest item (#110) is the one twice rejected on scope**: drawing
   entities at every visible lattice copy. It deletes the recurring
   copy-choice bug class (armies vanishing at the seam, "half the screen
