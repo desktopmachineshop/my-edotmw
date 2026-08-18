@@ -114,6 +114,29 @@ producing that. `siege` hands every seat a town centre, a tower and two
 militia on the first tick, so three seeded matches cost ~5 minutes
 instead of ~30.
 
+## What the ladder says, with its cap
+
+Both taken 2026-08-18. **Quote a ladder result with its cap** (D-107): a
+stronger defence lengthens matches and a truncated one reads as a draw.
+
+| configuration | matches | cap | result |
+|---|---|---|---|
+| `ai-ladder 2 600 4 2` (2v2) | 2 | 600 s | **2 of 2 decided, 0 draws**, one win to each side, first attack ~176–179 s, `ally_objectives=0` throughout |
+| `ai-ladder 2 600 2 0` (the default) | 2 | 600 s | **2 of 2 decided, 0 draws**, one win each, first attack **~171 s northmen / ~179 s legion**, `allies_seen~0.0` |
+
+The free-for-all figures reproduce the M6 baseline (~171 s / ~179 s,
+2026-08-16), which is the evidence that the default path is unchanged —
+not an argument that it should be.
+
+Two honest notes. One teamed seat reports `first_attack=never` in both
+matches: it built workers and almost no army (`squads_peak~12.5` against
+`workers_peak~12.0`), which is an economy outcome and not about alliance
+— the harness is what would catch the alliance case, and did. And **no
+timing number from this session is usable**: the host was running a dozen
+other Godot processes throughout, so the µs/squad and worst-tick figures
+in those logs are contention. Same rule as M6's worst-tick figures taken
+while the host was building containers.
+
 ## Rejected alternatives
 
 - **A teamed variant of `just ai-ladder` and nothing else** — the shape
