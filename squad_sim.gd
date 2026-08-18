@@ -40,12 +40,15 @@ const SEPARATION_MAX_RINGS := 16
 ## Smoothing passes applied to a flow-field path before it is written into
 ## the curve (D-20260818).
 ##
-## A flow field can only step in six directions, so the path to anywhere
-## that is not one of those six is a zigzag alternating every cell — the
-## highest frequency the lattice can express. A binomial [1,2,1] pass has
-## exactly ZERO gain at that frequency, so one pass removes it outright
-## and the second takes the harmonics with it. Genuine corners survive as
-## corners, merely rounded.
+## A flow field can only step in six directions, so it walks a route off
+## those six as a run of one direction and then a run of another. Facing
+## is derived from the curve, so every junction between runs reads as a
+## real 60 degree turn when it is nothing of the sort. A binomial [1,2,1]
+## pass has exactly ZERO gain at the highest frequency the lattice can
+## express, so a cell-by-cell alternation goes outright; the passes after
+## that widen the radius a run junction is rounded onto, which is what
+## lets the squad keep some pace through it. Genuine corners survive as
+## corners.
 const PATH_SMOOTHING_PASSES := 4
 
 ## How many times a path may be split finer when a corner is still too
