@@ -459,7 +459,13 @@ func test_squads_ordered_to_one_point_do_not_end_up_stacked() -> void:
 	# single heap. Separation happens on ARRIVAL, not by spreading
 	# destinations — see _separate_arrivals for why that distinction is
 	# load-bearing.
-	var space := TorusSpace.new(32, 16, 1.0)
+	#
+	# The map is 64x32 rather than the file's usual 32x16 because squads
+	# claim the ground they actually cover now (#104): eight of these need
+	# six cells between each pair, and eight disks of radius five do not
+	# fit in 512 cells. A toy map that cannot hold the squads would have
+	# been testing the give-up branch, not the rule.
+	var space := TorusSpace.new(64, 32, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var def := UnitRoster.first()
 
@@ -467,7 +473,7 @@ func test_squads_ordered_to_one_point_do_not_end_up_stacked() -> void:
 	for i in range(8):
 		squads.append(sim.add_squad(def, 1, Vector2i(2 + i, 2)))
 	for squad in squads:
-		sim.order_move(squad, Vector2i(16, 8))
+		sim.order_move(squad, Vector2i(32, 16))
 
 	for _i in range(600):
 		sim.tick()
@@ -501,9 +507,128 @@ func test_a_displaced_squad_steps_aside_rather_than_teleporting() -> void:
 		sim.tick()
 
 	var apart := space.distance(sim.cell_of(first), sim.cell_of(second))
-	assert_eq(apart, 1,
-		"the two squads settled %d cells apart — a squad shoved aside should " % apart
-		+ "take the cell NEXT to the contested one, not the first one a scan finds")
+	var wanted := sim.footprint_cells(first) + sim.footprint_cells(second)
+	assert_eq(apart, wanted,
+		"the two squads settled %d cells apart where %d is what clears them — " % [apart, wanted]
+		+ "a squad shoved aside should take the NEAREST ground it fits on, not "
+		+ "the first one a scan finds")
+
+
+# --- squads take up their REAL room (#104) -----------------------------
+
+func test_settled_squads_do_not_stand_inside_each_other() -> void:
+	# Playtest P06: "units all pile on top of each other". Separation was
+	# a rule about CENTRE CELLS, so it guaranteed one cell of clearance —
+	# while a 36-strong line is eleven cells across. The squads were
+	# obeying the rule and overlapping almost completely.
+	#
+	# A shipped def, not a caricature: the mechanism was correct all along
+	# and the whole question is whether the shipped numbers separate
+	# anybody (the D-066 lesson).
+	var space := TorusSpace.new(64, 32, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.by_id(&"legion_militia")
+	assert_not_null(def, "setup: the shipped militia def should exist")
+
+	var squads := []
+	for i in range(4):
+		squads.append(sim.add_squad(def, 1, Vector2i(4 + i * 2, 4)))
+	for squad in squads:
+		sim.order_move(squad, Vector2i(32, 16))
+
+	for _i in range(900):
+		sim.tick()
+
+	for a in squads:
+		for b in squads:
+			if a >= b:
+				continue
+			var apart := space.distance(sim.cell_of(a), sim.cell_of(b))
+			var clearance: int = sim.footprint_cells(a) + sim.footprint_cells(b)
+			assert_true(apart >= clearance,
+				"squads %d and %d settled %d cells apart but cover %d — their "
+					% [a, b, apart, clearance]
+				+ "soldiers are standing inside each other")
+
+
+func test_a_squad_claims_the_room_its_formation_actually_covers() -> void:
+	# `Formation.footprint` has computed this since selection needed it,
+	# and the simulation had never read it. If the two ever disagree the
+	# separation rule is back to guessing, so they are pinned to each
+	# other here rather than in prose.
+	var space := TorusSpace.new(64, 32, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.by_id(&"legion_militia")
+	var squad := sim.add_squad(def, 1, Vector2i(8, 8))
+
+	var world: float = Formation.footprint(
+		sim.shape_of(squad), sim.alive_of(squad), def.formation_spacing)["radius"]
+	assert_eq(sim.footprint_cells(squad),
+		ceili(world / (TorusSpace.SQRT_3 * space.hex_size)),
+		"the simulation's idea of how much room a squad takes must be "
+		+ "Formation.footprint's, converted to cells")
+	assert_true(sim.footprint_cells(squad) >= 2,
+		"a %d-strong line covers %.2f world units and must therefore claim more "
+			% [sim.alive_of(squad), world]
+		+ "than the single cell separation used to guarantee")
+
+
+func test_an_enemy_is_not_pushed_out_of_its_own_attack_range() -> void:
+	# Found by test_wall_top going red while this was being written, and
+	# worth its own check: applying footprint clearance to ENEMIES as well
+	# shoves a squad about eight cells off the opponent it has just
+	# reached — and a melee `attack_range` is under two world units, a
+	# little over ONE cell. No engagement could ever land. Enemies keep
+	# D-060's original one cell; interpenetrating them is what a fight
+	# looks like.
+	var space := TorusSpace.new(64, 32, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var def := UnitRoster.by_id(&"legion_militia")
+
+	var mine := sim.add_squad(def, 1, Vector2i(20, 10))
+	var theirs := sim.add_squad(def, 2, Vector2i(20, 10))
+	_tick_for(sim, 4.0)
+
+	var apart := space.distance(sim.cell_of(mine), sim.cell_of(theirs))
+	assert_true(apart <= 1,
+		"two enemy squads settled %d cells apart — a melee squad reaches a " % apart
+		+ "little over one cell, so anything more than D-060's original one "
+		+ "puts every engagement out of reach")
+
+
+func test_a_working_gatherer_crew_is_not_moved_by_footprint_separation() -> void:
+	# The exemption that had to survive the rewrite: several crews on one
+	# node is normal, and separating them once produced an economy with 22
+	# gatherer squads and a stockpile that never rose above its starting
+	# value. Crews HOLD ground now — an arriving squad goes round them —
+	# but are still never the ones that move.
+	var space := TorusSpace.new(64, 32, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var economy := Economy.new(space)
+	sim.economy = economy
+	var def := UnitRoster.by_id(&"gatherers")
+
+	var node := Vector2i(20, 10)
+	var node_index := space.index(node)
+	economy.nodes[node_index] = {
+		"kind": Economy.ResourceKind.WOOD, "remaining": 500,
+	}
+
+	var crews := []
+	for _i in range(3):
+		var crew := sim.add_squad(def, 1, node)
+		assert_true(economy.order_gather(sim, crew, node_index),
+			"setup: a gatherer crew standing on a node can work it")
+		crews.append(crew)
+
+	for _i in range(20):
+		sim.tick()
+
+	for crew in crews:
+		assert_true(economy.is_gathering(crew),
+			"setup: crew %d should still be on its haul" % crew)
+		assert_eq(sim.cell_of(crew), node,
+			"crew %d was shoved off the node it is working" % crew)
 
 
 func test_separation_does_not_cost_extra_flow_fields() -> void:

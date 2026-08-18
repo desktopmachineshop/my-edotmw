@@ -61,3 +61,58 @@ Three things worth carrying out of it:
   disagree with". This is the D-058/D-065 family for the third time: a
   decision entry asserting an invariant is not evidence the invariant
   holds. D-097's own file carries the amendment.
+
+**And the squad-level answer to "units all pile on top of each other"
+(D-20260818, #104, from playtest P06).** Separation on arrival (D-060)
+enforced exactly one rule — no two settled squads share a CENTRE CELL —
+while a 36-strong line formation is roughly eleven cells across. The
+guarantee was an order of magnitude short of the geometry, so squads
+ordered to the same area overlapped almost completely. Clearance is
+`footprint_cells(a) + footprint_cells(b)` now, which for two lines is
+very nearly shoulder to shoulder.
+
+Three things worth carrying:
+
+- **The number already existed and the simulation had never read it.**
+  `Formation.footprint` is correct, cached, and was called only by
+  `client.gd` — for the selection marker and the click test. That is the
+  declared-and-under-read family (D-055, D-106) in a variant the usual
+  grep cannot find: the member IS read, by the CLIENT, for DRAWING, and
+  never by the simulation for the rule it would enforce. **The marker was
+  drawn at the squad's true size and therefore visibly overlapped its
+  neighbours — the picture was telling the truth and nobody read it as a
+  bug report.**
+- **The request was for per-soldier collision and that is still out of
+  bounds.** D-006 names local avoidance, push-back and jostling as its
+  revisit trigger, and the same visible outcome is reachable at squad
+  level with no per-soldier state at all. The two look near-identical on
+  screen; only one is legal here.
+- **Marching squads stay exempt on purpose, and that is now an answered
+  question rather than an undiscovered one.** Columns crossing still
+  interpenetrate, because shoving a squad aside mid-journey is the
+  per-tick avoidance D-006 rules out. Accepted for now; the decision
+  entry carries the revisit trigger.
+- **The footprint rule is for ALLIES. Enemies keep D-060's one cell**,
+  and finding out why cost a red test in a file the change never touched.
+  A melee `attack_range` is a little over one cell, so separating a squad
+  from its opponent by its own footprint shoves every engagement out of
+  reach and **no melee can ever land** — the squad arrives, is declared
+  crowded, is sent eight cells back, and repeats. The only check that saw
+  it was a *setup* assertion in `test_wall_top.gd` ("defender climbed"),
+  because every test written for the spacing rule puts its squads under
+  one owner and every combat test places its squads already adjacent.
+  Then `test_buildings.gd` — D-067's own guard — reported the ALLIED half
+  of the same thing in its own words: *"two squads dealt 1560 against one
+  squad's 1461 — the second squad is not in the fight"*. Two squads
+  battering one town centre must BOTH be within reach of it, so
+  separating them from EACH OTHER deletes D-067's shipped rule. A squad
+  with something in reach is exempt outright now (`Combat.is_engaged`),
+  and the pass runs after combat so that it can be — the tick a besieger
+  arrives is the tick separation would have sent it away.
+
+  **A separation rule and an engagement rule are the same arithmetic
+  pointed in opposite directions, and separation is the one that gives
+  way.** When a change makes squads keep their distance, go and read the
+  mechanics whose whole job is to close it — combat range, siege,
+  gathering, wall access. Each is a position a squad NEEDS, and a spacing
+  rule that does not know about one of them quietly deletes the feature.

@@ -595,7 +595,7 @@ func _process(delta: float) -> void:
 		if _sim.last_tick_usec > TICK_BUDGET_USEC:
 			_ticks_over_budget += 1
 			if _ticks_over_budget <= 8:
-				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | field_expand=%.1fms curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
+				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | field_expand=%.1fms curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms sep=%.1fms" % [
 					_sim.tick_count, float(_sim.last_tick_usec) / 1000.0,
 					_sim.squad_count(), _clients.size(),
 					_sim.fields_built, _sim.field_waits,
@@ -605,7 +605,8 @@ func _process(delta: float) -> void:
 					float(_sim.last_squad_combat_usec) / 1000.0,
 					float(_sim.last_buildings_usec) / 1000.0,
 					float(_sim.last_production_usec) / 1000.0,
-					float(_sim.last_economy_usec) / 1000.0])
+					float(_sim.last_economy_usec) / 1000.0,
+					float(_sim.last_separation_usec) / 1000.0])
 		# Rubble is walkable again. Cheap to check — the list is empty on
 		# almost every tick — and skipping it would leave an invisible wall
 		# where a razed town hall used to be.
