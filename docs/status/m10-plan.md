@@ -36,10 +36,18 @@ server was down.
   explained no other optimisation here can be shown to have worked — and
   M6's older, still-unattributed 40.8 -> ~77 rise is the standing proof
   that unexplained numbers do not explain themselves later.
-- **`just profile` currently cannot see the shipped ladder (#108).** Its sweep
-  tops out at 32,768 cells, which is now the *default* map; the largest
-  size is 130,368. The sweep is this project's authority on scaling, so
-  re-basing it is a prerequisite for trusting anything it says.
+- **`just profile` sweeps the shipped ladder now (#108, done).** It topped out
+  at 32,768 cells, which is the *default* map; it runs 8,064 to 130,368
+  from `MapSettings.sizes()` — the ladder's own definition, so the two
+  cannot drift apart again. The re-taken curve is **flat**: 16x the map
+  area costs 13% of worst tick (84.8 -> 96.1 ms), all inside D-020's
+  budget. What the bigger map really costs is PATHING LATENCY — 97% of
+  squad-ticks wait on an unfinished field at the top of the ladder, which
+  is #107's number and the sweep's first sight of it. Both runs, and the
+  reason the deterministic COUNTS are the trustworthy columns, are in
+  `decisions/D-20260818-the-sweep-follows-the-ladder.md`. Read the
+  standing warning with it: **a green sweep is not a green server**, and
+  where the two disagree the live run wins.
 - **The biggest item (#110) is the one twice rejected on scope**: drawing
   entities at every visible lattice copy. It deletes the recurring
   copy-choice bug class (armies vanishing at the seam, "half the screen
