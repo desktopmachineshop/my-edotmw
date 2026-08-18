@@ -44,6 +44,18 @@ var _tail := 0
 var _passable := PackedByteArray()
 var _use_passable := false
 
+# The space's cached neighbour table (TorusSpace.neighbor_table), held for
+# the length of the build so expand()'s inner loop is an array index
+# rather than six method calls into TorusSpace per cell. Not a copy —
+# PackedInt32Array is copy-on-write and nothing here writes to it — and
+# not per-field state either: every field over the same space shares the
+# one table, which is why holding it costs nothing.
+#
+# This is the whole of D-040's latency fix (#107): the solver was 8.54
+# µs/cell and is 0.40, so `field_cells_per_tick` buys 21x the wavefront
+# for the same tick time. See TorusSpace.neighbor_table for the numbers.
+var _neighbors := PackedInt32Array()
+
 
 ## Build the field for `p_destination`, all at once.
 ##
@@ -86,6 +98,7 @@ func begin(p_space: TorusSpace, p_destination: Vector2i, passable := PackedByteA
 	_queue = PackedInt32Array()
 	_head = 0
 	_tail = 0
+	_neighbors = space.neighbor_table()
 
 	if _use_passable and _passable[destination] == 0:
 		# Destination itself is blocked; leave the field fully unreachable
@@ -122,9 +135,13 @@ func expand(cell_budget: int = -1) -> bool:
 		_head += 1
 		spent += 1
 		var next_distance := _distance[current] + 1
+		var row := current * 6
 
 		for dir in range(6):
-			var neighbor := space.neighbor_index(current, dir)
+			# TorusSpace.neighbor_table(), not neighbor_index(): identical
+			# answer, 21x the throughput, and the table is where D-008's
+			# wrap-awareness still lives — see that function's header.
+			var neighbor := _neighbors[row + dir]
 			if _distance[neighbor] != UNREACHABLE:
 				continue
 			if _use_passable and _passable[neighbor] == 0:
@@ -145,6 +162,7 @@ func expand(cell_budget: int = -1) -> bool:
 		# problem.
 		_queue = PackedInt32Array()
 		_passable = PackedByteArray()
+		_neighbors = PackedInt32Array()
 		return true
 	return false
 

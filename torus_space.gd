@@ -303,6 +303,16 @@ static func hex_length(d: Vector2i) -> int:
 ## TorusSpace instance and every radius.
 static var _disk_offset_cache: Dictionary = {}
 
+# `neighbor_table()`'s cache, and the dimensions it was built for. Per
+# INSTANCE rather than static like the disk table above, because a
+# neighbour index depends on width and height where a disk offset does
+# not. The dimensions are remembered rather than inferred from the array
+# length: width and height are @export, so a 64x64 space reshaped to
+# 32x128 keeps its cell count and would otherwise keep a wrong table.
+var _neighbor_table := PackedInt32Array()
+var _table_width: int = -1
+var _table_height: int = -1
+
 
 ## The hex disk of integer `radius`, as (dq, dr) offsets from an
 ## unspecified centre.
@@ -369,3 +379,61 @@ static func disk_offsets(radius: int) -> Array[Vector2i]:
 	# the table is reused by every squad, every rebuild (see above).
 	_disk_offset_cache[radius] = offsets
 	return offsets
+
+
+## The six neighbours of every cell, flat, stride 6: the neighbour of cell
+## `i` in direction `dir` is `neighbor_table()[i * 6 + dir]`.
+##
+## Same shape and the same reason as `disk_offsets`: a wrap-aware
+## derivation that a hot loop was recomputing per element. `FlowField`'s
+## BFS called `neighbor_index()` six times per cell, and each of those
+## calls is a method dispatch plus a posmod, an integer division, a
+## Vector2i and two more posmods — which turned out to be **93% of the
+## solver's cost**. Measured on the shipped 168x194 map: a full field is
+## **228.2 ms via neighbor_index() and 10.4 ms reading this table** (8.54
+## vs 0.40 µs/cell). That is the FIFTH time this project has found the same
+## defect (vision's distance() per candidate cell, UnitRoster.by_id per
+## produced squad, terrain noise per soldier per frame, the per-squad
+## building scan), so it is filed with them — see
+## decisions/D-20260818-the-flow-field-solver-was-93-percent-neighbour-lookup.md.
+##
+## Cached for the life of the space and built lazily on first use, because
+## it is a property of the LATTICE alone: nothing in it depends on
+## passability, terrain, gates or the match, so a gate opening does not
+## invalidate it the way it invalidates every cached field. 764 KB and
+## 14.7 ms on the shipped map; 3.0 MB and 46.9 ms at Huge (130,368 cells).
+##
+## `neighbor_index()` remains the definition of record — this is a
+## memoisation of it, not a second opinion, and `test_torus_space.gd`
+## asserts the two agree for EVERY cell and EVERY direction rather than
+## trusting the same arithmetic written twice. The build below is row-wise
+## rather than a loop over `neighbor_index` because that costs 14.7 ms
+## against 341.5 ms, which is the difference between a lazy build being a
+## non-event and being a dropped tick.
+func neighbor_table() -> PackedInt32Array:
+	if _table_width == width and _table_height == height \
+			and _neighbor_table.size() == width * height * 6:
+		return _neighbor_table
+
+	var table := PackedInt32Array()
+	table.resize(width * height * 6)
+	for dir in range(6):
+		var offset: Vector2i = DIRECTIONS[dir]
+		for r in range(height):
+			# Both wraps are hoisted out of the inner loop: the row is
+			# constant across it, and the column only ever advances by one
+			# and wraps at most once per row.
+			var row_base := posmod(r + offset.y, height) * width
+			var at := r * width * 6 + dir
+			var q := posmod(offset.x, width)
+			for _x in range(width):
+				table[at] = row_base + q
+				at += 6
+				q += 1
+				if q >= width:
+					q = 0
+
+	_neighbor_table = table
+	_table_width = width
+	_table_height = height
+	return _neighbor_table

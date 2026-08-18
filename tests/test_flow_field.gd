@@ -300,3 +300,109 @@ func test_a_blocked_destination_is_complete_immediately() -> void:
 	f.begin(t, dest, passable)
 	assert_true(f.is_complete(), "A field with a blocked destination has no frontier to expand")
 	assert_eq(f.pending_cells(), 0)
+
+
+# --- the solver's cost, and the latency it buys (#107) ----------------
+#
+# `expand()` reads TorusSpace.neighbor_table() instead of calling
+# neighbor_index() six times per cell. That is a pure speed change, and
+# the two tests below are the two halves of saying so: the field it
+# produces must be bit-identical to one built through neighbor_index, and
+# the latency the extra throughput was spent on must actually have fallen.
+
+func _reference_distances(t: TorusSpace, dest: Vector2i,
+		passable := PackedByteArray()) -> PackedInt32Array:
+	# A second, independent BFS written through neighbor_index() — the
+	# function neighbor_table() memoises. Deliberately NOT sharing any code
+	# with FlowField: a reference that went through the same table would
+	# agree with it however wrong the table was.
+	var count := t.cell_count()
+	var distance := PackedInt32Array()
+	distance.resize(count)
+	distance.fill(-1)
+	var queue := PackedInt32Array()
+	queue.resize(count)
+	var head := 0
+	var tail := 0
+	distance[t.index(dest)] = 0
+	queue[tail] = t.index(dest)
+	tail += 1
+	while head < tail:
+		var current := queue[head]
+		head += 1
+		for dir in range(6):
+			var neighbor := t.neighbor_index(current, dir)
+			if distance[neighbor] != -1:
+				continue
+			if not passable.is_empty() and passable[neighbor] == 0:
+				continue
+			distance[neighbor] = distance[current] + 1
+			queue[tail] = neighbor
+			tail += 1
+	return distance
+
+
+func test_the_table_backed_expansion_matches_a_neighbor_index_bfs() -> void:
+	var t := _space()
+	var passable := _all_passable(t)
+	# A wall down one column, so the answer depends on wrapping AROUND
+	# something rather than on straight-line distance.
+	for r in range(H):
+		if r == 4:
+			continue  # one gap, or the far side is simply unreachable
+		passable[t.index(Vector2i(7, r))] = 0
+
+	var dest := Vector2i(2, 3)
+	var field := _field(dest, passable)
+	var reference := _reference_distances(t, dest, passable)
+	for cell in range(t.cell_count()):
+		assert_eq(field.distance_at(cell), reference[cell],
+			"Cell %d disagrees with a BFS built through neighbor_index" % cell)
+
+
+func test_a_cross_map_order_paths_within_two_ticks_on_the_shipped_map() -> void:
+	# D-20260817-m10-scale-optimisation criterion 3, as a check rather
+	# than a paragraph: "a move order produces movement within 2 ticks
+	# (0.2 s)" on the DEFAULT map, which is the one a player plays.
+	#
+	# Ticks, not milliseconds. A wall-clock gate here would go red on a
+	# loaded host with nothing wrong — the mistake D-106's amendment
+	# already recorded — and the thing under test is how much wavefront a
+	# tick's budget buys, which is a count.
+	#
+	# This was observed to fail before the fix: at the 4,096 cells/tick
+	# this replaces, the same order waits SIX ticks (0.6 s).
+	var config: MapConfig = load("res://maps/default.tres")
+	var space := config.to_space()
+	var passable := TerrainGen.new().passability(space)
+	var spawns := config.spawn_points(passable)
+	assert_gt(spawns.size(), 1, "The shipped map must seat more than one player")
+
+	# The worst order on the map that anyone actually gives: the far end
+	# of the field from one start to another. Chosen by measurement rather
+	# than hardcoded, so a change to terrain or spawn placement re-picks it
+	# instead of quietly testing a short walk.
+	var probe := FlowField.new()
+	probe.build(space, spawns[0], passable)
+	var farthest := -1
+	var steps := -1
+	for i in range(1, spawns.size()):
+		var d := probe.distance_at(space.index(spawns[i]))
+		if d > steps:
+			steps = d
+			farthest = i
+	assert_gt(steps, 64, "The chosen pair should be a genuine cross-map march")
+
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.set_passable(passable)
+	var squad := sim.add_squad(UnitRoster.load_all()[0], 1, spawns[farthest])
+	sim.order_move(squad, spawns[0])
+	sim.tick()
+	sim.tick()
+
+	# field_waits counts a squad-tick that ended with no path, so "the
+	# squad had a path by the second tick" is at most one wait for the
+	# order itself and one for each of the two ticks.
+	assert_lte(sim.field_waits, 2,
+		"A %d-step order should path within 2 ticks on the shipped map, waited %d"
+			% [steps, sim.field_waits])
