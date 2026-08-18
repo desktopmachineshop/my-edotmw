@@ -722,15 +722,43 @@ static func corner_heights(classes: PackedByteArray,
 ## keeps its own. `biome_color` remains the single source of truth (D-083) and
 ## is still what the minimap and the terrain preview read per cell — the blend
 ## is DERIVED from it, so the small picture and the big one cannot drift.
+##
+## The whole-map case of `fields_begin` + `fields_step`, which is where the
+## arithmetic now lives (D-20260818-terrain-builds-a-slice-at-a-time). Every
+## headless caller — the sweep, the previews, the tests — wants the whole map
+## and should keep calling this; only the client, which has a frame to hold on
+## to, budgets it.
 func build_fields(space: TorusSpace) -> TerrainFields:
+	var work := fields_begin(space)
+	fields_step(work, -1)
+	return work["fields"] as TerrainFields
+
+
+## Everything a fields build carries between slices, and how far it has got.
+##
+## A Dictionary rather than a new class, for the reason `TerrainChunk`'s skirt
+## uses one: this is eight parallel buffers and a pair of cursors that exist
+## only until the build finishes, and eight parameters would be worse. Nothing
+## outside `fields_step` reads any of it — the result is `work["fields"]`, and
+## only once that has returned true.
+func fields_begin(space: TorusSpace) -> Dictionary:
 	var count := space.cell_count()
-	var raw := elevation_field(space)
 
 	var fields := TerrainFields.new()
 	fields.biome.resize(count)
 	fields.passable.resize(count)
 	fields.cliff_class.resize(count)
+	fields.surface.resize(count * SURFACE_STRIDE)
+	fields.colors.resize(count * SURFACE_STRIDE)
+	fields.corner_weights.resize(count * 6 * 3)
 
+	# Float32, and load-bearing: every threshold below reads the elevation back
+	# out of this array, so what gets classified is the ROUNDED value — exactly
+	# as it was when this pass began with `elevation_field()`. Classifying a
+	# float local instead would reclassify any cell sitting within a rounding
+	# error of `sea_level` and quietly move the coastline.
+	var raw := PackedFloat32Array()
+	raw.resize(count)
 	# Clamped once up front rather than inside the corner loop, where each cell
 	# is read six times by its neighbours.
 	var clamped := PackedFloat32Array()
@@ -740,24 +768,13 @@ func build_fields(space: TorusSpace) -> TerrainFields:
 	# would evaluate the elevation and moisture noise eighteen times per hex.
 	var cell_color := PackedColorArray()
 	cell_color.resize(count)
-
-	for i in range(count):
-		var e := raw[i]
-		var cell := space.from_index(i)
-		var b := _classify(space, cell, e)
-		fields.biome[i] = int(b)
-		# The identical predicate `passability()` applies, spelled once here so
-		# the rendering side and the flow field cannot drift (D-097).
-		fields.passable[i] = 0 if (e < sea_level or e >= mountain_level) else 1
-		fields.cliff_class[i] = int(cliff_class_of(b))
-		clamped[i] = maxf(e, sea_level)
-		cell_color[i] = color_of(b)
-
-	fields.surface.resize(count * SURFACE_STRIDE)
-	fields.colors.resize(count * SURFACE_STRIDE)
-	fields.corner_weights.resize(count * 6 * 3)
+	# The rendered elevation: the clamped one, plus the tier the HIGH class is
+	# drawn on. Applied to the CENTRE as well as the corners, or a mountain hex
+	# would tilt into its own cliff.
+	var rendered := PackedFloat32Array()
+	rendered.resize(count)
 	# Every hex corner is visited three times — once per owning cell — and the
-	# warp's two noise samples are the most expensive thing in this loop. A hex
+	# warp's two noise samples are the most expensive thing in that loop. A hex
 	# lattice has two corners per cell, so computing each one once and looking
 	# it up twice more is a 3x cut, and it took the standard map's terrain build
 	# from 2.27 s back to under 1.3 s. Same shape as `TorusSpace.disk_offsets`
@@ -769,95 +786,178 @@ func build_fields(space: TorusSpace) -> TerrainFields:
 	# overlap, so sharing the buffer would have one corner overwrite another.
 	var weight_cache := PackedFloat32Array()
 	weight_cache.resize(count * 6 * 3)
+
+	return {
+		"space": space,
+		"fields": fields,
+		"count": count,
+		"raw": raw,
+		"clamped": clamped,
+		"cell_color": cell_color,
+		"rendered": rendered,
+		"weight_done": weight_done,
+		"weight_cache": weight_cache,
+		# TWO cursors, and they are not interchangeable: a corner reads the
+		# three cells that meet there, so the corner pass cannot start on cell 0
+		# until the per-cell pass has finished the LAST one.
+		"cells_done": 0,
+		"corners_done": 0,
+	}
+
+
+## Advance a fields build by at most `cell_budget` cells; -1 means "until
+## finished". Returns true when the build is complete, at which point — and not
+## before — `work["fields"]` is the answer.
+##
+## The same amortisation D-040 applied to the flow field, and it works here for
+## the same reason it worked there: progress is KEPT, cell by cell, so a slice
+## that runs out of budget resumes where it stopped instead of starting again.
+## Budgeting CELLS rather than milliseconds is deliberate — a cell is work, and
+## a test can assert how much of it a slice did on a loaded host where a
+## stopwatch cannot (`docs/status/ground-fog.md`).
+##
+## Unlike a partial flow field, a partial FIELDS build is not safe to read: a
+## cell the corner pass has not reached yet carries zeroes, which is flat ground
+## at sea level rather than "not known yet". Hence the return value, and hence
+## `TerrainBuild` handing the client nothing at all until it is true.
+func fields_step(work: Dictionary, cell_budget: int = -1) -> bool:
+	var space := work["space"] as TorusSpace
+	var fields := work["fields"] as TerrainFields
+	var count := int(work["count"])
+	var raw: PackedFloat32Array = work["raw"]
+	var clamped: PackedFloat32Array = work["clamped"]
+	var cell_color: PackedColorArray = work["cell_color"]
+	var rendered: PackedFloat32Array = work["rendered"]
 	# The cliff threshold in raw elevation units, converted once. A zero or
 	# negative height_scale would make every corner a cliff, so guard rather
 	# than divide by it.
 	var step := cliff_min_step / maxf(height_scale, 0.0001)
-	# The rendered elevation: the clamped one, plus the tier the HIGH class is
-	# drawn on. Applied to the CENTRE as well as the corners, or a mountain hex
-	# would tilt into its own cliff.
 	var rise := cliff_rise / maxf(height_scale, 0.0001)
-	var rendered := PackedFloat32Array()
-	rendered.resize(count)
-	for i in range(count):
-		rendered[i] = clamped[i] + (rise if fields.cliff_class[i] == int(CliffClass.HIGH) else 0.0)
-	for i in range(count):
-		var base := i * SURFACE_STRIDE
-		var corner_total := 0.0
-		for k in range(6):
-			var trio := corner_cells(space, i, k)
-			# Heights average WITHIN a passability class and step between them
-			# (D-097). Colour still averages over all three owners, so the cliff
-			# face and the ground above it belong to the same landscape.
-			var resolved := corner_heights(fields.cliff_class, rendered, trio, step)
-			var mine := resolved.x
-			if trio.y == i:
-				mine = resolved.y
-			elif trio.z == i:
-				mine = resolved.z
-			var height := mine * height_scale
-			fields.surface[base + 1 + k] = height
-			# Colour blends over the owners on THIS side of the step, not over
-			# all three. Where nothing steps that is all three and the blend is
-			# D-096's; where a cliff steps, a mountain plateau would otherwise be
-			# painted in the colours of the valley it towers over — rock walls
-			# with grassland on top, which is what the first render of D-097
-			# actually showed.
-			# Which corner of the LOWEST-indexed owner this same point is —
-			# the canonical name for it, and the cache key. `corner_cells`
-			# sorts, so trio.x is always that owner.
-			var canonical := k
-			if trio.x != i:
-				canonical = posmod(2 + k, 6) if trio.x == space.neighbor_index(i, 1 - k) 					else posmod(4 + k, 6)
-			var key := trio.x * 6 + canonical
-			if weight_done[key] == 0:
-				var computed := corner_weights(space, i, k, trio)
-				var slot := key * 3
-				weight_cache[slot] = computed.x
-				weight_cache[slot + 1] = computed.y
-				weight_cache[slot + 2] = computed.z
-				weight_done[key] = 1
-			var cached := key * 3
-			var weights := Vector3(weight_cache[cached], weight_cache[cached + 1],
-				weight_cache[cached + 2])
-			var weight_base := (i * 6 + k) * 3
-			fields.corner_weights[weight_base] = weights.x
-			fields.corner_weights[weight_base + 1] = weights.y
-			fields.corner_weights[weight_base + 2] = weights.z
+	var spent := 0
 
-			var blended := Color(0.0, 0.0, 0.0, 0.0)
-			var owners := 0.0
-			var members := 0.0
-			var unweighted := Color(0.0, 0.0, 0.0, 0.0)
-			for m in range(3):
-				var owner := trio[m]
-				if absf(resolved[m] - mine) > 1e-6:
-					continue
-				blended += cell_color[owner] * weights[m]
-				owners += weights[m]
-				unweighted += cell_color[owner]
-				members += 1.0
-			# A group whose weights all clamped to zero — possible where the warp
-			# pushes hard and the cliff split leaves one owner alone — would
-			# otherwise divide near-nothing by near-nothing and come out BLACK.
-			# It showed up as ink blots along a coastline at high warp, and no
-			# count could have found it.
-			if owners > 1e-4:
-				fields.colors[base + 1 + k] = blended / owners
-			else:
-				fields.colors[base + 1 + k] = unweighted / maxf(members, 1.0)
-			corner_total += height
-		# The pillow, as a tunable rather than an implicit 1.0 — see `pillow`.
-		fields.surface[base] = lerpf(corner_total / 6.0,
-			rendered[i] * height_scale, pillow)
-		var centre_colour := cell_color[i]
-		if centre_bleed > 0.0:
-			var ring := Color(0.0, 0.0, 0.0, 0.0)
-			for k in range(6):
-				ring += fields.colors[base + 1 + k]
-			centre_colour = cell_color[i].lerp(ring / 6.0, centre_bleed)
-		fields.colors[base] = centre_colour
-	return fields
+	# Pass one: everything a cell can answer without reading a neighbour.
+	var i := int(work["cells_done"])
+	while i < count and (cell_budget < 0 or spent < cell_budget):
+		var cell := space.from_index(i)
+		raw[i] = elevation_at(space, cell)
+		var e := raw[i]
+		var b := _classify(space, cell, e)
+		fields.biome[i] = int(b)
+		# The identical predicate `passability()` applies, spelled once here so
+		# the rendering side and the flow field cannot drift (D-097).
+		fields.passable[i] = 0 if (e < sea_level or e >= mountain_level) else 1
+		var cliff := cliff_class_of(b)
+		fields.cliff_class[i] = int(cliff)
+		clamped[i] = maxf(e, sea_level)
+		cell_color[i] = color_of(b)
+		rendered[i] = clamped[i] + (rise if cliff == CliffClass.HIGH else 0.0)
+		i += 1
+		spent += 1
+	work["cells_done"] = i
+	if i < count:
+		return false
+
+	# Pass two: the corners, which read the cells pass one has just finished.
+	var weight_done: PackedByteArray = work["weight_done"]
+	var weight_cache: PackedFloat32Array = work["weight_cache"]
+	var c := int(work["corners_done"])
+	while c < count and (cell_budget < 0 or spent < cell_budget):
+		_cell_corners(space, fields, c, clamped, cell_color, rendered,
+			weight_done, weight_cache, step)
+		c += 1
+		spent += 1
+	work["corners_done"] = c
+	return c >= count
+
+
+## One cell's seven vertices: the body of `fields_step`'s corner pass, split out
+## only so the slice loop above stays readable.
+##
+## Reads its three-cell neighbourhood and writes nothing outside cell `i`, apart
+## from the shared corner-weight memo — which is order-independent by
+## construction, since whichever owner reaches a corner first, all three then
+## read the same cached triple. That is what makes slicing this pass legal at
+## any cell boundary.
+func _cell_corners(space: TorusSpace, fields: TerrainFields, i: int,
+		clamped: PackedFloat32Array, cell_color: PackedColorArray,
+		rendered: PackedFloat32Array, weight_done: PackedByteArray,
+		weight_cache: PackedFloat32Array, step: float) -> void:
+	var base := i * SURFACE_STRIDE
+	var corner_total := 0.0
+	for k in range(6):
+		var trio := corner_cells(space, i, k)
+		# Heights average WITHIN a passability class and step between them
+		# (D-097). Colour still averages over all three owners, so the cliff
+		# face and the ground above it belong to the same landscape.
+		var resolved := corner_heights(fields.cliff_class, rendered, trio, step)
+		var mine := resolved.x
+		if trio.y == i:
+			mine = resolved.y
+		elif trio.z == i:
+			mine = resolved.z
+		var height := mine * height_scale
+		fields.surface[base + 1 + k] = height
+		# Colour blends over the owners on THIS side of the step, not over
+		# all three. Where nothing steps that is all three and the blend is
+		# D-096's; where a cliff steps, a mountain plateau would otherwise be
+		# painted in the colours of the valley it towers over — rock walls
+		# with grassland on top, which is what the first render of D-097
+		# actually showed.
+		# Which corner of the LOWEST-indexed owner this same point is —
+		# the canonical name for it, and the cache key. `corner_cells`
+		# sorts, so trio.x is always that owner.
+		var canonical := k
+		if trio.x != i:
+			canonical = posmod(2 + k, 6) if trio.x == space.neighbor_index(i, 1 - k) \
+				else posmod(4 + k, 6)
+		var key := trio.x * 6 + canonical
+		if weight_done[key] == 0:
+			var computed := corner_weights(space, i, k, trio)
+			var slot := key * 3
+			weight_cache[slot] = computed.x
+			weight_cache[slot + 1] = computed.y
+			weight_cache[slot + 2] = computed.z
+			weight_done[key] = 1
+		var cached := key * 3
+		var weights := Vector3(weight_cache[cached], weight_cache[cached + 1],
+			weight_cache[cached + 2])
+		var weight_base := (i * 6 + k) * 3
+		fields.corner_weights[weight_base] = weights.x
+		fields.corner_weights[weight_base + 1] = weights.y
+		fields.corner_weights[weight_base + 2] = weights.z
+
+		var blended := Color(0.0, 0.0, 0.0, 0.0)
+		var owners := 0.0
+		var members := 0.0
+		var unweighted := Color(0.0, 0.0, 0.0, 0.0)
+		for m in range(3):
+			var owner := trio[m]
+			if absf(resolved[m] - mine) > 1e-6:
+				continue
+			blended += cell_color[owner] * weights[m]
+			owners += weights[m]
+			unweighted += cell_color[owner]
+			members += 1.0
+		# A group whose weights all clamped to zero — possible where the warp
+		# pushes hard and the cliff split leaves one owner alone — would
+		# otherwise divide near-nothing by near-nothing and come out BLACK.
+		# It showed up as ink blots along a coastline at high warp, and no
+		# count could have found it.
+		if owners > 1e-4:
+			fields.colors[base + 1 + k] = blended / owners
+		else:
+			fields.colors[base + 1 + k] = unweighted / maxf(members, 1.0)
+		corner_total += height
+	# The pillow, as a tunable rather than an implicit 1.0 — see `pillow`.
+	fields.surface[base] = lerpf(corner_total / 6.0,
+		rendered[i] * height_scale, pillow)
+	var centre_colour := cell_color[i]
+	if centre_bleed > 0.0:
+		var ring := Color(0.0, 0.0, 0.0, 0.0)
+		for k in range(6):
+			ring += fields.colors[base + 1 + k]
+		centre_colour = cell_color[i].lerp(ring / 6.0, centre_bleed)
+	fields.colors[base] = centre_colour
 
 
 ## Squads cannot cross water or mountains in M1. This is the array the
