@@ -320,3 +320,135 @@ func test_a_second_match_draws_terrain_again() -> void:
 	client._build_terrain()
 	assert_eq(_terrain_tiles(client), 9,
 		"The second match renders squads and forests standing on nothing without this")
+
+
+# --- restarting after a real win or a real loss ------------------------
+#
+# Everything above reaches FINISHED either by leaving mid-match or by
+# ASSIGNING `phase`/`winner` directly. That is enough to test the
+# transition itself and is not enough to test the transition it is
+# actually used for: a match that ended because somebody WON, through
+# `_check_victory`, with a victor and a loser both recorded.
+#
+# The distinction matters because the state a real ending leaves behind
+# is strictly larger than the state a hand-set `phase` leaves behind —
+# `winner`, per-player `eliminated`, and the registration that produced
+# them all get written by the victory path and by nothing else. A test
+# that sets `phase` itself is testing the cleanup of a world that never
+# existed.
+#
+# Reported from a playtest as "lots of strange bugs on restarting a game
+# from lobby", after a match had been decided.
+
+## Two seats, one of which is about to lose everything.
+##
+## `winner_owns_a_squad` decides which way the match goes, so the same
+## fixture drives both a win and a loss without a second copy of it.
+func _decided_match(winner: int, loser: int) -> Dictionary:
+	var m := _lobby()
+	m.add_player(winner)
+	m.add_player(loser)
+	assert_true(m.request_start(winner), "Setup: the admin should be able to start")
+
+	var space := TorusSpace.new(16, 8)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	# Only the winner has anything left to fight with, so `update` should
+	# eliminate the loser and `_check_victory` should end the match.
+	sim.add_squad(_squad_def(), winner, Vector2i(4, 4))
+
+	var out := m.update(sim, null)
+	return {"match": m, "sim": sim, "eliminated": out}
+
+
+## A minimal real UnitDef, borrowed from the roster so the shape and
+## spacing are a shipped unit's rather than invented.
+func _squad_def() -> UnitDef:
+	var real := UnitRoster.first()
+	var d := UnitDef.new()
+	d.id = real.id
+	d.formation_shape = real.formation_shape
+	d.formation_spacing = real.formation_spacing
+	d.squad_size = 8
+	d.health = 50.0
+	d.damage = 0.0
+	d.attack_range = 0.0
+	d.vision_range = 6.0
+	return d
+
+
+func test_a_real_victory_actually_finishes_the_match() -> void:
+	# The fixture the rest of this section leans on. If this stops
+	# decribing a genuine win, every test below it silently starts
+	# testing nothing, exactly as a hand-set `phase` does.
+	var world := _decided_match(1, 2)
+	var m: MatchState = world["match"]
+	assert_eq(m.phase, MatchState.Phase.FINISHED,
+		"A player with nothing left should end the match")
+	assert_eq(m.winner, 1, "The survivor should be the winner")
+	assert_true(m.is_eliminated(2), "The player with nothing left is out")
+	assert_false(m.is_eliminated(1), "The survivor is not")
+
+
+func test_the_lobby_after_a_won_match_names_no_winner() -> void:
+	var m: MatchState = _decided_match(1, 2)["match"]
+	assert_true(m.return_to_lobby(), "A decided match should be leavable")
+	assert_eq(m.phase, MatchState.Phase.LOBBY)
+	assert_eq(m.winner, -1,
+		"A lobby showing the last match's victor is showing a result for a match nobody is playing")
+
+
+func test_the_victor_of_one_match_does_not_start_the_next_still_winning() -> void:
+	var m: MatchState = _decided_match(1, 2)["match"]
+	m.return_to_lobby()
+
+	# Registration is per-match (see the loser test above), so the server
+	# re-seats everyone at start.
+	m.add_player(1)
+	m.add_player(2)
+	assert_true(m.request_start(1), "The admin should be able to start the next match")
+	assert_eq(m.phase, MatchState.Phase.RUNNING,
+		"The second match should run, not open already finished")
+	assert_eq(m.winner, -1, "The second match has not been won by anybody yet")
+
+
+func test_the_loser_of_a_real_defeat_plays_the_next_match_alive() -> void:
+	# The existing loser test drives a match in which BOTH players are
+	# eliminated, which never reaches `_check_victory`'s winner branch.
+	# This is the asymmetric case: a real defeat, with somebody else
+	# recorded as having won it.
+	var m: MatchState = _decided_match(1, 2)["match"]
+	assert_true(m.is_eliminated(2), "Setup: player 2 lost")
+
+	m.return_to_lobby()
+	m.add_player(1)
+	m.add_player(2)
+
+	assert_false(m.is_eliminated(2),
+		"Losing one match must not carry a defeat into the next one")
+	assert_false(m.is_eliminated(1), "And the winner starts level too")
+
+
+func test_a_second_match_does_not_end_the_instant_it_starts() -> void:
+	# The failure this exists for: victory state surviving the return to
+	# the lobby, so `update`'s first call in match two re-decides match
+	# one. It would present as a match ending before anybody moved, which
+	# is what D-055 records as having gone unnoticed for two milestones
+	# when nothing could destroy a building.
+	var m: MatchState = _decided_match(1, 2)["match"]
+	m.return_to_lobby()
+	m.add_player(1)
+	m.add_player(2)
+	assert_true(m.request_start(1), "Setup: the second match should start")
+
+	# Both players hold ground this time, so nobody is eliminated and the
+	# match must keep running.
+	var space := TorusSpace.new(16, 8)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.add_squad(_squad_def(), 1, Vector2i(4, 4))
+	sim.add_squad(_squad_def(), 2, Vector2i(12, 4))
+
+	var newly := m.update(sim, null)
+	assert_eq(newly.size(), 0, "Nobody has lost anything in the second match")
+	assert_eq(m.phase, MatchState.Phase.RUNNING,
+		"The second match must not inherit the first one's ending")
+	assert_eq(m.winner, -1, "Nor its winner")
