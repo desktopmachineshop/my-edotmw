@@ -17,7 +17,7 @@ against the `M10 — scale optimisation` milestone.
 | | measured | how |
 |---|---|---|
 | terrain meshing at client start | **5,071 ms**, 143 chunks | `just gen-terrain-preview` |
-| flow-field waits | **2,968 of 3,005 ticks** | `just test-load 4 300` |
+| flow-field waits | **2,968 of 3,005 ticks** — *fixed, see below* | `just test-load 4 300` |
 | per-squad update | **167.7 µs at 48 squads** (was ~83 at 28) | same run |
 | worst tick | 44.9 ms, **0 dropped** | same run |
 | server memory | 43.3 MB with **4** squads | `quick-test` |
@@ -48,6 +48,23 @@ server was down.
   `decisions/D-20260818-the-sweep-follows-the-ladder.md`. Read the
   standing warning with it: **a green sweep is not a green server**, and
   where the two disagree the live run wins.
+- **The per-squad rise is attributed (#105, done):** it is the
+  **flow-field expansion slice** (D-040), and the reason no reported phase
+  moved is that the tick had only two reported phases. Every region of
+  `SquadSim.tick()` is timed and printed now, with a computed residual —
+  `decisions/D-20260818-every-microsecond-of-a-tick-has-a-phase.md` has
+  the A/B (same squads, same orders, only the map changes: field expansion
+  52.5 -> 453.1 µs/squad on 4x the cells, every other phase FELL, residual
+  0.03%). The mechanism is a per-TICK cell budget divided by a squad
+  count, which is D-040 working as designed — spending it better is #107,
+  not this. **M6's older 40.8 -> ~77 rise is declared SEPARATE** in the
+  same entry: those two numbers were taken at 120 and ~52 squads on builds
+  with no breakdown, so no attribution can be recovered from them, only
+  invented.
+- **`just profile` currently cannot see the shipped ladder (#108).** Its sweep
+  tops out at 32,768 cells, which is now the *default* map; the largest
+  size is 130,368. The sweep is this project's authority on scaling, so
+  re-basing it is a prerequisite for trusting anything it says.
 - **The biggest item (#110) is the one twice rejected on scope**: drawing
   entities at every visible lattice copy. It deletes the recurring
   copy-choice bug class (armies vanishing at the seam, "half the screen
@@ -60,3 +77,33 @@ closed. Culling has been cleared twice by measurement — 0 wrongly-culled
 chunks in 36,288 tests on the old map and 41,184 on the new one — so a
 report of forests popping is not a culling fault and should not be
 diagnosed as one.
+
+## Landed
+
+**Workstream 2, flow-field latency (#107), 2026-08-18 — criterion 3
+discharged.** A cross-map move order on the default map waited **6 ticks
+(0.6 s)** and now waits **1 (0.1 s)**, and the per-tick cost of the budget
+that bounds it FELL, from ~35 ms to ~6.6 ms. Full entry, with the ladder
+and the A/B, in
+`decisions/D-20260818-the-flow-field-solver-was-93-percent-neighbour-lookup.md`.
+
+The lever was not the one the issue named. Raising `field_cells_per_tick`
+was measured to be unavailable on its own — at 16,384 the worst tick was
+**1.5 seconds** — because the solver was spending **93% of its time in six
+`TorusSpace.neighbor_index()` calls per cell**, recomputing a wrap-aware
+derivation that depends only on the lattice. `TorusSpace.neighbor_table()`
+memoises it (764 KB on the shipped map, 3.0 MB at Huge), a full field went
+**228 ms -> 10.4 ms**, and the budget could then go 4,096 -> 16,384 for a
+fifth of the old cost. **Fifth instance of the same defect** after vision's
+`distance()` per cell, `UnitRoster.by_id` per produced squad, terrain noise
+per soldier per frame and the per-squad building scan — so before reaching
+for a design (coarse-to-fine fields, in this case), price the loop first.
+
+Two things left open on purpose. **Large and Huge still wait 3 and 6 ticks**
+(0.3 s / 0.6 s, against 1.8 s / 3.2 s): the budget is deliberately a
+constant, not a fraction of the map, because D-040's worst-tick-flat-in-map-size
+property is worth more than flat latency on two rungs nobody has played —
+raising it to 32,768 takes the ladder to 0/0/1/3 ticks and is one number
+away. And the 1,000-squad sweep is still **over** D-020's 100 ms tick both
+before (342.9 ms) and after (204.5 ms); that is **#105's** unattributed
+per-squad rise, not this, and it is not closed.

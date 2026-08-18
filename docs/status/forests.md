@@ -49,3 +49,78 @@ it, and `test-client` aims its camera at a spawn — open ground by
 construction, the one place a wood cannot be. `just gen-forest-preview`
 is the instrument that can, and it frames the densest wood on the map
 from a low angle for exactly that reason.
+
+**And growing a revealed forest was unbudgeted
+(D-20260818-node-placement-is-budgeted, 2026-08-18, issue #109).** Every
+node cell the server had revealed since the last frame was grown in the
+frame it arrived. Measured on the shipped map: **87 us a cell, 666 ms for
+all 7,664 of them** — a terrain height sample, `biome_at`, `moisture_at`,
+six neighbour `biome_at` calls, then `trees_for` with a further sample per
+tree, and that is before the MultiMesh repack. So **192 revealed cells is
+a dropped frame**, and a squad walking into unexplored woodland reveals
+cells by the ring. `NodePlacement` is a queue with a per-frame budget
+(24 cells, ~2.1 ms), the same shape as D-040's flow-field fix: budget the
+work unit, keep partial progress.
+
+Three things worth carrying:
+
+- **The issue was filed with two candidate causes and the instrument that
+  could tell them apart did not exist.** A placement hitch and D-025's
+  truthful pop-in produce the same complaint — "the forests arrived all at
+  once" — and want opposite fixes, a budget or a fade-in. The measurement
+  says the hitch is real; the sandbox panel now reports `known / grown /
+  queued` and the worst frame so the other one stays separable. **A report
+  still arriving with `queued = 0` is the pop-in, and a smaller budget
+  would do nothing for it.**
+- **A budget makes drawn lag known ON PURPOSE, which retired a guard that
+  was sound until it wasn't.** The client found new cells by comparing
+  `_state.nodes.size()` with `_node_placed.size()` — a size comparison
+  standing in for set equality, harmless while the two moved together, and
+  a full 7,664-entry rescan on every frame spent catching up once they do
+  not. Reveals arrive as news on `ClientState.take_revealed()` now, the
+  sibling of the `felled` drain D-087 already had.
+- **Being deliberately behind creates a state that did not exist before:**
+  a node felled between the packet that revealed it and the frame that
+  would have grown it. The server reports that felling once, for a tree
+  this client never drew, so the queued cell has to be dropped or the
+  stand grows on a stump and nothing ever takes it down.
+**And there were too many of them (D-20260818, 2026-08-18).** Playtest #30
+read the standard map as woodland with clearings rather than open country
+with woods in it, and issue #94 asked for ~40% less wood. Every WOOD band
+in `Economy._bands` is scaled by **0.60** now (forest `lerpf(0.65, 0.98, f)`
+-> `lerpf(0.39, 0.59, f)`, and so on for grassland, dry grassland and
+beach): **wood nodes 5,553 -> 3,413 on the shipped map, open walkable
+ground 71.3% -> 79.3%, forest biome 70.2% -> 43.9% wooded.** Scaling both
+ENDPOINTS is what keeps D-087's shape and D-108's stands intact — a flat
+subtraction erases the dry edge first, a stride puts the lattice back.
+
+Three things to carry forward:
+
+- **The 98% wet heart in the report was never actually paid.** `f` reaches
+  1 only where moisture does, and over six seeds the wettest single forest
+  cell on the shipped map measured f = 0.57-0.73 — so the realised band was
+  the FLOOR (median forest cell 0.69), and lowering only the ceiling would
+  have changed almost nothing. **An interpolation's endpoints are not its
+  outputs**, and the alarming one may be the one nothing reaches.
+- **The number being complained about had no instrument.**
+  `gen-terrain-preview` reported chunks, water and impassability and no
+  resources at all; `gen-forest-preview` shows one wood and cannot say how
+  much of the map is wood. The recipe prints node counts by kind, the
+  **share of walkable cells that hold no node**, and the forest biome's own
+  share — the last because a whole-map average is dominated by open
+  grassland and stayed healthy-looking throughout.
+- **The instrument that could see it was the picture, again.**
+  `docs/playtest/p30-wood-density-{before,after}.png`, both from
+  `gen-forest-preview`. The BEFORE shot does not contain the squad that
+  recipe deliberately stands in the wood for scale — the canopy closes over
+  it completely. Same window, 336 nodes / 935 trees before and 226 / 614
+  after at an unchanged ~2.7 trees per node, so D-108's stands survived and
+  only their number moved.
+- **What was checked before picking 0.60, rather than after.** `TREE_STOCK`
+  stays 105 and total wood falls with the count (358,365 over 20 seats is
+  ~119 barracks each, from natural nodes alone); `RETARGET_RADIUS` stays 8
+  because **0 of 3,413** wood nodes have no wood neighbour within 8 cells,
+  and 0.50 is where the first isolated one appears; the D-104 fairness pass
+  still tops up no wood anywhere, the worst-off start keeping 4 wood nodes
+  in reach against 13. Issue #55's "nodes block 30% of walkable cells" is
+  28.7% -> **20.7%** and should be re-read off the recipe, not assumed.

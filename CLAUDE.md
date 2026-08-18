@@ -46,11 +46,15 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/ground-fog.md
 
+@docs/status/pathing.md
+
 @docs/status/forests.md
 
 @docs/status/world-look.md
 
 @docs/status/formation.md
+
+@docs/status/line-endings.md
 
 @docs/status/playtests-2026-08.md
 
@@ -59,6 +63,8 @@ and measurements belong in the decision entry that took them.
 @docs/status/m9-plan.md
 
 @docs/status/m10-plan.md
+
+@docs/status/server-memory.md
 
 ## What this project is
 
@@ -183,6 +189,16 @@ vision.gd                Per-player vision field over cells (D-025).
                         Stamped once per player, then an O(1) lookup
                         per squad — closes the "visible_to() returns
                         every squad" stub D-022 flagged for M1.
+terrain_knowledge.gd     What one SIDE believes the GROUND to be, and so
+                        what its squads may path through
+                        (D-20260818-pathing-knows-only-what-the-player-knows).
+                        Fed from vision.gd's own coverage; keyed by SIDE,
+                        because allies share sight (D-050). Unknown ground
+                        reads PASSABLE, which is what makes a squad take
+                        the shortest route it has no reason to doubt and
+                        find out by walking. THIS, never `_passable`, is
+                        what a flow field is solved against — `_passable`
+                        answers only "may a squad stand here now".
 terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
                         `build_fields` — heights, colours, biomes and
                         passability in one pass (D-096). `corner_cells`
@@ -208,6 +224,19 @@ terrain_fog.gd           What ONE CLIENT knows about each cell of the
                         map is DRAWN rather than what is sent. Purely
                         presentational: nothing here reaches the wire,
                         which is what makes deriving it locally legal.
+prop_fog.gd              The same field, read by everything that STANDS on
+                        the ground (D-20260817-fog-covers-props). D-106
+                        fogged the terrain shader and nothing else, so a
+                        scouted forest kept rendering at full brightness
+                        over the dim ground it grows in (#81). Re-expresses
+                        the imported glTF materials as a shader that can
+                        multiply by `known`; the coordinate rides
+                        per-instance custom data and comes from the CELL
+                        (`TerrainChunk.fog_uv`, never world position — a
+                        chunk root swings to a different torus copy every
+                        frame). Buildings are deliberately NOT dimmed: once
+                        seen, a building is knowledge, not sight (D-030,
+                        D-101). All-static.
 render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
@@ -369,7 +398,10 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         VAT sampling shared via a .gdshaderinc. Plus
                         `terrain.gdshader` (D-096): three atlas taps per
                         ground fragment on continuous UVs, which is what
-                        a fixed-function material cannot express.
+                        a fixed-function material cannot express — and
+                        `prop_fog.gdshader`, the same fog tap for the
+                        models standing on that ground, at a coordinate
+                        carried per MultiMesh instance.
 /art/**.py              Committed asset GENERATORS (D-081) — the source
                         of truth for every model and texture. Plain
                         Python; `bpy` is imported only by art/lib/bake.py.
@@ -406,6 +438,17 @@ instance-id.sh           THE definition of this checkout's dev-instance
                         derives its per-worktree compose project, ports
                         and container names from this — nothing may
                         re-derive it. See "Multi-agent isolation" below.
+gate-check.sh            THE log comparisons a real multi-client run must
+                        survive (D-20260818-the-fast-loop-carries-the-
+                        gate): fog gating of squads and of resource
+                        positions, and both civs having fielded
+                        something. `test-load` AND `test-scenario` both
+                        call it, so the loop people iterate in cannot
+                        assert less than the five-minute gate — it
+                        asserted three fewer things for three
+                        milestones. A missing marker FAILS the check; a
+                        comparison that silently skips is the vacuous
+                        pass D-022's audit was written against.
 scenario.gd              Applies a mid-game world (D-098). ALL-STATIC,
                         like formation.gd: a scenario is an opening
                         position, not a participant. Goes through the
@@ -680,12 +723,24 @@ Dev loop and tests:
   success, failure, and Ctrl-C. Prints the per-squad update cost — the
   number to watch — plus how many client/server state-hash comparisons
   ran and how many desynced.
-- `just ai-ladder [MATCHES] [SECONDS] [AI]` — headless AI-vs-AI matches on
-  `maps/ladder.tres`, to make "smarter" a measurement (D-054). Runs a
-  genuinely all-AI server (`--players=0`); **fails** unless every match is
-  observed to leave the lobby, which for three milestones it did not
-  (D-107). Quote a result WITH its cap — a stronger defence lengthens
-  matches, and a truncated one reads as a draw.
+- `just ai-ladder [MATCHES] [SECONDS] [AI] [TEAMS]` — headless AI-vs-AI
+  matches on `maps/ladder.tres`, to make "smarter" a measurement (D-054).
+  Runs a genuinely all-AI server (`--players=0`); **fails** unless every
+  match is observed to leave the lobby, which for three milestones it did
+  not (D-107). Quote a result WITH its cap — a stronger defence lengthens
+  matches, and a truncated one reads as a draw. TEAMS defaults to 0, a
+  free-for-all, so every number recorded before
+  D-20260818-allied-ai-is-exercised-by-something stays comparable.
+- `just test-ai-teams [MATCHES] [SECONDS] [AI] [TEAMS] [SCENARIO]` — real
+  teamed all-AI matches that **fail if an AI aims its army at a friend**
+  (#83, #119). The one thing in the estate that exercises an allied AI:
+  the ladder is a free-for-all, every AI fixture seats on team 0 (not a
+  team, D-050), and `--lobby=0` never handed `SquadSim.teams` over at
+  all. ~5 minutes at its defaults, because it starts from a scenario
+  (D-098) rather than an opening. It fails on `ally_objectives > 0` —
+  and first on every way that zero could be vacuous: a match that never
+  started, a simulation with no sides, a seat that saw no ally, a seat
+  that never attacked.
 - `just gen-terrain-preview [CHUNK_SIZE]` — terrain PNG into `artifacts/`
   plus chunking cost, and the count of cliff faces the shipped map draws.
   Vary CHUNK_SIZE to settle D-017 with data. The PNG is **top-down biome

@@ -1,4 +1,67 @@
-**Use `just test-load 4 300`** on the current default map.
+**Use `just test-load 4 420`** on the current default map. 300 s is the
+floor — it clears every gate, but a bot whose barracks lands late has
+almost no army time left (D-20260818-load-test-bots-must-field-an-army).
+**The gate is `just test-load`. The LOOP is `just test-scenario`, and as
+of D-20260818-the-fast-loop-carries-the-gate it makes the same log
+comparisons the gate does** — fog gating of squads (D-026 criterion 6's
+load half), fog gating of resource positions (D-061) and both civs having
+fielded something (D-046 criterion 10). They lived inline in `test-load`
+and were copied nowhere, so for three milestones the recipe anybody
+actually ran between gate runs asserted none of them. Iterating on the
+fast one no longer means asserting less; `gate-check.sh` is the one
+definition and `tests/test_gate_checks.gd` fails if the two drift.
+
+**What each costs.** Measured 2026-08-18 on `main` at 1e6ba9c, in an
+isolated worktree (D-095), on a host running eleven other agents' docker
+containers:
+
+| recipe | wall clock | what it covers |
+|---|---|---|
+| `just test-scenario siege 4 15` | **25 s** warm, **2 min 55 s** cold | everything downstream of the opening |
+| `just test-scenario developed 4 60` | 3 min 57 s | as above at REAL spawn separation — see below |
+| `just test-load 4 300` | **5 min 11 s** | the loop's coverage PLUS founding, production and real spawn distance |
+
+**Read those as wall clock, not as verdicts.** The gate run FAILED on
+`main` at `conceal_events=0 reveal_events=0`, and so did the cold loop
+run. That is neither the duration nor this change: the bots had stopped
+manoeuvring at all (#69/#84, fixed by
+`D-20260817-load-test-bots-must-manoeuvre` on its own branch).
+
+**Owed: a second CLEAN loop run.** One warm `siege 4 15` came back clean
+in 25 s and that is one run, which this file's own rule says is not a
+measurement. The host's docker daemon went down before a repeat could be
+taken. Take it before quoting 25 s as settled.
+
+Three caveats on those numbers, all of which cost time to learn:
+
+- **A wall clock here is a statement about the HOST as much as the
+  recipe.** The same `test-scenario siege 4 15` measured 25 s warm and
+  2 min 55 s cold (a docker image build), and one `just up` measured 5 s
+  and 24 s an hour apart with nothing changed. The DURATION is the honest
+  part; the rest is contention. Same lesson as M6's worst-tick figures
+  and the terrain session's `bench-render` absolutes.
+- **The LOOP's own fog gate is as marginal as the gate's on `main`.**
+  Two `siege 4 15` runs back to back reported `reveal_events=0` (fail)
+  and then `1` (clean). Same cause as above; a scenario simply reaches
+  the question in twenty-five seconds instead of five minutes, which is
+  the whole argument for iterating there.
+- **A scenario at REAL spawn separation does not buy the gate back.**
+  `test-scenario developed 4 60` — `developed` is the one shipped
+  scenario with `separation = 0` — reports `casualties_applied=0
+  conceal_events=0 reveal_events=0`. Real spawn distance means a real
+  march, and the march is what costs five minutes. Only skipping the
+  opening buys it back, which is what `separation` already does.
+
+**Do not shorten the gate's DURATION to make it cheaper.** D-031's trap
+is exactly that: `4 40` was the recommendation here for a whole milestone
+and could not have passed. A duration that no longer reaches contact
+fails honestly, and that is the check working. Run the LOOP more and the
+GATE less.
+
+**Use `just test-load 4 150`** — and know before you run it that **the
+verdict's `reveal_events` gate is currently failing on `main` itself, and
+no duration fixes it.** Measured 2026-08-16 on `main` at f5142fc, and on
+a branch off it, in an isolated worktree per D-095:
 
 **The `reveal_events` gate was unreachable on `main` for a day and is
 fixed** (D-20260817-load-test-bots-must-manoeuvre, #69/#84). If you are
@@ -83,8 +146,44 @@ resources by `tests/test_bot_patrol.gd`.
   is why the patrol's boundaries are stated in the WATCHER's terms rather
   than as "am I home yet": on a tight pair, home is inside the
   neighbour's vision.
-- **The bots still field no ARMY.** Nothing they build produces a soldier,
-  so `raid_pool` is empty on every tick and the raid alternation is dead
-  code until that changes. `test-load` therefore exercises the economy,
-  buildings, fog and incidental combat — not military production, and not
-  an engagement between two real armies. Tracked separately as **#123**.
+
+**The bots field an ARMY now** (D-20260818-load-test-bots-must-field-an-army,
+#123), and the verdict gates on their having used it. Until this landed,
+`raid_pool` — the squads free to be sent anywhere — was empty on every tick
+of every match, so `_issue_order` returned before issuing a single raid
+order, for every run there has ever been. A bot only built a town centre, a
+town centre `produces` gatherers only, and the haul loop claimed every crew.
+
+So `test-load` did not exercise military production, an engagement between
+two real armies, `UnitDef.damage_vs_buildings`, D-067's raze rule, or most
+of `/units` — a run only ever fielded `founders` and `gatherers`, both
+`civ = &"neutral"`. **The CIVS_FIELDED check passed throughout**, because
+`_civs_fielded()` counts by the PLAYER's civ rather than the unit's: two
+civs were reported fielded every run while the roster's civ half went
+untouched. Worth knowing before trusting any other count on this page.
+
+Two new keys in the verdict: `raid_orders` is a GATE (a run where no ARMY
+was sent anywhere fails — orders to a hauling crew do not count, and an
+early version that counted them passed on a crew nobody meant to raid
+with), and `military_peak` is the metric beside it, because "there was
+nothing to send" and "there was something and it was never sent" are
+different faults with the same symptom.
+
+Measured on the shipped map: a barracks finishes at **100-205 s** and the
+first soldier is fielded at **135-226 s**, so nothing below ~250 s tests
+any of it. **Two of four bots do not reach a barracks even at 420 s** — a
+town hall costs 150 wood out of a 180-220 opening bank and hauling round
+trips are long on the doubled map. One bot reliably banks a single 60-wood
+delivery and then stalls, wallet `[172, 90, 0, 0]`, in every run measured
+before and after that change; its crews are alive and assigned. Unexplained
+and pre-existing, so worth knowing before reading a low `military_peak` as
+a regression.
+
+**A bot never learns its own civ.** `server.gd` broadcasts the lobby only
+while there IS one and `test-load` starts a match without one, so
+`ClientState.civ_of` answers `""` for every bot in every run. Anything a
+client normally learns from the lobby is simply absent here — which cost a
+run to find, because resolving production per civ matched `gatherers`
+(`civ = &"neutral"`, so it matches anybody) and nothing else, leaving
+barracks standing and `military_peak=0`. The wire carries an ARCHETYPE and
+the server resolves it per civ (D-047), so a bot does not need to know.

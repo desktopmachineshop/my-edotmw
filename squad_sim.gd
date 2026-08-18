@@ -74,6 +74,15 @@ var vision: Vision
 ## the bottleneck.
 var vision_recompute_every_ticks: int = 3
 
+## What each SIDE believes the ground to be
+## (D-20260818-pathing-knows-only-what-the-player-knows), owned here and
+## folded from `vision`'s coverage on the same cadence. This — never
+## `_passable` — is what a flow field is solved against, so a squad can
+## neither route around terrain its owner has not discovered nor be
+## refused an order on the strength of it. See terrain_knowledge.gd for
+## why unknown ground reads PASSABLE and what that buys.
+var knowledge: TerrainKnowledge
+
 ## Seeds every stochastic combat roll (D-024, D-016). Must come from map
 ## configuration, never from wall-clock time — server.gd sets this via
 ## NetProtocol.seed_from() before the sim starts ticking. Defaults to a
@@ -138,6 +147,15 @@ var completed_buildings: Array = []
 
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
+#
+# Keyed by Vector2i(destination cell, KNOWLEDGE SIDE) since
+# D-20260818-pathing-knows-only-what-the-player-knows: two sides that have
+# explored different ground genuinely have different answers, so one field
+# cannot serve both. The sharing D-007's scaling claim rests on is
+# unharmed — a player ordering fifty squads to one place still solves ONE
+# field, because they all share their owner's knowledge (and their allies',
+# per D-050). Only two different sides ordering squads to the same cell
+# costs a second solve.
 var _fields := {}
 
 # --- the wall-top tier (D-076) ------------------------------------------
@@ -194,16 +212,33 @@ var total_field_usec: int = 0
 var curves_rebuilt: int = 0
 var vision_rebuilds: int = 0
 
-## Vision and combat as identifiable COMPONENTS of last_tick_usec/
+## Every phase of the tick as an identifiable COMPONENT of last_tick_usec/
 ## total_tick_usec (D-026 criterion 10, D-020, D-012) — same accounting
-## style, just scoped to the one phase each measures rather than the whole
-## tick. `total_tick_usec` already includes both; these do not double the
-## cost, they name a slice of it so a run can report "vision costs this
-## much, combat costs this much" instead of only the tick's grand total.
+## style, just scoped to one region of `tick()` each rather than the whole
+## tick. `total_tick_usec` already includes them all; these do not double
+## the cost, they name slices of it.
+##
+## The phases PARTITION the tick, and that is the point of them
+## (D-20260818): vision and combat were the only two ever reported, so a
+## rise that landed anywhere else had nowhere to be seen. Whatever the
+## named phases do not account for is reported as `other` — a residual
+## that is computed, not assumed to be small, so the next unexplained
+## number has a place to show up rather than hiding inside a total.
+##
+## `total_field_usec` cuts ACROSS this partition and is left alone: it
+## counts BFS solving wherever it happens, which is the expansion phase
+## below plus the field a curve rebuild starts inline. Divide it by
+## `fields_built` for the cost of a field; use `total_fields_usec` for the
+## cost of a tick's expansion slice.
+var last_fields_usec: int = 0
+var total_fields_usec: int = 0
 var last_vision_usec: int = 0
 var total_vision_usec: int = 0
-var last_combat_usec: int = 0
+var total_curves_usec: int = 0
 var total_combat_usec: int = 0
+var total_buildings_usec: int = 0
+var total_production_usec: int = 0
+var total_economy_usec: int = 0
 
 var _validated := false
 
@@ -231,6 +266,7 @@ func _init(p_space: TorusSpace = null, p_replicator: CurveReplicator = null) -> 
 	replicator = p_replicator if p_replicator != null else CurveReplicator.new()
 	combat = Combat.new()
 	vision = Vision.new()
+	knowledge = TerrainKnowledge.new()
 
 
 func squad_count() -> int:
@@ -976,18 +1012,36 @@ var field_builds_deferred: int = 0
 ## in-flight fields (D-040). -1 disables amortisation entirely and every
 ## field completes in the tick it is requested.
 ##
-## 4,096 is half a ship-map field, so an ordinary single order paths in
-## two ticks (0.2 s) — below noticing — and an eight-destination wave
-## drains over about a second with the FIRST group moving immediately,
-## because the queue is FIFO.
+## 4,096 was half a field on the 8,064-cell map D-040 measured, and an
+## EIGHTH of one on the 32,592-cell map the ladder shipped in
+## D-20260817-the-zoom-cap-was-modelling-the-wrong-axis — so the latency
+## D-040 deliberately bought with a per-tick budget quietly quadrupled and
+## a squad could stand still for six ticks after a right-click (#107).
 ##
-## Chosen by measurement, not by argument. At 1,000 squads on the ship
-## map, the worst tick was 1,226 ms unamortised, 103 ms at a budget of
-## 12,288, and **72.8 ms at 4,096** — the first value that fits D-020's
-## 100 ms tick at D-018's full scale, with ~27% headroom. The cost is
-## about 9% on average tick time, which is the right way round: the
-## budget being blown was always a latency spike, never throughput.
-const DEFAULT_FIELD_CELLS_PER_TICK := 4096
+## 16,384 is that number re-taken on the shipped map, and it costs LESS
+## tick time than the 4,096 it replaces rather than more: the solver got
+## 21x cheaper per cell when `TorusSpace.neighbor_table` replaced six
+## `neighbor_index()` calls per cell, so the per-tick expansion bound went
+## from 4,096 x 8.54 µs = **35 ms** to 16,384 x 0.40 µs = **6.6 ms**. The
+## budget is doing four times the work for a fifth of the cost.
+##
+## Chosen by measurement, not by argument, on the shipped 168x194 map:
+## worst wait over 114 spawn-to-spawn orders is **6 ticks at 4,096 and 1
+## tick at 16,384** (mean 2.58 -> 0.31), which discharges
+## D-20260817-m10-scale-optimisation criterion 3. D-040's own property is
+## preserved on purpose — worst tick stays FLAT in map size, because the
+## budget is a constant and not a fraction of the map — and the price of
+## that is the top of the ladder: worst wait is 3 ticks on Large and 6 on
+## Huge (0.6 s, against 3.2 s before). Raising this further is now cheap
+## and the numbers are in the decision entry; it is not raised today
+## because 100 ms of latency on the DEFAULT map is what was asked for and
+## a bigger constant buys the two sizes nobody has played.
+##
+## D-040's original reading, kept because it is what the shape of this
+## budget is for: at 1,000 squads on the then-ship map the worst tick was
+## 1,226 ms unamortised and 72.8 ms at 4,096. The thing being blown was
+## always a latency spike, never throughput.
+const DEFAULT_FIELD_CELLS_PER_TICK := 16384
 var field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
 
 ## Destination indices whose fields are still expanding, oldest first.
@@ -998,16 +1052,20 @@ var field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
 ## drains in a few ticks. Finishing the oldest first also bounds the worst
 ## wait, which is the number that matters — the spike was never about
 ## throughput.
-var _pending_fields: Array[int] = []
+##
+## Entries are `_fields` keys — (destination, side) — not bare
+## destinations, since the same destination can be in flight for two sides
+## at once (D-20260818-pathing-knows-only-what-the-player-knows).
+var _pending_fields: Array[Vector2i] = []
 
 ## Cells expanded so far this tick, against `field_cells_per_tick`.
 var _field_cells_this_tick: int = 0
 
 ## Per-phase cost of the LAST tick, for attributing a spike to a phase
-## instead of guessing at one. `last_combat_usec` covers combat, building
-## advance/production and hauling together; `last_economy_usec` is the
-## hauling part of that, broken out separately because it is the phase
-## most likely to scale with something nobody budgeted.
+## instead of guessing at one. Same regions as the run totals above, so
+## the two lines a server prints — the over-budget spike and the final
+## summary — name the same phases. `last_production_usec` is a slice of
+## `last_buildings_usec`, not a phase beside it.
 var last_curves_usec: int = 0
 var last_economy_usec: int = 0
 var last_squad_combat_usec: int = 0
@@ -1024,6 +1082,14 @@ var ticks_with_pending_fields: int = 0
 ## assumed to be small.
 var field_waits: int = 0
 
+## Planned steps that ran into ground the mover's side had not known was
+## blocked, each of which drops a field and re-routes
+## (D-20260818-pathing-knows-only-what-the-player-knows). Counted for the
+## same reason `field_waits` is: it is the price of optimistic pathing, and
+## a match with terrain that reports ZERO of these is one where the whole
+## mechanism is quietly dead — this project's most-repeated defect.
+var route_discoveries: int = 0
+
 
 ## Spend this tick's expansion budget on fields still being built.
 ##
@@ -1035,19 +1101,19 @@ func _expand_pending_fields() -> void:
 		return
 
 	var started := Time.get_ticks_usec()
-	var still_pending: Array[int] = []
-	for destination_index in _pending_fields:
-		var field: FlowField = _fields.get(destination_index, null)
+	var still_pending: Array[Vector2i] = []
+	for key in _pending_fields:
+		var field: FlowField = _fields.get(key, null)
 		if field == null or field.is_complete():
 			continue
 		var remaining := _field_budget_remaining()
 		if remaining == 0:
 			# Out of budget: keep it queued, untouched, for next tick.
-			still_pending.append(destination_index)
+			still_pending.append(key)
 			continue
 		var before := field.expanded_cells()
 		if not field.expand(remaining):
-			still_pending.append(destination_index)
+			still_pending.append(key)
 		# Charge what was actually expanded, not the budget offered — a
 		# field that finishes early must not consume the whole allowance
 		# and starve the next one in the same wave.
@@ -1065,15 +1131,23 @@ func _field_budget_remaining() -> int:
 	return maxi(0, field_cells_per_tick - _field_cells_this_tick)
 
 
+## `knower` is the KNOWLEDGE SIDE the field is solved for
+## (`knowledge_group_of`), never a player id directly — allies share sight
+## (D-050) and therefore share fields.
+##
 ## `tier` (D-076): 0 is the ground layer, unchanged from before tiers
 ## existed; 1 dispatches to `_field_for_top`, a completely separate cache
-## and budget — see that function and `_fields_top`'s own doc for why.
-func _field_for(destination_index: int, tier: int = 0) -> FlowField:
+## and budget — see that function and `_fields_top`'s own doc for why. The
+## wall-top network is deliberately NOT fogged: it is made of buildings a
+## side put there itself, so there is no unknown ground in it to be
+## optimistic about.
+func _field_for(destination_index: int, knower: int, tier: int = 0) -> FlowField:
 	if tier == 1:
 		return _field_for_top(destination_index)
 
-	if _fields.has(destination_index):
-		return _fields[destination_index]
+	var key := Vector2i(destination_index, knower)
+	if _fields.has(key):
+		return _fields[key]
 
 	if fields_per_tick > 0 and _fields_built_this_tick >= fields_per_tick:
 		field_builds_deferred += 1
@@ -1085,17 +1159,26 @@ func _field_for(destination_index: int, tier: int = 0) -> FlowField:
 	# question with a number attached, not a matter of opinion.
 	var started := Time.get_ticks_usec()
 	var field := FlowField.new()
-	field.begin(space, space.from_index(destination_index), _passable)
+	# What this SIDE believes, not what the map is
+	# (D-20260818-pathing-knows-only-what-the-player-knows). Empty when the
+	# side has never observed a blocked cell, which FlowField reads as
+	# "everything passable" — exactly the optimism a side that has explored
+	# nothing is entitled to.
+	field.begin(space, space.from_index(destination_index),
+		knowledge.believed_passable(knower))
 	# Expand into whatever budget this tick has left. In a quiet tick that
 	# is the whole field and the amortisation is invisible; in a wave, the
 	# later fields get little or nothing here and finish over the next few
 	# ticks.
-	if not field.expand(_field_budget_remaining()):
-		_pending_fields.append(destination_index)
+	# `has` rather than a bare append: a field dropped mid-solve by a
+	# re-route (see `_rebuild_curve`) and immediately rebuilt would
+	# otherwise be queued twice and charged the budget twice.
+	if not field.expand(_field_budget_remaining()) and not _pending_fields.has(key):
+		_pending_fields.append(key)
 	_field_cells_this_tick += field.expanded_cells()
 	total_field_usec += Time.get_ticks_usec() - started
 
-	_fields[destination_index] = field
+	_fields[key] = field
 	fields_built += 1
 	return field
 
@@ -1154,11 +1237,17 @@ func _rebuild_curve(squad: int) -> void:
 	curve.append_cell(at, space.from_index(current), space)
 
 	var speed := _speed[squad]
+	# Set when a planned step turns out to cross ground this side now knows
+	# is blocked: the field that produced it was solved against older
+	# knowledge, so it is dropped and the give-up rule below is held off
+	# (D-20260818-pathing-knows-only-what-the-player-knows).
+	var stale := false
 	if speed > 0.0 and _destination[squad] != current:
+		var knower := knowledge_group_of(squad)
 		# D-076: the squad's OWN tier picks which layer serves this path —
 		# ground or the wall-top network. A squad never silently crosses
 		# tiers here; that only happens through `_advance_tier_transitions`.
-		var field := _field_for(_destination[squad], _tier[squad])
+		var field := _field_for(_destination[squad], knower, _tier[squad])
 		# No field this tick (budgeted — see fields_per_tick). Leave the
 		# existing curve alone and try again next tick, rather than
 		# stranding the squad with a one-keyframe curve it would then
@@ -1189,9 +1278,46 @@ func _rebuild_curve(squad: int) -> void:
 			var next := field.step_from(current)
 			if next == current:
 				break  # unreachable; stall rather than wander
+
+			# The route was planned on what this side BELIEVES, and belief
+			# is optimistic about ground nobody has looked at
+			# (D-20260818-pathing-knows-only-what-the-player-knows). So the
+			# step about to be written is the moment of truth, and it does
+			# two jobs at once:
+			#
+			# 1. DISCOVERY. A squad about to walk onto a cell learns what it
+			#    is, whatever its vision_range — the safety net that keeps
+			#    optimism from ever putting soldiers inside a mountain, and
+			#    the only teacher a sightless unit has.
+			# 2. RE-ROUTE. If the cell is blocked in truth or in what this
+			#    side now knows, the cached field predates the knowledge and
+			#    must be re-solved. The curve keeps the prefix already
+			#    written, so the squad walks up to the obstruction while the
+			#    new field is being solved rather than stopping dead.
+			#
+			# `_passable` empty means a sim with no terrain at all (most
+			# tests): nothing to be wrong about, and no belief array worth
+			# allocating.
+			if _tier[squad] == 0 and not _passable.is_empty():
+				var open := next < _passable.size() and _passable[next] != 0
+				if knowledge.discover(knower, next, open, _passable.size()):
+					route_discoveries += 1
+				if not open or not knowledge.believes_passable(knower, next):
+					stale = true
+					break
+
 			at += seconds_per_cell
 			curve.append_cell(at, space.from_index(next), space)
 			current = next
+
+		if stale:
+			# Dropped, not re-solved here: field builds are budgeted (D-040)
+			# and re-entering the solver from inside a curve rebuild would
+			# spend that budget out of turn. The next rebuild — next tick,
+			# since the curve now ends where the squad is heading — solves
+			# against what this side knows NOW, and every squad sharing the
+			# field gets the corrected route with it.
+			_fields.erase(Vector2i(_destination[squad], knower))
 
 	# If the field could not take the squad a single step, the destination
 	# is unreachable RIGHT NOW — walled off by water or mountains, or
@@ -1213,7 +1339,22 @@ func _rebuild_curve(squad: int) -> void:
 	# `set_passable` retries it the moment passability actually changes.
 	# That retry is what keeps this cheap: nothing re-attempts on its own
 	# every tick, only when something could plausibly have unblocked it.
-	if curve.key_count() <= 1 and current != _destination[squad]:
+	#
+	# D-20260818-pathing-knows-only-what-the-player-knows narrows what
+	# "unreachable" is allowed to mean here: the field is solved against
+	# this side's own knowledge, so this now fires only when the ground the
+	# player has actually SEEN proves the destination impossible — never on
+	# the strength of a lake nobody has scouted. `stale` holds it off for
+	# the one tick between discovering an obstruction and re-solving
+	# around it; without that, walking into the first unknown wall would
+	# read as a refusal and cancel a perfectly good order.
+	#
+	# The "unreachable now is unreachable later" reasoning survives intact:
+	# belief only ever loses passable cells (see terrain_knowledge.gd), so
+	# a destination the known map has ruled out cannot be re-opened by
+	# further exploration — only by passability itself changing, which is
+	# what `set_passable`'s retry is for.
+	if curve.key_count() <= 1 and current != _destination[squad] and not stale:
 		_deferred_destination[squad] = _destination[squad]
 		_destination[squad] = current
 
@@ -1342,8 +1483,16 @@ func tick() -> void:
 	# Push in-flight BFS solves forward before anything asks a field for a
 	# direction (D-040). Also resets this tick's cell budget, so it must
 	# run even when nothing is pending.
+	#
+	# Timed as a phase of its own, because it is a phase of its own: the
+	# budget is per TICK, so this slice costs what it costs whether one
+	# squad or fifty is waiting on it, and until D-20260818 it was charged
+	# to nothing at all.
+	var fields_started := Time.get_ticks_usec()
 	_expand_pending_fields()
 	_expand_pending_fields_top()  # D-076: its own budget, see that function
+	last_fields_usec = Time.get_ticks_usec() - fields_started
+	total_fields_usec += last_fields_usec
 
 	time += 1.0 / TICK_HZ
 	tick_count += 1
@@ -1378,6 +1527,7 @@ func tick() -> void:
 	_advance_tier_transitions()
 
 	last_curves_usec = Time.get_ticks_usec() - curves_started
+	total_curves_usec += last_curves_usec
 
 	# Vision (D-025) recomputes against THIS tick's freshly-derived
 	# positions, at its own slower cadence — see
@@ -1387,6 +1537,19 @@ func tick() -> void:
 	if tick_count == 1 or tick_count % vision_recompute_every_ticks == 0:
 		var vision_started := Time.get_ticks_usec()
 		vision.rebuild(self, buildings)
+		# What each side can see, it now knows about the GROUND as well
+		# (D-20260818-pathing-knows-only-what-the-player-knows). Folded
+		# here, on vision's own cadence and out of vision's own coverage,
+		# so no disk is walked twice and pathing knowledge can never be
+		# wider than sight.
+		#
+		# Inside the timed block deliberately: this IS the vision phase,
+		# same cadence over the same cells, and `last_vision_usec` should
+		# name the whole of it. Said out loud because #105 is an open
+		# investigation into an unattributed per-squad rise, and a new cost
+		# quietly joining an existing slice is exactly how a number stops
+		# meaning what its name says.
+		knowledge.absorb(vision, _passable)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
 		vision_rebuilds += 1
@@ -1399,7 +1562,6 @@ func tick() -> void:
 	# dressed up as a message.
 	var combat_started := Time.get_ticks_usec()
 	last_combat_events = combat.resolve(self, tick_count, 1.0 / TICK_HZ)
-	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
 
 	# Idle combat squads chase a nearby enemy rather than waiting for one to
 	# walk all the way into attack_range — the default "for now" stance
@@ -1408,6 +1570,10 @@ func tick() -> void:
 	# where they stand, and reuses resolve()'s bucket map rather than
 	# rebuilding one.
 	combat.assign_idle_engagements(self, tick_count)
+	# Both halves of the combat phase, not just resolve(): the assignment
+	# scan is combat work and would otherwise land in the residual.
+	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
+	total_combat_usec += last_squad_combat_usec
 
 	var buildings_started := Time.get_ticks_usec()
 
@@ -1442,6 +1608,7 @@ func tick() -> void:
 			if rally != door:
 				order_move(spawned, rally)
 		last_production_usec = Time.get_ticks_usec() - production_started
+		total_production_usec += last_production_usec
 		var building_events := combat.resolve_buildings(self, buildings, tick_count)
 		if not building_events.is_empty():
 			last_combat_events = last_combat_events + building_events
@@ -1464,13 +1631,14 @@ func tick() -> void:
 	# Hauling runs after combat, so a crew wiped out this tick does not
 	# also deliver a load (D-028).
 	last_buildings_usec = Time.get_ticks_usec() - buildings_started
+	total_buildings_usec += last_buildings_usec
+
 	last_wallet_changes = []
 	var economy_started := Time.get_ticks_usec()
 	if economy != null:
 		last_wallet_changes = economy.tick(self, buildings, 1.0 / TICK_HZ)
 	last_economy_usec = Time.get_ticks_usec() - economy_started
-	last_combat_usec = Time.get_ticks_usec() - combat_started
-	total_combat_usec += last_combat_usec
+	total_economy_usec += last_economy_usec
 	_log_combat_events(last_combat_events)
 
 	last_tick_usec = Time.get_ticks_usec() - started
@@ -1496,18 +1664,52 @@ func mean_usec_per_squad_update() -> float:
 ## rebuild phase so it's identifiable as a component rather than folded
 ## into the tick's grand total.
 func mean_vision_usec_per_squad_update() -> float:
-	if _cell.is_empty() or tick_count <= 0:
-		return 0.0
-	return float(total_vision_usec) / float(tick_count * _cell.size())
+	return _mean_usec_per_squad_update(total_vision_usec)
 
 
 ## Combat's own slice of mean_usec_per_squad_update (D-026 criterion 10) —
 ## see mean_vision_usec_per_squad_update's comment; same reasoning, scoped
-## to Combat.resolve() instead of Vision.rebuild().
+## to the combat phase (Combat.resolve plus the idle-engagement scan)
+## instead of Vision.rebuild().
+##
+## It covered building advance, production and hauling too until
+## D-20260818, which is how a run could report "combat=32.7" for a tick in
+## which combat was a third of that: the phases now partition the tick
+## instead of two of them overlapping the rest.
 func mean_combat_usec_per_squad_update() -> float:
+	return _mean_usec_per_squad_update(total_combat_usec)
+
+
+## THE breakdown of mean_usec_per_squad_update, phase by phase, in tick
+## order (D-20260818). Keys sum to that figure exactly, because `other` is
+## the difference rather than an estimate — so a rise always lands on a
+## named phase or on the residual, and never simply vanishes into the
+## total the way M6's 40.8 -> ~77 and M10's 83 -> 167.7 both did.
+##
+## `production` is a slice of `buildings` and is reported alongside rather
+## than summed; everything else is disjoint.
+func phase_usec_per_squad_update() -> Dictionary:
+	var named := (total_fields_usec + total_curves_usec + total_vision_usec
+		+ total_combat_usec + total_buildings_usec + total_economy_usec)
+	return {
+		"fields": _mean_usec_per_squad_update(total_fields_usec),
+		"curves": _mean_usec_per_squad_update(total_curves_usec),
+		"vision": _mean_usec_per_squad_update(total_vision_usec),
+		"combat": _mean_usec_per_squad_update(total_combat_usec),
+		"buildings": _mean_usec_per_squad_update(total_buildings_usec),
+		"production": _mean_usec_per_squad_update(total_production_usec),
+		"economy": _mean_usec_per_squad_update(total_economy_usec),
+		"other": _mean_usec_per_squad_update(total_tick_usec - named),
+	}
+
+
+## Shared divisor for every per-squad-update figure above: no squads means
+## an honest zero, not the tick's fixed overhead reported as if it were
+## per-squad cost.
+func _mean_usec_per_squad_update(total: int) -> float:
 	if _cell.is_empty() or tick_count <= 0:
 		return 0.0
-	return float(total_combat_usec) / float(tick_count * _cell.size())
+	return float(total) / float(tick_count * _cell.size())
 
 
 ## Soldier transforms for a squad, derived not stored (D-006).
@@ -1524,6 +1726,7 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 ## an arbitrary number of times and hoping the schedule has caught up.
 func recompute_vision_now() -> void:
 	vision.rebuild(self, buildings)
+	knowledge.absorb(vision, _passable)
 
 
 ## How many of `player`'s squads still have soldiers in them.
@@ -1607,6 +1810,15 @@ var teams := {}
 ## team — two players who both picked "none" are enemies, not allies,
 ## which is what makes free-for-all the default rather than a special
 ## case that has to be spelled somewhere.
+## Whose knowledge solves this squad's routes: its owner, or its TEAM
+## where it has one, because allies share sight (D-050) and therefore
+## share what they have explored. `Vision.group_of_player` is the one
+## definition of that grouping — see it for why this is not spelled out
+## again here.
+func knowledge_group_of(squad: int) -> int:
+	return Vision.group_of_player(_owner[squad], teams)
+
+
 func are_allied(a: int, b: int) -> bool:
 	if a == b:
 		return true

@@ -1,3 +1,19 @@
+# EVERY tracked file gets an explicit answer here, because "unspecified"
+# means "ask the machine" — and this machine has core.autocrlf=true. Until
+# #118 this file named five patterns and the other ~940 tracked files fell
+# through to that setting, so they were checked out CRLF while Godot's
+# importer rewrites the ones it owns (`*.import`, `*.tres`, `*.tscn`,
+# `*.uid`) with LF. The working tree then differed from what was checked
+# out, which `git status` reports as ~140 modified files while `git diff`
+# shows nothing at all — enough to make `git rebase` refuse to start
+# ("cannot rebase: You have unstaged changes") and `git add -A` sweep the
+# noise into every commit.
+#
+# This line is FIRST on purpose. gitattributes is last-match-wins, so
+# every rule below overrides it; moving it to the bottom would silently
+# take `binary` off every .glb in the repo.
+* text=auto eol=lf
+
 # Line endings.
 #
 # The dev machine has core.autocrlf=true, so without these rules a fresh
@@ -34,3 +50,16 @@ justfile text eol=lf
 *.glb binary
 *.exr binary
 *.png binary
+
+# GUT's bundled fonts. Git's own auto-detection already calls these binary,
+# but the catch-all above names them for the first time, and a font is
+# exactly the class of file where a CRLF substitution corrupts silently
+# rather than loudly — the same reason the .glb/.exr/.png rules exist.
+*.ttf binary
+*.fnt binary
+
+# The fresh-clone entry point, run by Windows PowerShell before anything
+# else in this repo exists. CRLF is the safe side of that bet, and the LF
+# the catch-all would otherwise hand it buys nothing on a file nothing but
+# PowerShell reads.
+*.ps1 text eol=crlf

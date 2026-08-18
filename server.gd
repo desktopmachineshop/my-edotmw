@@ -210,7 +210,8 @@ func _ready() -> void:
 	# is seed 1 — a plausible, reproducible, entirely wrong map, with no
 	# value in the log that looks wrong enough to notice (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
-		["port", "seed", "ai", "players", "lobby", "sandbox", "random-civs"])
+		["port", "seed", "ai", "players", "lobby", "sandbox", "random-civs",
+		"ai-teams"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds", "height_scale"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("server", bad_args))
@@ -344,13 +345,43 @@ func _ready() -> void:
 		# by default: round-robin is what guarantees test-load's "both civs
 		# fielded" check (D-046 criterion 10) without depending on a coin
 		# flip.
+		#
+		# --ai-teams=T splits those seats across T sides (#119). 0 — the
+		# default — is the free-for-all every ladder number so far was
+		# measured on, and `MatchState.set_team` is lobby-and-admin-only by
+		# design, so without this flag there is no door to a teamed match
+		# that nobody is sitting in.
+		#
+		# Sides are dealt round-robin, and that is a convention rather than
+		# a claim: seat order is not map order. Spawn points are scattered
+		# at `min_spawn_spacing` (D-039), so which neighbour a seat gets is
+		# a property of the SEED — no dealing puts an ally reliably nearest,
+		# which is why `just test-ai-teams` plays several worlds instead of
+		# arranging one.
+		#
+		# Refused rather than clamped above MAX_TEAMS: `--ai-teams=9` would
+		# otherwise deal nine sides into four and quietly ally seats the
+		# caller asked to separate — an argument that is not the number it
+		# will be read as, which is the trap
+		# D-20260817-recipe-args-are-positional exists to close.
+		var ai_teams := maxi(0, int(args.get("ai-teams", 0)))
+		if ai_teams > MatchState.MAX_TEAMS:
+			push_error("server: --ai-teams=%d, but a match has at most %d sides"
+				% [ai_teams, MatchState.MAX_TEAMS])
+			get_tree().quit(1)
+			return
 		var random_civs := int(args.get("random-civs", 0)) != 0
 		var civs := CivRoster.ids()
 		for i in range(ai_wanted):
 			var ai_civ: StringName = CivRoster.resolve(CivRoster.RANDOM, _match.civ_rng) \
 				if random_civs \
 				else (civs[i % maxi(civs.size(), 1)] if not civs.is_empty() else &"")
-			_seat_ai(1000 + i, ai_civ)
+			# The team goes on at SEATING, not afterwards: seating the last
+			# AI is what starts the match (`_start_if_ready`), so a team
+			# assigned in a second pass would be assigned to a seat whose
+			# match had already handed `team_map()` to the simulation.
+			var team := (i % ai_teams) + 1 if ai_teams > 0 else 0
+			_seat_ai(1000 + i, ai_civ, team)
 
 		# Human seats aren't known by id until they connect (`_next_player`
 		# hands them out in `_on_connect`), but the expected COUNT is —
@@ -564,10 +595,11 @@ func _process(delta: float) -> void:
 		if _sim.last_tick_usec > TICK_BUDGET_USEC:
 			_ticks_over_budget += 1
 			if _ticks_over_budget <= 8:
-				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
+				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | field_expand=%.1fms curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
 					_sim.tick_count, float(_sim.last_tick_usec) / 1000.0,
 					_sim.squad_count(), _clients.size(),
 					_sim.fields_built, _sim.field_waits,
+					float(_sim.last_fields_usec) / 1000.0,
 					float(_sim.last_curves_usec) / 1000.0,
 					float(_sim.last_vision_usec) / 1000.0,
 					float(_sim.last_squad_combat_usec) / 1000.0,
@@ -638,30 +670,31 @@ func _print_summary(reason: String) -> void:
 	# their own components of that same figure (D-026 criterion 10, D-012)
 	# rather than folded into one number, so a reviewer can see which phase
 	# a budget overrun would come from.
-	# Bandwidth per client per second and peak memory (M4). D-003's whole
-	# claim is about bytes, so a total is not enough — the number that
-	# matters is what one client costs per second, because that is what
-	# multiplies by player count.
+	# Bandwidth per client per second (M4). D-003's whole claim is about
+	# bytes, so a total is not enough — the number that matters is what
+	# one client costs per second, because that is what multiplies by
+	# player count.
 	# PEAK clients, not current. The summary prints when the last client
 	# leaves, so dividing by _clients.size() divides by 1 no matter how
 	# many played — the first run of this reported "11 B/client/s over 1
 	# client(s)" for a twenty-player test.
 	var clients := maxi(_peak_clients, 1)
 	var seconds := maxf(_sim.time, 0.001)
-	print("server: bandwidth — %.0f B/client/s over %d client(s), budget_overruns=%d, mem=%.1f MB" % [
+	print("server: bandwidth — %.0f B/client/s over %d client(s), budget_overruns=%d" % [
 		float(_sim.replicator.bytes_sent_total) / float(clients) / seconds,
 		clients,
 		_sim.replicator.budget_overruns,
-		float(OS.get_static_memory_usage()) / 1048576.0,
 	])
+	# Memory gets its own line, and never rides along at the end of
+	# another one, because it needs conditions of its own (#111).
+	print(_memory_line(OS.get_static_memory_usage(), OS.get_static_memory_peak_usage()))
 
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (vision=%.3f combat=%.3f) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
 		_sim.mean_usec_per_squad_update(),
-		_sim.mean_vision_usec_per_squad_update(),
-		_sim.mean_combat_usec_per_squad_update(),
+		_phase_breakdown(),
 		_sim.vision_rebuilds,
 		float(_worst_tick_usec) / 1000.0,
 		_sim.field_waits,
@@ -682,8 +715,14 @@ func _print_summary(reason: String) -> void:
 
 	for brain in _ai_players:
 		print("server: %s" % brain.stats_line())
-	print("server: MATCH_RESULT winner=%d phase=%d" % [
-		_match.winner, int(_match.phase)])
+	# `team=` because a TEAM can win, not only a player (D-050, and
+	# `MatchState._check_victory` has said so since it was written). The
+	# winner field carries one member of the winning side — the lowest id
+	# still standing — so a 2v2 reported by player alone credits one of two
+	# allies with a victory both of them won. 0 is no team, i.e. the
+	# free-for-all every ladder result before #119 was measured on.
+	print("server: MATCH_RESULT winner=%d team=%d phase=%d" % [
+		_match.winner, _match.team_of(_match.winner), int(_match.phase)])
 
 	print("server: ticks over D-020's %dms budget: %d of %d, worst %.1fms at tick %d" % [
 		TICK_BUDGET_USEC / 1000, _ticks_over_budget, _sim.tick_count,
@@ -703,17 +742,64 @@ func _print_summary(reason: String) -> void:
 	print("server: FOG_TOTAL_NODES=%d" % (_economy.node_count() if _economy != null else 0))
 
 
+## What the server is holding, and under what conditions it held it.
+##
+## A memory figure without its conditions cannot be compared with
+## another one, exactly as us/squad cannot be read without a squad count
+## (CLAUDE.md). This project has the proof: 42.5 MB at 120 squads on
+## 8,064 cells (M4) and 43.3 MB at FOUR squads on 32,592 read as
+## "memory is flat" side by side, and say the opposite once their
+## conditions are attached — the map is the dominant allocator now and
+## the armies are not (#111). Nothing failed and nothing could; the
+## number was correct, it just could not be quoted.
+##
+## Players is a PEAK for the same reason the bandwidth line's client
+## count is: this prints when the LAST client leaves, so the live count
+## is 1 however many played. An all-AI server (`--players=0`, the
+## ladder) has no sockets at all, so its seat count stands in — an AI
+## seat is a player for every purpose except owning one (D-051).
+##
+## Cells come from the sim's OWN space rather than from `_settings`, so
+## the line reports the map that was actually simulated, not the one
+## that was asked for.
+func _memory_line(bytes: int, peak_bytes: int) -> String:
+	var seated := 0
+	if _match != null:
+		seated = _match.player_count()
+	var players := maxi(_peak_clients, seated)
+	var space := _sim.space
+	return "server: MEMORY %.1f MB static, %.1f MB peak — %d player(s), %d squad(s), %dx%d = %d cells" % [
+		float(bytes) / 1048576.0,
+		float(peak_bytes) / 1048576.0,
+		players,
+		_sim.squad_count(),
+		space.width, space.height, space.cell_count(),
+	]
+
+
 func _print_status() -> void:
 	# Deliberately avoids the words this project's log scanners look for
 	# (`just test-load` greps for warning/desync), so routine status can
 	# never be mistaken for a fault.
-	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f (vision=%.3f combat=%.3f)" % [
+	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f (%s)" % [
 		_sim.tick_count, _sim.time, _sim.squad_count(), _clients.size(),
 		_sim.replicator.bytes_sent_total, _sim.fields_built,
 		_sim.mean_usec_per_squad_update(),
-		_sim.mean_vision_usec_per_squad_update(),
-		_sim.mean_combat_usec_per_squad_update(),
+		_phase_breakdown(),
 	])
+
+
+## The per-squad cost broken down by phase, as `name=us` pairs in tick
+## order (D-20260818). The parts SUM to the us/squad they sit beside —
+## `other` is the difference, not an estimate — so a rise is always
+## attributable to a named phase or visibly to none of them, which is the
+## thing this project has twice been unable to do after the fact.
+func _phase_breakdown() -> String:
+	var parts := []
+	var phases := _sim.phase_usec_per_squad_update()
+	for phase in phases:
+		parts.append("%s=%.2f" % [phase, phases[phase]])
+	return " ".join(parts)
 
 
 func _service_network() -> void:
@@ -2565,9 +2651,7 @@ func _on_match_started() -> void:
 	# an opening stockpile.
 	for seat in _match.seats:
 		_civs[int(seat["player"])] = StringName(seat["civ"])
-	# Teams reach the simulation here, because combat needs them every
-	# round and nothing before this point could have known them (D-050).
-	_sim.teams = _match.team_map()
+	_hand_teams_to_sim()
 	print("server: match started — %s" % _seat_summary())
 
 	# The world's concrete numbers, before anybody is admitted: a client
@@ -2599,7 +2683,11 @@ func _on_match_started() -> void:
 ## It is admitted through exactly the same `_admit_player` a human goes
 ## through — same spawn, same opening stockpile, same welcome packet —
 ## because "what a player starts with" must not have two implementations.
-func _seat_ai(player: int, civ: StringName) -> void:
+## `team` is the side the seat is dealt on the command-line path
+## (`--ai-teams`, #119). It is ignored when the seat already exists — a
+## lobby seat brought its own side with it, chosen by the admin, and this
+## call is then only bringing the BRAIN to life.
+func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	var brain := AiPlayer.new(player, civ)
 	# Whatever the admin already had toggled before this AI was seated —
 	# a live toggle afterward updates every brain directly (see
@@ -2625,7 +2713,7 @@ func _seat_ai(player: int, civ: StringName) -> void:
 	# the first of them the lobby admin badge, which is a lobby no human
 	# can ever start a second match from
 	# (D-20260817-an-ai-never-holds-the-lobby).
-	var started := _match.add_ai_player(player, civ)
+	var started := _match.add_ai_player(player, civ, team)
 	_ai_clients[peer] = {"player": player, "visible": {}}
 	_ai_players.append(brain)
 	_admit_player(peer, player)
@@ -2651,8 +2739,38 @@ func _seat_ai(player: int, civ: StringName) -> void:
 ## has one marker in the log however it started; `just ai-ladder` fails on
 ## its absence rather than reporting a match that never happened as a draw.
 func _note_match_started() -> void:
+	_hand_teams_to_sim()
 	print("server: match started — %s" % _seat_summary())
 	_broadcast_lobby()
+
+
+## Hand the seats' sides to the simulation (D-050).
+##
+## BOTH ways a match can begin, which is the half of #119 worth knowing
+## about on its own. This existed only on the lobby path, so a `--lobby=0`
+## run — `just ai-ladder`, `just test-load`, `just test-scenario`, every
+## automated exercise of the AI there is — left `SquadSim.teams` empty
+## whatever the seats said. It was dormant rather than broken, because
+## nothing without a lobby had ever had a team to hand over; adding
+## `--ai-teams` is exactly what stops it being dormant, and the failure it
+## would have produced is worse than the one #83 fixed — allies whose
+## alliance the simulation never learns shoot each other, while every seat
+## list and every client agrees they are friends.
+##
+## Safe with no teams: `team_map()` is all zeros and `SquadSim.are_allied`
+## reads 0 as free-for-all, which is what the empty dictionary meant.
+##
+## The marker is printed from `_sim.teams` — the thing that was missing —
+## and not from `_match`, because a harness asserting that teams reached
+## the SIMULATION must read the simulation. `just test-ai-teams` fails on
+## its absence.
+func _hand_teams_to_sim() -> void:
+	_sim.teams = _match.team_map()
+	var parts := []
+	for who in _sim.teams:
+		parts.append("%d=%d" % [int(who), int(_sim.teams[who])])
+	parts.sort()
+	print("server: SIM_TEAMS %s" % (", ".join(parts) if not parts.is_empty() else "none"))
 
 
 ## EVERY peer that receives simulation state — sockets and AI seats alike.

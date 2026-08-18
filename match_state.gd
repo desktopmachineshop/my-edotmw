@@ -137,9 +137,15 @@ func add_player(player: int) -> bool:
 ## `add_ai` below is the lobby COMMAND — the same seating plus a
 ## permission check. The check belongs on the command, not on the seating,
 ## which is why the two are separate and why this one has no `by_player`.
-func add_ai_player(player: int, civ: StringName) -> bool:
+## `team` is the side this seat is dealt, for the command-line path that
+## has no admin to choose one (`--ai-teams`, #119). It is a PARAMETER of
+## seating rather than a `set_team` call afterwards because seating the
+## last seat is what starts the match: a side set a line later would be
+## set on a seat whose `team_map()` had already gone to the simulation.
+## `set_team` stays the lobby's door and stays admin-only.
+func add_ai_player(player: int, civ: StringName, team: int = 0) -> bool:
 	_register(player)
-	_seat_ai(player, civ)
+	_seat_ai(player, civ, team)
 	return _start_if_ready()
 
 
@@ -243,13 +249,13 @@ func _seat_human(player: int) -> void:
 ## doors onto AI seating go through this function, so starting positions
 ## following the seats is structural for the command-line path and the
 ## lobby command alike, rather than a call each of them has to remember.
-func _seat_ai(player: int, civ: StringName) -> void:
+func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	for seat in seats:
 		if int(seat["player"]) == player:
 			return
 	seats.append({
 		"kind": "ai", "player": player,
-		"civ": civ, "team": 0, "name": "AI %d" % player,
+		"civ": civ, "team": clampi(team, 0, MAX_TEAMS), "name": "AI %d" % player,
 	})
 	_seats_changed()
 
@@ -713,19 +719,16 @@ func set_map_option(by_player: int, key: String, value: float) -> bool:
 				return false
 			map_settings.apply_preset(
 				TerrainPresetRoster.by_id(ids[posmod(int(value), ids.size())]))
-		"sea_level":
-			map_settings.sea_level = clampf(value, 0.05, 0.9)
-		"mountain_level":
-			map_settings.mountain_level = clampf(value, 0.1, 0.98)
-		"elevation_frequency":
-			map_settings.elevation_frequency = clampf(value, 0.5, 8.0)
-		"height_scale":
-			# Ceiling raised from 6.0 to 20.0 alongside the new 15.0 default
-			# (was 2.0) — a slider that could not reach the default would
-			# clamp it right back down on the first nudge.
-			map_settings.height_scale = clampf(value, 0.5, 20.0)
 		_:
-			return false
+			# Every terrain slider, through the ONE definition of how far
+			# each may travel (`MapSettings.slider_bounds`, #125). Four
+			# `clampf` calls used to live here with the ranges written out
+			# again, which is how the lobby came to draw travel this
+			# function refused — and `set_slider` returns false for a key
+			# that is not a slider at all, so an unknown option is still
+			# refused exactly as it was.
+			if not map_settings.set_slider(key, value):
+				return false
 
 	# Refuse the change rather than the match: an unplayable combination
 	# is rejected at the moment it is made, so nobody discovers it by

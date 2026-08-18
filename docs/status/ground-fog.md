@@ -50,3 +50,43 @@ are worth knowing because neither is really about fog:
   cells each bake re-shades and the test compares those counts; the milliseconds
   are printed, not gated. A refresh now touches 977 cells on both an 8,064-cell
   map and a 32,592-cell one.
+
+**And the fog stopped at the terrain for a day
+(D-20260817-fog-covers-props, #81).** D-106 gave `shaders/terrain.gdshader`
+a `fog` uniform and it was the only shader in the project with one, so
+unexplored ground was drawn black with a fully lit forest, white stone piles
+and boulder fields standing on it. `docs/playtest/p31-prop-fog-before.png` and
+`-after.png` are the same camera and the same vision wedge either side of the
+fix. `PropFog` is `TerrainChunk.set_fog`'s sibling for everything that stands
+on the ground; buildings are excluded on purpose, because a building once seen
+is knowledge rather than sight (D-030/D-101).
+
+Three things to carry forward, none of which are really about fog:
+
+- **The caller-exists test only covers the caller it names.** D-106 wrote the
+  right kind of test — a scan for a `TerrainChunk.set_fog` call outside
+  `terrain_chunk.gd` — and it passed throughout, because it asked whether ONE
+  material was bound. When a rule applies to a class of surfaces, the test has
+  to enumerate the class. `test_prop_fog.gd` now asks the same question of the
+  props, and the same question is still unasked for any surface added next.
+- **The reported symptom named the wrong object.** "Cliffs are showing through
+  the fog" — and the cliff skirts were fogged correctly all along, being a
+  second surface of the same mesh with its own `fog_uvs` channel. What was
+  leaking was rock PROPS and tree canopies, which read as cliffs at a glance.
+  Reproduce before believing the noun in a bug report.
+- **`--headless` Godot stores nothing in a MultiMesh.** Transforms, colours and
+  custom data all read back as their defaults from the dummy RenderingServer,
+  so no GUT test can assert per-instance data at all. The half that had to be
+  looked at was looked at, in `just test-client`'s rendered frame.
+
+And a fourth, about the instrument rather than the bug: **`test-client`'s
+opening camera no longer frames a fog boundary.** The same-day map-ladder change
+put it close enough to the player's own spawn that the whole visible island sits
+inside their own vision, so the before/after pair above could not be taken again
+today — an A/B on the current base differs in 4,395 of 97,500 sampled world
+pixels against 14,415 on the base the frames were taken from, and
+`p31-prop-fog-edge-diff.png` shows those pixels are a rim of canopies at the
+fog edge. **That is the third thing `test-client`'s framing structurally cannot
+show**, after cliffs (D-097 — a spawn is walkable by construction) and forest
+interiors (D-108 — a spawn is open ground). When a rendered check has to see
+something specific, frame it on purpose, the way `gen-forest-preview` does.
