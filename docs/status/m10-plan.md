@@ -17,7 +17,7 @@ against the `M10 — scale optimisation` milestone.
 | | measured | how |
 |---|---|---|
 | terrain meshing at client start | **5,071 ms**, 143 chunks | `just gen-terrain-preview` |
-| flow-field waits | **2,968 of 3,005 ticks** | `just test-load 4 300` |
+| flow-field waits | **2,968 of 3,005 ticks** — *fixed, see below* | `just test-load 4 300` |
 | per-squad update | **167.7 µs at 48 squads** (was ~83 at 28) | same run |
 | worst tick | 44.9 ms, **0 dropped** | same run |
 | server memory | 43.3 MB with **4** squads | `quick-test` |
@@ -52,3 +52,33 @@ closed. Culling has been cleared twice by measurement — 0 wrongly-culled
 chunks in 36,288 tests on the old map and 41,184 on the new one — so a
 report of forests popping is not a culling fault and should not be
 diagnosed as one.
+
+## Landed
+
+**Workstream 2, flow-field latency (#107), 2026-08-18 — criterion 3
+discharged.** A cross-map move order on the default map waited **6 ticks
+(0.6 s)** and now waits **1 (0.1 s)**, and the per-tick cost of the budget
+that bounds it FELL, from ~35 ms to ~6.6 ms. Full entry, with the ladder
+and the A/B, in
+`decisions/D-20260818-the-flow-field-solver-was-93-percent-neighbour-lookup.md`.
+
+The lever was not the one the issue named. Raising `field_cells_per_tick`
+was measured to be unavailable on its own — at 16,384 the worst tick was
+**1.5 seconds** — because the solver was spending **93% of its time in six
+`TorusSpace.neighbor_index()` calls per cell**, recomputing a wrap-aware
+derivation that depends only on the lattice. `TorusSpace.neighbor_table()`
+memoises it (764 KB on the shipped map, 3.0 MB at Huge), a full field went
+**228 ms -> 10.4 ms**, and the budget could then go 4,096 -> 16,384 for a
+fifth of the old cost. **Fifth instance of the same defect** after vision's
+`distance()` per cell, `UnitRoster.by_id` per produced squad, terrain noise
+per soldier per frame and the per-squad building scan — so before reaching
+for a design (coarse-to-fine fields, in this case), price the loop first.
+
+Two things left open on purpose. **Large and Huge still wait 3 and 6 ticks**
+(0.3 s / 0.6 s, against 1.8 s / 3.2 s): the budget is deliberately a
+constant, not a fraction of the map, because D-040's worst-tick-flat-in-map-size
+property is worth more than flat latency on two rungs nobody has played —
+raising it to 32,768 takes the ladder to 0/0/1/3 ticks and is one number
+away. And the 1,000-squad sweep is still **over** D-020's 100 ms tick both
+before (342.9 ms) and after (204.5 ms); that is **#105's** unattributed
+per-squad rise, not this, and it is not closed.

@@ -976,18 +976,36 @@ var field_builds_deferred: int = 0
 ## in-flight fields (D-040). -1 disables amortisation entirely and every
 ## field completes in the tick it is requested.
 ##
-## 4,096 is half a ship-map field, so an ordinary single order paths in
-## two ticks (0.2 s) — below noticing — and an eight-destination wave
-## drains over about a second with the FIRST group moving immediately,
-## because the queue is FIFO.
+## 4,096 was half a field on the 8,064-cell map D-040 measured, and an
+## EIGHTH of one on the 32,592-cell map the ladder shipped in
+## D-20260817-the-zoom-cap-was-modelling-the-wrong-axis — so the latency
+## D-040 deliberately bought with a per-tick budget quietly quadrupled and
+## a squad could stand still for six ticks after a right-click (#107).
 ##
-## Chosen by measurement, not by argument. At 1,000 squads on the ship
-## map, the worst tick was 1,226 ms unamortised, 103 ms at a budget of
-## 12,288, and **72.8 ms at 4,096** — the first value that fits D-020's
-## 100 ms tick at D-018's full scale, with ~27% headroom. The cost is
-## about 9% on average tick time, which is the right way round: the
-## budget being blown was always a latency spike, never throughput.
-const DEFAULT_FIELD_CELLS_PER_TICK := 4096
+## 16,384 is that number re-taken on the shipped map, and it costs LESS
+## tick time than the 4,096 it replaces rather than more: the solver got
+## 21x cheaper per cell when `TorusSpace.neighbor_table` replaced six
+## `neighbor_index()` calls per cell, so the per-tick expansion bound went
+## from 4,096 x 8.54 µs = **35 ms** to 16,384 x 0.40 µs = **6.6 ms**. The
+## budget is doing four times the work for a fifth of the cost.
+##
+## Chosen by measurement, not by argument, on the shipped 168x194 map:
+## worst wait over 114 spawn-to-spawn orders is **6 ticks at 4,096 and 1
+## tick at 16,384** (mean 2.58 -> 0.31), which discharges
+## D-20260817-m10-scale-optimisation criterion 3. D-040's own property is
+## preserved on purpose — worst tick stays FLAT in map size, because the
+## budget is a constant and not a fraction of the map — and the price of
+## that is the top of the ladder: worst wait is 3 ticks on Large and 6 on
+## Huge (0.6 s, against 3.2 s before). Raising this further is now cheap
+## and the numbers are in the decision entry; it is not raised today
+## because 100 ms of latency on the DEFAULT map is what was asked for and
+## a bigger constant buys the two sizes nobody has played.
+##
+## D-040's original reading, kept because it is what the shape of this
+## budget is for: at 1,000 squads on the then-ship map the worst tick was
+## 1,226 ms unamortised and 72.8 ms at 4,096. The thing being blown was
+## always a latency spike, never throughput.
+const DEFAULT_FIELD_CELLS_PER_TICK := 16384
 var field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
 
 ## Destination indices whose fields are still expanding, oldest first.

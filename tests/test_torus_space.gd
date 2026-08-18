@@ -318,3 +318,54 @@ func test_hex_length_agrees_with_distance_for_unwrapped_offsets() -> void:
 			var target := origin + offset
 			assert_eq(t.distance(origin, target), TorusSpace.hex_length(offset),
 				"hex_length(%s) should equal distance() away from any seam" % offset)
+
+
+# --- neighbour table (#107) ------------------------------------------
+#
+# `neighbor_table()` is a memoisation of `neighbor_index()`, added because
+# FlowField's BFS spent 93% of its time in six method calls per cell. The
+# whole risk of a memoisation is that it becomes a SECOND opinion, so the
+# tests below assert the two agree exhaustively rather than trusting the
+# same wrapping arithmetic written twice — the "assert the value on the
+# far side of the boundary" rule D-100 wrote down for asset pipelines,
+# applied to a cache.
+
+func test_neighbor_table_agrees_with_neighbor_index_for_every_cell() -> void:
+	var t := _space()
+	var table := t.neighbor_table()
+	assert_eq(table.size(), t.cell_count() * 6,
+		"The table is flat, stride 6 — one entry per cell per direction")
+	for cell in range(t.cell_count()):
+		for dir in range(6):
+			assert_eq(table[cell * 6 + dir], t.neighbor_index(cell, dir),
+				"Cell %d direction %d disagrees with neighbor_index" % [cell, dir])
+
+
+func test_neighbor_table_agrees_on_an_odd_width_space() -> void:
+	# W and H above are both even and both powers-of-two-ish, which is
+	# exactly the shape a modulo bug hides in. An odd width makes the
+	# row-wise column wrap in the builder do something a power of two
+	# would forgive.
+	var t := TorusSpace.new(13, 6, 1.0)
+	var table := t.neighbor_table()
+	for cell in range(t.cell_count()):
+		for dir in range(6):
+			assert_eq(table[cell * 6 + dir], t.neighbor_index(cell, dir),
+				"Cell %d direction %d disagrees on a 13x6 space" % [cell, dir])
+
+
+func test_neighbor_table_is_cached_and_survives_a_reshape() -> void:
+	# Cached per instance, because a neighbour index depends on width and
+	# height where a disk offset does not. width/height are @export, so a
+	# reshape that preserves the cell count must not be allowed to keep a
+	# table built for the old dimensions.
+	var t := TorusSpace.new(16, 8, 1.0)
+	assert_eq(t.neighbor_table(), t.neighbor_table(), "The table should be stable across calls")
+
+	t.width = 8
+	t.height = 16
+	var reshaped := t.neighbor_table()
+	for cell in range(t.cell_count()):
+		for dir in range(6):
+			assert_eq(reshaped[cell * 6 + dir], t.neighbor_index(cell, dir),
+				"Cell %d direction %d kept a table built for the old shape" % [cell, dir])
