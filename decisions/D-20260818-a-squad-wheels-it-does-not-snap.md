@@ -47,6 +47,8 @@ each check was watched fail:
 | peak soldier speed, open march | 3.59 (1.09×) | 3.30 (1.000×) |
 | facing step per 20 ms at a corner | **90.00°** | 0.57° |
 | that corner journey, line / column | 9.6 s / 9.6 s | 15.2 s / 17.2 s |
+| keyframes, open march | 7 | 7 |
+| keyframes, round the obstacle | 7 | 25 |
 
 The 9.6/9.6 tie is the "before" column saying what it should: a turn cost
 nothing, so the formation made no difference to how long one took.
@@ -132,7 +134,9 @@ which is a simulation change — exactly the split #101 predicted.
 - **No new wire format and no new field.** A straight march buys no extra
   keyframes at all — refinement only fires on a segment that actually
   bends — so D-003's bandwidth claim holds where squads spend most of
-  their time.
+  their time. A path round an obstacle costs 25 keyframes where it cost
+  7, bounded at `PATH_REFINEMENTS` halvings, and two tests hold both ends
+  of that.
 - **Nothing for a re-ORDER.** A player turning a squad on the spot still
   gets a fresh curve from its current cell, and the block comes round as
   fast as the client's easing (D-059) allows. That is a different

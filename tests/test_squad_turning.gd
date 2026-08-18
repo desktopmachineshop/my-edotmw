@@ -251,6 +251,52 @@ func test_smoothing_never_puts_a_squad_on_impassable_ground() -> void:
 			break
 
 
+# --- what it costs the wire -------------------------------------------
+
+func test_a_straight_march_buys_no_extra_keyframes() -> void:
+	# Splitting a path finer is how a bend gets resolved, and every split
+	# is keyframes on the wire (D-003). So it has to be paid for only
+	# where there is a bend: an open march must cost exactly what it cost
+	# before any of this existed, which is one keyframe per cell the flow
+	# field walked.
+	var sim := _sim()
+	sim.set_passable(_all_passable(sim))
+	var def := _militia()
+	var squad := sim.add_squad(def, 1, FROM)
+	sim.order_move(squad, DIAGONAL)
+
+	var cells_per_second := def.move_speed / (sim.space.hex_size * TorusSpace.SQRT_3)
+	var most := ceili(sim.curve_lookahead_seconds * cells_per_second) + 1
+
+	var worst := int(_worst_over_journey(sim, squad, DIAGONAL,
+		func(s: SquadSim, q: int) -> float: return float(s.curve_of(q).key_count())))
+	gut.p("open march: worst %d keyframes against a ceiling of %d" % [worst, most])
+	assert_lte(worst, most,
+		"a straight march is paying keyframes for a bend it does not have")
+
+
+func test_a_bend_costs_keyframes_but_a_bounded_number_of_them() -> void:
+	# And where it IS paid, it stays bounded: PATH_REFINEMENTS halvings,
+	# so at worst 2^n segments where there was one. A number that ran away
+	# here would be a bandwidth regression nothing else in the suite could
+	# see.
+	var sim := _sim()
+	sim.set_passable(_barrier(sim))
+	var def := _militia()
+	var squad := sim.add_squad(def, 1, FROM)
+	sim.order_move(squad, TO)
+
+	var cells_per_second := def.move_speed / (sim.space.hex_size * TorusSpace.SQRT_3)
+	var walked := ceili(sim.curve_lookahead_seconds * cells_per_second)
+	var ceiling := walked * int(pow(2, SquadSim.PATH_REFINEMENTS)) + 1
+
+	var worst := int(_worst_over_journey(sim, squad, TO,
+		func(s: SquadSim, q: int) -> float: return float(s.curve_of(q).key_count())))
+	gut.p("round an obstacle: worst %d keyframes against a ceiling of %d" % [worst, ceiling])
+	assert_lte(worst, ceiling,
+		"path refinement is splitting further than it is allowed to")
+
+
 # --- the tactical property that falls out of it ------------------------
 
 func test_the_further_a_formation_reaches_the_longer_it_takes_to_turn() -> void:
