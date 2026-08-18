@@ -27,7 +27,7 @@ Four clauses:
    tree back into a marker that ticks down slowly — the thing D-087 moved
    away from. Wood was not scarce and is not scarce now (see below).
 4. **`RETARGET_RADIUS` stays 8**, because it was measured rather than
-   reasoned about: at 0.60 exactly **0 of 3,411** wood nodes have no other
+   reasoned about: at 0.60 exactly **0 of 3,413** wood nodes have no other
    wood node within 8 cells.
 
 ## Rationale
@@ -66,22 +66,27 @@ reads alarming may be the one nothing ever reaches.**
 
 | | before | after | change |
 |---|---|---|---|
-| resource nodes | 7,664 | 5,530 | −27.8% |
-| wood nodes | 5,553 | 3,411 | **−38.6%** |
+| resource nodes | 7,664 | 5,532 | −27.8% |
+| wood nodes | 5,553 | 3,413 | **−38.6%** |
 | food nodes | 1,908 | 1,920 | +0.6% |
 | gold nodes | 52 | 48 | −4 |
 | stone nodes | 151 | 151 | — |
 | open walkable ground | 71.3% | **79.3%** | +8.0 pts |
-| forest biome wooded | 70.2% | 43.8% | −26.4 pts |
-| wood on the map | 583,065 | 358,155 | −38.6% |
-| wood nodes with none within 8 cells | 0 of 5,553 | 0 of 3,411 | — |
+| forest biome wooded | 70.2% | 43.9% | −26.3 pts |
+| wood on the map | 583,065 | 358,365 | −38.6% |
+| wood nodes with none within 8 cells | 0 of 5,553 | 0 of 3,413 | — |
 | wood within 9 cells of a start | min 13, mean 42.9 | min 4, mean 24.4 | — |
 
 The scale was picked off a sweep of 1.00 / 0.75 / 0.70 / 0.65 / 0.60 /
 0.50 against the real band table, not off the requested percentage: 0.60
 is where the wood node count lands nearest the requested −40%, and 0.50 is
 where the first isolated wood node appears (1 of 2,799), which is the first
-sign that `RETARGET_RADIUS` would have to move with the density.
+sign that `RETARGET_RADIUS` would have to move with the density. The sweep
+reconstructed each scale's outcome from the real bands and the real roll;
+the "after" column above is then the shipped code's own answer, taken from
+`gen-terrain-preview` once the change was in. The two agree to two nodes
+in 5,532, which is float ordering in the reconstruction — the shipped
+figures are the ones quoted.
 
 **Food and gold are effectively unchanged, and the wobble they do show is
 real rather than a bug.** Each band is an absolute cut point, so scaling
@@ -93,7 +98,7 @@ tens on a map of thousands. +0.6% food and −4 gold nodes is that, not a
 lost invariant.
 
 **Wood is still abundant, which is why the total was allowed to fall.**
-358,155 wood over 20 seats is ~17,900 each, against 150 for a town centre
+358,365 wood over 20 seats is ~17,900 each, against 150 for a town centre
 or a barracks and 30 for a wall segment — about 119 barracks-equivalents
 per player, from natural nodes alone, before anything is contested. The
 project's pacing problem is that matches end in minutes (D-056), not that
@@ -131,6 +136,25 @@ cosmetic statistic; it is the buildable map. That is also the number issue
 #55 quotes as "resource nodes block 30% of walkable cells": measured 28.7%
 before, **20.7% after**, so #55's percentage should be re-read off this
 recipe rather than assumed.
+
+### The picture, which is the check for forests
+
+`docs/playtest/p30-wood-density-before.png` and `-after.png`, both from
+`just gen-forest-preview` — the same recipe, the same seed, framed by its
+own rule on the densest wood on the map.
+
+**The before shot does not contain the squad it deliberately puts there.**
+That recipe stands real soldiers in the wood for scale (D-108), and at the
+old density the canopy closes over them completely: no ground, no floor, no
+troops. The after shot has the same wood with a floor under it, three
+soldiers plainly visible standing in it, and open grassland beside it. In
+the preview's 1,536-cell window: 336 nodes / 935 trees before, 226 nodes /
+614 trees after, at an unchanged ~2.7 trees per node — so the STANDS are
+untouched and only their number moved, which is D-108 surviving the change
+rather than being tuned around.
+
+A number could have told you 231 wood nodes became 135. Neither number
+tells you a squad had nowhere to stand.
 
 ### The one test that went red for a reason worth writing down
 

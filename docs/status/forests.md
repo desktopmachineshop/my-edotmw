@@ -55,8 +55,8 @@ read the standard map as woodland with clearings rather than open country
 with woods in it, and issue #94 asked for ~40% less wood. Every WOOD band
 in `Economy._bands` is scaled by **0.60** now (forest `lerpf(0.65, 0.98, f)`
 -> `lerpf(0.39, 0.59, f)`, and so on for grassland, dry grassland and
-beach): **wood nodes 5,553 -> 3,411 on the shipped map, open walkable
-ground 71.3% -> 79.3%, forest biome 70.2% -> 43.8% wooded.** Scaling both
+beach): **wood nodes 5,553 -> 3,413 on the shipped map, open walkable
+ground 71.3% -> 79.3%, forest biome 70.2% -> 43.9% wooded.** Scaling both
 ENDPOINTS is what keeps D-087's shape and D-108's stands intact — a flat
 subtraction erases the dry edge first, a stride puts the lattice back.
 
@@ -75,10 +75,17 @@ Three things to carry forward:
   **share of walkable cells that hold no node**, and the forest biome's own
   share — the last because a whole-map average is dominated by open
   grassland and stayed healthy-looking throughout.
+- **The instrument that could see it was the picture, again.**
+  `docs/playtest/p30-wood-density-{before,after}.png`, both from
+  `gen-forest-preview`. The BEFORE shot does not contain the squad that
+  recipe deliberately stands in the wood for scale — the canopy closes over
+  it completely. Same window, 336 nodes / 935 trees before and 226 / 614
+  after at an unchanged ~2.7 trees per node, so D-108's stands survived and
+  only their number moved.
 - **What was checked before picking 0.60, rather than after.** `TREE_STOCK`
-  stays 105 and total wood falls with the count (358,155 over 20 seats is
+  stays 105 and total wood falls with the count (358,365 over 20 seats is
   ~119 barracks each, from natural nodes alone); `RETARGET_RADIUS` stays 8
-  because **0 of 3,411** wood nodes have no wood neighbour within 8 cells,
+  because **0 of 3,413** wood nodes have no wood neighbour within 8 cells,
   and 0.50 is where the first isolated one appears; the D-104 fairness pass
   still tops up no wood anywhere, the worst-off start keeping 4 wood nodes
   in reach against 13. Issue #55's "nodes block 30% of walkable cells" is
