@@ -40,3 +40,13 @@ neither is fixed here.
 enough and D-006 has to be reopened deliberately.
 
 ---
+
+**Amendment, 2026-08-18 — the clearance was an order of magnitude short
+(see `D-20260818-squads-separate-by-their-footprints.md`).** "Do not
+share a cell" is one cell of separation between squads that are eleven
+cells wide, so this decision's own goal — armies with a physical extent —
+was not actually reached: squads ordered to one place overlapped almost
+completely. Everything above still stands (arrival-time, squad-granular,
+one destination and one flow field, no per-soldier collision); only the
+required distance changes, to `Formation.footprint`'s radius for each of
+the two squads, summed.

@@ -24,6 +24,19 @@ class_name SquadSim
 
 const TICK_HZ := 10.0  # D-020. Also see D-023 on why this lives here.
 
+## How far a settling squad will walk to find room, as a multiple of the
+## separation it needs from ONE neighbour. Two neighbours' worth lets a
+## handful of squads sent to the same place form a ring around it rather
+## than all giving up on the first occupied spot.
+const SEPARATION_SEARCH := 2
+
+## Hard ceiling on that search, in hex rings. `_free_cell_near` is the
+## one loop in the arrival pass whose cost is not bounded by the squad
+## count, and a crowd big enough to need more room than this is better
+## served by standing a little close (the function's existing fallback)
+## than by scanning a quarter of the map.
+const SEPARATION_MAX_RINGS := 16
+
 ## How far ahead a squad's path is written into its curve. Must exceed
 ## the replicator's horizon, or clients run out of curve between updates.
 ## Kept modest so a re-path discards little work.
@@ -239,6 +252,7 @@ var total_combat_usec: int = 0
 var total_buildings_usec: int = 0
 var total_production_usec: int = 0
 var total_economy_usec: int = 0
+var total_separation_usec: int = 0
 
 var _validated := false
 
@@ -599,8 +613,8 @@ func set_alive(squad: int, alive: int) -> void:
 ## A routed squad ignores this (D-024, D-019): it is fleeing under its own
 ## steam and does not take player orders again until it rallies. That is
 ## enforced here, structurally, rather than left to callers to remember.
-## Squads that have ARRIVED do not stack: one settles onto a free cell
-## nearby (D-060).
+## Squads that have ARRIVED do not stack: one settles onto free ground
+## nearby (D-060), far enough that its soldiers clear its neighbour's.
 ##
 ## ## Why on arrival, and not by spreading destinations
 ##
@@ -627,11 +641,42 @@ func set_alive(squad: int, alive: int) -> void:
 ## The GOAL though — armies taking up room instead of heaping — is a
 ## squad-level property, and squads are the atomic unit (D-005).
 ##
+## ## How much room, and why the first version bought almost none
+##
+## Separation used to mean "no two squads share a CENTRE CELL", which is
+## one cell of guaranteed clearance between armies that are eleven cells
+## wide (#104). Squads ordered to one place did not shove each other far
+## away — they overlapped almost completely, and the rule was doing
+## exactly what it said while being an order of magnitude short of the
+## geometry.
+##
+## `Formation.footprint` had computed the missing number since selection
+## needed it, and nothing in the simulation had ever read it — so the
+## selection marker was drawn at the squad's true size and visibly
+## overlapped its neighbours. The picture was telling the truth. The
+## clearance required is `footprint_cells(a) + footprint_cells(b)` now,
+## which for two line formations is very nearly shoulder to shoulder.
+##
+## ## Cost
+##
+## A squad asks only the cells its own footprint can reach, against a
+## bucket map built once per pass — the D-066 shape, not a squad x squad
+## scan, which would be ~10^6 comparisons a tick at D-018's scale.
+##
 ## Deterministic tie-break: the LOWER squad id keeps the cell and the
 ## higher one moves. Without that, two squads would each decide the other
 ## was there first and swap places forever.
 func _separate_arrivals() -> void:
-	var occupants := {}
+	# Cell index -> the squads holding that ground, built up as the pass
+	# places them. A squad that has just been sent somewhere else is
+	# recorded at its NEW spot, so the next squad in the pass does not
+	# pick the same one — without that, three squads on one cell all
+	# settled on the same free cell and had to re-separate over the
+	# following ticks.
+	var held := {}
+	var widest := 0
+	var settling := PackedInt32Array()
+
 	for i in range(_cell.size()):
 		if _alive[i] <= 0:
 			continue
@@ -647,6 +692,8 @@ func _separate_arrivals() -> void:
 		if _cell[i] != _destination[i]:
 			continue
 
+		widest = maxi(widest, footprint_cells(i))
+
 		# A crew AT WORK is exempt, and this is not a nicety.
 		#
 		# Gathering requires standing on the node's own cell (D-028), and
@@ -656,40 +703,172 @@ func _separate_arrivals() -> void:
 		# ladder showed 22 gatherer squads and a stockpile that never rose
 		# above the STARTING 480 — an economy that looked staffed and was
 		# producing literally nothing.
+		#
+		# It still HOLDS its ground — an arriving squad goes around a
+		# working crew rather than standing in it — it is simply never the
+		# one that moves.
 		if economy != null and economy.is_gathering(i):
+			_hold_ground(held, _cell[i], i)
 			continue
+
+		# A squad IN A FIGHT is exempt for the same reason, and this is
+		# not a nicety either. Two squads battering one town centre have
+		# to BOTH be within `attack_range` of it — a little over one cell
+		# for melee — so pushing the second one out to its own footprint
+		# takes it out of the fight entirely. That is D-067's shipped rule
+		# ("one squad cannot raze a defended building; two can") broken by
+		# a spacing change, and it is what `test_buildings.gd` reported
+		# when this pass first went in: "the second squad is not in the
+		# fight".
+		#
+		# The pass runs AFTER combat for this to be answerable at all —
+		# see tick(). A squad reads engaged on the very tick it arrives,
+		# which is the tick separation would otherwise have sent it away.
+		if combat != null and combat.is_engaged(i):
+			_hold_ground(held, _cell[i], i)
+			continue
+		settling.append(i)
+
+	# Ascending id, so the LOWER id keeps its ground and the higher one
+	# moves. Without that, two squads would each decide the other was
+	# there first and swap places forever.
+	for i in settling:
 		var cell := _cell[i]
-		if not occupants.has(cell):
-			occupants[cell] = i
+		if _crowded(held, space.from_index(cell), i, widest):
+			var spot := _free_cell_near(space.from_index(cell), i, held, widest)
+			if spot != space.from_index(cell):
+				cell = space.index(spot)
+				_destination[i] = cell
+				_rebuild_curve(i)
+		_hold_ground(held, cell, i)
+
+
+func _hold_ground(held: Dictionary, cell: int, squad: int) -> void:
+	if not held.has(cell):
+		held[cell] = []
+	held[cell].append(squad)
+
+
+## Whether a squad of `asking`'s size standing on `cell` would have its
+## soldiers standing inside somebody else's.
+##
+## Scans `asking`'s own hex disk against the bucket map — the furthest a
+## squad that overlaps it can be is its own footprint plus the widest one
+## on the board — rather than testing every squad, which is the
+## radius-scan defect this project has now hit five times (vision,
+## UnitRoster.by_id, terrain noise, the building scan).
+func _crowded(held: Dictionary, cell: Vector2i, asking: int, widest: int) -> bool:
+	for offset in TorusSpace.disk_offsets(footprint_cells(asking) + widest):
+		var index := space.index(cell + offset)
+		if not held.has(index):
 			continue
-
-		# Someone is already here. Lower id stays.
-		var sitting: int = occupants[cell]
-		var mover := i if i > sitting else sitting
-		if mover == sitting:
-			occupants[cell] = i
-		var spot := _free_cell_near(space.from_index(cell), mover)
-		if spot != space.from_index(cell):
-			_destination[mover] = space.index(spot)
-			_rebuild_curve(mover)
+		for other in held[index]:
+			if other != asking and space.distance(cell, space.from_index(index)) \
+					< _clearance(asking, other):
+				return true
+	return false
 
 
-## The nearest cell to `cell` that no living squad is sitting on.
-func _free_cell_near(cell: Vector2i, asking: int) -> Vector2i:
-	for offset in TorusSpace.disk_offsets(4):
+## How far apart two squads must stand, in CELLS — not world units,
+## because every other radius rule here is a hex-disk scan and
+## `TorusSpace.disk_offsets` is how this project does those.
+##
+## Allies keep out of each other's formations: the sum of the ground the
+## two of them cover, which for a pair of lines is very nearly shoulder
+## to shoulder.
+##
+## ENEMIES keep D-060's original ONE cell, and that distinction is not a
+## nicety. A melee squad's `attack_range` is under two world units — a
+## little over one cell — so separating a squad from its opponent by its
+## own footprint would shove every engagement out of its own reach and no
+## melee could ever land. Interpenetrating enemies is what a fight looks
+## like; combat (D-024) is what resolves it, not spacing.
+func _clearance(asking: int, other: int) -> int:
+	if not are_allied(_owner[asking], _owner[other]):
+		return 1
+	return footprint_cells(asking) + footprint_cells(other)
+
+
+## The ground a squad's soldiers actually cover, as a radius in CELLS.
+##
+## `Formation.footprint` has answered this in world units since selection
+## needed a hit target and a marker of the right size; until #104 nothing
+## in the simulation had ever asked, which is why separation guaranteed
+## one cell of clearance to squads eleven cells across.
+##
+## Rounded UP, and converted at the spacing between neighbouring cell
+## centres (`sqrt(3) * hex_size`): half a cell of extra room beats two
+## squads sharing a rank of men because the arithmetic landed just under.
+func footprint_cells(squad: int) -> int:
+	if squad < 0 or squad >= _alive.size() or _alive[squad] <= 0:
+		return 0
+	var world: float = Formation.footprint(
+		_shape[squad], _alive[squad], _spacing[squad])["radius"]
+	return ceili(world / (TorusSpace.SQRT_3 * space.hex_size))
+
+
+## The nearest cell where `asking` can stand clear of everything already
+## holding ground.
+##
+## `disk_offsets` is sorted nearest-first, so the first candidate that
+## clears is the nearest one — that ordering is what stops a displaced
+## squad landing four cells away in a fixed direction and out of its own
+## reach (D-067's amendment).
+##
+## Neighbours are collected ONCE from the bucket map and then tested per
+## candidate, rather than re-scanning the map for every candidate: the
+## scan is the expensive half and it does not change as the candidate
+## moves.
+func _free_cell_near(cell: Vector2i, asking: int, held: Dictionary,
+		widest: int) -> Vector2i:
+	var radius := footprint_cells(asking)
+	var reach := mini(SEPARATION_MAX_RINGS, (radius + widest) * SEPARATION_SEARCH)
+
+	var neighbours := []
+	for offset in TorusSpace.disk_offsets(reach + widest):
+		var index := space.index(cell + offset)
+		if not held.has(index):
+			continue
+		for other in held[index]:
+			if other != asking:
+				neighbours.append([space.from_index(index), _clearance(asking, other)])
+
+	for offset in TorusSpace.disk_offsets(reach):
 		var candidate := space.normalize(cell + offset)
 		if not is_passable(candidate):
 			continue
-		var index := space.index(candidate)
 		var taken := false
-		for i in range(_cell.size()):
-			if i != asking and _alive[i] > 0 and _cell[i] == index:
+		for neighbour in neighbours:
+			if space.distance(candidate, neighbour[0]) < int(neighbour[1]):
 				taken = true
 				break
 		if not taken:
 			return candidate
 	# Nowhere free within reach: standing too close beats never settling.
 	return cell
+
+
+## Cell index -> the squads standing on it, for every living GROUND
+## squad. Built fresh by each caller, the same shape and for the same
+## reason as Combat._build_buckets: the curve IS the state, so an
+## incrementally maintained map would be a second source of truth.
+func _ground_held() -> Dictionary:
+	var held := {}
+	for i in range(_cell.size()):
+		if _alive[i] > 0 and _tier[i] == 0:
+			_hold_ground(held, _cell[i], i)
+	return held
+
+
+## The largest footprint standing on the ground right now, in cells — how
+## far a scan has to reach to be sure it has seen every squad that could
+## overlap the one asking.
+func _widest_footprint() -> int:
+	var widest := 0
+	for i in range(_cell.size()):
+		if _alive[i] > 0 and _tier[i] == 0:
+			widest = maxi(widest, footprint_cells(i))
+	return widest
 
 
 ## `cell` if a squad can stand there, otherwise the nearest cell it can.
@@ -1067,6 +1246,13 @@ var _field_cells_this_tick: int = 0
 ## summary — name the same phases. `last_production_usec` is a slice of
 ## `last_buildings_usec`, not a phase beside it.
 var last_curves_usec: int = 0
+
+## What `_separate_arrivals` cost this tick (#104). Its own phase rather
+## than a share of `last_curves_usec`, where it used to sit: the pass
+## scans a hex disk per settled squad now, and the phases PARTITION the
+## tick — so a pass with no accumulator of its own does not go unmeasured,
+## it lands in `other` and looks like the next unexplained rise.
+var last_separation_usec: int = 0
 var last_economy_usec: int = 0
 var last_squad_combat_usec: int = 0
 var last_buildings_usec: int = 0
@@ -1440,13 +1626,22 @@ func _teleport_curve(squad: int, cell_index: int) -> void:
 ## only when something was actually destroyed this tick, so it costs
 ## nothing on every ordinary tick.
 func _evict_stranded_tier1_squads() -> void:
+	# Built once for the whole sweep rather than once per stranded squad:
+	# this runs with a wall coming down, which is exactly when several
+	# squads drop at once.
+	var held := _ground_held()
+	var widest := _widest_footprint()
 	for squad in range(_cell.size()):
 		if _tier[squad] != 1 or _alive[squad] <= 0:
 			continue
 		if buildings != null and buildings.is_walkable_top_cell(_cell[squad]):
 			continue
 		_tier[squad] = 0
-		var spot := space.index(_free_cell_near(space.from_index(_cell[squad]), squad))
+		var spot := space.index(
+			_free_cell_near(space.from_index(_cell[squad]), squad, held, widest))
+		# Held straight away, so a second squad dropping in the same sweep
+		# is not sent to the cell this one just took.
+		_hold_ground(held, spot, squad)
 		_cell[squad] = spot
 		_teleport_curve(squad, spot)
 		_destination[squad] = spot
@@ -1514,12 +1709,6 @@ func tick() -> void:
 		# exactly at the end would leave a gap at the horizon.
 		if time >= curve.end_time() - (1.0 / TICK_HZ):
 			_rebuild_curve(squad)
-
-	# Squads that have arrived shuffle off each other's cell (D-060), so
-	# an army settles as a body rather than a heap. Only touches squads
-	# already at their destination, so it costs nothing while everyone is
-	# walking and never interferes with a journey in progress.
-	_separate_arrivals()
 
 	# A squad that just reached a tower's door hops tiers here (D-076) —
 	# after positions are derived and arrivals settle, so it acts on this
@@ -1639,6 +1828,29 @@ func tick() -> void:
 		last_wallet_changes = economy.tick(self, buildings, 1.0 / TICK_HZ)
 	last_economy_usec = Time.get_ticks_usec() - economy_started
 	total_economy_usec += last_economy_usec
+
+	# Squads that have arrived settle out of each other's formations
+	# (D-060), so an army stands as a body rather than a heap. Only
+	# touches squads already at their destination, so it costs nothing
+	# while everyone is walking and never interferes with a journey in
+	# progress.
+	#
+	# AFTER combat, deliberately: the pass exempts a squad that has
+	# something in reach, and combat is what knows. Run before it, the
+	# exemption is a tick stale — which is exactly one tick too late,
+	# because the tick a besieging squad arrives is the tick separation
+	# would send it back out of range (#104).
+	#
+	# Its OWN phase, not folded into whichever one it happens to sit next
+	# to: it is a hex-disk scan per settled squad now, which is a real
+	# share of a tick. `phase_usec_per_squad_update` partitions the tick
+	# exactly (D-20260818), so a pass without its own accumulator does not
+	# go unmeasured — it goes into `other`, which is the same disappearing
+	# act that decision exists to stop.
+	var separation_started := Time.get_ticks_usec()
+	_separate_arrivals()
+	last_separation_usec = Time.get_ticks_usec() - separation_started
+	total_separation_usec += last_separation_usec
 	_log_combat_events(last_combat_events)
 
 	last_tick_usec = Time.get_ticks_usec() - started
@@ -1690,7 +1902,8 @@ func mean_combat_usec_per_squad_update() -> float:
 ## than summed; everything else is disjoint.
 func phase_usec_per_squad_update() -> Dictionary:
 	var named := (total_fields_usec + total_curves_usec + total_vision_usec
-		+ total_combat_usec + total_buildings_usec + total_economy_usec)
+		+ total_combat_usec + total_buildings_usec + total_economy_usec
+		+ total_separation_usec)
 	return {
 		"fields": _mean_usec_per_squad_update(total_fields_usec),
 		"curves": _mean_usec_per_squad_update(total_curves_usec),
@@ -1699,6 +1912,7 @@ func phase_usec_per_squad_update() -> Dictionary:
 		"buildings": _mean_usec_per_squad_update(total_buildings_usec),
 		"production": _mean_usec_per_squad_update(total_production_usec),
 		"economy": _mean_usec_per_squad_update(total_economy_usec),
+		"separation": _mean_usec_per_squad_update(total_separation_usec),
 		"other": _mean_usec_per_squad_update(total_tick_usec - named),
 	}
 

@@ -138,6 +138,17 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	return _diff(sim, before_alive, before_routed)
 
 
+## Whether this squad has something in reach THIS TICK — an enemy squad
+## (`resolve`) or a building it is battering (`resolve_squads_vs_buildings`).
+##
+## Read by SquadSim._separate_arrivals, which must leave a squad in a
+## fight exactly where it stands: separation and engagement are the same
+## arithmetic pointed in opposite directions, and separation is the one
+## that has to give way (#104).
+func is_engaged(squad: int) -> bool:
+	return _engaged.has(squad)
+
+
 ## Idle squads pursue a nearby enemy instead of waiting for one to walk all
 ## the way into attack_range. A "for now" default aggressive stance — a
 ## per-squad control to opt out (hold position / passive) is future work,
@@ -332,6 +343,13 @@ func resolve_squads_vs_buildings(sim: SquadSim, buildings: BuildingSim, tick: in
 			_range_in_cells(sim.space, def.attack_range))
 		if target == -1:
 			continue
+
+		# Besieging counts as engaged, exactly as fighting a squad does.
+		# Recorded AFTER this loop's own `_engaged` guard above, so the
+		# "already spent this tick's attack" rule is untouched — the
+		# reader this is for is SquadSim._separate_arrivals, which must
+		# not shuffle a squad off the wall it is battering (#104).
+		_engaged[attacker] = true
 
 		# Attack-move halts on contact (D-034), exactly as it does against
 		# a squad — an army ordered onto a town should stop and besiege it,
