@@ -74,6 +74,15 @@ var vision: Vision
 ## the bottleneck.
 var vision_recompute_every_ticks: int = 3
 
+## What each SIDE believes the ground to be
+## (D-20260818-pathing-knows-only-what-the-player-knows), owned here and
+## folded from `vision`'s coverage on the same cadence. This — never
+## `_passable` — is what a flow field is solved against, so a squad can
+## neither route around terrain its owner has not discovered nor be
+## refused an order on the strength of it. See terrain_knowledge.gd for
+## why unknown ground reads PASSABLE and what that buys.
+var knowledge: TerrainKnowledge
+
 ## Seeds every stochastic combat roll (D-024, D-016). Must come from map
 ## configuration, never from wall-clock time — server.gd sets this via
 ## NetProtocol.seed_from() before the sim starts ticking. Defaults to a
@@ -138,6 +147,15 @@ var completed_buildings: Array = []
 
 # Flow fields are per DESTINATION and shared by every squad heading there
 # (D-007). This dictionary is the thing that makes that claim real.
+#
+# Keyed by Vector2i(destination cell, KNOWLEDGE SIDE) since
+# D-20260818-pathing-knows-only-what-the-player-knows: two sides that have
+# explored different ground genuinely have different answers, so one field
+# cannot serve both. The sharing D-007's scaling claim rests on is
+# unharmed — a player ordering fifty squads to one place still solves ONE
+# field, because they all share their owner's knowledge (and their allies',
+# per D-050). Only two different sides ordering squads to the same cell
+# costs a second solve.
 var _fields := {}
 
 # --- the wall-top tier (D-076) ------------------------------------------
@@ -248,6 +266,7 @@ func _init(p_space: TorusSpace = null, p_replicator: CurveReplicator = null) -> 
 	replicator = p_replicator if p_replicator != null else CurveReplicator.new()
 	combat = Combat.new()
 	vision = Vision.new()
+	knowledge = TerrainKnowledge.new()
 
 
 func squad_count() -> int:
@@ -1033,7 +1052,11 @@ var field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
 ## drains in a few ticks. Finishing the oldest first also bounds the worst
 ## wait, which is the number that matters — the spike was never about
 ## throughput.
-var _pending_fields: Array[int] = []
+##
+## Entries are `_fields` keys — (destination, side) — not bare
+## destinations, since the same destination can be in flight for two sides
+## at once (D-20260818-pathing-knows-only-what-the-player-knows).
+var _pending_fields: Array[Vector2i] = []
 
 ## Cells expanded so far this tick, against `field_cells_per_tick`.
 var _field_cells_this_tick: int = 0
@@ -1059,6 +1082,14 @@ var ticks_with_pending_fields: int = 0
 ## assumed to be small.
 var field_waits: int = 0
 
+## Planned steps that ran into ground the mover's side had not known was
+## blocked, each of which drops a field and re-routes
+## (D-20260818-pathing-knows-only-what-the-player-knows). Counted for the
+## same reason `field_waits` is: it is the price of optimistic pathing, and
+## a match with terrain that reports ZERO of these is one where the whole
+## mechanism is quietly dead — this project's most-repeated defect.
+var route_discoveries: int = 0
+
 
 ## Spend this tick's expansion budget on fields still being built.
 ##
@@ -1070,19 +1101,19 @@ func _expand_pending_fields() -> void:
 		return
 
 	var started := Time.get_ticks_usec()
-	var still_pending: Array[int] = []
-	for destination_index in _pending_fields:
-		var field: FlowField = _fields.get(destination_index, null)
+	var still_pending: Array[Vector2i] = []
+	for key in _pending_fields:
+		var field: FlowField = _fields.get(key, null)
 		if field == null or field.is_complete():
 			continue
 		var remaining := _field_budget_remaining()
 		if remaining == 0:
 			# Out of budget: keep it queued, untouched, for next tick.
-			still_pending.append(destination_index)
+			still_pending.append(key)
 			continue
 		var before := field.expanded_cells()
 		if not field.expand(remaining):
-			still_pending.append(destination_index)
+			still_pending.append(key)
 		# Charge what was actually expanded, not the budget offered — a
 		# field that finishes early must not consume the whole allowance
 		# and starve the next one in the same wave.
@@ -1100,15 +1131,23 @@ func _field_budget_remaining() -> int:
 	return maxi(0, field_cells_per_tick - _field_cells_this_tick)
 
 
+## `knower` is the KNOWLEDGE SIDE the field is solved for
+## (`knowledge_group_of`), never a player id directly — allies share sight
+## (D-050) and therefore share fields.
+##
 ## `tier` (D-076): 0 is the ground layer, unchanged from before tiers
 ## existed; 1 dispatches to `_field_for_top`, a completely separate cache
-## and budget — see that function and `_fields_top`'s own doc for why.
-func _field_for(destination_index: int, tier: int = 0) -> FlowField:
+## and budget — see that function and `_fields_top`'s own doc for why. The
+## wall-top network is deliberately NOT fogged: it is made of buildings a
+## side put there itself, so there is no unknown ground in it to be
+## optimistic about.
+func _field_for(destination_index: int, knower: int, tier: int = 0) -> FlowField:
 	if tier == 1:
 		return _field_for_top(destination_index)
 
-	if _fields.has(destination_index):
-		return _fields[destination_index]
+	var key := Vector2i(destination_index, knower)
+	if _fields.has(key):
+		return _fields[key]
 
 	if fields_per_tick > 0 and _fields_built_this_tick >= fields_per_tick:
 		field_builds_deferred += 1
@@ -1120,17 +1159,26 @@ func _field_for(destination_index: int, tier: int = 0) -> FlowField:
 	# question with a number attached, not a matter of opinion.
 	var started := Time.get_ticks_usec()
 	var field := FlowField.new()
-	field.begin(space, space.from_index(destination_index), _passable)
+	# What this SIDE believes, not what the map is
+	# (D-20260818-pathing-knows-only-what-the-player-knows). Empty when the
+	# side has never observed a blocked cell, which FlowField reads as
+	# "everything passable" — exactly the optimism a side that has explored
+	# nothing is entitled to.
+	field.begin(space, space.from_index(destination_index),
+		knowledge.believed_passable(knower))
 	# Expand into whatever budget this tick has left. In a quiet tick that
 	# is the whole field and the amortisation is invisible; in a wave, the
 	# later fields get little or nothing here and finish over the next few
 	# ticks.
-	if not field.expand(_field_budget_remaining()):
-		_pending_fields.append(destination_index)
+	# `has` rather than a bare append: a field dropped mid-solve by a
+	# re-route (see `_rebuild_curve`) and immediately rebuilt would
+	# otherwise be queued twice and charged the budget twice.
+	if not field.expand(_field_budget_remaining()) and not _pending_fields.has(key):
+		_pending_fields.append(key)
 	_field_cells_this_tick += field.expanded_cells()
 	total_field_usec += Time.get_ticks_usec() - started
 
-	_fields[destination_index] = field
+	_fields[key] = field
 	fields_built += 1
 	return field
 
@@ -1189,11 +1237,17 @@ func _rebuild_curve(squad: int) -> void:
 	curve.append_cell(at, space.from_index(current), space)
 
 	var speed := _speed[squad]
+	# Set when a planned step turns out to cross ground this side now knows
+	# is blocked: the field that produced it was solved against older
+	# knowledge, so it is dropped and the give-up rule below is held off
+	# (D-20260818-pathing-knows-only-what-the-player-knows).
+	var stale := false
 	if speed > 0.0 and _destination[squad] != current:
+		var knower := knowledge_group_of(squad)
 		# D-076: the squad's OWN tier picks which layer serves this path —
 		# ground or the wall-top network. A squad never silently crosses
 		# tiers here; that only happens through `_advance_tier_transitions`.
-		var field := _field_for(_destination[squad], _tier[squad])
+		var field := _field_for(_destination[squad], knower, _tier[squad])
 		# No field this tick (budgeted — see fields_per_tick). Leave the
 		# existing curve alone and try again next tick, rather than
 		# stranding the squad with a one-keyframe curve it would then
@@ -1224,9 +1278,46 @@ func _rebuild_curve(squad: int) -> void:
 			var next := field.step_from(current)
 			if next == current:
 				break  # unreachable; stall rather than wander
+
+			# The route was planned on what this side BELIEVES, and belief
+			# is optimistic about ground nobody has looked at
+			# (D-20260818-pathing-knows-only-what-the-player-knows). So the
+			# step about to be written is the moment of truth, and it does
+			# two jobs at once:
+			#
+			# 1. DISCOVERY. A squad about to walk onto a cell learns what it
+			#    is, whatever its vision_range — the safety net that keeps
+			#    optimism from ever putting soldiers inside a mountain, and
+			#    the only teacher a sightless unit has.
+			# 2. RE-ROUTE. If the cell is blocked in truth or in what this
+			#    side now knows, the cached field predates the knowledge and
+			#    must be re-solved. The curve keeps the prefix already
+			#    written, so the squad walks up to the obstruction while the
+			#    new field is being solved rather than stopping dead.
+			#
+			# `_passable` empty means a sim with no terrain at all (most
+			# tests): nothing to be wrong about, and no belief array worth
+			# allocating.
+			if _tier[squad] == 0 and not _passable.is_empty():
+				var open := next < _passable.size() and _passable[next] != 0
+				if knowledge.discover(knower, next, open, _passable.size()):
+					route_discoveries += 1
+				if not open or not knowledge.believes_passable(knower, next):
+					stale = true
+					break
+
 			at += seconds_per_cell
 			curve.append_cell(at, space.from_index(next), space)
 			current = next
+
+		if stale:
+			# Dropped, not re-solved here: field builds are budgeted (D-040)
+			# and re-entering the solver from inside a curve rebuild would
+			# spend that budget out of turn. The next rebuild — next tick,
+			# since the curve now ends where the squad is heading — solves
+			# against what this side knows NOW, and every squad sharing the
+			# field gets the corrected route with it.
+			_fields.erase(Vector2i(_destination[squad], knower))
 
 	# If the field could not take the squad a single step, the destination
 	# is unreachable RIGHT NOW — walled off by water or mountains, or
@@ -1248,7 +1339,22 @@ func _rebuild_curve(squad: int) -> void:
 	# `set_passable` retries it the moment passability actually changes.
 	# That retry is what keeps this cheap: nothing re-attempts on its own
 	# every tick, only when something could plausibly have unblocked it.
-	if curve.key_count() <= 1 and current != _destination[squad]:
+	#
+	# D-20260818-pathing-knows-only-what-the-player-knows narrows what
+	# "unreachable" is allowed to mean here: the field is solved against
+	# this side's own knowledge, so this now fires only when the ground the
+	# player has actually SEEN proves the destination impossible — never on
+	# the strength of a lake nobody has scouted. `stale` holds it off for
+	# the one tick between discovering an obstruction and re-solving
+	# around it; without that, walking into the first unknown wall would
+	# read as a refusal and cancel a perfectly good order.
+	#
+	# The "unreachable now is unreachable later" reasoning survives intact:
+	# belief only ever loses passable cells (see terrain_knowledge.gd), so
+	# a destination the known map has ruled out cannot be re-opened by
+	# further exploration — only by passability itself changing, which is
+	# what `set_passable`'s retry is for.
+	if curve.key_count() <= 1 and current != _destination[squad] and not stale:
 		_deferred_destination[squad] = _destination[squad]
 		_destination[squad] = current
 
@@ -1431,6 +1537,19 @@ func tick() -> void:
 	if tick_count == 1 or tick_count % vision_recompute_every_ticks == 0:
 		var vision_started := Time.get_ticks_usec()
 		vision.rebuild(self, buildings)
+		# What each side can see, it now knows about the GROUND as well
+		# (D-20260818-pathing-knows-only-what-the-player-knows). Folded
+		# here, on vision's own cadence and out of vision's own coverage,
+		# so no disk is walked twice and pathing knowledge can never be
+		# wider than sight.
+		#
+		# Inside the timed block deliberately: this IS the vision phase,
+		# same cadence over the same cells, and `last_vision_usec` should
+		# name the whole of it. Said out loud because #105 is an open
+		# investigation into an unattributed per-squad rise, and a new cost
+		# quietly joining an existing slice is exactly how a number stops
+		# meaning what its name says.
+		knowledge.absorb(vision, _passable)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
 		vision_rebuilds += 1
@@ -1607,6 +1726,7 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 ## an arbitrary number of times and hoping the schedule has caught up.
 func recompute_vision_now() -> void:
 	vision.rebuild(self, buildings)
+	knowledge.absorb(vision, _passable)
 
 
 ## How many of `player`'s squads still have soldiers in them.
@@ -1690,6 +1810,15 @@ var teams := {}
 ## team — two players who both picked "none" are enemies, not allies,
 ## which is what makes free-for-all the default rather than a special
 ## case that has to be spelled somewhere.
+## Whose knowledge solves this squad's routes: its owner, or its TEAM
+## where it has one, because allies share sight (D-050) and therefore
+## share what they have explored. `Vision.group_of_player` is the one
+## definition of that grouping — see it for why this is not spelled out
+## again here.
+func knowledge_group_of(squad: int) -> int:
+	return Vision.group_of_player(_owner[squad], teams)
+
+
 func are_allied(a: int, b: int) -> bool:
 	if a == b:
 		return true

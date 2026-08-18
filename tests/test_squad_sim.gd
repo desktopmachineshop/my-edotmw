@@ -401,7 +401,13 @@ func test_a_walled_off_destination_is_still_given_up_on() -> void:
 
 	var squad := sim.add_squad(_def(), 1, Vector2i(0, 0))
 	sim.order_move(squad, dest)
-	_tick_for(sim, 3.0)
+	# Long enough to walk the whole way there and find out.
+	# D-20260818-pathing-knows-only-what-the-player-knows moved WHEN this
+	# fires, not whether: the wall is now discovered rather than known from
+	# the first tick, so the squad marches up to it before giving up. The
+	# claim under test is unchanged — once it has given up it must stay
+	# given up, or it re-paths every tick forever.
+	_tick_for(sim, 20.0)
 
 	assert_ne(sim.cell_of(squad), dest, "The destination is walled off; nothing should reach it")
 	var rebuilt := sim.curves_rebuilt
