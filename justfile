@@ -135,6 +135,16 @@ _import:
         fi
     fi
 
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Acquired HERE rather than at the top of the recipe, because the skip
+    # above is the common case and costs nothing — a recipe that imports
+    # nothing must not queue behind another agent's load test. When the
+    # caller already holds a slot (test-load -> up -> _import) this
+    # inherits it and does not wait.
+    gate="$(bash host-gate.sh acquire medium '_import' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+
     pending="$cache_dir/.edotmw-import-pending"
     mkdir -p "$cache_dir"
     : > "$pending"
@@ -171,6 +181,35 @@ doctor:
     else
         echo "FAIL: just not found on PATH or in {{tools_dir}}"
         exit 1
+    fi
+
+    # --- host budget (D-20260818) -------------------------------------
+    # Reported, never enforced here: doctor's job is to say what the
+    # machine looks like, and a preflight that FAILED on a busy host
+    # would be a gate with no queue.
+    echo
+    bash host-gate.sh status
+    if [ "${EDOTMW_NO_GATE:-0}" = "1" ]; then
+        echo "WARN: EDOTMW_NO_GATE=1 — this shell is not being gated at all"
+    fi
+    # WSL2 with no .wslconfig may take 50% of RAM on demand and hold it,
+    # which is the mechanism behind "Docker Desktop dies under parallel
+    # agents". Applying a cap needs `wsl --shutdown`, which would kill
+    # every OTHER agent's running containers — so this reports and a
+    # human decides. The repo must never do that to a machine.
+    if [ -n "${USERPROFILE:-}" ]; then
+        wslcfg="$(cygpath -u "$USERPROFILE" 2>/dev/null || echo "$HOME")/.wslconfig"
+        if [ -f "$wslcfg" ]; then
+            echo "OK: .wslconfig present ($(grep -c . "$wslcfg" 2>/dev/null || echo 0) lines) — WSL memory is capped"
+        else
+            echo "WARN: no ~/.wslconfig — WSL2 may grow to 50% of RAM ($(( $(bash host-budget.sh total) / 2 )) MB) and hold it."
+            echo "      Recommended, applied by a HUMAN at a quiet moment (it needs 'wsl --shutdown',"
+            echo "      which kills every other agent's running containers):"
+            echo "        [wsl2]"
+            echo "        memory=4GB"
+            echo "        processors=8"
+            echo "        autoMemoryReclaim=gradual"
+        fi
     fi
     echo "OK: preflight passed"
 
@@ -218,6 +257,13 @@ bootstrap:
 up: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'up' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ ! -f "{{server_scene}}" ]; then
         echo "NOT IMPLEMENTED UNTIL M1: {{server_scene}} doesn't exist yet, so there is no server to bring up." >&2
         exit 1
@@ -298,6 +344,126 @@ status:
         fi
     fi
 
+# --- host load (D-20260818-dev-work-is-admitted-against-a-host-budget) ---
+#
+# Several agents share one laptop. `instance` says who you are; these say
+# what the machine has left, who is holding it, and what a change to any
+# of it actually bought.
+
+[doc("What the host has left, and who is holding it (D-20260818)")]
+host-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash host-gate.sh status
+
+# Drop gate holders whose process is gone. Runs automatically on every
+# acquire; exposed because a human staring at an unexplained wait wants
+# to be able to check rather than guess.
+[doc("Drop admission-gate holders whose process died")]
+host-reap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash host-gate.sh reap
+    echo "host-reap: done"
+    bash host-gate.sh status
+
+# THE instrument. Every number in D-20260818 came out of this, and any
+# claim that the gate helped has to come out of it too — the same rule
+# as gen-terrain-shot existing because no counter could see the ground.
+#
+# Windows-only: it reads Win32 performance counters. On any other host it
+# says so rather than printing something it did not measure.
+[doc("Sample host CPU/memory for SECONDS while you run something else")]
+host-profile SECONDS="60" TAG="untagged":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int SECONDS "{{SECONDS}}"
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) ;;
+        *) echo "host-profile: Windows only — it reads Win32 perf counters." >&2; exit 1 ;;
+    esac
+    mkdir -p "{{artifacts_dir}}"
+    out="{{artifacts_dir}}/host-profile-{{TAG}}.csv"
+    echo "host-profile: sampling {{SECONDS}}s into $out — run the thing you are measuring NOW"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-sample.ps1         -Seconds {{SECONDS}} -Interval 1.5 -Out "$(cygpath -w "$out")" -Tag "{{TAG}}"
+
+# Remove containers left behind by worktrees that NO LONGER EXIST.
+#
+# Keyed on the worktree being gone, never on age: D-095 forbids touching
+# another agent's instance, and a live agent's container may legitimately
+# sit idle for hours. A worktree that has been deleted has no agent left
+# to own its containers, so this cannot race anyone. Found the need by
+# measurement — five containers from other instances were sitting Exited
+# for up to 42 hours despite a teardown-scoped design.
+[doc("Remove containers whose worktree no longer exists (dry run unless APPLY=1)")]
+reap-orphans APPLY="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum APPLY "{{APPLY}}" 0 1
+    command -v docker >/dev/null 2>&1 || { echo "reap-orphans: no docker on PATH — nothing to do"; exit 0; }
+
+    # The instance a container belongs to is derived from a git BRANCH, so
+    # the only safe test for "orphaned" is that NO worktree still has that
+    # branch. Matching container names against worktree PATHS was tried
+    # first and is wrong in exactly the dangerous direction: instance
+    # "ao-my-edotmw-45-reveal-gate" lives in a directory called
+    # "my-edotmw-45", so a path match finds nothing and the container of a
+    # LIVE agent looks orphaned. D-095's line is that a worktree never
+    # removes another instance's containers — a heuristic that can be
+    # wrong here is not allowed to be the one that runs.
+    #
+    # Sanitising is instance-id.sh's, character for character, because two
+    # sanitisers that drift produce exactly the same false orphan.
+    sanitise() {
+        printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//'
+    }
+    live_file="$(mktemp)"
+    trap 'rm -f "$live_file"' EXIT INT TERM
+    git worktree list --porcelain 2>/dev/null | sed -n 's|^branch refs/heads/||p' | while read -r br; do
+        [ -n "$br" ] && sanitise "$br" >> "$live_file"
+        [ -n "$br" ] && echo >> "$live_file"
+    done
+    echo "{{instance}}" >> "$live_file"
+
+    removed=0; kept=0
+    while read -r name; do
+        [ -n "$name" ] || continue
+        # edotmw-<instance>-<service>[-run]-<suffix>
+        inst="${name#edotmw-}"
+        inst="$(echo "$inst" | sed -E 's/-(server|bots|test|client-test)(-run)?-[a-z0-9]+$//')"
+        # Exact branch match, OR the same AO session on a different branch.
+        # Worktrees 30 and 38 were both found still registered and ACTIVE
+        # while their containers named the branch they had moved off — so
+        # an exact-branch-only rule proposed deleting a live agent's
+        # containers. Keeping too much costs an exited container; keeping
+        # too little is the D-095 breach this recipe exists inside.
+        # Greedy up to the LAST number: ao-my-edotmw-30-root -> ao-my-edotmw-30.
+        # A [a-z0-9]+ class cannot span the dashes in "my-edotmw", which is
+        # why the first attempt silently matched nothing and kept nobody.
+        session="$(echo "$inst" | sed -E 's/^(.*-[0-9]+)-.*$/\1/')"
+        if grep -qx "$inst" "$live_file" || grep -q "^$session-" "$live_file"; then
+            kept=$((kept + 1)); continue
+        fi
+        if [ "{{APPLY}}" = "1" ]; then
+            echo "reap-orphans: removing $name (branch for instance '$inst' is gone)"
+            docker rm -f "$name" >/dev/null 2>&1 || true
+        else
+            echo "reap-orphans: WOULD remove $name (branch for instance '$inst' is gone)"
+        fi
+        removed=$((removed + 1))
+        # NOT `docker ps -aq`: -q overrides --format and yields container IDs,
+    # which then parse as instance names that match no branch — so every
+    # LIVE agent's container reads as an orphan. Caught only because this
+    # recipe dry-runs by default; it had five live containers queued for
+    # deletion. A destructive default here would have been a D-095 breach
+    # shipped as a cleanup convenience.
+    done < <(docker ps -a --filter "name=^edotmw-" --format '{{{{.Names}}' 2>/dev/null || true)
+    if [ "{{APPLY}}" = "1" ]; then
+        echo "reap-orphans: removed $removed, kept $kept"
+    else
+        echo "reap-orphans: $removed orphan(s), $kept kept — DRY RUN, re-run with APPLY=1 to remove"
+    fi
+
 # Manual dev loop: run the server in the foreground.
 # AI is how many computer opponents to seat (D-051). They take ordinary
 # player slots, read the world through a client like you do, and are held
@@ -318,6 +484,13 @@ run-server AI="0" MAP="res://maps/default.tres" LOBBY="0": _import
     set -euo pipefail
     bash recipe-arg.sh int AI "{{AI}}"
     bash recipe-arg.sh enum LOBBY "{{LOBBY}}" 0 1
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'run-server' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ ! -f "{{server_scene}}" ]; then
         echo "NOT IMPLEMENTED UNTIL M1: {{server_scene}} doesn't exist yet." >&2
         exit 1
@@ -357,6 +530,12 @@ lobby PLAYERS="1":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int PLAYERS "{{PLAYERS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire gpu 'lobby' $$)"
+    export EDOTMW_GATE_HELD="$gate"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014)." >&2
@@ -366,7 +545,7 @@ lobby PLAYERS="1":
 
     # Whatever happens next, do not leave a server holding this
     # instance's port ({{port}} — D-095; other instances are untouched).
-    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true; bash host-gate.sh release "$gate"' EXIT INT TERM
     "{{just_executable()}}" down > /dev/null 2>&1 || true
 
     mkdir -p "{{artifacts_dir}}"
@@ -428,6 +607,12 @@ quick-test SEED="1337" SANDBOX="auto":
     set -euo pipefail
     bash recipe-arg.sh int SEED "{{SEED}}"
     bash recipe-arg.sh enum SANDBOX "{{SANDBOX}}" 0 1 auto
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire gpu 'quick-test' $$)"
+    export EDOTMW_GATE_HELD="$gate"
     sandbox="{{SANDBOX}}"
     if [ "$sandbox" = "auto" ]; then
         sandbox="$(bash instance-id.sh agent)"
@@ -449,7 +634,7 @@ quick-test SEED="1337" SANDBOX="auto":
 
     # Whatever happens next, do not leave a server holding this
     # instance's port ({{port}} — D-095; other instances are untouched).
-    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true; bash host-gate.sh release "$gate"' EXIT INT TERM
     "{{just_executable()}}" down > /dev/null 2>&1 || true
 
     mkdir -p "{{artifacts_dir}}"
@@ -495,6 +680,13 @@ run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int PORT "{{PORT}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire gpu 'run-client' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the GUI client needs a native Godot (D-014: it cannot be containerized)." >&2
@@ -536,6 +728,13 @@ run-bots N DURATION="-1": _import
     set -euo pipefail
     bash recipe-arg.sh int N "{{N}}"
     bash recipe-arg.sh int DURATION "{{DURATION}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'run-bots' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ "{{runtime}}" = "docker" ]; then
         # In-network: the bots reach this project's server as "server:4433",
         # so no host port is involved (D-095).
@@ -557,6 +756,13 @@ run-bots N DURATION="-1": _import
 test-unit FILTER="" TEST="": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'test-unit' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     args=(-s res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit)
     [ -n "{{FILTER}}" ] && args+=("-gselect={{FILTER}}")
     [ -n "{{TEST}}" ] && args+=("-gunit_test_name={{TEST}}")
@@ -610,8 +816,14 @@ test-load N DURATION:
     set -euo pipefail
     bash recipe-arg.sh int N "{{N}}"
     bash recipe-arg.sh int DURATION "{{DURATION}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'test-load' $$)"
+    export EDOTMW_GATE_HELD="$gate"
     mkdir -p "{{artifacts_dir}}"
-    trap '"{{just_executable()}}" down' EXIT INT TERM
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
     "{{just_executable()}}" up
 
     bots_log="{{artifacts_dir}}/test-load-bots.log"
@@ -707,8 +919,14 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     set -euo pipefail
     bash recipe-arg.sh int N "{{N}}"
     bash recipe-arg.sh int DURATION "{{DURATION}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'test-scenario' $$)"
+    export EDOTMW_GATE_HELD="$gate"
     mkdir -p "{{artifacts_dir}}"
-    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true' EXIT INT TERM
+    trap '"{{just_executable()}}" down > /dev/null 2>&1 || true; bash host-gate.sh release "$gate"' EXIT INT TERM
     "{{just_executable()}}" _import
 
     bots_log="{{artifacts_dir}}/test-scenario-bots.log"
@@ -833,6 +1051,12 @@ test-client SECONDS="60" BOTS="3": _import
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int BOTS "{{BOTS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'test-client' $$)"
+    export EDOTMW_GATE_HELD="$gate"
     if [ "{{runtime}}" != "docker" ]; then
         echo "test-client requires the docker runtime (it needs the software-GL image)." >&2
         echo "For the native GUI client use: {{just_executable()}} run-client" >&2
@@ -843,7 +1067,7 @@ test-client SECONDS="60" BOTS="3": _import
     log="{{artifacts_dir}}/test-client.log"
     bots_log="{{artifacts_dir}}/test-client-bots.log"
     rm -f "$shot"
-    trap '"{{just_executable()}}" down' EXIT INT TERM
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
     "{{just_executable()}}" up
 
     # Bots run for a little longer than the client so they don't vanish out
@@ -952,6 +1176,13 @@ gen-terrain-preview CHUNK_SIZE="16": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int CHUNK_SIZE "{{CHUNK_SIZE}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-terrain-preview' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     if [ "{{runtime}}" = "docker" ]; then
         docker compose -p {{compose_project}} run --rm --no-deps test --headless --script terrain_preview.gd -- --chunk-size={{CHUNK_SIZE}}
@@ -975,6 +1206,13 @@ gen-terrain-preview CHUNK_SIZE="16": _import
 build-assets ONLY="": 
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'build-assets' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ ! -x "{{blender_python}}" ]; then
         echo "FAIL: no bpy environment at {{blender_venv}}"
         echo "Run: {{just_executable()}} bootstrap-art"
@@ -1051,6 +1289,13 @@ gen-model-preview SECONDS="1.2": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-model-preview' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1095,6 +1340,13 @@ gen-cover-preview SECONDS="0.6": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-cover-preview' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1158,6 +1410,13 @@ gen-forest-preview SECONDS="0.6": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-forest-preview' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1221,6 +1480,13 @@ gen-terrain-shot HEIGHT="14": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-terrain-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
@@ -1255,6 +1521,13 @@ gen-terrain-shot HEIGHT="14": _import
 profile: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'profile' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ "{{runtime}}" = "docker" ]; then
         docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd
     else
@@ -1285,6 +1558,13 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
     bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire gpu 'bench-render' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: the render benchmark needs a native Godot with a GPU (D-014)." >&2
@@ -1315,6 +1595,15 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int AI "{{AI}}"
     bash recipe-arg.sh int PRESET "{{PRESET}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'lobby-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    # Release is folded into this recipe's own teardown trap below — a
+    # second `trap ... EXIT` here would REPLACE it and silently drop the
+    # teardown, which is the whole reason that trap is not additive.
     if [ "{{runtime}}" != "docker" ]; then
         echo "lobby-shot requires the docker runtime (it needs the software-GL image)." >&2
         exit 1
@@ -1323,7 +1612,7 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
     shot="{{artifacts_dir}}/lobby.png"
     log="{{artifacts_dir}}/lobby-shot.log"
     rm -f "$shot"
-    trap '"{{just_executable()}}" down' EXIT INT TERM
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
 
     docker compose -p {{compose_project}} run --rm --no-deps -d --name {{compose_project}}-lobby-server \
         server --headless --path . server.tscn -- --lobby=1 --players=8 > /dev/null
@@ -1407,6 +1696,13 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
     bash recipe-arg.sh int SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int AI "{{AI}}"
     bash recipe-arg.sh int TEAMS "{{TEAMS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'ai-ladder' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/ai-ladder.log"
     : > "$log"
@@ -1643,6 +1939,13 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege" PROFILE
     bash recipe-arg.sh int SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int AI "{{AI}}"
     bash recipe-arg.sh int TEAMS "{{TEAMS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire heavy 'test-ai-teams' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/test-ai-teams.log"
     : > "$log"

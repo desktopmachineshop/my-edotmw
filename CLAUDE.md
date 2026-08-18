@@ -60,6 +60,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/line-endings.md
 
+@docs/status/host-load.md
+
 @docs/status/playtests-2026-08.md
 
 @docs/status/m8-plan.md
@@ -464,6 +466,29 @@ gate-check.sh            THE log comparisons a real multi-client run must
                         milestones. A missing marker FAILS the check; a
                         comparison that silently skips is the vacuous
                         pass D-022's audit was written against.
+host-budget.sh           THE definition of how much of this machine dev
+                        work may use (D-20260818). instance-id.sh's
+                        sibling: that one stops agents COLLIDING, this
+                        one stops them STARVING each other. Gates on
+                        MEMORY, because profiling found CPU under 41%
+                        for everything but test-load while free RAM never
+                        left 1.5-2.4 GB. Admission reconstructs the pool
+                        (free + charged) every poll rather than counting
+                        jobs — the resident floor moved 1.2 GB in an hour
+                        and free memory fell anyway.
+host-gate.sh             The cross-worktree queue built on it. Lock dir
+                        lives OUTSIDE every worktree, because shared
+                        state is the whole point; it touches no docker
+                        object of any kind, which is what keeps D-095
+                        intact. Reaps holders whose pid is gone, and a
+                        child recipe INHERITS its parent's slot through
+                        EDOTMW_GATE_HELD (test-load calls up calls
+                        _import — three acquires would be a deadlock the
+                        parent can never clear).
+host-sample.ps1          The instrument. Every number in D-20260818 came
+                        out of it; `just host-profile` wraps it. Same
+                        rule as gen-terrain-shot: a claim that the gate
+                        helped has to be measured, not argued.
 scenario.gd              Applies a mid-game world (D-098). ALL-STATIC,
                         like formation.gd: a scenario is an opening
                         position, not a participant. Goes through the
@@ -652,6 +677,24 @@ reason; a bare `just` inside a recipe will not resolve.
 **Run recipes from a bash shell (Git Bash), not PowerShell.** From
 PowerShell, `just` resolves `sh` to WSL's bash and dies with
 `execvpe(/bin/bash) failed` before any recipe body runs.
+
+**Every heavy command is ADMITTED against the host's spare memory
+before it runs** (D-20260818). Several agents share one laptop, and the
+machine fits roughly ONE heavy docker recipe at a time. A gated recipe
+waits, saying what it is waiting for and who is ahead of it, then fails
+loudly rather than proceeding if it waits out `EDOTMW_GATE_TIMEOUT`.
+
+- `just host-status` — what the machine has left, and who holds it
+- `just host-profile [SECONDS] [TAG]` — sample the host while you run
+  something else. **The before-numbers for any tuning claim.**
+- `just reap-orphans [APPLY]` — containers whose worktree is gone. DRY
+  RUN unless `APPLY=1`, because two versions of its matching rule each
+  proposed deleting a LIVE agent's containers.
+- `EDOTMW_NO_GATE=1` is the off switch, and `just doctor` reports it.
+
+**A recipe that waited is a recipe whose wall clock means nothing** —
+the same rule this project already applies to figures measured while the
+host was building containers.
 
 **Every command belongs to an INSTANCE, and a worktree is isolated
 automatically** — see "Multi-agent isolation (D-095)" above for the rules.
