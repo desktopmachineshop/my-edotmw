@@ -5742,13 +5742,17 @@ func _building_screen_radius(node: MeshInstance3D, at: Vector3) -> float:
 ## lattice copy (D-20260818-entities-are-drawn-at-every-visible-copy).
 ##
 ## `node.position` is the FIRST of them, so the rest are found by
-## re-basing off the offsets the draw pass recorded. A building with no
-## visible copy is offered at its node's last position rather than nowhere,
-## so a click is never silently impossible.
+## re-basing off the offsets the draw pass recorded. A building drawn
+## nowhere is offered nowhere.
 func _building_drawn_positions(wire_id, node: MeshInstance3D) -> Array[Vector3]:
 	var drawn: Array = _building_offsets.get(wire_id, [])
-	if drawn.size() < 2:
-		return [node.position] as Array[Vector3]
+	if drawn.is_empty():
+		# Drawn nowhere this frame, so there is nothing on screen to click.
+		# `node.position` is the copy it stood at when it was last visible,
+		# and offering that would let a click land on a building the player
+		# cannot see — the same detachment this whole change removes, just
+		# pointing the other way.
+		return [] as Array[Vector3]
 	var out: Array[Vector3] = []
 	for offset in drawn:
 		out.append(node.position - (drawn[0] as Vector3) + (offset as Vector3))
