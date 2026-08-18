@@ -1498,6 +1498,13 @@ func tick() -> void:
 		# here, on vision's own cadence and out of vision's own coverage,
 		# so no disk is walked twice and pathing knowledge can never be
 		# wider than sight.
+		#
+		# Inside the timed block deliberately: this IS the vision phase,
+		# same cadence over the same cells, and `last_vision_usec` should
+		# name the whole of it. Said out loud because #105 is an open
+		# investigation into an unattributed per-squad rise, and a new cost
+		# quietly joining an existing slice is exactly how a number stops
+		# meaning what its name says.
 		knowledge.absorb(vision, _passable)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
