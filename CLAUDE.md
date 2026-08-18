@@ -52,6 +52,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/formation.md
 
+@docs/status/line-endings.md
+
 @docs/status/playtests-2026-08.md
 
 @docs/status/m8-plan.md
