@@ -824,7 +824,7 @@ func _refresh_squads() -> void:
 		# by the formation's own on-screen radius, exactly the fix
 		# selection already got (see `_screen_radius_of`) — a wide "Sparse"
 		# or "Ring" formation is a wide target for culling too, not just
-		# for a click. `RenderCull.visible_offset_of_extent` is the one
+		# for a click. `RenderCull.visible_offsets_of_extent` is the one
 		# definition of that rule now, shared with the forest chunks,
 		# which had the identical defect at four times the size.
 		var comp_info: Dictionary = _state.composition.get(squad_id, {})
@@ -832,18 +832,35 @@ func _refresh_squads() -> void:
 			String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
 			float(comp_info.get("spacing", 1.0)))["radius"]
 
-		# Every lattice copy, not just the nearest to the look-at point.
+		# Every lattice copy that is on screen, and the squad is drawn at
+		# ALL of them (D-20260818-entities-are-drawn-at-every-visible-copy).
 		# The torus is shallower in z than it is wide, so more than one
-		# copy is routinely on screen and "nearest" picks the wrong one —
-		# which showed up in play as half the screen rendering no units.
-		var offset = RenderCull.visible_offset_of_extent(
+		# copy is routinely on screen — and while one node was placed at
+		# one of them, whichever copy lost the argument was bare ground
+		# with real terrain on it. That is what "half the screen will not
+		# render units" was, and no better choice of copy fixes it.
+		#
+		# This is now purely the DERIVATION GATE (D-045): an empty list
+		# means no copy is on screen, so the ~40 soldier transforms below
+		# are not worth computing. It no longer decides where anything
+		# goes, so a cull mistake can no longer MOVE a squad.
+		var drawn := RenderCull.visible_offsets_of_extent(
 			_camera, offsets, centre, world_radius, CULL_MARGIN_PIXELS, viewport_size)
-		if offset == null:
-			unit.visible = false
+		unit.set_lattice_offsets(drawn)
+		if drawn.is_empty():
+			# The highlight goes with the squad: a disc left standing where
+			# a culled squad used to be is the same detachment this fixes,
+			# reached by not touching it rather than by moving it.
+			_hide_selection_discs(squad_id)
 			continue
-		unit.visible = true
-		unit.position = offset
 		_visible_squads += 1
+		# LOD is a property of the SQUAD, not of a copy: `visible_instance_count`
+		# lives on the one MultiMesh every copy reads, so there is one
+		# answer to give. Nearest visible copy wins — the copy a player is
+		# looking at closely is the one whose detail they can judge, and
+		# taking the farthest would thin a squad in the foreground because
+		# a twin of it sits near the horizon.
+		var offset := RenderCull.nearest_offset(drawn, centre, _camera_target)
 
 		# Render LOD (D-045, permitted camera-keyed by D-012): a squad far
 		# from the camera is drawn thinner, never smaller. Per-soldier
@@ -879,9 +896,16 @@ func _refresh_squads() -> void:
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
 				and bool(doing["is_ranged"]):
-			var launch := _missile_ground(centre + offset, MISSILE_RELEASE_HEIGHT)
+			# CANONICAL endpoints, with no lattice offset baked in. They
+			# used to be fixed at launch to whichever copy the shooter was
+			# drawn at, so an arrow fired near the seam went on flying at
+			# a copy the camera had since left — one of the two bugs
+			# D-20260818-entities-are-drawn-at-every-visible-copy names as
+			# live. The flight is now placed per frame, at every visible
+			# copy, exactly like the squad that fired it.
+			var launch := _missile_ground(centre, MISSILE_RELEASE_HEIGHT)
 			var landing := _missile_ground(
-				_missile_landing(centre + offset, centre, doing["toward"]),
+				_missile_landing(centre, doing["toward"]),
 				MISSILE_IMPACT_HEIGHT)
 			_maybe_launch_missile(
 				"squad:%d" % int(squad_id), launch, landing, float(doing["interval"]))
@@ -890,7 +914,7 @@ func _refresh_squads() -> void:
 		# just derived — so the highlight follows the formation's real
 		# shape as it changes, for free. A single disc could only ever
 		# approximate a line, a wedge and a loose scatter with one circle.
-		_stamp_selection_discs(squad_id, decorated)
+		_stamp_selection_discs(squad_id, decorated, drawn)
 
 	# Squad ghosts are hidden rather than drawn (D-099). Buildings' own
 	# persistent-explored fog never un-knows a building and never fades one,
@@ -1383,6 +1407,17 @@ var _defeat_time_held := 0.0
 var _notice_seen := 0
 var _notice_until := 0.0
 var _building_nodes := {}
+## wire id -> Array[Node3D]: the building seen at the OTHER lattice copies
+## on screen, and wire id -> Array[Vector3]: which copies those are.
+##
+## The offsets are kept because SELECTION has to read them. A click ranks
+## candidates by screen distance, and a building standing on two visible
+## copies has two screen positions — `node.position` answers for one of
+## them, which is how clicking a wrapped building used to select nothing.
+var _building_mirrors := {}
+var _building_offsets := {}
+## Junction key -> Array[Node3D], the same for the wall joint rigs.
+var _wall_joint_mirrors := {}
 ## wire id -> BuildingDef, cached alongside _building_nodes so the missile
 ## visual (see _refresh_buildings) doesn't re-load one from disk per frame.
 var _building_defs := {}
@@ -2573,22 +2608,27 @@ func _missile_ground(world: Vector3, extra_height: float) -> Vector3:
 	return out
 
 
-## The on-screen landing point for a shot toward `to_canonical`, given the
-## shooter's own canonical position `from_canonical` and its already-chosen
-## render position `from_render` (D-045's per-frame lattice-copy pick).
+## The CANONICAL landing point for a shot from `from_canonical` toward
+## `to_canonical`.
 ##
 ## Squads and buildings near a seam can be geometrically close while
 ## numerically far apart in canonical (wrapped) world space — D-008's
 ## recurring wrap tax. `TorusSpace.world_delta` gives the shortest vector
 ## between the two CELLS, which is short whenever the shot itself is
-## (every shipped attack_range is under ten world units), so adding it to
-## the shooter's render position keeps the arrow on the same lattice copy
-## the shooter is drawn at instead of flying off toward a different one.
-func _missile_landing(from_render: Vector3, from_canonical: Vector3, to_canonical: Vector3) -> Vector3:
+## (every shipped attack_range is under ten world units), so the arrow
+## flies the length of the shot rather than the length of the map.
+##
+## It used to take the shooter's already-chosen RENDER position as a third
+## argument and bake the lattice copy into the flight, which froze an
+## arrow to whichever copy it was fired at
+## (D-20260818-entities-are-drawn-at-every-visible-copy). Everything stays
+## canonical now and the copies are chosen per frame, by the same rule the
+## shooter uses.
+func _missile_landing(from_canonical: Vector3, to_canonical: Vector3) -> Vector3:
 	var space := _state.space
 	var wrap_delta := space.world_delta(
 		space.world_to_cell(from_canonical), space.world_to_cell(to_canonical))
-	return from_render + wrap_delta
+	return from_canonical + wrap_delta
 
 
 ## Built once and reused (the usual reason, D-045: rebuilding a mesh per
@@ -2647,8 +2687,10 @@ func _maybe_launch_missile(key: String, from: Vector3, to: Vector3, interval: fl
 		instance.rotation.y = atan2(flat.x, flat.z)
 
 	var duration := maxf(from.distance_to(to) / MISSILE_SPEED, 0.1)
+	# `mirrors` is this arrow's extra lattice copies, grown on demand by
+	# `LatticeCopies.draw` and freed with the arrow itself.
 	_missiles.append({
-		"node": instance, "from": from, "to": to,
+		"node": instance, "from": from, "to": to, "mirrors": [] as Array[Node3D],
 		"start": _now, "duration": duration,
 	})
 
@@ -2661,9 +2703,12 @@ func _update_missiles() -> void:
 	while i >= 0:
 		var shot: Dictionary = _missiles[i]
 		var node: MeshInstance3D = shot["node"]
+		var mirrors: Array[Node3D] = shot["mirrors"]
 		var t := (_now - float(shot["start"])) / float(shot["duration"])
 		if t >= 1.0:
 			node.queue_free()
+			for mirror in mirrors:
+				mirror.queue_free()
 			_missiles.remove_at(i)
 			i -= 1
 			continue
@@ -2671,7 +2716,11 @@ func _update_missiles() -> void:
 		var to: Vector3 = shot["to"]
 		var pos := from.lerp(to, t)
 		pos.y += sin(t * PI) * MISSILE_ARC_HEIGHT
-		node.position = pos
+		# Every visible copy, from the CANONICAL flight — the endpoints
+		# carry no lattice offset, so an arrow fired near the seam is on
+		# screen wherever its shooter is
+		# (D-20260818-entities-are-drawn-at-every-visible-copy).
+		LatticeCopies.draw(node, mirrors, pos, _visible_copies_of(pos, MISSILE_ARC_HEIGHT))
 		i -= 1
 
 
@@ -2750,6 +2799,9 @@ var _selection_rings: Array[MeshInstance3D] = []
 
 ## squad id -> MultiMeshInstance3D of per-soldier selection circles.
 var _selection_discs := {}
+## squad id -> Array[Node3D]: that squad's disc MultiMesh seen at the OTHER
+## lattice copies on screen. Grown on demand, freed with the discs.
+var _selection_disc_mirrors := {}
 
 
 ## A circle under every soldier of a selected squad.
@@ -2765,14 +2817,20 @@ var _selection_discs := {}
 ## outline, and one circle can only approximate all three. This follows
 ## whatever the formation actually is, including as casualties restamp it
 ## (D-006 clause 3).
-func _stamp_selection_discs(squad_id, transforms: Array[Transform3D]) -> void:
-	var marked := _selected.has(squad_id)
-	var discs: MultiMeshInstance3D = _selection_discs.get(squad_id, null)
-
-	if not marked:
-		if discs != null:
-			discs.visible = false
+## `offsets` is where the squad is DRAWN — every lattice copy on screen.
+## The discs were stamped at canonical positions with no offset at all, so
+## the moment a squad was drawn across the seam its highlight stayed
+## behind on the canonical copy, a whole map from the soldiers it marked.
+## One of the two live bugs
+## D-20260818-entities-are-drawn-at-every-visible-copy names; it is fixed
+## by the discs travelling with the squad rather than by a rule of their
+## own.
+func _stamp_selection_discs(squad_id, transforms: Array[Transform3D],
+		offsets: Array[Vector3]) -> void:
+	if not _selected.has(squad_id) or offsets.is_empty():
+		_hide_selection_discs(squad_id)
 		return
+	var discs: MultiMeshInstance3D = _selection_discs.get(squad_id, null)
 
 	if discs == null:
 		var mesh := CylinderMesh.new()
@@ -2793,13 +2851,13 @@ func _stamp_selection_discs(squad_id, transforms: Array[Transform3D]) -> void:
 		discs.multimesh = multi
 		discs.material_override = material
 		_selection_discs[squad_id] = discs
+		_selection_disc_mirrors[squad_id] = [] as Array[Node3D]
 		add_child(discs)
 
 	var colour := _owner_colour_of(squad_id)
 	(discs.material_override as StandardMaterial3D).albedo_color = Color(
 		colour.r, colour.g, colour.b, 0.5)
 
-	discs.visible = true
 	discs.multimesh.instance_count = transforms.size()
 	for i in range(transforms.size()):
 		# Flat on the ground under the soldier, upright regardless of how
@@ -2807,6 +2865,22 @@ func _stamp_selection_discs(squad_id, transforms: Array[Transform3D]) -> void:
 		var at := transforms[i].origin
 		discs.multimesh.set_instance_transform(i,
 			Transform3D(Basis.IDENTITY, Vector3(at.x, at.y + 0.05, at.z)))
+
+	# The soldier transforms above are canonical world space, so a copy is
+	# a pure translation of the same MultiMesh — no second stamp.
+	LatticeCopies.draw(discs, _selection_disc_mirrors[squad_id], Vector3.ZERO, offsets)
+
+
+## Take a squad's discs off the ground, at every copy. Its own function
+## because "not selected" and "not drawn anywhere this frame" reach it
+## from two different places and must do the same thing.
+func _hide_selection_discs(squad_id) -> void:
+	var discs: MultiMeshInstance3D = _selection_discs.get(squad_id, null)
+	if discs == null:
+		return
+	discs.visible = false
+	for mirror in _selection_disc_mirrors.get(squad_id, []):
+		(mirror as Node3D).visible = false
 
 
 ## A flat, glowing ring on the ground beneath every selected thing.
@@ -2880,33 +2954,29 @@ func _refresh_build_markers() -> void:
 			live.append(marker)
 	_build_markers = live
 
-	while _build_marker_nodes.size() < _build_markers.size():
-		# A flat SLAB, not a disc: it stands in for a rectangular building,
-		# so it has to be able to be longer than it is wide and to point
-		# somewhere. Unit-sized and scaled per marker below, so one mesh
-		# serves every footprint.
-		var mesh := BoxMesh.new()
-		mesh.size = Vector3(1.0, 0.04, 1.0)
-		var material := StandardMaterial3D.new()
-		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		material.no_depth_test = true
-		var node := MeshInstance3D.new()
-		node.mesh = mesh
-		node.material_override = material
-		_build_marker_nodes.append(node)
-		add_child(node)
+	# One slab per marker PER VISIBLE LATTICE COPY
+	# (D-20260818-entities-are-drawn-at-every-visible-copy): a mark on the
+	# ground belongs to the ground, and the ground is drawn nine times.
+	# Flattened rather than mirrored, because the pool is already a pool.
+	var placed := []
+	for live_marker in _build_markers:
+		var extent: Vector2 = live_marker["size"]
+		for offset in _visible_copies_of(live_marker["pos"], maxf(extent.x, extent.y)):
+			placed.append({"marker": live_marker, "offset": offset})
+
+	while _build_marker_nodes.size() < placed.size():
+		_build_marker_nodes.append(_build_marker_node())
 
 	for i in range(_build_marker_nodes.size()):
 		var node := _build_marker_nodes[i]
-		if i >= _build_markers.size():
+		if i >= placed.size():
 			node.visible = false
 			continue
-		var marker: Dictionary = _build_markers[i]
+		var marker: Dictionary = placed[i]["marker"]
 		var world: Vector3 = marker["pos"]
 		var size: Vector2 = marker["size"]
 		node.visible = true
-		node.position = world + Vector3(0.0, 0.05, 0.0) + _lattice_offset_for(world)
+		node.position = world + Vector3(0.0, 0.05, 0.0) + (placed[i]["offset"] as Vector3)
 		# x is the building's LENGTH along its own local +X, matching the
 		# mesh convention every wall and building already uses, so the mark
 		# and the thing that replaces it are the same shape pointing the
@@ -2918,6 +2988,24 @@ func _refresh_build_markers() -> void:
 		var age := (_now - float(marker["at"])) / BUILD_MARKER_SECONDS
 		var material := node.material_override as StandardMaterial3D
 		material.albedo_color = Color(0.45, 0.85, 1.0, 0.5 * (1.0 - age))
+
+
+## One pooled build-site slab. A flat SLAB, not a disc: it stands in for a
+## rectangular building, so it has to be able to be longer than it is wide
+## and to point somewhere. Unit-sized and scaled per marker, so one mesh
+## serves every footprint.
+func _build_marker_node() -> MeshInstance3D:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(1.0, 0.04, 1.0)
+	var material := StandardMaterial3D.new()
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.no_depth_test = true
+	var node := MeshInstance3D.new()
+	node.mesh = mesh
+	node.material_override = material
+	add_child(node)
+	return node
 
 
 func _refresh_selection_rings() -> void:
@@ -2940,10 +3028,13 @@ func _refresh_selection_rings() -> void:
 				_state.space.from_index(int(selected.get("rally", 0))))
 			if _state.terrain_sampler.is_valid():
 				rally.y = _state.terrain_sampler.call(rally.x, rally.z)
-			wanted.append({
-				"at": rally + _lattice_offset_for(rally), "radius": 1.1,
-				"colour": _state.colour_of(_state.player),
-			})
+			# Every visible copy, like the ground it is painted on
+			# (D-20260818-entities-are-drawn-at-every-visible-copy).
+			for offset in _visible_copies_of(rally, 1.1):
+				wanted.append({
+					"at": rally + offset, "radius": 1.1,
+					"colour": _state.colour_of(_state.player),
+				})
 
 	if _selected_building >= 0 and _state.buildings.has(_selected_building):
 		var instance: MeshInstance3D = _building_nodes.get(_selected_building, null)
@@ -2953,13 +3044,21 @@ func _refresh_selection_rings() -> void:
 			# building's node sits half its height up so the box rests on
 			# the terrain, and a footprint placed there is inside the mesh
 			# and invisible.
-			var ground := instance.position
-			if _state.terrain_sampler.is_valid():
-				ground.y = _state.terrain_sampler.call(ground.x, ground.z)
-			wanted.append({
-				"at": ground, "radius": 2.2,
-				"colour": _state.colour_of(int(info["owner"])),
-			})
+			#
+			# One ring per copy the building is DRAWN at, read off the
+			# building itself rather than re-derived — a highlight that
+			# answered the copy question separately from the thing it
+			# highlights is exactly how the per-soldier discs came adrift.
+			var drawn_at: Array = _building_offsets.get(_selected_building, [])
+			for offset in drawn_at:
+				var rebased: Vector3 = (offset as Vector3) - (drawn_at[0] as Vector3)
+				var ground: Vector3 = instance.position + rebased
+				if _state.terrain_sampler.is_valid():
+					ground.y = _state.terrain_sampler.call(ground.x, ground.z)
+				wanted.append({
+					"at": ground, "radius": 2.2,
+					"colour": _state.colour_of(int(info["owner"])),
+				})
 
 	while _selection_rings.size() < wanted.size():
 		# A flat disc sitting on the ground, not a torus standing on it.
@@ -3000,15 +3099,35 @@ func _refresh_selection_rings() -> void:
 		material.albedo_color = Color(colour.r, colour.g, colour.b, 0.5)
 
 
-## Where to draw a STATIC thing that stands on the tiled world.
+## Every lattice copy of `world` the camera can see, for something of
+## world radius `radius` — the list an ENTITY is drawn at
+## (D-20260818-entities-are-drawn-at-every-visible-copy).
+##
+## Empty means no copy is on screen, and the caller draws it nowhere.
+## Nothing here chooses between copies, which is the whole point: terrain
+## has been drawn nine times since D-035, and every rule this project ever
+## wrote for picking ONE copy for the things standing on it was a choice
+## between two right answers.
+func _visible_copies_of(world: Vector3, radius: float) -> Array[Vector3]:
+	if _state.space == null:
+		return [] as Array[Vector3]
+	return RenderCull.visible_offsets_of_extent(_camera,
+		_state.space.lattice_offsets(), world, radius, CULL_MARGIN_PIXELS,
+		get_viewport().get_visible_rect().size)
+
+
+## Where to draw the PLAYER'S OWN CURSOR PREVIEW on the tiled world.
 ##
 ## Prefers the copy that is genuinely on screen, and falls back to the one
-## nearest the camera when none is — a building off screen still needs a
-## sensible position, and Godot culls it from there for free.
+## nearest the camera when none is.
 ##
-## Buildings and resource nodes were both drawn at canonical coordinates
-## only, so anything past the seam appeared a whole map away: the terrain
-## tiles nine times (D-035) and the things standing on it did not.
+## Everything that EXISTS in the world — squads, buildings, forests, walls,
+## arrows and the marks that follow them — goes through
+## `_visible_copies_of` and is drawn at all of them. What is left here is
+## the placement ghost and its drag line, which are not in the world at
+## all: they follow the mouse, and the mouse is a ray into ONE copy of the
+## ground. Previewing a barracks at nine places would be the mirror image
+## of the bug this file just stopped having.
 func _lattice_offset_for(world: Vector3) -> Vector3:
 	var offsets := _state.space.lattice_offsets()
 	var visible = RenderCull.visible_offset(_camera, offsets, world,
@@ -3068,19 +3187,19 @@ func _refresh_resource_nodes() -> void:
 	_node_place_worst_usec = maxi(_node_place_worst_usec,
 		Time.get_ticks_usec() - grow_started)
 
-	# Rebuild only chunks whose membership changed, then swing every chunk
-	# to its lattice copy — per chunk, never per tree (D-035's tax, paid
-	# wholesale).
+	# Rebuild only chunks whose membership changed, then draw every chunk
+	# at EVERY lattice copy on screen — per chunk, never per tree (D-035's
+	# tax, paid wholesale).
 	#
-	# NOT `_lattice_offset_for`, which is the rule for something that must
-	# always be drawn SOMEWHERE (a rally marker, a placement ghost): on a
-	# miss it falls through to the copy nearest the look-at point, a
-	# different question from "which copy is on screen". A chunk is 16x16
-	# cells — ~48 world units across, wider than any formation — so it
-	# crossed that boundary constantly, and each crossing teleported a
-	# whole block of forest a map period sideways in one frame. Reported
-	# from playtest as forests snapping in and out on small camera moves.
-	# A chunk with no visible copy is drawn NOWHERE.
+	# A chunk is 16x16 cells, ~48 world units across and wider than any
+	# formation, so it straddles copies constantly. Choosing one of them
+	# per frame teleported a whole block of forest a map period sideways
+	# the frame the choice flipped (reported from playtest as forests
+	# snapping in and out on small camera moves), and choosing the RIGHT
+	# one still left the other visible copy of the same ground bare. Both
+	# go away by drawing at all of them
+	# (D-20260818-entities-are-drawn-at-every-visible-copy). A chunk with
+	# no visible copy is still drawn NOWHERE — that half was already right.
 	var offsets := _state.space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
 	for key in _tree_chunks:
@@ -3088,12 +3207,11 @@ func _refresh_resource_nodes() -> void:
 		if bool(chunk["dirty"]):
 			_rebuild_tree_chunk(chunk)
 		var root := chunk["root"] as Node3D
-		var offset = RenderCull.visible_offset_of_extent(_camera, offsets,
-			chunk["centre"], float(chunk["radius"]), CULL_MARGIN_PIXELS,
-			viewport_size)
-		root.visible = offset != null
-		if offset != null:
-			root.position = offset
+		var mirrors: Array[Node3D] = chunk["mirrors"]
+		LatticeCopies.draw(root, mirrors, Vector3.ZERO,
+			RenderCull.visible_offsets_of_extent(_camera, offsets,
+				chunk["centre"], float(chunk["radius"]), CULL_MARGIN_PIXELS,
+				viewport_size))
 
 	_advance_fallings()
 
@@ -3170,6 +3288,10 @@ func _place_node(cell: int, kind: int) -> void:
 			# exists to stop.
 			"radius": RenderCull.block_radius(space, NODE_CHUNK)
 				+ ResourceVisuals.MAX_OFFSET * space.hex_size,
+			# The same chunk seen at the other visible lattice copies —
+			# a second Node3D over the same per-species MultiMeshes, so
+			# nothing about a tree is computed twice.
+			"mirrors": [] as Array[Node3D],
 			"multis": {}, "cells": {}, "dirty": true}
 		_tree_chunks[key] = chunk
 	chunk["cells"][cell] = entries
@@ -3271,6 +3393,18 @@ func _rebuild_tree_chunk(chunk: Dictionary) -> void:
 		for i in range(entries.size()):
 			instance.multimesh.set_instance_transform(i, entries[i]["xform"])
 			instance.multimesh.set_instance_custom_data(i, entries[i]["fog"])
+	# A species added or dropped changes what the chunk DRAWS, so the copies
+	# have to be re-pointed. Membership changes on a reveal or a felling,
+	# never per frame — which is why this is here and not in the draw loop.
+	#
+	# The copies share this MultiMesh rather than getting one each, which is
+	# also what carries the per-instance fog coordinate written just above
+	# (D-20260817-fog-covers-props) to every lattice copy. There is one
+	# buffer, so a wrapped copy of a forest cannot be lit differently from
+	# the canonical one — and it must not be: a lattice copy is a copy of
+	# the whole world, so a tree at a wrapped copy stands on the SAME cell
+	# and has the same fog state by construction (D-035).
+	LatticeCopies.resync(chunk["root"] as Node3D, chunk["mirrors"])
 	chunk["dirty"] = false
 
 
@@ -3301,6 +3435,7 @@ func _begin_felling(felled: Dictionary) -> void:
 		add_child(instance)
 		_fallings.append({"node": instance, "kind": kind,
 			"axis": ResourceVisuals.tip_axis_for(cell, i),
+			"mirrors": [] as Array[Node3D],
 			"age": 0.0, "base": entries[i]["xform"]})
 
 
@@ -3314,14 +3449,22 @@ func _advance_fallings() -> void:
 	for fall in _fallings:
 		fall["age"] = float(fall["age"]) + _frame_delta
 		var pose: Dictionary = ResourceVisuals.fall_pose(int(fall["kind"]), float(fall["age"]))
+		var mirrors: Array[Node3D] = fall["mirrors"]
 		if bool(pose["done"]):
 			(fall["node"] as MeshInstance3D).queue_free()
+			for mirror in mirrors:
+				mirror.queue_free()
 			continue
 		var base: Transform3D = fall["base"]
 		var tip := Basis(fall["axis"] as Vector3, float(pose["angle"]))
 		var origin := base.origin + Vector3(0.0, -float(pose["sink"]), 0.0)
-		(fall["node"] as MeshInstance3D).transform = Transform3D(
-			tip * base.basis, origin + _lattice_offset_for(base.origin))
+		# The tip is the tree's own pose; the copies are pure translation
+		# of it. A felling used to pick one copy per frame and could
+		# therefore jump mid-crash, a couple of seconds during which the
+		# thing is the most visible object on the ground.
+		var node := fall["node"] as MeshInstance3D
+		node.transform = Transform3D(tip * base.basis, origin)
+		LatticeCopies.draw(node, mirrors, origin, _visible_copies_of(origin, 2.0))
 		kept.append(fall)
 	_fallings = kept
 
@@ -3462,6 +3605,9 @@ func _refresh_buildings() -> void:
 
 		if bool(info["destroyed"]):
 			instance.visible = false
+			for mirror in _building_mirrors.get(wire_id, []):
+				(mirror as Node3D).visible = false
+			_building_offsets[wire_id] = [] as Array[Vector3]
 			# And its health bar, which this loop would otherwise never
 			# reach again — the update below is past this `continue`. The
 			# bar would hang in the air over the rubble showing the last
@@ -3470,8 +3616,6 @@ func _refresh_buildings() -> void:
 			# took damage and therefore had a bar.
 			_hide_building_health_bar(int(wire_id))
 			continue
-		instance.visible = true
-
 		var progress := clampf(_derived_progress(wire_id, info), 0.15, 1.0)
 		instance.scale = Vector3(1.0, progress, 1.0)
 
@@ -3503,11 +3647,22 @@ func _refresh_buildings() -> void:
 		# Sit the mesh ON the ground rather than half-sunk into it (zero for an
 		# authored, base-pivoted model — see _building_ground_lift above).
 		world.y += float(_building_ground_lift.get(wire_id, 0.0)) * progress
-		# Drawn at the lattice copy the camera can actually see (D-035).
-		# Buildings were placed at their canonical position only, so one
-		# across the seam appeared a whole map from where it stands —
-		# terrain tiles nine times and the things standing on it did not.
-		instance.position = world + _lattice_offset_for(world)
+		# Drawn at EVERY lattice copy the camera can see (D-035,
+		# D-20260818-entities-are-drawn-at-every-visible-copy). One copy was
+		# chosen per frame before this, so a view spanning two copies of the
+		# same ground showed the barracks on one of them and bare terrain on
+		# the other — and which one it was flipped as the camera moved.
+		var extent := 2.0
+		if building_def != null:
+			if building_def.mesh_size != Vector3.ZERO:
+				extent = maxf(building_def.mesh_size.x, building_def.mesh_size.z) * 0.5
+			else:
+				extent = maxf(1.0, float(building_def.footprint_radius)) * 1.9
+		var drawn := _visible_copies_of(world, extent)
+		if not _building_mirrors.has(wire_id):
+			_building_mirrors[wire_id] = [] as Array[Node3D]
+		_building_offsets[wire_id] = drawn
+		LatticeCopies.draw(instance, _building_mirrors[wire_id], world, drawn)
 
 		# Playtest fix, REVISED: an earlier pass here tilted a wall segment
 		# to follow the terrain between its own two ends. Rejected on
@@ -3602,10 +3757,12 @@ func _refresh_buildings() -> void:
 					best_distance = d
 					target = entry["at"]
 			if target != Vector3.ZERO:
-				var launch := _missile_ground(instance.position, MISSILE_RELEASE_HEIGHT)
+				# From the building's CANONICAL position, not the copy it
+				# happens to be drawn at — the arrow is placed at every
+				# visible copy per frame, like the tower that fired it.
+				var launch := _missile_ground(world, MISSILE_RELEASE_HEIGHT)
 				var landing := _missile_ground(
-					_missile_landing(instance.position, world, target),
-					MISSILE_IMPACT_HEIGHT)
+					_missile_landing(world, target), MISSILE_IMPACT_HEIGHT)
 				_maybe_launch_missile(
 					"building:%d" % int(wire_id), launch, landing, def.attack_interval)
 
@@ -3822,19 +3979,20 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 		rig.set_meta("post", post)
 		rig.set_meta("steps", steps)
 		_wall_joint_nodes[key] = rig
+		_wall_joint_mirrors[key] = [] as Array[Node3D]
 
 	var post: MeshInstance3D = rig.get_meta("post")
 	var steps: Array = rig.get_meta("steps")
 
+	var mirrors: Array[Node3D] = _wall_joint_mirrors[key]
 	var a_info: Dictionary = _state.buildings.get(a_id, {})
 	var b_info: Dictionary = _state.buildings.get(b_id, {})
 	var a_def: BuildingDef = _building_defs.get(a_id, null)
 	var b_def: BuildingDef = _building_defs.get(b_id, null)
 	if a_info.is_empty() or b_info.is_empty() or a_def == null or b_def == null \
 			or bool(a_info.get("destroyed", false)) or bool(b_info.get("destroyed", false)):
-		rig.visible = false
+		LatticeCopies.draw(rig, mirrors, Vector3.ZERO, [] as Array[Vector3])
 		return
-	rig.visible = true
 
 	var a_progress := clampf(_derived_progress(a_id, a_info), 0.15, 1.0)
 	var b_progress := clampf(_derived_progress(b_id, b_info), 0.15, 1.0)
@@ -3880,13 +4038,13 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 			# grows with construction by scaling Y alone. Its material and
 			# colour were settled once at creation — nothing to tint per
 			# frame, which is the point of it being authored.
-			post.position = mid + _lattice_offset_for(mid)
+			post.position = mid
 			post.scale = Vector3(1.0, clampf(progress, 0.15, 1.0), 1.0)
 		else:
 			# Primitive fallback: centred on its own origin, so it needs
 			# lifting by half its height and resizing rather than scaling.
 			(post.mesh as CylinderMesh).height = post_height
-			post.position = mid + Vector3(0.0, post_height / 2.0, 0.0) + _lattice_offset_for(mid)
+			post.position = mid + Vector3(0.0, post_height / 2.0, 0.0)
 			var owner_colour := _state.colour_of(int(a_info["owner"]))
 			(post.material_override as StandardMaterial3D).albedo_color = \
 				owner_colour.lerp(a_def.mesh_color, 0.9)
@@ -3921,7 +4079,7 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 			(step.mesh as BoxMesh).size = Vector3(1.0, step_height, tread_depth * 1.05)
 			var pos := a_world + dir * (run_len * t_mid)
 			pos.y = base_y + step_height / 2.0
-			step.position = pos + _lattice_offset_for(pos)
+			step.position = pos
 			step.rotation.y = yaw
 			var owner_colour := _state.colour_of(int(a_info["owner"]))
 			(step.material_override as StandardMaterial3D).albedo_color = \
@@ -3929,6 +4087,16 @@ func _update_wall_joint(a_id: int, b_id: int, a_cell: Vector2i, b_cell: Vector2i
 	else:
 		for step in steps:
 			(step as MeshInstance3D).visible = false
+
+	# The rig's children are posed in CANONICAL world space, so the whole
+	# junction moves as one and its copies are pure translations of it
+	# (D-20260818-entities-are-drawn-at-every-visible-copy). `resync`
+	# first, because a bastion appearing or a stair unfolding changes what
+	# the rig draws and every copy has to follow it — unlike a squad or a
+	# forest, this composite is re-posed every frame.
+	LatticeCopies.resync(rig, mirrors)
+	LatticeCopies.draw(rig, mirrors, Vector3.ZERO,
+		_visible_copies_of(mid, WALL_JOINT_HALF_SPACING * 2.0))
 
 
 ## Health, over the building itself.
@@ -5386,9 +5554,6 @@ func _finish_selection(at: Vector2, additive: bool) -> void:
 ## in the function selection is actually built on.
 func _squad_footprint(squad: int) -> Dictionary:
 	var centre := _state.squad_world_position(squad, _now)
-	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
-	if node != null:
-		centre += node.position
 	if _state.terrain_sampler.is_valid():
 		centre.y = _state.terrain_sampler.call(centre.x, centre.z)
 
@@ -5413,7 +5578,28 @@ func _squad_footprint(squad: int) -> Dictionary:
 	return {"centre": centre, "radius": float(print["radius"])}
 
 
-## Where a squad appears on screen. Squads behind the camera unproject to
+## The lattice copies a squad is currently DRAWN at, read off the node
+## that drew them (`PrimitiveUnit.lattice_offsets`).
+##
+## Selection has to rank across all of them
+## (D-20260818-entities-are-drawn-at-every-visible-copy). It used to read
+## `node.position` — one offset, because the squad was drawn once — and a
+## squad on two visible copies has two places a click can legitimately
+## land. Reading it from the renderer rather than re-deriving it is what
+## keeps the pick and the picture from disagreeing, which is the defect
+## `node.position` was itself introduced to fix.
+##
+## A squad with no node yet, or one culled this frame, is offered at its
+## canonical position so a click is never silently impossible.
+func _squad_drawn_offsets(squad) -> Array[Vector3]:
+	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
+	if node == null or node.lattice_offsets.is_empty():
+		return [Vector3.ZERO] as Array[Vector3]
+	return node.lattice_offsets
+
+
+## Where a squad appears on screen, at whichever of its drawn copies is
+## nearest `near` — the click. Squads behind the camera unproject to
 ## a meaningless point, so they are pushed far off-screen rather than
 ## being allowed to match a click.
 ##
@@ -5444,20 +5630,23 @@ func _screen_radius_of(print: Dictionary) -> float:
 		_camera.unproject_position(edge))
 
 
-func _squad_screen_position(squad: int) -> Vector2:
+func _squad_screen_position(squad: int, near: Vector2) -> Vector2:
 	var world := _state.squad_world_position(squad, _now)
-	var node: PrimitiveUnit = _squad_nodes.get(squad, null)
-	if node != null:
-		world += node.position
 	# Terrain-corrected for the same reason `_squad_footprint` is — this
 	# feeds `_enemy_squad_at`/`_enemy_cell_at` (target-picking and
 	# attack-click hit-testing), which had the identical flat-plane-vs-
 	# real-terrain gap.
 	if _state.terrain_sampler.is_valid():
 		world.y = _state.terrain_sampler.call(world.x, world.z)
-	if _camera.is_position_behind(world):
-		return Vector2(-1e6, -1e6)
-	return _camera.unproject_position(world)
+	var best := Vector2(-1e6, -1e6)
+	var best_distance := INF
+	for offset in _squad_drawn_offsets(squad):
+		var at := _screen_of(world + offset)
+		var d := at.distance_to(near)
+		if d < best_distance:
+			best_distance = d
+			best = at
+	return best
 
 
 ## What a click selected. Gathers every candidate's screen geometry and
@@ -5476,11 +5665,22 @@ func _select_nearest(at: Vector2) -> void:
 		# nothing. Reported as selection being based on one man rather than
 		# the squad. The tolerance is now the squad's own on-screen size,
 		# so a big formation is a big target and a small one is not.
+		# The copy the click is NEAREST, not the canonical one. A squad
+		# straddling the seam is drawn at two visible copies now
+		# (D-20260818-entities-are-drawn-at-every-visible-copy), and both
+		# are things the player can see and reasonably aim at.
 		var print := _squad_footprint(squad)
+		var best_at := INF
+		var best_allowance := 0.0
+		for offset in _squad_drawn_offsets(squad):
+			var copy := {"centre": print["centre"] + offset, "radius": print["radius"]}
+			var d := _screen_of(copy["centre"]).distance_to(at)
+			if d < best_at:
+				best_at = d
+				best_allowance = maxf(_screen_radius_of(copy),
+					SELECT_CLICK_RADIUS_PX * 0.35)
 		squads.append({
-			"id": squad,
-			"distance": _screen_of(print["centre"]).distance_to(at),
-			"allowance": maxf(_screen_radius_of(print), SELECT_CLICK_RADIUS_PX * 0.35),
+			"id": squad, "distance": best_at, "allowance": best_allowance,
 		})
 
 	# Buildings compete on the same NORMALISED scale (see SelectionPick).
@@ -5493,12 +5693,21 @@ func _select_nearest(at: Vector2) -> void:
 		if int(info["owner"]) != _state.player or bool(info["destroyed"]):
 			continue
 		var node: MeshInstance3D = _building_nodes.get(wire_id, null)
-		if node == null or _camera.is_position_behind(node.position):
+		if node == null:
+			continue
+		var best_at := INF
+		var best_allowance := 0.0
+		for copy in _building_drawn_positions(wire_id, node):
+			if _camera.is_position_behind(copy):
+				continue
+			var d := _camera.unproject_position(copy).distance_to(at)
+			if d < best_at:
+				best_at = d
+				best_allowance = _building_screen_radius(node, copy)
+		if best_at == INF:
 			continue
 		buildings.append({
-			"id": int(wire_id),
-			"distance": _camera.unproject_position(node.position).distance_to(at),
-			"allowance": _building_screen_radius(node),
+			"id": int(wire_id), "distance": best_at, "allowance": best_allowance,
 		})
 
 	var picked := SelectionPick.choose(squads, buildings)
@@ -5519,14 +5728,31 @@ func _select_nearest(at: Vector2) -> void:
 ## Measured across the drawn box rather than assumed, so the target
 ## matches what is on screen at any zoom — the same reason a squad's
 ## allowance is its projected footprint and not a constant.
-func _building_screen_radius(node: MeshInstance3D) -> float:
+func _building_screen_radius(node: MeshInstance3D, at: Vector3) -> float:
 	var mesh := node.mesh as BoxMesh
 	var half := 1.2 if mesh == null else mesh.size.x * 0.5
-	var edge := node.position + Vector3(half, 0.0, 0.0)
-	if _camera.is_position_behind(node.position) or _camera.is_position_behind(edge):
+	var edge := at + Vector3(half, 0.0, 0.0)
+	if _camera.is_position_behind(at) or _camera.is_position_behind(edge):
 		return 0.0
-	return _camera.unproject_position(node.position).distance_to(
+	return _camera.unproject_position(at).distance_to(
 		_camera.unproject_position(edge))
+
+
+## Every world position a building is currently DRAWN at — one per visible
+## lattice copy (D-20260818-entities-are-drawn-at-every-visible-copy).
+##
+## `node.position` is the FIRST of them, so the rest are found by
+## re-basing off the offsets the draw pass recorded. A building with no
+## visible copy is offered at its node's last position rather than nowhere,
+## so a click is never silently impossible.
+func _building_drawn_positions(wire_id, node: MeshInstance3D) -> Array[Vector3]:
+	var drawn: Array = _building_offsets.get(wire_id, [])
+	if drawn.size() < 2:
+		return [node.position] as Array[Vector3]
+	var out: Array[Vector3] = []
+	for offset in drawn:
+		out.append(node.position - (drawn[0] as Vector3) + (offset as Vector3))
+	return out
 
 
 func _select_within(rect: Rect2) -> void:
@@ -5537,10 +5763,12 @@ func _select_within(rect: Rect2) -> void:
 		# needing to contain one particular point — dragging across the
 		# front rank of a line should select that line.
 		var print := _squad_footprint(squad)
-		var at := _screen_of(print["centre"])
-		var reach := _screen_radius_of(print)
-		if rect.grow(reach).has_point(at) and not _selected.has(squad):
-			_selected.append(squad)
+		for offset in _squad_drawn_offsets(squad):
+			var copy := {"centre": print["centre"] + offset, "radius": print["radius"]}
+			var at := _screen_of(copy["centre"])
+			var reach := _screen_radius_of(copy)
+			if rect.grow(reach).has_point(at) and not _selected.has(squad):
+				_selected.append(squad)
 
 
 ## Drop squads this client can no longer command out of the live selection
@@ -5822,7 +6050,7 @@ func _enemy_squad_at(screen_position: Vector2) -> int:
 			continue
 		if _state.alive_of(squad) <= 0:
 			continue
-		var distance := _squad_screen_position(squad).distance_to(screen_position)
+		var distance := _squad_screen_position(squad, screen_position).distance_to(screen_position)
 		if distance < best_distance:
 			best_distance = distance
 			best = squad
@@ -5867,7 +6095,7 @@ func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
 			continue
 		if _state.alive_of(squad) <= 0:
 			continue
-		var distance := _squad_screen_position(squad).distance_to(screen_position)
+		var distance := _squad_screen_position(squad, screen_position).distance_to(screen_position)
 		if distance < best_distance:
 			best_distance = distance
 			best = _state.squad_cell(squad, _now)
@@ -5877,9 +6105,14 @@ func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
 		if int(info["owner"]) == _state.player or bool(info["destroyed"]):
 			continue
 		var node: MeshInstance3D = _building_nodes.get(wire_id, null)
-		if node == null or not node.visible or _camera.is_position_behind(node.position):
+		if node == null or not node.visible:
 			continue
-		var distance := _camera.unproject_position(node.position).distance_to(screen_position)
+		var distance := INF
+		for copy in _building_drawn_positions(wire_id, node):
+			if _camera.is_position_behind(copy):
+				continue
+			distance = minf(distance,
+				_camera.unproject_position(copy).distance_to(screen_position))
 		if distance < best_distance:
 			best_distance = distance
 			best = _state.space.from_index(int(info["cell"]))
@@ -6607,9 +6840,12 @@ func _gather_selected() -> void:
 ## hitbox feeling tiny, which it was — one cell.
 ##
 ## Same screen-distance test as enemies and squads, so everything on the
-## map is clicked the same way, and against the DRAWN position — the
-## placement table plus the same lattice offset the chunks use — so a
-## node past the seam is clickable where it appears (D-035).
+## map is clicked the same way, and against EVERY lattice copy — a forest
+## chunk is drawn at all of the visible ones now
+## (D-20260818-entities-are-drawn-at-every-visible-copy), so asking about
+## one of them would make the trees on the others unclickable. The whole
+## nine are tested rather than the visible subset because this runs on a
+## click, not per frame, and an off-screen copy simply never wins.
 ##
 ## Only known nodes can be here at all: the server fog-gates what
 ## `_state.nodes` (and so `_node_placed`) ever learns (D-061).
@@ -6619,15 +6855,17 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
+	var offsets := _state.space.lattice_offsets()
 	for cell in _node_placed:
 		var world: Vector3 = _node_placed[cell]["world"]
-		var drawn := world + _lattice_offset_for(world)
-		if _camera.is_position_behind(drawn):
-			continue
-		var distance := _camera.unproject_position(drawn).distance_to(screen_position)
-		if distance < best_distance:
-			best_distance = distance
-			best = _state.space.from_index(int(cell))
+		for offset in offsets:
+			var drawn := world + offset
+			if _camera.is_position_behind(drawn):
+				continue
+			var distance := _camera.unproject_position(drawn).distance_to(screen_position)
+			if distance < best_distance:
+				best_distance = distance
+				best = _state.space.from_index(int(cell))
 	return best
 
 
@@ -7427,14 +7665,26 @@ func _teardown_match() -> void:
 	_free_nodes(_wall_joint_nodes)
 	_free_nodes(_health_bars)
 	# Tree chunks: freeing each chunk root takes its MultiMeshes with it.
+	# Its lattice copies are SIBLINGS, not children (a copy must not
+	# inherit the source's transform), so they are freed alongside.
 	for key in _tree_chunks:
 		(_tree_chunks[key]["root"] as Node3D).queue_free()
+		_free_mirrors(_tree_chunks[key]["mirrors"])
 	_tree_chunks.clear()
 	_node_placed.clear()
 	_node_queue.clear()
 	for fall in _fallings:
 		(fall["node"] as MeshInstance3D).queue_free()
+		_free_mirrors(fall["mirrors"])
 	_fallings.clear()
+	for shot in _missiles:
+		(shot["node"] as MeshInstance3D).queue_free()
+		_free_mirrors(shot["mirrors"])
+	_missiles.clear()
+	_free_mirror_sets(_building_mirrors)
+	_free_mirror_sets(_wall_joint_mirrors)
+	_free_mirror_sets(_selection_disc_mirrors)
+	_building_offsets.clear()
 	_terrain_gen = null
 	_free_nodes(_selection_discs)
 	_free_nodes(_progress_anchor)
@@ -7484,6 +7734,20 @@ func _free_nodes(store: Dictionary) -> void:
 		if held is Node:
 			held.queue_free()
 	store.clear()
+
+
+## The same, for a store of lattice-copy pools. They are siblings of the
+## node they copy, so nothing else frees them.
+func _free_mirror_sets(store: Dictionary) -> void:
+	for key in store:
+		_free_mirrors(store[key])
+	store.clear()
+
+
+func _free_mirrors(mirrors: Array) -> void:
+	for mirror in mirrors:
+		(mirror as Node).queue_free()
+	mirrors.clear()
 
 
 ## Notice the match starting and ending. The server is the authority on

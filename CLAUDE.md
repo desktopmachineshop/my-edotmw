@@ -52,6 +52,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/world-look.md
 
+@docs/status/lattice-copies.md
+
 @docs/status/formation.md
 
 @docs/status/line-endings.md
@@ -239,8 +241,19 @@ prop_fog.gd              The same field, read by everything that STANDS on
                         D-101). All-static.
 render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
-                        the interesting failure mode — which lattice copy
-                        of a squad to draw — is testable without a GPU.
+                        the interesting failure mode is testable without
+                        a GPU. `visible_offsets_of_extent` returns EVERY
+                        copy on screen, not one
+                        (D-20260818-entities-are-drawn-at-every-visible-copy)
+                        — a cull decision and nothing else, so a cull
+                        mistake can no longer MOVE anything.
+lattice_copies.gd        One thing in the world, drawn at every visible
+                        lattice copy of the torus. The mechanism that
+                        closes the copy-choice bug class: mirrors share
+                        the source's MultiMesh/Mesh/material, are created
+                        lazily, and are SIBLINGS — a building's facing is
+                        rotation and its progress is scale, and a child's
+                        offset would be turned and squashed by both.
 world_look.gd            The one definition of the lighting rig — sun,
                         sky, ambient, tonemap, fog (D-086). All-static,
                         guarded by a test that fails if any other script

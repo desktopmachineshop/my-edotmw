@@ -86,13 +86,24 @@ static func visible_offset(camera: Camera3D, offsets: Array[Vector3],
 	return null
 
 
-## `visible_offset` for something with real EXTENT, where a miss means
-## DRAW NOWHERE.
+## EVERY lattice copy of something with real EXTENT that is on screen —
+## the list the caller DRAWS it at, in full (D-20260818-entities-are-drawn-
+## at-every-visible-copy). Empty means draw it nowhere.
 ##
-## Two things separate it from the point version, and both were bought by
-## the same playtest report three times over (squads vanishing before they
-## finished leaving the viewport; a click missing a forty-man line;
-## whole blocks of forest snapping in and out):
+## This used to return one offset and was called `visible_offset_of_extent`.
+## The plural is the whole point: a view can genuinely contain two copies
+## of the same ground, and every "which copy?" rule this project has
+## written — nearest to the look-at point, first one on screen — was a
+## choice between two right answers. Terrain has been drawn at all nine
+## copies since D-035; an entity drawn at one of them is the asymmetry
+## behind armies vanishing at the seam, half the screen rendering no
+## units, and a click landing on a soldier and selecting nothing. There is
+## nothing left to get wrong once the caller is handed every copy.
+##
+## Three things separate this from the point version, and the first two
+## were bought by the same playtest report three times over (squads
+## vanishing before they finished leaving the viewport; a click missing a
+## forty-man line; whole blocks of forest snapping in and out):
 ##
 ## 1. **The margin grows by the thing's own projected radius.** A flat
 ##    pixel margin is a statement about a POINT, and everything this is
@@ -100,12 +111,16 @@ static func visible_offset(camera: Camera3D, offsets: Array[Vector3],
 ##    across. Tested at its centre alone, the whole thing disappears the
 ##    instant that one point crosses the margin, while the half of it the
 ##    player can plainly still see goes with it.
-## 2. **`null` means hidden, not "put it somewhere else".** The caller
-##    must hide it. Falling through to `nearest_offset` answers a
+## 2. **An empty result means hidden, not "put it somewhere else".** The
+##    caller must hide it. Falling through to `nearest_offset` answers a
 ##    DIFFERENT question — nearest to the look-at point, not on screen —
 ##    and when the two rules disagree the thing jumps a whole map period
 ##    in one frame. That reads as snapping, which is worse than the
 ##    honest disappearance it was standing in for.
+## 3. **A non-empty result is now a LIST, so it is a cull decision and
+##    nothing else.** The old singular doubled as the placement rule, so a
+##    cull that picked the wrong copy MOVED the entity. It cannot now: the
+##    caller draws at all of them.
 ##
 ## The margin is worked out PER COPY, not once from the nearest one: it
 ## falls off as 1/depth, so a margin borrowed from a copy near the camera
@@ -114,8 +129,15 @@ static func visible_offset(camera: Camera3D, offsets: Array[Vector3],
 ## projection lookup is hoisted out of the loop instead — the same
 ## treatment `is_on_screen`'s viewport size already gets, for the same
 ## reason.
-static func visible_offset_of_extent(camera: Camera3D, offsets: Array[Vector3],
-		centre: Vector3, world_radius: float, margin: float, size: Vector2):
+##
+## Nine projections per entity per frame, always, where the old first-hit
+## version paid one for an unwrapped entity. That is the price of the
+## question being answered honestly, and it is still far less than
+## deriving forty soldiers, which is the work culling exists to avoid
+## (D-045).
+static func visible_offsets_of_extent(camera: Camera3D, offsets: Array[Vector3],
+		centre: Vector3, world_radius: float, margin: float,
+		size: Vector2) -> Array[Vector3]:
 	var scale := extent_scale(camera, world_radius, size)
 	# Every camera read the loop needs, taken once. `global_transform` is
 	# a property fetch per access, and the loop runs nine times per
@@ -129,12 +151,13 @@ static func visible_offset_of_extent(camera: Camera3D, offsets: Array[Vector3],
 		eye = view.origin
 		forward = -view.basis.z
 		near = camera.near
+	var out: Array[Vector3] = []
 	for offset in offsets:
 		var at := centre + offset
 		if is_on_screen(camera, at,
 				margin_at_depth(at, scale, margin, eye, forward, near), size):
-			return offset
-	return null
+			out.append(offset)
+	return out
 
 
 ## Pixels of on-screen radius PER UNIT OF DEPTH for something of world
@@ -210,7 +233,7 @@ static func margin_at_depth(centre: Vector3, scale: float, margin: float,
 ##   trees it is supposed to stand for. Anything culled on that centre is
 ##   then DRAWN a map away from its own contents, because the offset that
 ##   puts the centre on screen is applied to the contents. That is the
-##   defect `visible_offset_of_extent` exists to fix, one level up, and it
+##   defect `visible_offsets_of_extent` exists to fix, one level up, and it
 ##   is why this cannot stay in the caller: the centre became
 ##   load-bearing for visibility the moment culling started reading it.
 ## - **An edge block owns fewer cells than a full one** — four, not
@@ -238,7 +261,7 @@ static func block_centre(space: TorusSpace, key: Vector2i,
 
 
 ## How far a square block of `cells_per_side` cells reaches from its own
-## centre, in world units — the radius `visible_offset_of_extent` wants
+## centre, in world units — the radius `visible_offsets_of_extent` wants
 ## for a chunked thing like the forest MultiMeshes.
 ##
 ## An upper bound, and deliberately so: a block at the map's edge owns

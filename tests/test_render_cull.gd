@@ -613,8 +613,8 @@ func test_a_forest_is_culled_by_its_trees_not_by_the_point_at_its_middle() -> vo
 		"the chunk's own on-screen radius does not reach its trees, so the "
 		+ "block is still being culled on the point at its middle")
 
-	assert_eq(RenderCull.visible_offset_of_extent(camera, offsets, centre,
-		radius, margin, size), Vector3.ZERO,
+	assert_true(RenderCull.visible_offsets_of_extent(camera, offsets, centre,
+		radius, margin, size).has(Vector3.ZERO),
 		"a forest whose trees are on screen was culled by the point at its middle")
 
 
@@ -670,8 +670,8 @@ func test_a_forest_with_no_visible_copy_is_hidden_rather_than_relocated() -> voi
 	# both as far from the camera as this torus allows.
 	var centre := space.to_world(Vector2i(space.width / 2, space.height / 2))
 
-	assert_null(RenderCull.visible_offset_of_extent(camera, offsets, centre,
-		radius, margin, size),
+	assert_true(RenderCull.visible_offsets_of_extent(camera, offsets, centre,
+		radius, margin, size).is_empty(),
 		"a forest on the far side of the map must report nowhere, so the client "
 		+ "can hide it — falling through to a fallback is what teleports it")
 

@@ -14,6 +14,24 @@ class_name PrimitiveUnit
 
 var _multimesh_instance: MultiMeshInstance3D
 
+## The extra views of this squad's ONE MultiMesh, one per lattice copy of
+## the torus beyond the first that the camera can see
+## (D-20260818-entities-are-drawn-at-every-visible-copy). Empty for a squad
+## standing well inside the map, which is nearly all of them.
+var _mirrors: Array[Node3D] = []
+
+## Where this squad is DRAWN this frame — every visible lattice offset, in
+## the order `RenderCull.visible_offsets_of_extent` returned them, so the
+## first is the canonical copy whenever the canonical copy is on screen.
+##
+## Public because SELECTION has to read it. A click ranks candidates by
+## screen distance, and with several copies on screen there is no single
+## `node.position` to project — the node is in more than one place, which
+## is the entire point. Reading it from the thing that drew it is what
+## keeps the pick and the picture from drifting, the same reason
+## `_squad_footprint` reached for `node.position` in the first place.
+var lattice_offsets: Array[Vector3] = []
+
 ## Whether this squad is wearing an authored model (D-064) rather than a
 ## primitive. Decides which material path applies and whether the MultiMesh
 ## carries the per-soldier animation data D-065 needs.
@@ -88,6 +106,9 @@ func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 
 	_multimesh_instance.multimesh = mm
 	_apply_material(def)
+	# Every copy reads the SAME MultiMesh and the SAME material, so a
+	# rebuild has to be re-pointed at them rather than repeated.
+	LatticeCopies.resync(_multimesh_instance, _mirrors)
 
 
 ## Attach the right material for the current model and owner.
@@ -177,6 +198,31 @@ func set_slot_transforms(transforms: Array[Transform3D]) -> void:
 	# fewer soldiers than the squad has is exactly writing fewer
 	# transforms than `instance_count`.
 	mm.visible_instance_count = count
+
+
+## Draw this squad at EVERY lattice copy of the torus the camera can see,
+## or nowhere at all when the list is empty
+## (D-20260818-entities-are-drawn-at-every-visible-copy).
+##
+## Costs one thin `MultiMeshInstance3D` per extra copy, sharing this
+## squad's single MultiMesh and its single material. Nothing is derived
+## twice: `set_slot_transforms` wrote canonical world-space transforms
+## once, and per-soldier derivation is ~96% of the client's frame at scale
+## (D-045), so a second view of that buffer is a transform and a
+## reference. Godot culls the off-screen ones at the RenderingServer
+## level, which is what already makes 1,287 terrain mesh instances
+## affordable.
+##
+## The mirrors are children of THIS node, which never moves — the soldier
+## transforms are canonical world space, so a copy is a pure translation
+## and nothing here has a rotation or a scale for a child offset to be
+## bent by.
+func set_lattice_offsets(offsets: Array[Vector3]) -> void:
+	lattice_offsets = offsets
+	if _multimesh_instance == null:
+		return
+	visible = not offsets.is_empty()
+	LatticeCopies.draw(_multimesh_instance, _mirrors, Vector3.ZERO, offsets)
 
 
 func _build_primitive_mesh(def: UnitDef) -> Mesh:
