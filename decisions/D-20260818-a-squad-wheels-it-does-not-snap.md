@@ -53,6 +53,50 @@ each check was watched fail:
 The 9.6/9.6 tie is the "before" column saying what it should: a turn cost
 nothing, so the formation made no difference to how long one took.
 
+## What it costs a real match — measured, A/B, same host
+
+Docker was down on this machine for the whole session, so these are
+**native** runs (`EDOTMW_RUNTIME=native`, a real server and real bots over
+the real socket, this worktree's own port per D-095) rather than
+`just test-load`. Same host, same seed 1337, same 168x194 default map,
+4 bots. Absolute numbers are therefore not comparable to the docker
+figures in `docs/status/`; the A/B between the two columns is the result.
+
+`4 300`:
+
+| | `main` | this branch |
+|---|---|---|
+| verdict | **ok** | **failed** — fog gates, see below |
+| desyncs | 0 of 1,200 checks | 0 of 1,172 checks |
+| dropped ticks | 0 | 0 |
+| µs/squad **at 48 squads** | 385.95 | 413.48 |
+| vision / combat µs | 24.71 / 56.01 | 27.32 / 61.44 |
+| bytes sent over the run | 124,368 | 232,748 |
+| curves rebuilt | 1,236 | 1,373 |
+
+**The µs/squad column is host noise, not this change, and the run says so
+itself:** `vision` and `combat` rose by the same ~10% and this change
+touches neither. A third run of the branch on a quieter host — the other
+agents on this machine had finished — measured **370.68 µs/squad at 48
+squads at the same tick 3000, against `main`'s 385.95**. Quote none of
+these without the squad count, and none of them as a delta without an
+interleaved pair.
+
+**Bandwidth is the real cost, and it is affordable.** 232,748 B over
+312 s across 4 clients is **186 B/client/s**, against `main`'s 101 and
+against M4's measured 595 B/client/s at 20 players. Roughly 1.9x for
+paths that bend, nothing for paths that do not.
+
+**The fog gates failed at 300 s and that is a duration, not a defect.**
+`conceal_events` went 6 -> 1 and `reveal_events` 5 -> 0, because squads
+wheeling round bends cross vision boundaries fewer times inside a fixed
+window — CLAUDE.md's standing "when the opening changes, every timing
+tuned against the old one is stale" rule, applied to how fast armies
+walk. Re-run at **`4 480` the branch is clean**: `VERDICT ok`, 0 desyncs
+over 1,920 checks, 0 dropped ticks, `casualties_applied=60
+conceal_events=20 reveal_events=5 ghosts_peak=16 nodes_felled=254`, and
+392.95 µs/squad at 48 squads.
+
 ## Rationale
 
 ### The snap had two causes, and only one of them was a turn
