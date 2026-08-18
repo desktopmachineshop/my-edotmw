@@ -746,6 +746,15 @@ func _fight(now: float) -> void:
 		if target.x < 0:
 			return
 
+	# Where the army was actually SENT, judged after the fact (#119).
+	#
+	# Deliberately not a second copy of `_hostile`: this asks what stands
+	# on the cell the order names, so it answers "did this AI march on a
+	# friend" from the OUTCOME rather than from the code path that chose
+	# it. A check that re-ran the filter would be green whenever the filter
+	# was green, which is precisely the thing under test.
+	if _allies_only_at(target):
+		ally_objectives += 1
 	# Attacked in a body rather than one squad at a time, so the AI
 	# arrives as an army instead of feeding itself in piecemeal.
 	_attack_at = now + THINK_INTERVAL * 8.0
@@ -811,6 +820,20 @@ var _assigned_at := {}
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
 
+## How many attack objectives landed on a friend (#119). Zero is the only
+## acceptable value, and it is only EVIDENCE of anything alongside
+## `allies_seen` below: an AI that never had a teammate in sight cannot
+## have marched on one, and would report the same zero.
+var ally_objectives: int = 0
+
+## The most allied-but-not-own things this AI could see at once — squads
+## and standing buildings. The vacuity guard for the counter above, and
+## the check that D-050's shared vision actually reached this seat: on the
+## `--lobby=0` path the simulation was never handed the seats' teams at
+## all before #119, so a teamed AI saw exactly what a free-for-all one
+## did and every alliance-shaped assertion about it passed for free.
+var peak_allies_seen: int = 0
+
 
 func _record_stats() -> void:
 	var squads := _own_squads()
@@ -852,6 +875,24 @@ func _record_stats() -> void:
 	# did.
 	peak_enemy_buildings_known = maxi(peak_enemy_buildings_known, theirs)
 
+	# Friends in sight, counted the same way and for the opposite reason
+	# (#119): `ally_objectives=0` says nothing at all unless this AI had an
+	# ally it could actually have marched on.
+	var allies := 0
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]) or int(info["owner"]) == player:
+			continue
+		if not _hostile(int(info["owner"])):
+			allies += 1
+	for id in state.composition:
+		var owner := int(state.composition[id].get("owner", 0))
+		if owner == player or state.alive_of(id) <= 0:
+			continue
+		if not _hostile(owner):
+			allies += 1
+	peak_allies_seen = maxi(peak_allies_seen, allies)
+
 	var stockpile := 0
 	for i in range(state.wallet.size()):
 		stockpile += state.wallet[i]
@@ -868,10 +909,22 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
-		player, civ, peak_squads, peak_workers, buildings_raised,
-		peak_enemy_buildings_known, attacks_launched, first_attack_at,
+	return "AI_STATS player=%d civ=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
+		player, civ, _own_team(), peak_squads, peak_workers, buildings_raised,
+		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
+		attacks_launched, first_attack_at,
 		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals]
+
+
+## The side this seat is on, as the AI itself understands it — read off
+## the seat list it was sent, not off the simulation. A teamed harness
+## that read the team from the server would be asking the wrong process:
+## the question is whether the AI, a client (D-051), knows.
+func _own_team() -> int:
+	for seat in state.lobby.get("seats", []):
+		if int(seat["player"]) == player:
+			return int(seat.get("team", 0))
+	return 0
 
 
 # --- what it is thinking (D-054) --------------------------------------
@@ -1003,6 +1056,44 @@ func _enemy_target() -> Vector2i:
 ## symptom of the correct rule meeting the incorrect targeting.
 func _hostile(who: int) -> bool:
 	return not state.are_allied(who, player)
+
+
+## Does `cell` hold friends and nothing else? (#119)
+##
+## The measurement that says #83 has come back. It is deliberately about
+## the GROUND rather than about the decision: an objective is counted
+## against this AI when something friendly stands on the cell it ordered
+## its army to and nothing hostile does. So it is satisfied by an ally's
+## town centre and by an ally's squad, whether the target came from
+## `_enemy_target` or from the scouting fallback — the two sites #83 had
+## to fix — and it cannot be satisfied by an enemy hall an ally happens to
+## be standing next to, which is what the "and nothing hostile" half is
+## for.
+##
+## `are_allied(player, player)` is true, so its OWN base counts as
+## friendly here too. Marching an army onto your own town is the same
+## mistake wearing a different hat, and there is no reason for the
+## instrument to be able to tell them apart.
+func _allies_only_at(cell: Vector2i) -> bool:
+	var friends := false
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]):
+			continue
+		if state.space.from_index(int(info["cell"])) != cell:
+			continue
+		if _hostile(int(info["owner"])):
+			return false
+		friends = true
+	for id in state.composition:
+		if state.alive_of(id) <= 0:
+			continue
+		if state.squad_cell(id, state_time()) != cell:
+			continue
+		if _hostile(int(state.composition[id].get("owner", 0))):
+			return false
+		friends = true
+	return friends
 
 
 ## Somewhere it has not looked. Other players' starting cells first —

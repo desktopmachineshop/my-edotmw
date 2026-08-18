@@ -137,9 +137,15 @@ func add_player(player: int) -> bool:
 ## `add_ai` below is the lobby COMMAND — the same seating plus a
 ## permission check. The check belongs on the command, not on the seating,
 ## which is why the two are separate and why this one has no `by_player`.
-func add_ai_player(player: int, civ: StringName) -> bool:
+## `team` is the side this seat is dealt, for the command-line path that
+## has no admin to choose one (`--ai-teams`, #119). It is a PARAMETER of
+## seating rather than a `set_team` call afterwards because seating the
+## last seat is what starts the match: a side set a line later would be
+## set on a seat whose `team_map()` had already gone to the simulation.
+## `set_team` stays the lobby's door and stays admin-only.
+func add_ai_player(player: int, civ: StringName, team: int = 0) -> bool:
 	_register(player)
-	_seat_ai(player, civ)
+	_seat_ai(player, civ, team)
 	return _start_if_ready()
 
 
@@ -243,13 +249,13 @@ func _seat_human(player: int) -> void:
 ## doors onto AI seating go through this function, so starting positions
 ## following the seats is structural for the command-line path and the
 ## lobby command alike, rather than a call each of them has to remember.
-func _seat_ai(player: int, civ: StringName) -> void:
+func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	for seat in seats:
 		if int(seat["player"]) == player:
 			return
 	seats.append({
 		"kind": "ai", "player": player,
-		"civ": civ, "team": 0, "name": "AI %d" % player,
+		"civ": civ, "team": clampi(team, 0, MAX_TEAMS), "name": "AI %d" % player,
 	})
 	_seats_changed()
 

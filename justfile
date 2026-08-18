@@ -15,7 +15,7 @@
 #
 # Headless (docker or native): doctor, bootstrap, up, down, nuke, status,
 # run-server, run-bots, test-unit, test-load, test-scenario, scenarios,
-# gen-terrain-preview, replay-info.
+# ai-ladder, test-ai-teams, gen-terrain-preview, replay-info.
 # Docker only: test-client — renders the real GUI client via Mesa's
 # software rasteriser and checks the frame. No GPU involved.
 # Native only: run-client — for a human to actually look at on real
@@ -1376,18 +1376,28 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
 # changes, every timing tuned against the old one is stale. If crew size,
 # TRAIN_COOLDOWN or the town hall's build time move, re-derive this
 # before believing a run that says the AI never fought.
+#
+# TEAMS defaults to 0 — a free-for-all, which is what every ladder number
+# recorded before #119 was measured on, so the default run stays
+# comparable with them. TEAMS=2 with AI=4 is a 2v2, and the reason it
+# exists is that allied AI behaviour was exercised by NOTHING: #83 shipped
+# an AI that marched its army onto its own teammate's town for a
+# milestone, and the ladder — a free-for-all — could not have noticed on
+# any map, at any cap, for any number of matches. Arguments are POSITIONAL
+# (D-20260817-recipe-args-are-positional): `just ai-ladder 3 600 4 2`.
 [doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
-ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
+ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int MATCHES "{{MATCHES}}"
     bash recipe-arg.sh int SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int AI "{{AI}}"
+    bash recipe-arg.sh int TEAMS "{{TEAMS}}"
     mkdir -p "{{artifacts_dir}}"
     log="{{artifacts_dir}}/ai-ladder.log"
     : > "$log"
 
-    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{SECONDS}}s cap, map=ladder"
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
@@ -1402,13 +1412,13 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
-                --ai={{AI}} --seed=$i --run-seconds={{SECONDS}} \
+                --ai={{AI}} --ai-teams={{TEAMS}} --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         fi
         printf '.'
@@ -1449,22 +1459,37 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
     awk '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
+            match($0, /team=(-?[0-9]+)/, wt)
             match($0, /phase=([0-9]+)/, ph)
             # phase 0 is LOBBY. A summary printed while still in the lobby
             # is a match that never ran, whatever its winner field says.
             if (ph[1] == "0") { unstarted++ }
-            if (w[1] == "-1") { draws++ } else { wins[w[1]]++ }
+            if (w[1] == "-1") { draws++ }
+            else {
+                wins[w[1]]++
+                # A TEAM can win (D-050). The winner field names one member
+                # of the winning side, so in a 2v2 a per-player tally
+                # credits one of two allies with a victory both won — and
+                # reads as a 1-of-4 win rate for a side that took every
+                # match.
+                if (wt[1] + 0 > 0) team_wins[wt[1]]++
+            }
             matches++
         }
         /AI_STATS/ {
             match($0, /player=([0-9]+)/, p)
             match($0, /civ=([a-z_]+)/, c)
+            match($0, / team=([0-9]+)/, t)
             match($0, /squads_peak=([0-9]+)/, s)
             match($0, /workers_peak=([0-9]+)/, wk)
-            match($0, /buildings=([0-9]+)/, b)
+            match($0, / buildings=([0-9]+)/, b)
+            match($0, /allies_seen=([0-9]+)/, al)
+            match($0, /ally_objectives=([0-9]+)/, ao)
             match($0, /first_attack=(-?[0-9.]+)/, fa)
             civ[p[1]] = c[1]
+            team[p[1]] = t[1] + 0
             sq[p[1]] += s[1]; wkr[p[1]] += wk[1]; bld[p[1]] += b[1]; n[p[1]]++
+            allies[p[1]] += al[1]; ally_obj[p[1]] += ao[1]; ally_obj_total += ao[1]
             if (fa[1] >= 0) { atk[p[1]] += fa[1]; atkn[p[1]]++ }
         }
         END {
@@ -1475,14 +1500,207 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2": _import
             }
             printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
             for (k in n) {
-                printf "  player %-5s civ=%-10s wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f",
-                    k, civ[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k]
+                printf "  player %-5s civ=%-10s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
+                    k, civ[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]
                 if (atkn[k] > 0) printf "  first_attack~%.0fs", atk[k]/atkn[k]
                 else printf "  first_attack=never"
                 printf "\n"
             }
+            for (k in team_wins) printf "  team %-2s wins=%d of %d\n", k, team_wins[k], matches
+            # An objective on a friend is #83 coming back, and a ladder
+            # measuring an AI parked on its own ally is measuring nothing.
+            # Reported per player so the log says WHICH seat did it.
+            if (ally_obj_total > 0) {
+                printf "  FAILED: %d attack objective(s) landed on a friend — see #83/#119\n", ally_obj_total
+                for (k in ally_obj) if (ally_obj[k] > 0) printf "    player %s: %d\n", k, ally_obj[k]
+                exit 1
+            }
             if (draws == matches) {
                 print "  EVERY match hit the time cap — the AI is not seeking combat, which is a finding, not a pass"
             }
+        }
+    ' "$log"
+
+
+# A TEAMED all-AI match, played for real, that fails if an AI marches on a
+# friend (#119).
+#
+# This exists because #83 — an AI whose targeting read "not mine" as
+# "hostile", so an allied AI parked its whole army on its teammate's town
+# centre and milled there for the rest of the match — shipped for a
+# milestone with NOTHING in the estate able to see it. `just ai-ladder` is
+# a free-for-all, `tests/test_ai_player.gd` seated its AI on team 0 (which
+# D-050 says is not a team), and the `--lobby=0` path never handed
+# `SquadSim.teams` over at all, so even a teamed seat list would have
+# produced a simulation in which nobody was anybody's ally. The one
+# configuration that breaks a thing was the one nothing ran.
+#
+# It is a SCENARIO run (D-098), not an opening: #83 needs an AI with an
+# army, a teammate with a base, and both of them in sight of each other,
+# which the real opening takes ~170 s of production and walking to
+# produce. `siege` hands every seat a town centre, a tower and two
+# militia squads on the first tick, so the AI reaches its first objective
+# in seconds and the harness costs a minute rather than ten.
+#
+# It plays MATCHES seeds, and that is not thoroughness for its own sake.
+# The bug fires when an ALLY is the nearest thing an AI knows about, and
+# spawn points are scattered at `min_spawn_spacing` (D-039) — so which
+# neighbour a seat gets is a property of the seed, not of the seating.
+# One seed with the fix reverted found ONE offending seat of four; a
+# harness that catches its bug in a quarter of cases is not a harness.
+# Every seed is a fresh world, and the verdict is over all of them.
+#
+# What it asserts, and why each one is here rather than implied:
+#
+#   the match started            the standing rule — the ladder reported
+#                                three milestones of matches that never
+#                                left the lobby as draws
+#   SIM_TEAMS has >= 2 sides     teams reached the SIMULATION, printed
+#                                from `_sim.teams` itself. Without this
+#                                every alliance assertion below passes
+#                                vacuously on a free-for-all
+#   every AI saw an ally         the vacuity guard for the next line: an
+#                                AI with no teammate in sight cannot have
+#                                marched on one and reports the same 0
+#   every AI attacked            an AI that never picked an objective
+#                                cannot have picked a bad one
+#   ally_objectives == 0         the finding itself
+#
+# Observed to FAIL before it was trusted, per CLAUDE.md: with the #83 fix
+# reverted (`_hostile` in `_enemy_target` put back to an ownership test)
+# this recipe reports ally objectives on every seat. See
+# decisions/D-20260818-allied-ai-is-exercised-by-something.md for the two
+# runs.
+[doc("Teamed all-AI matches that fail if an AI attacks its own ally (#119)")]
+test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int MATCHES "{{MATCHES}}"
+    bash recipe-arg.sh int SECONDS "{{SECONDS}}"
+    bash recipe-arg.sh int AI "{{AI}}"
+    bash recipe-arg.sh int TEAMS "{{TEAMS}}"
+    mkdir -p "{{artifacts_dir}}"
+    log="{{artifacts_dir}}/test-ai-teams.log"
+    : > "$log"
+
+    echo "test-ai-teams: {{MATCHES}} matches, {{AI}} AI across {{TEAMS}} teams, scenario={{SCENARIO}}, {{SECONDS}}s cap, map=ladder"
+    for i in $(seq 1 {{MATCHES}}); do
+        # A different seed per match, for the reason the ladder gives: the
+        # same seed every time measures one world repeatedly. Here it is
+        # load-bearing rather than hygienic — see the header.
+        if [ "{{runtime}}" = "docker" ]; then
+            docker compose -p {{compose_project}} run --rm --no-deps server \
+                --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --ai={{AI}} --ai-teams={{TEAMS}} --scenario={{SCENARIO}} \
+                --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        else
+            godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+            "$godot" --headless --path . server.tscn -- \
+                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --ai={{AI}} --ai-teams={{TEAMS}} --scenario={{SCENARIO}} \
+                --seed=$i --run-seconds={{SECONDS}} \
+                >> "$log" 2>&1 || true
+        fi
+        printf '.'
+    done
+    echo
+
+    # Same scan the ladder runs, and for the same reason: an average — or
+    # a zero — cannot report a fault, and a push_error nobody reads is how
+    # an AI played a whole milestone without ever being told how strong
+    # its own squads were.
+    if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log"; then
+        echo "test-ai-teams: FAILED — engine diagnostics during the match:" >&2
+        grep -EIn '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' "$log" >&2 | head -20
+        exit 1
+    fi
+
+    # ASSERT THE MATCHES HAPPENED before reading a statistic off them —
+    # the ladder spent three milestones reporting matches that never left
+    # the lobby as draws, and every gate below is satisfied vacuously by a
+    # match that was never played.
+    started=$(grep -c '^server: match started' "$log" || true)
+    if [ "$started" -lt "{{MATCHES}}" ]; then
+        echo "test-ai-teams: FAILED — only $started of {{MATCHES}} matches left the lobby. See $log." >&2
+        exit 1
+    fi
+
+    awk -v want_teams={{TEAMS}} -v want_matches={{MATCHES}} '
+        /SIM_TEAMS/ {
+            markers++
+            fields = split($0, f, /[ ,]+/)
+            for (i = 1; i <= fields; i++) {
+                if (f[i] ~ /^[0-9]+=[0-9]+$/) {
+                    split(f[i], kv, "=")
+                    if (kv[2] + 0 > 0) sides[kv[2]] = 1
+                    else teamless_in_sim++
+                }
+            }
+        }
+        /AI_STATS/ {
+            match($0, /player=([0-9]+)/, p)
+            match($0, / team=([0-9]+)/, t)
+            match($0, /allies_seen=([0-9]+)/, al)
+            match($0, /ally_objectives=([0-9]+)/, ao)
+            match($0, /attacks=([0-9]+)/, at)
+            who = p[1]
+            if (!(who in n)) order[++seats] = who
+            n[who]++
+            team[who] = t[1] + 0
+            allies[who] += al[1]; attacks[who] += at[1]; ally_obj[who] += ao[1]
+            if (t[1] + 0 == 0) teamless++
+            # Per SEAT PER MATCH, not per seat: an AI that saw an ally in
+            # one world and none in another had a world in which its zero
+            # proved nothing, and the aggregate would hide it.
+            if (al[1] + 0 == 0) blind++
+            if (at[1] + 0 == 0) idle++
+            ally_obj_total += ao[1]
+        }
+        END {
+            fail = 0
+            if (seats == 0) {
+                print "  FAILED: no AI_STATS lines — no AI played"
+                print "test-ai-teams: FAILED"
+                exit 1
+            }
+            for (i = 1; i <= seats; i++) {
+                who = order[i]
+                printf "  player %-5s team=%-2d matches=%-2d allies_seen~%.1f attacks=%-3d ally_objectives=%d\n",
+                    who, team[who], n[who], allies[who]/n[who], attacks[who], ally_obj[who]
+            }
+            side_count = 0
+            for (s in sides) side_count++
+            if (markers < want_matches) {
+                printf "  FAILED: %d of %d matches printed no SIM_TEAMS — the simulation was never handed the seats sides\n", want_matches - markers, want_matches
+                fail = 1
+            } else if (side_count != want_teams || side_count < 2) {
+                printf "  FAILED: the simulation knows %d side(s); %d were asked for, and a teamed match needs at least 2\n", side_count, want_teams
+                fail = 1
+            } else if (teamless_in_sim > 0) {
+                printf "  FAILED: %d seat(s) reached the simulation on team 0, which is FREE-FOR-ALL and not a side\n", teamless_in_sim
+                fail = 1
+            } else {
+                printf "  the simulation knows %d sides, in all %d matches\n", side_count, markers
+            }
+            if (teamless > 0) {
+                printf "  FAILED: %d AI seat-match(es) are on no team — nothing allied was exercised there\n", teamless
+                fail = 1
+            }
+            if (blind > 0) {
+                printf "  FAILED: %d AI seat-match(es) never saw an ally — ally_objectives=0 proves nothing there\n", blind
+                fail = 1
+            }
+            if (idle > 0) {
+                printf "  FAILED: %d AI seat-match(es) never attacked anything — an AI that picked no objective cannot have picked a bad one\n", idle
+                fail = 1
+            }
+            if (ally_obj_total > 0) {
+                printf "  FAILED: %d attack objective(s) landed on a friend — #83 is back\n", ally_obj_total
+                fail = 1
+            }
+            if (fail) { print "test-ai-teams: FAILED"; exit 1 }
+            printf "test-ai-teams: VERDICT clean over %d matches — every seat teamed, saw an ally, attacked, and aimed at no friend\n", want_matches
         }
     ' "$log"
