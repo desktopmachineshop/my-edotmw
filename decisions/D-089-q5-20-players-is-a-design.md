@@ -40,4 +40,12 @@ below 20 (coordination, readability, pacing), the design target moves
 and this entry is superseded — the engineering ceiling stays where
 D-018 put it either way.
 
+**Amended 2026-08-18**
+(D-20260818-battle-quality-outranks-player-count): the trigger above is
+effectively pulled, from a direction it did not anticipate — the owner
+priced battle quality above headcount rather than finding 20 un-fun.
+The design-target number is now an output of that programme's measured
+result. Everything else here stands: discovery, AI fill, drop-in/out
+resilience and SteamID repossession are needed at any headline count.
+
 ---

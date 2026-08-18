@@ -165,3 +165,11 @@ accepting the wider form:
   (cosmetic, legal under D-006 today), then Tier 2 (derived pairing,
   pure function of replicated state, nothing new on the wire), then
   Tier 3 (after the D-006 amendment).
+
+**Extended same day:** a gap analysis against RTW-quality battles found
+most of the remaining distance outside these tiers (morale terms,
+control verbs, charges, visible deaths), and the owner ordered all of it
+closed, naming player count as the budget that gives way. The programme,
+its workstream order and its exit criteria live in
+**D-20260818-battle-quality-outranks-player-count**; these three tiers
+are its workstreams 1, 3 and 10.
