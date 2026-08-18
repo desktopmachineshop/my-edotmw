@@ -1138,18 +1138,46 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var transforms := _state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset))
+		var detail := _detail_for(centre + offset)
+		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
 		#
-		# Eased FIRST, so soldiers walk to their slots when the squad turns
+		# A MELEE is a duel pass (Tier 1 of
+		# D-20260818-rome-total-war-formations-in-three-tiers): each man is
+		# paired with his nearest opponent, faced at him and stepped into
+		# contact BEFORE easing — so `_motion.ease` below glides men to a
+		# new opponent after a casualty restamp instead of snapping them.
+		# The pairing is recomputed from both squads' derived positions
+		# every frame, held stable by its inputs rather than by memory
+		# (the same trick as AnimationState.phase_offset), which is what
+		# keeps this inside D-006 clause 2. The opponent squad is derived
+		# at this squad's own detail tier — the two are adjacent, and
+		# pairing against men the enemy is not drawing would aim strikes
+		# at empty ground.
+		var doing := _activity_for(squad_id)
+		var dueling: bool = int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
+			and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0
+		var paired := PackedInt32Array()
+		var enemy_transforms: Array[Transform3D] = []
+		if dueling:
+			enemy_transforms = _state.soldier_transforms_lod(
+				int(doing["enemy_squad"]), _now, detail)
+			dueling = not enemy_transforms.is_empty()
+		if dueling:
+			paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			transforms = CosmeticDuel.engage(
+				transforms, enemy_transforms, paired, _state.terrain_sampler)
+
+		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
 		var eased := _motion.ease(squad_id, transforms, _frame_delta)
-		var doing := _activity_for(squad_id)
-		var decorated := CosmeticOffset.decorate_activity(
-			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
+		var speed := _state.squad_speed(squad_id, _now)
+		var decorated := CosmeticDuel.strike_decorate(
+				eased, enemy_transforms, paired, _now, speed) if dueling \
+			else CosmeticOffset.decorate_activity(
+				eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1158,7 +1186,6 @@ func _refresh_squads() -> void:
 		# every client agrees by construction, the same shape as D-052's
 		# colour. Writes into the MultiMesh only when the clip or the rate
 		# actually changes; the per-frame cost here is a comparison.
-		var speed := _state.squad_speed(squad_id, _now)
 		var clip := AnimationState.clip_for(
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
@@ -2813,6 +2840,7 @@ func _refresh_enemy_scan() -> void:
 		if _state.alive_of(id) <= 0 or not _state.curves.has(id):
 			continue
 		_enemy_scan.append({
+			"id": int(id),
 			"owner": int(_state.composition[id].get("owner", -2)),
 			"at": _state.squad_world_position(id, _now),
 		})
@@ -2828,7 +2856,7 @@ func _refresh_enemy_scan() -> void:
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
-		"is_ranged": false, "interval": 0.0,
+		"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 	}
 	var info: Dictionary = _state.composition.get(squad_id, {})
 	if info.is_empty() or _state.space == null:
@@ -2841,7 +2869,7 @@ func _activity_for(squad_id) -> Dictionary:
 		return {
 			"activity": CosmeticOffset.Activity.WORKING,
 			"toward": _state.squad_world_position(squad_id, _now),
-			"is_ranged": false, "interval": 0.0,
+			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 		}
 
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
@@ -2853,6 +2881,7 @@ func _activity_for(squad_id) -> Dictionary:
 	var mine := int(info.get("owner", -1))
 	var best_distance := def.attack_range
 	var toward := Vector3.ZERO
+	var enemy_squad := -1
 	for entry in _enemy_scan:
 		if int(entry["owner"]) == mine:
 			continue
@@ -2860,6 +2889,7 @@ func _activity_for(squad_id) -> Dictionary:
 		if d < best_distance:
 			best_distance = d
 			toward = entry["at"]
+			enemy_squad = int(entry["id"])
 	if toward == Vector3.ZERO:
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
@@ -2869,6 +2899,7 @@ func _activity_for(squad_id) -> Dictionary:
 	return {
 		"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward,
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
+		"enemy_squad": enemy_squad,
 	}
 
 
