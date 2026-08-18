@@ -13,7 +13,7 @@ extends GutTest
 ## fields, real shipped UnitDefs. A caricature def would prove the
 ## mechanism and say nothing about whether the shipped numbers move
 ## anybody (M6's lesson), and hand-built curves would not exercise the
-## lattice zigzag that is most of the defect.
+## lattice artefact that is most of the defect.
 ##
 ## Everything here stays inside D-006 clause 1: facing is still derived
 ## from the curve by a pure function, and the turn is paid for in the
@@ -30,10 +30,10 @@ const H := 24
 # single frame's worth of snap, long enough not to be float noise.
 const DT := 0.02
 
-# The slack allowed over move_speed. The turn charge is spread over whole
-# path segments while the facing chord sweeps continuously, so the two
-# windows line up to within a segment rather than exactly. This is a few
-# percent, not a factor.
+# The slack allowed over move_speed. A segment's pace is set from the
+# curvature at the vertices bounding it, while the facing chord sweeps
+# continuously across them, so the two line up to within a segment rather
+# than exactly. This is a few percent, not a factor.
 const SPEED_TOLERANCE := 1.05
 
 # The obstacle the corner fixtures walk round, and the route past it.
@@ -143,17 +143,12 @@ func _barrier(sim: SquadSim) -> PackedByteArray:
 	return p
 
 
-func _tick_for(sim: SquadSim, seconds: float) -> void:
-	for _i in range(int(seconds * SquadSim.TICK_HZ)):
-		sim.tick()
-
-
 # --- the owner's rule -------------------------------------------------
 
 func test_no_soldier_outruns_his_own_speed_on_a_lattice_march() -> void:
-	# The everyday case, and the one that made formations "jump around":
-	# a destination off the six lattice directions, so the flow field
-	# zigzags 60 degrees every single cell.
+	# The everyday case: a destination off the six lattice directions, so
+	# the flow field has to staircase its way there and the route changes
+	# direction without the squad's journey doing anything of the sort.
 	var sim := _sim()
 	sim.set_passable(_all_passable(sim))
 	var def := _militia()
