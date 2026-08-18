@@ -220,6 +220,19 @@ terrain_fog.gd           What ONE CLIENT knows about each cell of the
                         map is DRAWN rather than what is sent. Purely
                         presentational: nothing here reaches the wire,
                         which is what makes deriving it locally legal.
+prop_fog.gd              The same field, read by everything that STANDS on
+                        the ground (D-20260817-fog-covers-props). D-106
+                        fogged the terrain shader and nothing else, so a
+                        scouted forest kept rendering at full brightness
+                        over the dim ground it grows in (#81). Re-expresses
+                        the imported glTF materials as a shader that can
+                        multiply by `known`; the coordinate rides
+                        per-instance custom data and comes from the CELL
+                        (`TerrainChunk.fog_uv`, never world position — a
+                        chunk root swings to a different torus copy every
+                        frame). Buildings are deliberately NOT dimmed: once
+                        seen, a building is knowledge, not sight (D-030,
+                        D-101). All-static.
 render_cull.gd           Wrap-aware render culling and LOD selection
                         (D-045). All-static and pure, so the half with
                         the interesting failure mode — which lattice copy
@@ -381,7 +394,10 @@ unit_mesh.gd            Loads authored models, their VATs and their
                         VAT sampling shared via a .gdshaderinc. Plus
                         `terrain.gdshader` (D-096): three atlas taps per
                         ground fragment on continuous UVs, which is what
-                        a fixed-function material cannot express.
+                        a fixed-function material cannot express — and
+                        `prop_fog.gdshader`, the same fog tap for the
+                        models standing on that ground, at a coordinate
+                        carried per MultiMesh instance.
 /art/**.py              Committed asset GENERATORS (D-081) — the source
                         of truth for every model and texture. Plain
                         Python; `bpy` is imported only by art/lib/bake.py.
