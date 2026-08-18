@@ -206,8 +206,8 @@ func test_an_ai_told_the_match_started_stops_waiting() -> void:
 	assert_eq(w["sent"].size(), 0, "Setup: still in the lobby")
 
 	ai.state.handle_packet(NetProtocol.encode_lobby(0, ai.state.lobby["seats"], {}, 1))
-	ai.set_time(sim.time + AiPlayer.THINK_INTERVAL)
-	ai.update(sim.time + AiPlayer.THINK_INTERVAL)
+	ai.set_time(sim.time + ai.profile.think_interval)
+	ai.update(sim.time + ai.profile.think_interval)
 
 	assert_eq(_build_orders(w["sent"]).size(), 1,
 		"An AI that has been told the match started should get on with it")
@@ -225,7 +225,7 @@ func test_an_ai_whose_founding_order_was_dropped_tries_again() -> void:
 	assert_eq(_build_orders(w["sent"]).size(), 1, "Setup: it tried once")
 	w["sent"].clear()   # the server dropped it; no town centre appears
 
-	var later := sim.time + AiPlayer.FOUND_RETRY + AiPlayer.THINK_INTERVAL
+	var later := sim.time + AiPlayer.FOUND_RETRY + ai.profile.think_interval
 	ai.set_time(later)
 	ai.update(later)
 

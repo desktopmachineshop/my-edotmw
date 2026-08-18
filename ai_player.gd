@@ -33,50 +33,18 @@ class_name AiPlayer
 ## deliberately simple: D-046 makes AI players a shipped feature, so this
 ## is the floor to build on, not the ceiling.
 
-## How often the AI reconsiders, in seconds. Ten times slower than the
-## simulation tick on purpose — a human does not issue orders at 10 Hz,
-## and thinking every tick would spend real CPU to play worse.
-const THINK_INTERVAL := 1.0
-
-## How many gatherer squads to field before spending on soldiers.
+## How this seat plays: the intervals and thresholds that used to be
+## constants here (D-20260818-ai-profiles-are-data).
 ##
-## Was 3, which is why it never fought: three crews haul too slowly to
-## reach a barracks' 150 wood inside a match, so it sat at three squads
-## with no way to build anything that trains an army. The economy has to
-## outrun the first building before the army can exist at all.
+## Three of them carried a comment promising they would "become a profile
+## field in the next slice (D-053)" for two milestones — and D-053 was
+## never written. This is that slice. The rationale for each number moved
+## to `ai_profile.gd` with the field; what is left here is the reading.
 ##
-## Becomes a profile field in the next slice (D-053); it is a constant
-## here only until profiles land.
-## Counted in SOLDIERS, not squads.
-##
-## It was 7 SQUADS, which is a number about crews rather than about
-## labour — so when gatherer squads went from 16 men to 5 the AI's economy
-## silently fell to a third without anyone changing the AI. A target
-## expressed in the thing that actually gathers (gather_rate is per living
-## soldier, D-028) survives a roster change instead of quietly breaking.
-const GATHERER_SOLDIERS_WANTED := 110
-
-## Seconds between production orders, so the queue cannot outrun the
-## target the AI is aiming at. A profile field in the next slice.
-##
-## ## Per ORDER, and that is deliberate — do not "fix" it
-##
-## Because it gates orders rather than labour, shrinking gatherer crews
-## from 16 to 5 tripled the time to staff an economy: the same ~110
-## workers now take 22 productions instead of 7, so 110 s of cooldown
-## instead of 35 s. First contact moved from 121-160 s to ~326 s.
-##
-## I flagged that as a bug to fix. It is not: the owner's call is that
-## the old ramp was FAR too quick, and a slower build-up is wanted
-## (2026-08-04). It pulls the same direction as D-056's 1-2 hour target —
-## an opening you can be attacked out of in two minutes is not a strategy
-## game, it is a race.
-##
-## So a future reader finding "the cooldown scales with order count rather
-## than headcount" should leave it alone unless the pacing target changes.
-## The thing to re-derive when it does is `ai-ladder`'s SECONDS default,
-## which has already been stale once for exactly this reason.
-const TRAIN_COOLDOWN := 5.0
+## Never null: the schema's defaults are the constants this file used to
+## hold, so an AI seated before /ai is readable plays exactly the AI that
+## shipped rather than crashing on its first think.
+var profile: AiProfileDef = AiProfileRoster.default()
 
 var player: int = 0
 var civ: StringName = &""
@@ -110,7 +78,7 @@ func _init(p_player: int = 0, p_civ: StringName = &"") -> void:
 func update(now: float) -> void:
 	if now < _next_think or not send.is_valid():
 		return
-	_next_think = now + THINK_INTERVAL
+	_next_think = now + profile.think_interval
 
 	# Nothing at all until the match is actually running.
 	#
@@ -198,7 +166,7 @@ func _raise_buildings() -> void:
 		# Hold this worker off hauling until the order lands, or the
 		# gather order issued a second later cancels the build.
 		_builder_squad = builder
-		_builder_busy_until = state_time() + THINK_INTERVAL * 3.0
+		_builder_busy_until = state_time() + profile.think_interval * 3.0
 		print("server: AI_BUILD player=%d %s at %s" % [player, def.id, site])
 		send.call(order)
 		return
@@ -359,11 +327,11 @@ func _train() -> void:
 		worker_soldiers += state.alive_of(squad)
 	# LATCHED, with hysteresis — the boundary is not a safe place to sit.
 	#
-	# The target is 110 soldiers and a crew is 5, so it is met at exactly
-	# 22 squads. A single casualty anywhere drops the count to 109, the
-	# test flips back to "make gatherers", and the AI spends the rest of
-	# the match rebuilding one worker instead of an army. One ladder seat
-	# did exactly that: 22 squads, all of them workers, three buildings,
+	# The default target is 110 soldiers and a crew is 5, so it is met at
+	# exactly 22 squads. A single casualty anywhere drops the count to
+	# 109, the test flips back to "make gatherers", and the AI spends the
+	# rest of the match rebuilding one worker instead of an army. One
+	# ladder seat did exactly that: 22 squads, all workers, three buildings,
 	# 1,680 wood banked and not one soldier trained in 700 seconds — while
 	# its opponent on the same code reached 44 squads and attacked 59
 	# times.
@@ -371,9 +339,9 @@ func _train() -> void:
 	# So: once the economy has EVER been staffed, stay switched. It only
 	# goes back if the workforce is genuinely gutted (a raid, not a
 	# scratch), which is the case where rebuilding really is the priority.
-	if worker_soldiers >= GATHERER_SOLDIERS_WANTED:
+	if worker_soldiers >= profile.gatherer_soldiers_wanted:
 		_economy_staffed = true
-	elif worker_soldiers < GATHERER_SOLDIERS_WANTED * 0.6:
+	elif worker_soldiers < float(profile.gatherer_soldiers_wanted) * 0.6:
 		_economy_staffed = false
 
 	# economy_only (sandbox mode, dev testing) holds this at "gatherers"
@@ -409,7 +377,7 @@ func _train() -> void:
 		# it blew past the target into the squad cap (D-033) — 54 orders,
 		# 15 workers, no room left for an army. A player watches the queue;
 		# this is the same restraint expressed as a cooldown.
-		_train_at = state_time() + TRAIN_COOLDOWN
+		_train_at = state_time() + profile.train_cooldown
 		send.call(NetProtocol.encode_order_produce(int(wire_id), wanted))
 		return
 
@@ -648,7 +616,7 @@ func _drop_unreachable_assignments() -> void:
 func _kinds_below_floor() -> Array:
 	var out := []
 	if state.wallet.size() >= 4:
-		if state.wallet[1] < WOOD_FLOOR:
+		if state.wallet[1] < profile.wood_floor:
 			out.append(Economy.ResourceKind.WOOD)
 	out.append(Economy.ResourceKind.FOOD)
 	return out
@@ -666,17 +634,11 @@ func _kinds_below_floor() -> Array:
 func _scarcest_kind() -> int:
 	if state.wallet.size() < 4:
 		return Economy.ResourceKind.FOOD
-	if state.wallet[0] < FOOD_FLOOR:
+	if state.wallet[0] < profile.food_floor:
 		return Economy.ResourceKind.FOOD
-	if state.wallet[1] < WOOD_FLOOR:
+	if state.wallet[1] < profile.wood_floor:
 		return Economy.ResourceKind.WOOD
 	return Economy.ResourceKind.FOOD
-
-
-## Enough food to keep training, and enough wood for the first building
-## that makes soldiers. Profile fields in the next slice (D-053).
-const FOOD_FLOOR := 180
-const WOOD_FLOOR := 200
 
 
 func _nearest_node_of_kind(from: Vector2i, kind: int) -> int:
@@ -729,7 +691,12 @@ func _fight(now: float) -> void:
 		var def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
 		if def != null and def.damage > 1.0 and def.carry_capacity <= 0:
 			army.append(squad)
-	if army.size() < 2:
+	# How much army it masses before it moves is a profile field
+	# (D-20260818-ai-profiles-are-data): at two it dribbles pairs across
+	# the map, at four it turns up as an army. It is the half of pacing a
+	# defender FEELS — the other half is when the army exists at all,
+	# which is `gatherer_soldiers_wanted` and the train cooldown.
+	if army.size() < profile.attack_squads_minimum:
 		return
 
 	var target := _enemy_target()
@@ -757,10 +724,17 @@ func _fight(now: float) -> void:
 		ally_objectives += 1
 	# Attacked in a body rather than one squad at a time, so the AI
 	# arrives as an army instead of feeding itself in piecemeal.
-	_attack_at = now + THINK_INTERVAL * 8.0
+	_attack_at = now + profile.think_interval * profile.attack_regroup_thinks
 	attacks_launched += 1
 	if first_attack_at < 0.0:
 		first_attack_at = now
+		# How BIG the first attack was, not merely when it landed. #93 is
+		# about an attack arriving before a human's opening is finished,
+		# and "at 171 s" is only half of that sentence — a person can be
+		# asked whether they could have held 40 men at three minutes, and
+		# cannot be asked anything useful about a bare timestamp.
+		for squad in army:
+			first_attack_soldiers += state.alive_of(squad)
 	for squad in army:
 		var order := state.encode_attack_move(squad, target)
 		if not order.is_empty():
@@ -819,6 +793,11 @@ var _scout_leg := 0
 var _assigned_at := {}
 var attacks_launched: int = 0
 var first_attack_at: float = -1.0
+## How many soldiers marched in that first attack. Recorded when it is
+## ordered rather than reconstructed later, because the army that sets off
+## is not the army that arrives — and the question #93 asks is what the
+## defender was hit BY.
+var first_attack_soldiers: int = 0
 
 ## How many attack objectives landed on a friend (#119). Zero is the only
 ## acceptable value, and it is only EVIDENCE of anything alongside
@@ -909,10 +888,10 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
-		player, civ, _own_team(), peak_squads, peak_workers, buildings_raised,
+	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
+		player, civ, profile.id, _own_team(), peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
-		attacks_launched, first_attack_at,
+		attacks_launched, first_attack_at, first_attack_soldiers,
 		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals]
 
 

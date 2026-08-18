@@ -63,6 +63,17 @@ var _civs := {}
 var _ai_clients := {}
 var _ai_players: Array = []
 
+## player -> the AiProfileDef that seat was dealt
+## (D-20260818-ai-profiles-are-data). Kept here rather than on the seat
+## because a seat is a LOBBY record that travels on the wire, and per-seat
+## selection in the lobby is the next increment, not this one. Seats
+## missing from here take the default, which is the AI that already
+## shipped — so an absent `--ai-profiles` changes nothing about a run.
+##
+## Keyed by player and not by index so it survives `_on_match_started`
+## re-seating every AI after a return to the lobby (D-075).
+var _ai_profiles := {}
+
 
 ## This player's civ. Never a hardcoded id — the roster is the authority,
 ## and no script may name a civ (D-046 criterion 3).
@@ -291,6 +302,31 @@ func _ready() -> void:
 	# one like the town centre) offers nothing to train.
 	var ai_wanted := int(args.get("ai", 0))
 
+	# --ai-profiles=a,b deals difficulties across those seats round-robin,
+	# exactly as civs are dealt below (D-20260818-ai-profiles-are-data).
+	# It is what lets `just ai-ladder` play one profile against another and
+	# report a win rate per pairing, instead of measuring one AI against
+	# a copy of itself.
+	#
+	# An unknown name REFUSES TO START rather than falling back to the
+	# default, for the reason `int()` stripping non-digits earns its own
+	# check (D-20260817-recipe-args-are-positional): a run that quietly
+	# seated a different opponent from the one asked for would report a
+	# pairing it never played, and nothing in the log would look wrong.
+	# Dealt for at least one seat even when none was asked for, so a typo
+	# is caught whatever `--ai` says rather than only when somebody
+	# happens to have seated an opponent.
+	var profile_spec := String(args.get("ai-profiles", ""))
+	var ai_profiles := AiProfileRoster.resolve_list(profile_spec, maxi(ai_wanted, 1))
+	if ai_profiles.is_empty():
+		var shipped := PackedStringArray()
+		for profile_id in AiProfileRoster.ids():
+			shipped.append(String(profile_id))
+		push_error("server: --ai-profiles=%s names a difficulty that does not exist; shipped: %s"
+			% [profile_spec, ", ".join(shipped)])
+		get_tree().quit(1)
+		return
+
 	_match = MatchState.new()
 	# `maxi` around the SUM, not around the human count alone.
 	#
@@ -381,6 +417,7 @@ func _ready() -> void:
 			# assigned in a second pass would be assigned to a seat whose
 			# match had already handed `team_map()` to the simulation.
 			var team := (i % ai_teams) + 1 if ai_teams > 0 else 0
+			_ai_profiles[1000 + i] = ai_profiles[i]
 			_seat_ai(1000 + i, ai_civ, team)
 
 		# Human seats aren't known by id until they connect (`_next_player`
@@ -2689,6 +2726,12 @@ func _on_match_started() -> void:
 ## call is then only bringing the BRAIN to life.
 func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	var brain := AiPlayer.new(player, civ)
+	# The difficulty this seat was dealt, if anybody dealt one. Absent —
+	# every lobby seat today — leaves the brain on the default profile it
+	# constructs itself with, which is the AI that shipped before profiles
+	# existed (D-20260818-ai-profiles-are-data).
+	if _ai_profiles.has(player):
+		brain.profile = _ai_profiles[player]
 	# Whatever the admin already had toggled before this AI was seated —
 	# a live toggle afterward updates every brain directly (see
 	# _handle_lobby_command's LOBBY_SET_OPTION case).
@@ -2717,7 +2760,7 @@ func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	_ai_clients[peer] = {"player": player, "visible": {}}
 	_ai_players.append(brain)
 	_admit_player(peer, player)
-	print("server: AI seated as player %d (%s)" % [player, civ])
+	print("server: AI seated as player %d (%s, %s)" % [player, civ, brain.profile.id])
 	# An all-AI match (`--players=0 --ai=n`) begins the moment the last seat
 	# is filled, with nobody left to connect and trigger the path above.
 	if started:

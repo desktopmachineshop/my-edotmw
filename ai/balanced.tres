@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="AiProfileDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ai_profile.gd" id="1_aiprof"]
+
+[resource]
+script = ExtResource("1_aiprof")
+id = &"balanced"
+display_name = "Balanced"
+summary = "The opponent this game shipped with. Switches to soldiers once its economy is staffed and attacks with whatever is standing."
+order = 10
+is_default = true
+think_interval = 1.0
+gatherer_soldiers_wanted = 110
+train_cooldown = 5.0
+attack_squads_minimum = 2
+attack_regroup_thinks = 8.0
+food_floor = 180
+wood_floor = 200

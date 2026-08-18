@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="AiProfileDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ai_profile.gd" id="1_aiprof"]
+
+[resource]
+script = ExtResource("1_aiprof")
+id = &"relentless"
+display_name = "Relentless"
+summary = "Cuts its economy short, ramps hard, and masses before it moves. It sees no more of the map than you do; it just stops gathering sooner."
+order = 20
+is_default = false
+think_interval = 0.5
+gatherer_soldiers_wanted = 80
+train_cooldown = 3.0
+attack_squads_minimum = 4
+attack_regroup_thinks = 6.0
+food_floor = 180
+wood_floor = 200
