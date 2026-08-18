@@ -591,12 +591,73 @@ func test_forests_are_dense_and_open_ground_is_not() -> void:
 
 	var forest_fill := float(forest_trees) / maxf(float(forest_cells), 1.0)
 	var grass_fill := float(grass_trees) / maxf(float(grass_cells), 1.0)
-	assert_gt(forest_fill, 0.5,
+	# 0.3 rather than 0.5 since D-20260818 (#94) thinned every wood band by
+	# 0.60. The bound has to move with the tuning, but it stays TWO-SIDED:
+	# a forest is still several times denser than the prairie beside it,
+	# and the upper bound is what the complaint was — a wood whose every
+	# cell holds a tree leaves nowhere to walk or build inside it.
+	assert_gt(forest_fill, 0.3,
 		"only %.0f%% of forest cells carry a tree — a forest should read as one" % (forest_fill * 100.0))
+	assert_lt(forest_fill, 0.65,
+		"%.0f%% of forest cells carry a tree — a wood with no floor is not a place, it is a wall" % (forest_fill * 100.0))
 	assert_lt(grass_fill, 0.35,
 		"%.0f%% of grassland carries trees — open ground should stay open" % (grass_fill * 100.0))
 	assert_gt(forest_fill, grass_fill * 2.0,
 		"forest is barely denser than prairie — density is not following biome")
+
+
+## The number #94 was actually about (D-20260818), and the one no instrument
+## reported when it was filed: what SHARE of the ground a player can walk
+## on is free of nodes.
+##
+## It is not the same question as either test above. A node is ground
+## nobody can BUILD on (`server._is_buildable`), so this is the measurement
+## behind "the map reads as woodland with clearings rather than open
+## country with woods in it" — and a per-biome fill can look healthy while
+## the whole-map answer does not, because the map is mostly not forest.
+##
+## The shipped Standard map at the default seed, through the real path
+## (generate, then the fairness top-up, because that is the map a player
+## gets). Measured before the wood bands were thinned by 0.60: 71.3% of
+## walkable cells open. After: 79.3%.
+func test_open_ground_is_most_of_the_walkable_map() -> void:
+	# MapSettings' own defaults ARE the shipped Standard map at the default
+	# seed, so this is the world the playtest complained about rather than a
+	# toy one.
+	var settings := MapSettings.new()
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var passable := terrain.passability(space)
+	var spawn_config := MapConfig.new()
+	spawn_config.width = settings.width
+	spawn_config.height = settings.height
+	var map := load("res://maps/default.tres") as MapConfig
+	spawn_config.player_slots = map.player_slots
+	spawn_config.min_spawn_spacing = map.min_spawn_spacing
+	economy.balance_for_spawns(spawn_config.spawn_points(passable), passable,
+		map.fairness_radius, map.fairness_quota)
+
+	var walkable := 0
+	var open := 0
+	for i in range(space.cell_count()):
+		if passable[i] == 0:
+			continue
+		walkable += 1
+		if not economy.nodes.has(i):
+			open += 1
+	var open_share := float(open) / maxf(float(walkable), 1.0)
+	gut.p("open ground: %d of %d walkable cells (%.1f%%), %d nodes" % [
+		open, walkable, open_share * 100.0, economy.node_count()])
+	assert_gt(open_share, 0.75,
+		"only %.1f%% of walkable ground is free of nodes — that is woodland with clearings, not open country with woods in it" % (open_share * 100.0))
+	# Two-sided for the same reason as the forest fill: thinning the woods
+	# until the map is a lawn with markers on it would satisfy the bound
+	# above and undo D-087.
+	assert_lt(open_share, 0.92,
+		"%.1f%% of walkable ground is free of nodes — the resources have thinned out of existence" % (open_share * 100.0))
 
 
 func test_natural_stone_sits_on_walkable_ground() -> void:
@@ -983,6 +1044,20 @@ func test_no_top_up_lands_on_a_beach_while_better_ground_is_free() -> void:
 	# water by definition and the authored node models overhang the cell
 	# they sit on, so a rock dropped there reads as standing in the sea.
 	#
+	# A PALM is the exception, and it is the code's exception rather than
+	# this test's: `_ground_ranks` ranks a cell NATURAL for anything its
+	# own band table grows, and a beach grows wood (D-087). So what is
+	# forbidden here is a beach top-up of a kind the beach does NOT grow —
+	# the rock, not the tree. Stated as this test's own rule rather than
+	# read back out of `_bands`, per D-022's audit.
+	#
+	# It went red for the first time when D-20260818 thinned the woods:
+	# with fewer natural trees an islands start needed a wood top-up at
+	# all, and the only wood-growing ground it could walk to was its own
+	# shoreline. The rule was never breached — the assertion was simply
+	# wider than the rule, and had never been handed a case that told
+	# them apart.
+	#
 	# The biome-blind arm is the counter-test: without it this passes just
 	# as happily on a map with no beaches at all.
 	var settings := MapSettings.new()
@@ -1003,7 +1078,7 @@ func test_no_top_up_lands_on_a_beach_while_better_ground_is_free() -> void:
 	assert_gt(blind, 0,
 		"picking cells by passability alone should still strand top-ups on the shoreline — if it does not, the check below is vacuous")
 	assert_eq(aware, 0,
-		"%d fairness top-ups were placed on beach cells with other walkable ground free" % aware)
+		"%d fairness top-ups were placed on beach cells that do not grow them, with other walkable ground free" % aware)
 
 
 ## Does this cell border the mountains? The test's OWN definition, not a
@@ -1021,9 +1096,14 @@ func _mountain_foot(space: TorusSpace, terrain: TerrainGen, coord: Vector2i) -> 
 	return false
 
 
-## How many nodes the fairness pass adds on beach cells. Nulling
-## `Economy.terrain` after generation reproduces the old biome-blind pass
-## exactly, so both arms run the same code over the same world.
+## How many nodes the fairness pass adds on beach cells THAT DO NOT GROW
+## THEM. Nulling `Economy.terrain` after generation reproduces the old
+## biome-blind pass exactly, so both arms run the same code over the same
+## world.
+##
+## A beach grows wood and nothing else (D-087: the odd palm). Written out
+## here rather than asked of `_bands`, so this counts what the shoreline
+## rule MEANS instead of agreeing with whatever the code currently does.
 func _top_ups_on_beach(settings: MapSettings, spawns: Array, blind: bool) -> int:
 	var space := settings.to_space()
 	var terrain := settings.to_terrain()
@@ -1042,6 +1122,9 @@ func _top_ups_on_beach(settings: MapSettings, spawns: Array, blind: bool) -> int
 	for cell in economy.nodes:
 		if before.has(cell):
 			continue
-		if terrain.biome_at(space, space.from_index(int(cell))) == TerrainGen.Biome.BEACH:
-			beached += 1
+		if terrain.biome_at(space, space.from_index(int(cell))) != TerrainGen.Biome.BEACH:
+			continue
+		if int(economy.nodes[cell]["kind"]) == Economy.ResourceKind.WOOD:
+			continue  # a palm, which is what a beach is FOR
+		beached += 1
 	return beached

@@ -100,6 +100,41 @@ func _initialize() -> void:
 	print("gen-terrain-preview: %d of %d cells impassable (%.1f%%)" % [
 		blocked, space.cell_count(), 100.0 * float(blocked) / float(space.cell_count())])
 
+	# --- resource nodes, and how much walkable ground they leave open ---
+	#
+	# The counts alone cannot answer the question a player asks ("is there
+	# any open country?"), because a node only matters where somebody could
+	# have walked or built: 7,694 nodes on a map that is a fifth water is a
+	# different picture from the same number on dry land. So the share of
+	# PASSABLE cells that hold no node is reported next to the totals, and
+	# the FOREST biome's own share separately — a forest heart at 98% trees
+	# is invisible in a whole-map average dominated by open grassland.
+	var economy := Economy.new(space)
+	economy.generate(terrain, config.symmetry_order)
+	var by_kind := PackedInt32Array()
+	by_kind.resize(Economy.RESOURCE_COUNT)
+	var open_passable := 0
+	var forest_cells := 0
+	var forest_nodes := 0
+	for i in range(space.cell_count()):
+		var held: bool = economy.nodes.has(i)
+		if held:
+			by_kind[int(economy.nodes[i]["kind"])] += 1
+		if passable[i] != 0 and not held:
+			open_passable += 1
+		if terrain.biome_at(space, space.from_index(i)) == TerrainGen.Biome.FOREST:
+			forest_cells += 1
+			if held:
+				forest_nodes += 1
+	var walkable_cells := space.cell_count() - blocked
+	print("gen-terrain-preview: %d resource nodes — %d food, %d wood, %d gold, %d stone" % [
+		economy.node_count(), by_kind[Economy.ResourceKind.FOOD], by_kind[Economy.ResourceKind.WOOD],
+		by_kind[Economy.ResourceKind.GOLD], by_kind[Economy.ResourceKind.STONE]])
+	print("gen-terrain-preview: %d of %d walkable cells are open ground (%.1f%%) — a node is ground nobody can build on" % [
+		open_passable, walkable_cells, 100.0 * float(open_passable) / float(maxi(walkable_cells, 1))])
+	print("gen-terrain-preview: forest biome %d cells, %d hold a node (%.1f%% wooded)" % [
+		forest_cells, forest_nodes, 100.0 * float(forest_nodes) / float(maxi(forest_cells, 1))])
+
 	quit(0)
 
 
