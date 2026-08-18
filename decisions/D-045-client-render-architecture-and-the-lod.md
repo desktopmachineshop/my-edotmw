@@ -324,4 +324,22 @@ Recorded rather than edited away, because "a sweep that measured
 something adjacent to the question and agreed with the answer anyway" is
 worth one entry in this project's list of ways to be confidently wrong.
 
+## Amendment, 2026-08-18 — the copy question is gone, not answered
+
+`RenderCull.visible_offset_of_extent` no longer exists.
+`visible_offsets_of_extent` replaces it and returns EVERY copy on screen,
+because the paragraph above still frames this as picking the right one
+and there is no right one: a view can hold two copies of the same ground,
+and whichever the rule names, the other is bare terrain. Entities are
+drawn at all of them now, and the cull survives only as this decision's
+own derivation gate — so a cull mistake can no longer move anything.
+See **D-20260818-entities-are-drawn-at-every-visible-copy**.
+
+`nearest_offset` keeps a narrower version of the role described above:
+LOD picks the nearest of the copies actually drawn, and the placement
+ghost still needs one copy because it follows the mouse. The rally marker
+and the build preview named above are drawn at every copy now, like the
+ground they are painted on.
+
+
 ---

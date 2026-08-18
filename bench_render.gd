@@ -242,6 +242,13 @@ func _setup_count(count: int) -> void:
 	_now = _sim.time
 
 
+## A formation's own on-screen extent, in world units, for the cull test —
+## the client takes it from `Formation.footprint`, and one number close to
+## a shipped squad's radius is enough here because what is being measured
+## is the cost of the copies, not the exactness of the cull.
+const SQUAD_CULL_RADIUS := 4.0
+
+
 ## Exactly what client.gd's _refresh_squads does, minus the ghost pass
 ## (this harness never conceals anything).
 func _refresh_squads() -> void:
@@ -267,13 +274,18 @@ func _refresh_squads() -> void:
 		# the client's real cost rather than a version of it without the
 		# one optimisation that matters.
 		var centre := _state.squad_world_position(squad_id, _now)
-		var offset := RenderCull.nearest_offset(offsets, centre, target)
-		if not RenderCull.is_on_screen(_camera, centre + offset, 192.0, viewport_size):
-			unit.visible = false
+		# Every visible lattice copy, exactly as the client draws it
+		# (D-20260818-entities-are-drawn-at-every-visible-copy). The whole
+		# claim of that change is that extra copies cost draw calls and
+		# not derivation, so a benchmark that still drew one of them would
+		# be measuring the version of the client that does not ship.
+		var drawn := RenderCull.visible_offsets_of_extent(
+			_camera, offsets, centre, SQUAD_CULL_RADIUS, 192.0, viewport_size)
+		unit.set_lattice_offsets(drawn)
+		if drawn.is_empty():
 			continue
-		unit.visible = true
-		unit.position = offset
 		_visible_squads += 1
+		var offset := RenderCull.nearest_offset(drawn, centre, target)
 		unit.set_slot_transforms(_state.soldier_transforms_lod(
 			squad_id, _now, _detail_for(centre + offset)))
 
