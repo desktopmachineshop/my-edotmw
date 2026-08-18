@@ -495,3 +495,241 @@ func test_every_shape_the_schema_offers_is_implemented() -> void:
 		var b := Formation.slot_offset(shape, 8, 20, 1.0)
 		assert_ne(a, b,
 			"'%s' put two different soldiers in the same place — is it implemented?" % shape)
+
+
+# --- clause 1's other terrain input: passability (#97) -----------------
+#
+# Passability was enforced on the SQUAD and on nothing else. A squad
+# cannot path into water or onto a mountain, but its slot offsets are
+# pure geometry, so a squad parked on a coastline stamped part of its
+# formation into the sea and part of it up the rock behind. Worse, D-097
+# draws the impassable HIGH class on a lifted tier (`cliff_rise`, 2.0
+# world units), so a slot crossing that boundary did not nudge — it
+# teleported onto the top of the drawn cliff, which is the popping the
+# playtest reported.
+#
+# Every number stayed green throughout, and would have: the squad really
+# was standing on legal ground, and soldier positions are derived rather
+# than sent, so there is no packet for anything to disagree over.
+
+
+func _open_ground(space: TorusSpace) -> PackedByteArray:
+	var p := PackedByteArray()
+	p.resize(space.cell_count())
+	p.fill(1)
+	return p
+
+
+## A coastline: every cell more than `reach` world units past the squad's
+## own, along z. Along z because these curves march in +q, which is +x in
+## world space, and a line formation lays its files out ACROSS its
+## heading — a boundary parallel to the frontage would miss every slot and
+## the test would pass having proved nothing.
+func _rock_beyond(space: TorusSpace, home: Vector2i, reach: float) -> PackedByteArray:
+	var limit := space.to_world(home).z + reach
+	var p := _open_ground(space)
+	for i in range(space.cell_count()):
+		if space.to_world(space.from_index(i)).z > limit:
+			p[i] = 0
+	return p
+
+
+func _standing_on_rock(space: TorusSpace, transforms: Array[Transform3D],
+		passable: PackedByteArray) -> int:
+	var count := 0
+	for tr in transforms:
+		if passable[space.index(space.world_to_cell(tr.origin))] == 0:
+			count += 1
+	return count
+
+
+func test_no_soldier_stands_on_ground_his_squad_could_not_walk_on() -> void:
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+	var rock := _rock_beyond(t, home, 1.0)
+
+	for shape in SHAPES:
+		var loose := Formation.soldier_transforms(curve, 2.0, 40, shape, 1.0, t)
+		# The fixture has to actually reach past the coastline, or the
+		# assertion below is satisfied by a formation that never went near
+		# it — a check nobody has watched fail.
+		assert_gt(_standing_on_rock(t, loose, rock), 0,
+			"Setup: %s should put some soldiers past the coastline" % shape)
+
+		var clamped := Formation.soldier_transforms(
+			curve, 2.0, 40, shape, 1.0, t, Callable(), rock)
+		assert_eq(clamped.size(), loose.size(),
+			"%s lost soldiers to the clamp — nobody may be dropped" % shape)
+		assert_eq(_standing_on_rock(t, clamped, rock), 0,
+			"%s still has soldiers standing on rock" % shape)
+
+
+func test_a_slot_over_the_line_is_pulled_back_not_reset() -> void:
+	# The formation compresses against the water; it does not collapse
+	# into a pile on the squad's own cell. The fallback exists, but it is
+	# the last resort and not the answer.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+	var centre := curve.sample_world(2.0, t)
+	var rock := _rock_beyond(t, home, 2.0)
+
+	var loose := Formation.soldier_transforms(curve, 2.0, 40, "line", 1.0, t)
+	var clamped := Formation.soldier_transforms(
+		curve, 2.0, 40, "line", 1.0, t, Callable(), rock)
+
+	var pulled := 0
+	for i in range(clamped.size()):
+		if clamped[i].origin.is_equal_approx(loose[i].origin):
+			continue
+		pulled += 1
+		assert_gt((clamped[i].origin - centre).length(), 0.001,
+			"Soldier %d was dropped onto the squad's own cell rather than pulled back" % i)
+	assert_gt(pulled, 0, "Setup: nobody was clamped, so this proves nothing")
+
+
+func test_a_slot_never_climbs_the_drawn_cliff() -> void:
+	# The reported symptom, in the terms the player saw it: rock is DRAWN
+	# `cliff_rise` above the ground beside it (D-097), so a slot that
+	# crossed the boundary jumped 2.0 world units rather than nudging.
+	# Heights are sampled after the clamp for exactly this reason.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+	var rock := _rock_beyond(t, home, 1.0)
+	var shelf := func(x: float, z: float) -> float:
+		return 0.0 if rock[t.index(t.world_to_cell(Vector3(x, 0.0, z)))] != 0 else 2.0
+
+	var loose := Formation.soldier_transforms(curve, 2.0, 40, "line", 1.0, t, shelf)
+	var on_the_shelf := 0
+	for tr in loose:
+		if tr.origin.y > 0.001:
+			on_the_shelf += 1
+	assert_gt(on_the_shelf, 0, "Setup: nobody stood on the shelf, so this proves nothing")
+
+	var clamped := Formation.soldier_transforms(
+		curve, 2.0, 40, "line", 1.0, t, shelf, rock)
+	for i in range(clamped.size()):
+		assert_almost_eq(clamped[i].origin.y, 0.0, 0.001,
+			"Soldier %d is standing on top of the drawn cliff" % i)
+
+
+func test_open_ground_derives_exactly_as_it_always_did() -> void:
+	# An all-passable map must be indistinguishable from no map at all, to
+	# the bit. Otherwise this change quietly moves every soldier in every
+	# match that never goes near water.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var open := _open_ground(t)
+
+	for shape in SHAPES:
+		var without := Formation.soldier_transforms(curve, 2.0, 40, shape, 1.0, t)
+		var with_open := Formation.soldier_transforms(
+			curve, 2.0, 40, shape, 1.0, t, Callable(), open)
+		for i in range(without.size()):
+			assert_eq(with_open[i], without[i],
+				"%s slot %d moved on ground nothing was blocking" % [shape, i])
+
+
+func test_the_clamp_carries_nothing_between_calls() -> void:
+	# Clause 1's real question about this change: is it an INPUT, or is it
+	# local avoidance in disguise? An input gives the same answer forever
+	# and forgets instantly — so a soldier back on open ground must get his
+	# full offset again, with no memory of having been pushed.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+	var rock := _rock_beyond(t, home, 1.0)
+
+	var loose := Formation.soldier_transforms(curve, 2.0, 40, "line", 1.0, t)
+	var clamped := Formation.soldier_transforms(
+		curve, 2.0, 40, "line", 1.0, t, Callable(), rock)
+	var again := Formation.soldier_transforms(
+		curve, 2.0, 40, "line", 1.0, t, Callable(), rock)
+	var reopened := Formation.soldier_transforms(curve, 2.0, 40, "line", 1.0, t)
+
+	for i in range(loose.size()):
+		assert_eq(again[i], clamped[i], "Slot %d is not deterministic under the clamp" % i)
+		assert_eq(reopened[i], loose[i],
+			"Slot %d remembered being clamped — that is per-soldier state" % i)
+
+
+func test_bulk_and_single_derivation_agree_about_the_clamp() -> void:
+	# The bulk loop hoists everything squad-wide out of the per-soldier
+	# work, so the clamp is the one place the two paths could drift. They
+	# must not: the client derives in bulk and everything else derives
+	# singly.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+	var rock := _rock_beyond(t, home, 1.0)
+
+	for shape in SHAPES:
+		var bulk := Formation.soldier_transforms(
+			curve, 2.0, 24, shape, 1.0, t, Callable(), rock)
+		for slot in range(24):
+			var single := Formation.soldier_transform(
+				curve, 2.0, slot, 24, shape, 1.0, t, 0.0, rock)
+			assert_eq(bulk[slot], single,
+				"%s slot %d differs between bulk and single derivation" % [shape, slot])
+
+
+func test_the_client_clamps_against_the_ground_the_server_derives() -> void:
+	# The wire half. Terrain passability is never sent — both sides compute
+	# it from the replicated MapSettings (D-049) — so the check that
+	# matters is that the client's array is byte-identical to the server's,
+	# and that the client actually hands it over. Feeding the two sides
+	# differently built arrays is the M1 desync in D-022's audit block,
+	# rebuilt from parts.
+	#
+	# `_build_terrain()` needs neither a GPU nor a window; see
+	# test_return_to_lobby.gd's note on why the client's node LIFETIME is
+	# testable even though what it draws is not.
+	var settings := MapSettings.new()
+	settings.width = 16
+	settings.height = 8
+	settings.seed = 7
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, settings.width, settings.height, []))
+	state.handle_packet(NetProtocol.encode_map_settings(settings.to_dict()))
+	assert_true(state.has_map(), "Setup: the client should have the map settings (D-049)")
+
+	var client: Node3D = autofree(load("res://client.gd").new())
+	client._state = state
+	client._build_terrain()
+
+	assert_eq(state.terrain_passable, settings.to_terrain().passability(state.space),
+		"The client must clamp against the ground the SERVER calls impassable")
+
+	state.leave_match()
+	assert_eq(state.terrain_passable.size(), 0,
+		"A left match's coastline must not clamp the next match's soldiers")
+
+
+func test_client_state_hands_the_passability_to_formation() -> void:
+	# The reader half of the same wiring: holding the array and never
+	# passing it on is this project's oldest defect family, and every other
+	# check here would stay green through it.
+	var t := _space()
+	var curve := _march(t, Vector2i(4, 6), 6)
+	var home := curve.sample_cell(2.0, t)
+
+	var state := ClientState.new()
+	state.handle_packet(NetProtocol.encode_welcome(1, W, H, []))
+	state.handle_packet(NetProtocol.encode_squad_info([
+		{"id": 0, "def_id": "legion_militia", "alive": 40, "shape": "line", "owner": 1},
+	]))
+	state.curves[0] = curve
+
+	var rock := _rock_beyond(state.space, home, 1.0)
+	var loose := state.soldier_transforms(0, 2.0)
+	assert_gt(_standing_on_rock(state.space, loose, rock), 0,
+		"Setup: this squad should overlap the coastline")
+
+	state.terrain_passable = rock
+	assert_eq(_standing_on_rock(state.space, state.soldier_transforms(0, 2.0), rock), 0,
+		"ClientState is not passing its terrain passability to Formation")
+	assert_eq(_standing_on_rock(state.space, state.soldier_transforms_lod(0, 2.0, 8), rock), 0,
+		"The render LOD path skips the clamp — a distant squad still stands on rock")

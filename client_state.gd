@@ -797,6 +797,23 @@ func _sampler_for(squad: int, now: float) -> Callable:
 	return func(x, z): return base.call(x, z) + bump
 
 
+## The map's TERRAIN passability, one byte per cell, 1 where a squad could
+## walk (#97). Empty until the client has built its terrain, which means
+## "fully open" — the same convention as `SquadSim.is_passable` — so a
+## client that has not generated a map yet derives exactly the geometry it
+## always did.
+##
+## TERRAIN only, and the distinction is what keeps client and server
+## deriving the same man in the same place. The server stamps living
+## buildings out of its own copy (`Server._refresh_passability`) so squads
+## walk around a town hall; a client under fog cannot know that set, so a
+## soldier clamp built on it would put the two sides in different places —
+## the M1 desync D-022's audit block describes, rebuilt from parts. Water
+## and rock are what #97 is about, they come from `MapSettings` over the
+## wire (D-049), and both sides derive them from the identical numbers.
+var terrain_passable := PackedByteArray()
+
+
 ## Hash of the composition this client will derive from, in the format
 ## SquadSim produces for the server side. Compared on every STATE_HASH.
 ##
@@ -830,7 +847,7 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 		return empty
 	return Formation.soldier_transforms(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now))
+		_sampler_for(squad, now), terrain_passable)
 
 
 ## As above, but drawing at most `max_soldiers` of them — the render LOD
@@ -848,7 +865,7 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 		return empty
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now), max_soldiers)
+		_sampler_for(squad, now), max_soldiers, terrain_passable)
 
 
 ## Total soldiers this client would be drawing — the number that makes
@@ -969,11 +986,15 @@ func in_lobby() -> bool:
 ## `terrain_sampler` goes because it closes over terrain chunks the client
 ## is about to free — left in place it would sample freed nodes, and the
 ## symptom would be soldiers at wrong heights rather than a crash.
+## `terrain_passable` goes with it: it describes the map just left, and the
+## next match's may be a different size, so keeping it would clamp soldiers
+## against another world's coastline.
 func leave_match() -> void:
 	welcomed = false
 	space = null
 	map_settings = {}
 	terrain_sampler = Callable()
+	terrain_passable = PackedByteArray()
 
 	squads = PackedInt32Array()
 	spawn_cells = PackedInt32Array()
