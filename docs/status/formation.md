@@ -116,3 +116,99 @@ Three things worth carrying:
   mechanics whose whole job is to close it — combat range, siege,
   gathering, wall access. Each is a position a squad NEEDS, and a spacing
   rule that does not know about one of them quietly deletes the feature.
+
+**A squad WHEELS now; it does not snap (D-20260818, from playtest P06,
+#101).** The owner's complaint was that formations jump around as corners
+are turned, with the rule attached: *no unit may exceed its individual
+speed, so the inside units must go slower to hold the shape*. On the
+shipped militia an outer soldier was moving at **81x his own move_speed**
+at a tight corner, and the whole block flipped **90 degrees in one 20 ms
+frame**. Both are numbers now (`tests/test_squad_turning.gd` prints
+them); after the change they are **1.003x** and **0.57 degrees**.
+
+Three things had to change together, and the interesting one is the
+third:
+
+- **Facing is a chord of fixed ARC LENGTH along the path ahead**, not an
+  instantaneous difference. Still derived, still pure, still no stored
+  facing anywhere — D-006 clause 1 is untouched.
+- **A flow-field path is smoothed before it goes into the curve**, and
+  split finer where a bend is packed tighter than the chord can span. A
+  hex field can only step six ways, so most of what read as "turns" was
+  the lattice; a binomial pass has zero gain at exactly that frequency.
+  A straight march buys no extra keyframes, so the wire is unaffected
+  where squads spend their time.
+- **A squad's pace is `move_speed / (1 + lever x curvature)`**, where
+  `lever` is how far the outermost slot stands from the point the
+  formation rotates about. That one line IS the owner's rule: the man on
+  the outside walks exactly that much further, so dividing by it puts HIM
+  on his own speed, and the men on the inside slow down without anything
+  being told to slow them.
+
+**The lesson worth carrying is about the chord, and it is a general
+one.** The obvious implementation measures it in SECONDS — and a chord
+that spans a fixed time spans less PATH when the squad walks slower. So
+slowing a squad down to wheel it safely shortened its chord, and a
+shorter chord swung faster through the same bend: the correction fed the
+defect. The peak got *worse* after the first working slowdown (2.0x ->
+2.6x), and tuning the margin was non-monotonic (1.6 -> 3.68, 1.8 -> 3.37,
+2.0 -> 4.12, 2.4 -> 5.45) — a constant fitted to that is fitted to a
+fixture, not to a rule. Measured in PATH the facing turns at
+`curvature x speed` whatever the speed is, the same sweep goes monotone,
+and one honest constant is left. **When a correction's own effect changes
+the quantity it is computed from, re-express it in something the
+correction does not move.**
+
+Two smaller things bought the same way. **Which formation is slowest to
+turn is not the obvious one** — a squad rotates about its curve point,
+which sits at the FRONT rank, so a deep column swings its rear further
+(7.33) than a wide line swings its flank (5.27); the test reads the lever
+rather than assuming which shape wins. And **a fixture can look like it
+measures a corner and measure nothing**: a wall of constant q does not
+block a torus at all, so the first corner fixture had the squad walk the
+other way round the world and arrive on a dead straight path, reporting
+two formations taking identical times because neither ever turned.
+
+**And what the wheel cost when it was rebased onto the three rules that
+landed while it sat** (#135 soldiers stand where their squad could walk,
+#146 squads separate by their footprint, #133 pathing knows only what the
+player knows). The three structural claims above are unchanged; three
+other things are not, and none of them is really about turning:
+
+- **The smoothing guard tested the wrong thing, and a decision entry said
+  it did not.** The entry's own Consequences list claimed a smoothed
+  squad's cell "is always one the flow field itself walked". It tested
+  the smoothed POINT, and a squad's authoritative cell is
+  `curve.sample_cell()` — a point BETWEEN two keyframes far more often
+  than one of them. Two vertices could each sit on open ground with the
+  line between them clipping a rock. #133's own
+  `test_a_blind_squad_still_never_stands_in_a_wall` went red on the
+  rebase and said so. **The D-058/D-065 family again: a decision entry
+  asserting an invariant is not evidence the invariant holds.** Smoothing
+  now keeps a move only if the squad could WALK both segments it leaves
+  behind.
+- **Refusing a point while its neighbours move puts a SPIKE in the
+  path** — 82.9 degrees measured, on a lattice whose sharpest genuine
+  corner is 60. A guard that makes the thing it guards worse is worth
+  looking for whenever a per-item veto sits inside a smoothing loop.
+- **And underneath it, `StateCurve.sample_cell` was rounding to the wrong
+  shape** (`D-20260818-a-curve-samples-the-hex-not-the-rhombus`): `roundi`
+  per component partitions the plane into rhombi, `TorusSpace.round_axial`
+  into hexagons, and they disagree over about a quarter of a cell. Nothing
+  had ever sampled a curve anywhere but on a lattice line, where they
+  agree except at one point. **Smoothing a path is what took a squad off
+  those lines**, and the wrong answer became a squad reading as standing
+  inside a rock its own line was a clear cell away from.
+
+**One thing the rebase could not resolve, and it is a design call.**
+D-067's shipped rule — two squads of any line troop but light skirmishers
+can take a tower — now fails for northmen_spearmen, who are wiped with
+the tower on 86 of 1700 HP where they used to raze it at 52.6 s with 31
+men left. Nothing hits differently: a LONE spearman squad is
+bit-for-bit unaffected, and a straight 10-cell march costs exactly what it
+did (4.80 s). What costs more is a bent reposition — **1.30 s -> 2.00 s
+for two cells** — and a siege where two squads are sent to the same cell
+is nothing else, under fire, with routs and returns. **Wheeling favours
+the side that does not have to move.** The decision entry has the numbers,
+why tuning `TURN_SWEEP` to fix it would be fitting a constant to a
+fixture, and the two candidate resolutions.

@@ -51,3 +51,35 @@ answers "can a squad STAND here", corrects a destination rather than
 choosing a route, and can never refuse an order). Deliberately not
 fogged: the wall-top tier (D-076), whose network is made of buildings a
 side put there itself.
+
+**And a squad's cell was being rounded to the wrong SHAPE
+(`D-20260818-a-curve-samples-the-hex-not-the-rhombus`, 2026-08-18).**
+`StateCurve.sample_cell` rounded each axial component with `roundi`, which
+partitions the plane into rhombi; `TorusSpace.round_axial` — the project's
+one definition, and `world_to_cell`'s — partitions it into hexagons. The
+two disagree over roughly a quarter of every cell, at the corner where
+three cells meet.
+
+It survived six milestones because **nothing was ever between cells
+anywhere but on a lattice line**: a squad's curve held one keyframe per
+cell the flow field walked, and along one of the six lattice directions
+the two roundings agree everywhere except the exact midpoint — a set of
+measure zero, sampled by a 10 Hz tick. #101's path smoothing is the first
+thing that ever moves a squad off those lines, and the disagreement
+immediately became a region rather than a point: a squad rounding an
+obstacle read as standing INSIDE it while its own line was a clear cell
+away. `_cell[squad]` is `space.index(curve.sample_cell(time, space))`, so
+that was the simulation's own opinion, not a rendering artefact — and it
+is what `route_discoveries`, vision, combat and separation all read.
+
+Two things to carry:
+
+- **The rule this file already states got a second reader.** Anything
+  that plans a route reads `terrain_knowledge.gd`; anything that asks
+  "which cell is this fractional axial coordinate in" reads
+  `TorusSpace.round_axial`. A `Vector2i(roundi(q), roundi(r))` on a
+  fractional pair is the defect, and it is worth grepping for.
+- **A wrong answer nothing can reach is still a wrong answer waiting for
+  a caller.** This is the declared-and-unread family with the roles
+  swapped: the code was read constantly and simply never asked the
+  question at a coordinate where it mattered.

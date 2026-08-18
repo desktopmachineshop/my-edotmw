@@ -131,9 +131,24 @@ func sample_axial(t: float) -> Vector2:
 
 
 ## Sample to a wrapped grid cell.
+##
+## Through `TorusSpace.round_axial`, which is the project's one answer to
+## "which hex is this fractional axial coordinate in" and what
+## `world_to_cell` has always used. This used to round each component with
+## `roundi`, which partitions the plane into RHOMBI rather than hexagons —
+## a different answer over about a quarter of every cell's area
+## (D-20260818, amended for #101).
+##
+## Nothing had ever caught it because nothing was ever between cells
+## anywhere but on a lattice line: a curve's keyframes were cell centres
+## and the segment between two of them ran along one of the six lattice
+## directions, where the two roundings agree everywhere except the exact
+## midpoint. Smoothing a path takes a squad OFF those lines, and the
+## disagreement stops being a single point and becomes a region — a squad
+## rounding an obstacle read as standing INSIDE it while its own line was
+## a clear cell away.
 func sample_cell(t: float, space: TorusSpace) -> Vector2i:
-	var p := sample_axial(t)
-	return space.normalize(Vector2i(roundi(p.x), roundi(p.y)))
+	return space.normalize(space.round_axial(sample_axial(t)))
 
 
 ## Sample to a world position. Uses the continuous value, so an object

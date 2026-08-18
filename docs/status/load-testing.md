@@ -147,6 +147,28 @@ resources by `tests/test_bot_patrol.gd`.
   than as "am I home yet": on a tight pair, home is inside the
   neighbour's vision.
 
+- **`4 300` stops satisfying the fog gates once squads wheel round bends
+  rather than snapping round them** (D-20260818, #101). Measured A/B on
+  one host, native, seed 1337, default map: `conceal_events` 6 -> 1 and
+  `reveal_events` 5 -> 0, taking the verdict from ok to failed, while
+  `casualties_applied` stayed at 36 and desyncs stayed at 0 — armies
+  cross vision boundaries fewer times inside a fixed window, not less
+  correctly. **`4 480` on the same tree is clean**: `VERDICT ok`, 0
+  desyncs over 1,920 checks, 0 dropped ticks, `casualties_applied=60
+  conceal_events=20 reveal_events=5 ghosts_peak=16 nodes_felled=254`.
+  This is the "when the opening changes, every timing tuned against the
+  old one is stale" rule again, applied to how fast an army walks rather
+  than to the build order — and it is the third thing on this page to
+  move that duration, so read a `conceal_events` failure as a question
+  about DURATION before reading it as a fault in the change under test.
+
+  **Those two numbers were taken BEFORE that branch was rebased**, on a
+  tree whose smoothed paths cut the corners of obstacles
+  (`D-20260818-a-squad-wheels-it-does-not-snap`'s rebase amendment). The
+  direction is unchanged — wheeling slows an army that turns, so a fixed
+  window holds fewer vision crossings — but treat `480` as the shape of
+  the answer rather than a measurement until it is re-run.
+
 **The bots field an ARMY now** (D-20260818-load-test-bots-must-field-an-army,
 #123), and the verdict gates on their having used it. Until this landed,
 `raid_pool` — the squads free to be sent anywhere — was empty on every tick
