@@ -120,15 +120,42 @@ func _derive_sweep(config: MapConfig) -> void:
 ## Flow-field build is a wrap-aware BFS over EVERY cell, rebuilt per
 ## destination, and D-021 names it the prime candidate for escaping to
 ## GDExtension "over 10,000+ cells". That threshold was an estimate
-## nobody had measured. Ship map size is therefore an OUTPUT of this
+## nobody had measured. Ship map size was therefore an OUTPUT of this
 ## sweep rather than an input to it: pick the size from where the solver
 ## actually breaks, not from where it was guessed to.
 ##
+## That direction reversed once D-040 amortised field building and worst
+## tick went flat in map size — the solver stopped being what bounds a
+## map, and the ladder is set by the zoom cap instead
+## (D-20260817-the-zoom-cap-was-modelling-the-wrong-axis). So the sweep
+## FOLLOWS the shipped sizes now, and its job is to keep checking that the
+## flatness Q8 was closed on still holds where players actually play.
+##
 ## Squad count is held fixed so the only variable is the map.
-const MAP_SIZES := [
-	Vector2i(64, 32), Vector2i(128, 64), Vector2i(192, 96), Vector2i(256, 128),
-]
 const MAP_SWEEP_SQUADS := 250
+
+
+## The sizes swept, taken from the SHIPPED LADDER rather than a list of
+## this sweep's own (#108).
+##
+## It kept its own list — 2,048 to 32,768 cells — and the ladder moved out
+## from under it twice, most recently on 2026-08-17
+## (D-20260817-the-zoom-cap-was-modelling-the-wrong-axis). By then the
+## sweep's LARGEST map was the one every match is played on by default,
+## and the top three quarters of what ships, out to 130,368 cells, had
+## never been swept at all. Nothing failed: the sweep stayed green and
+## kept answering a question about maps nobody plays.
+##
+## `MapSettings.sizes()` is the one definition of what ships, so a rung
+## added to the ladder is a row added here and the two cannot disagree
+## again. Every entry it offers is already a legal world — D-008 row
+## parity included — which is why nothing is re-validated on the way past.
+static func map_sizes() -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for size in MapSettings.sizes():
+		out.append(Vector2i(int(size["width"]), int(size["height"])))
+	return out
+
 
 ## How many distinct destinations an order wave produces. A player orders
 ## groups, not individuals — D-007 shares one field across every squad
@@ -153,7 +180,7 @@ func _map_sweep() -> void:
 
 
 func _map_sweep_at(quantum: int, cells_per_tick: int) -> void:
-	for size in MAP_SIZES:
+	for size in map_sizes():
 		var space := TorusSpace.new(size.x, size.y, 1.0)
 		var sim := SquadSim.new(space, CurveReplicator.new())
 		sim.set_passable(TerrainGen.new().passability(space))
