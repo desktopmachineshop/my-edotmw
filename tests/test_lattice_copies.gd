@@ -247,6 +247,79 @@ func test_a_composite_copies_its_children() -> void:
 	assert_eq(copy.get_child_count(), 3, "a rebuilt chunk did not reach its copies")
 
 
+# --- the copies and the props' fog (D-20260817-fog-covers-props) ------
+
+func test_a_wrapped_forest_reads_the_same_fog_as_its_canonical_copy() -> void:
+	# The interaction between this change and
+	# D-20260817-fog-covers-props, pinned because neither file alone
+	# states it and both depend on it.
+	#
+	# A tree reads the fog field at a coordinate carried in per-instance
+	# custom data, taken from its CELL. That was already the right rule
+	# when a chunk was drawn at ONE lattice copy at a time; it is
+	# load-bearing now that a chunk is drawn at up to nine SIMULTANEOUSLY.
+	# What makes it safe is that a copy shares the source's MultiMesh —
+	# the buffer the fog coordinate lives in — so there is one answer and
+	# no second place to get it wrong.
+	#
+	# And one answer is the CORRECT number of answers: a lattice copy is a
+	# copy of the whole world (D-035), so a tree drawn at a wrapped copy
+	# stands on the same cell as the canonical one and has the same fog
+	# state by construction. A copy that carried its own custom data could
+	# only ever disagree with the ground under it.
+	var root := Node3D.new()
+	add_child_autofree(root)
+	var chunk := Node3D.new()
+	root.add_child(chunk)
+
+	var trees := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	# Declared before instance_count, exactly as `_rebuild_tree_chunk`
+	# does it — the format flags decide the buffer layout and Godot
+	# reallocates rather than reinterprets when they change afterwards.
+	mm.use_custom_data = true
+	mm.mesh = BoxMesh.new()
+	mm.instance_count = 3
+	trees.multimesh = mm
+	chunk.add_child(trees)
+
+	var mirrors: Array[Node3D] = []
+	LatticeCopies.draw(chunk, mirrors, Vector3.ZERO,
+		[Vector3.ZERO, Vector3(100.0, 0.0, 0.0)] as Array[Vector3])
+
+	var twin := mirrors[0].get_child(0) as MultiMeshInstance3D
+	assert_true(twin.multimesh == mm,
+		"the wrapped copy of a forest has its own MultiMesh, so its trees "
+		+ "carry their own fog coordinates and can be lit differently from "
+		+ "the ground they stand on")
+	assert_true(twin.multimesh.use_custom_data,
+		"the copy lost the per-instance channel the fog coordinate rides in")
+
+
+func test_the_fog_coordinate_comes_from_the_cell_not_the_world() -> void:
+	# The other half, and the reason the assertion above is enough: what
+	# rides in that shared buffer must be derived from the CELL. A
+	# world-derived coordinate would be wrong the moment a chunk is drawn
+	# anywhere but its canonical copy — which, after this change, is most
+	# of the time for anything near a seam.
+	#
+	# Asserted against `PropFog` rather than assumed, because this file
+	# and that one are the two halves of the claim and neither imports the
+	# other.
+	var space := _shipped_space()
+	var cell := Vector2i(3, 5)
+	var here := PropFog.instance_data(space, cell)
+	assert_eq(PropFog.instance_data(space, cell), here,
+		"the fog coordinate is not a pure function of the cell")
+	assert_eq(here.r, TerrainChunk.fog_uv(space, cell, -1).x,
+		"PropFog re-derives the fog coordinate instead of asking "
+		+ "TerrainChunk for it, so a tree and the ground under it can drift")
+	assert_eq(here.g, TerrainChunk.fog_uv(space, cell, -1).y,
+		"PropFog re-derives the fog coordinate instead of asking "
+		+ "TerrainChunk for it, so a tree and the ground under it can drift")
+
+
 # --- the caller has to exist (D-106's lesson) -------------------------
 
 func test_the_client_draws_entities_at_every_copy_rather_than_choosing_one() -> void:
