@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="MapConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://map_config.gd" id="1_mapcfg"]
+
+[resource]
+script = ExtResource("1_mapcfg")
+id = &"huge"
+display_name = "Huge Torus"
+width = 336
+height = 388
+hex_size = 1.0
+squads_per_player = 12
+squad_cap = 40
+symmetry_order = 1
+player_slots = 20
+min_spawn_spacing = 12
+min_spawn_landmass = 96
+spawn_seed = 20260801

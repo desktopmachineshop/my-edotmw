@@ -673,6 +673,11 @@ test-load N DURATION:
     # identifiable components (D-026 criterion 10), so surface it here
     # rather than making a human dig through server_log for it.
     grep -E "server: final" "$server_log" || true
+    # Memory, with ITS conditions — players, squads and cells (#111).
+    # The same rule applied to a different number: "43.3 MB" says
+    # nothing until you know it was four squads on a 32,592-cell map.
+    grep -E "server: MEMORY" "$server_log" || true
+    grep -E "MEMORY —" "$bots_log" || true
 
 # The fast integration loop: a REAL server and REAL bots, but starting
 # mid-match from a scenario instead of playing the opening (D-098).

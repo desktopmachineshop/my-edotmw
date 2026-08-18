@@ -639,22 +639,24 @@ func _print_summary(reason: String) -> void:
 	# their own components of that same figure (D-026 criterion 10, D-012)
 	# rather than folded into one number, so a reviewer can see which phase
 	# a budget overrun would come from.
-	# Bandwidth per client per second and peak memory (M4). D-003's whole
-	# claim is about bytes, so a total is not enough — the number that
-	# matters is what one client costs per second, because that is what
-	# multiplies by player count.
+	# Bandwidth per client per second (M4). D-003's whole claim is about
+	# bytes, so a total is not enough — the number that matters is what
+	# one client costs per second, because that is what multiplies by
+	# player count.
 	# PEAK clients, not current. The summary prints when the last client
 	# leaves, so dividing by _clients.size() divides by 1 no matter how
 	# many played — the first run of this reported "11 B/client/s over 1
 	# client(s)" for a twenty-player test.
 	var clients := maxi(_peak_clients, 1)
 	var seconds := maxf(_sim.time, 0.001)
-	print("server: bandwidth — %.0f B/client/s over %d client(s), budget_overruns=%d, mem=%.1f MB" % [
+	print("server: bandwidth — %.0f B/client/s over %d client(s), budget_overruns=%d" % [
 		float(_sim.replicator.bytes_sent_total) / float(clients) / seconds,
 		clients,
 		_sim.replicator.budget_overruns,
-		float(OS.get_static_memory_usage()) / 1048576.0,
 	])
+	# Memory gets its own line, and never rides along at the end of
+	# another one, because it needs conditions of its own (#111).
+	print(_memory_line(OS.get_static_memory_usage(), OS.get_static_memory_peak_usage()))
 
 	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
@@ -701,6 +703,41 @@ func _print_summary(reason: String) -> void:
 	# The same shape for resources (D-061): the best-informed client must
 	# know FEWER nodes than exist, or positions are not being gated.
 	print("server: FOG_TOTAL_NODES=%d" % (_economy.node_count() if _economy != null else 0))
+
+
+## What the server is holding, and under what conditions it held it.
+##
+## A memory figure without its conditions cannot be compared with
+## another one, exactly as us/squad cannot be read without a squad count
+## (CLAUDE.md). This project has the proof: 42.5 MB at 120 squads on
+## 8,064 cells (M4) and 43.3 MB at FOUR squads on 32,592 read as
+## "memory is flat" side by side, and say the opposite once their
+## conditions are attached — the map is the dominant allocator now and
+## the armies are not (#111). Nothing failed and nothing could; the
+## number was correct, it just could not be quoted.
+##
+## Players is a PEAK for the same reason the bandwidth line's client
+## count is: this prints when the LAST client leaves, so the live count
+## is 1 however many played. An all-AI server (`--players=0`, the
+## ladder) has no sockets at all, so its seat count stands in — an AI
+## seat is a player for every purpose except owning one (D-051).
+##
+## Cells come from the sim's OWN space rather than from `_settings`, so
+## the line reports the map that was actually simulated, not the one
+## that was asked for.
+func _memory_line(bytes: int, peak_bytes: int) -> String:
+	var seated := 0
+	if _match != null:
+		seated = _match.player_count()
+	var players := maxi(_peak_clients, seated)
+	var space := _sim.space
+	return "server: MEMORY %.1f MB static, %.1f MB peak — %d player(s), %d squad(s), %dx%d = %d cells" % [
+		float(bytes) / 1048576.0,
+		float(peak_bytes) / 1048576.0,
+		players,
+		_sim.squad_count(),
+		space.width, space.height, space.cell_count(),
+	]
 
 
 func _print_status() -> void:
