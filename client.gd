@@ -2222,9 +2222,38 @@ func _layout_lobby(design: Vector2) -> void:
 
 ## Lay one action grid out inside its own column. Both grids are the same
 ## grid in different columns, so this is written once.
-func _place_action_grid(buttons: Array[Button], column: Rect2, button_size: Vector2) -> void:
+##
+## `formations` is how many of the leading buttons are formation ICONS
+## (D-058 as amended): those go in the strip along row 0, squares rather
+## than labelled buttons, and everything after them starts on the next row.
+## The build grid passes 0 and is laid out exactly as it always was.
+## How many of `_actions` are formation icons. They are the LEADING run
+## (see `_squad_actions`, which puts them first), counted rather than
+## assumed to be `FormationRoster.offered().size()`: a building's action
+## list has none at all, and miscounting would place Stop into the strip.
+func _formation_action_count() -> int:
+	var n := 0
+	for action in _actions:
+		if String(action.get("kind", "")) != "formation":
+			break
+		n += 1
+	return n
+
+
+func _place_action_grid(buttons: Array[Button], column: Rect2,
+		button_size: Vector2, formations: int = 0) -> void:
+	var icon_size := HudLayout.formation_icon_size(_panel_rect, formations)
 	for i in range(buttons.size()):
-		buttons[i].position = column.position + HudLayout.action_slot(i, button_size)
+		if i < formations:
+			buttons[i].position = column.position 				+ HudLayout.formation_icon_slot(i, icon_size)
+			buttons[i].size = icon_size
+			# Rasterised AT the button's size. Cached per (shape, size), so
+			# this costs once per shape per window size, not per layout.
+			buttons[i].icon = FormationIcon.texture(
+				String(_actions[i]["id"]), Vector2i(icon_size.round()))
+			continue
+		var slot := HudLayout.actions_start_index() + i - formations
+		buttons[i].position = column.position + HudLayout.action_slot(slot, button_size)
 		buttons[i].size = button_size
 
 
@@ -2252,7 +2281,7 @@ func _layout_panel_columns() -> void:
 	var button_size := HudLayout.action_button_size(_panel_rect)
 	var commands_col := HudLayout.commands_column_rect(_panel_rect, in_use)
 	var build_col := HudLayout.build_column_rect(_panel_rect)
-	_place_action_grid(_action_buttons, commands_col, button_size)
+	_place_action_grid(_action_buttons, commands_col, button_size, _formation_action_count())
 	_place_action_grid(_build_action_buttons, build_col, button_size)
 	_place_rule(_commands_rule, commands_col)
 	_place_rule(_build_column_rule, build_col)
@@ -4782,8 +4811,12 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		out.append({
 			# The current one is marked rather than hidden: a row where one
 			# is ticked says "these are your options and this is where you
-			# are", which hiding it cannot.
-			"label": ("* " if String(formation.id) == current else "") + formation.display_name,
+			# are", which hiding it cannot. The mark is the button's
+			# PRESSED state now that the button is an icon and has no room
+			# for a "* " — see `_set_actions`.
+			"label": formation.display_name,
+			"hint": formation.display_name,
+			"current": String(formation.id) == current,
 			"kind": "formation", "id": formation.id,
 		})
 
@@ -4949,7 +4982,19 @@ func _set_actions(actions: Array) -> void:
 			button.visible = false
 			continue
 		button.visible = true
-		button.text = String(actions[i]["label"])
+		# A formation is a PICTURE of itself (D-058 as amended): six shapes
+		# would not fit as words, and a shape is recognised faster than it
+		# is read. The tick that marked the current one in the label moves
+		# onto the button's pressed state, which is what that state is for.
+		# The ICON itself is set in `_place_action_grid`, which is the only
+		# place that knows the button's pixel size — and the icon has to be
+		# rasterised at that size, not stretched to it (see
+		# `FormationIcon.texture`).
+		var is_formation := String(actions[i].get("kind", "")) == "formation"
+		button.expand_icon = is_formation
+		button.toggle_mode = is_formation
+		button.button_pressed = is_formation and bool(actions[i].get("current", false))
+		button.text = "" if is_formation else String(actions[i]["label"])
 		# The button is one line of 26 units now (see
 		# `HudLayout.ACTION_BUTTON_HEIGHT`), so anything that used to be a
 		# second line is a tooltip — and a label too long for a narrow
