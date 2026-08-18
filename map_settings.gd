@@ -89,11 +89,144 @@ var min_spawn_spacing: int = 12
 var min_spawn_landmass: int = 96
 
 var sea_level: float = 0.38
-var beach_level: float = 0.44
 var mountain_level: float = 0.74
 var elevation_frequency: float = 2.5
 var moisture_frequency: float = 4.0
 var height_scale: float = 15.0
+
+## How far above the waterline sand gives way to grass (#125).
+##
+## The BAND, not the level. A beach is a strip along the shore, and
+## storing where its far edge happened to fall made it a free parameter
+## that no control exposed and every other control had to work around:
+## `validate` demanded `sea_level <= beach_level <= mountain_level`, so a
+## preset's hidden beach line was the real ceiling of the sea-level
+## slider — 0.27 on `plains`, against a slider drawn to 0.90, which put
+## three quarters of that slider's travel outside the settings the server
+## accepts. Nothing said so, because the value pinning it was one a player
+## could not see.
+##
+## Storing the WIDTH leaves every shipped preset's beach exactly where it
+## was (`apply_preset` takes the difference) and makes it FOLLOW the water
+## when the slider moves, which is the one behaviour the word predicts.
+var beach_band: float = 0.06
+
+## Where sand gives way to grass. Derived, and clamped into the range the
+## ordering above used to have to police.
+##
+## Biome only: passability is decided by sea and mountain alone
+## (`TerrainGen.passability`), so this moves COLOURS and never moves where
+## a squad may walk. That is what makes deriving it safe — the same split
+## D-084 drew between the picture and the simulation.
+var beach_level: float:
+	get: return clampf(sea_level + beach_band, sea_level, mountain_level)
+
+
+## The map-generation sliders, and how far each is drawn (#125).
+##
+## ONE definition, because there were three: a literal table of ranges in
+## `client.gd`, a matching set of `clampf` calls in
+## `MatchState.set_map_option`, and the coupled thresholds `validate`
+## enforces below. Each was right on its own and the set of them was
+## meaningless — the lobby offered travel the server refused, and nothing
+## could fail until somebody moved a handle. The same shape as
+## `UnitDef.damage` against `BuildingDef.damage` (D-066): two correct
+## numbers, an incoherent pair.
+const SLIDER_LIMITS := {
+	"sea_level": Vector2(0.05, 0.9),
+	"mountain_level": Vector2(0.1, 0.98),
+	"elevation_frequency": Vector2(0.5, 8.0),
+	# Ceiling raised from 6.0 to 20.0 alongside the 15.0 default (was
+	# 2.0) — a slider that cannot reach the default clamps it back down on
+	# the first nudge.
+	"height_scale": Vector2(0.5, 20.0),
+}
+
+## The step every map slider moves in, and so the smallest gap the bounds
+## below can leave between two handles on the same ordering.
+const SLIDER_STEP := 0.01
+
+## Cells sampled per axis by `walkable_fraction`. A fixed COUNT rather
+## than a stride, so the estimate costs the same on an 8,064-cell map and
+## a 130,368-cell one — D-106's rule, that a check which must not scale
+## with the map is written so that it cannot.
+const GROUND_SAMPLES_PER_AXIS := 32
+
+
+## How far `key` may ACTUALLY travel, given what its neighbours are set to.
+##
+## Sea level and mountain line are two handles on one ordering, so each
+## bounds the other and the ends MOVE — the coupling is visible in the
+## control instead of being discovered when the server refuses. `validate`
+## still checks the ordering, because a slider is a suggestion from an
+## untrusted client (D-002); with these bounds applied on both sides, an
+## honest one has no way to violate it.
+func slider_bounds(key: String) -> Vector2:
+	var limits: Vector2 = SLIDER_LIMITS.get(key, Vector2.ZERO)
+	match key:
+		"sea_level":
+			return Vector2(limits.x, minf(limits.y, mountain_level - SLIDER_STEP))
+		"mountain_level":
+			return Vector2(maxf(limits.x, sea_level + SLIDER_STEP), limits.y)
+	return limits
+
+
+## Move one slider, clamped to the travel it actually has. Returns false
+## for a key that is not a slider at all, so a caller can tell an unknown
+## option from a refused one.
+func set_slider(key: String, value: float) -> bool:
+	if not SLIDER_LIMITS.has(key):
+		return false
+	var bounds := slider_bounds(key)
+	var clamped := clampf(value, bounds.x, bounds.y)
+	match key:
+		"sea_level":
+			sea_level = clamped
+		"mountain_level":
+			mountain_level = clamped
+		"elevation_frequency":
+			elevation_frequency = clamped
+		"height_scale":
+			height_scale = clamped
+	return true
+
+
+## Roughly what share of this world comes out walkable.
+##
+## Sampled on a sparse lattice rather than generated: `TerrainGen.
+## passability` is O(cells) and this runs on every slider tick — ~130 ms
+## on the shipped map against ~4 ms for the sample. Measured against the
+## full generation on 16 worlds (4 presets x 4 sizes) it agrees to within
+## 0.012, and to within 0.001 in the thin cases this exists to catch;
+## `test_map_slider_ranges.gd` pins that against the real `passability`
+## so the two cannot drift.
+##
+## An ESTIMATE, and only of QUANTITY: ground scattered as a thousand
+## one-cell islets counts the same as one continent. That is enough for
+## what `validate` asks of it — is there anywhere to stand at all — and
+## deliberately not enough to answer whether this is a GOOD map, which is
+## the player's call rather than the server's.
+func walkable_fraction() -> float:
+	var space := to_space()
+	var terrain := to_terrain()
+	var step_x := maxi(1, space.width / GROUND_SAMPLES_PER_AXIS)
+	var step_y := maxi(1, space.height / GROUND_SAMPLES_PER_AXIS)
+	var sampled := 0
+	var walkable := 0
+	var x := 0
+	while x < space.width:
+		var y := 0
+		while y < space.height:
+			# The same test `TerrainGen.passability` applies, which is why
+			# the test named above compares this against it on a real map
+			# rather than trusting two copies of a threshold to stay equal.
+			var e := terrain.elevation_at(space, Vector2i(x, y))
+			sampled += 1
+			if e >= sea_level and e < mountain_level:
+				walkable += 1
+			y += step_y
+		x += step_x
+	return float(walkable) / float(maxi(sampled, 1))
 
 
 ## The map sizes the lobby offers. Every height is even (D-008), and every
@@ -188,7 +321,10 @@ func apply_preset(preset_def: TerrainPreset) -> void:
 		return
 	preset = preset_def.id
 	sea_level = preset_def.sea_level
-	beach_level = preset_def.beach_level
+	# The WIDTH of the preset's beach, so applying one leaves the beach
+	# exactly where the preset put it and moving the water afterwards
+	# takes it along (#125).
+	beach_band = maxf(preset_def.beach_level - preset_def.sea_level, 0.0)
 	mountain_level = preset_def.mountain_level
 	elevation_frequency = preset_def.elevation_frequency
 	moisture_frequency = preset_def.moisture_frequency
@@ -284,8 +420,14 @@ static func from_dict(data: Dictionary) -> MapSettings:
 	out.min_spawn_spacing = int(data.get("min_spawn_spacing", out.min_spawn_spacing))
 	out.min_spawn_landmass = int(data.get("min_spawn_landmass", out.min_spawn_landmass))
 	out.sea_level = float(data.get("sea_level", out.sea_level))
-	out.beach_level = float(data.get("beach_level", out.beach_level))
 	out.mountain_level = float(data.get("mountain_level", out.mountain_level))
+	# The wire still carries the absolute level, because concrete numbers
+	# travel (see this file's header) and `to_terrain` wants one. The BAND
+	# is what this side stores, so it is recovered here rather than
+	# assigned — and a beach below the waterline, off a malformed packet,
+	# comes back as no beach rather than as an invalid world.
+	out.beach_band = maxf(
+		float(data.get("beach_level", out.beach_level)) - out.sea_level, 0.0)
 	out.elevation_frequency = float(data.get("elevation_frequency", out.elevation_frequency))
 	out.moisture_frequency = float(data.get("moisture_frequency", out.moisture_frequency))
 	out.height_scale = float(data.get("height_scale", out.height_scale))
@@ -306,10 +448,31 @@ func validate() -> String:
 		return "a match needs at least two starting positions"
 	if sea_level >= mountain_level:
 		return "sea level is at or above the mountain line, leaving nowhere to walk"
-	if beach_level < sea_level or beach_level > mountain_level:
-		return "the beach line must sit between sea and mountain"
+	# No beach check any more: `beach_level` is derived from the waterline
+	# (#125) and clamped as it is read, so the ordering this used to police
+	# cannot be violated. What it policed was a value only a preset could
+	# set, and policing it pinned the sea-level slider to a hidden number.
 	if elevation_frequency <= 0.0 or moisture_frequency <= 0.0:
 		return "noise frequency must be positive"
+	# Whether the world has any GROUND on it (#125). Everything above is
+	# an ORDERING, and ordering three thresholds correctly is not the same
+	# as leaving anywhere to stand: at sea level 0.85 every check above
+	# passes and the shipped Standard map comes out 0.0% walkable with 0
+	# of 8 starting positions. That combination is inside the sliders'
+	# travel, so nothing but this refuses it.
+	#
+	# Two starts' worth of land, because two starting positions is what
+	# this function already demands above — necessary rather than
+	# sufficient (the land could be scattered as islets), and deliberately
+	# not a judgement about whether the map is a GOOD one. A shortfall of
+	# starts on a map that has ground is already tolerated: the server
+	# warns and the players who are seated share what there is.
+	#
+	# Last, because it is the only check here that samples the world — the
+	# same order D-104's three spawn tests run in, and for the same
+	# reason: let the cheap answers be the answer whenever they can be.
+	if walkable_fraction() * float(width * height) < 2.0 * float(min_spawn_landmass):
+		return "most of the map falls outside the band between sea level and the mountain line, leaving almost nowhere to walk"
 	return ""
 
 
