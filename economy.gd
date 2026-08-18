@@ -89,7 +89,7 @@ func _init(p_space: TorusSpace = null) -> void:
 ## which made resources a uniform sprinkle — a forest held exactly as many
 ## wood nodes per acre as a prairie held food. Now each biome rolls its
 ## own densities, shaped by the SAME moisture field the biome
-## classification reads: a forest's wet heart is near-solid trees, its dry
+## classification reads: a forest's wet heart is dense woodland, its dry
 ## edge thins out, grassland carries scattered groves that thicken toward
 ## the forest line, dry country keeps a few hardy trees, and a beach gets
 ## the odd palm. The result is dense woods, ragged treelines and lone
@@ -145,6 +145,22 @@ func _roll_kind(coord: Vector2i, roll: float) -> int:
 ## and the symptom would be stone outcrops on sand with every number
 ## green.
 ##
+## ## Why the wood bands are what they are
+##
+## Every wood band was scaled by 0.60
+## (D-20260818-open-country-with-woods-in-it, #94) — a playtest read the
+## map as woodland with clearings rather than open country with woods in
+## it. Scaling the ENDPOINTS keeps the shape D-087 built (wet hearts
+## dense, treelines frayed, lone trees in dry country) and only thins it;
+## a flat subtraction or a stride would undo it.
+##
+## The 0.98 the forest band used to end at was never actually paid: `f`
+## reaches 1 only where moisture reaches 1, and over six seeds on the
+## shipped map the wettest single forest cell measured f = 0.57-0.73. The
+## realised density was the FLOOR — the median forest cell rolled at 0.69
+## and the biome came out 70.2% wooded. So this is a change to the floor
+## first and the ceiling second, whatever the ceiling reads as.
+##
 ## Note the thresholds are ABSOLUTE cut points tested in order, not
 ## cumulative widths — the biome's own table is tested from zero even
 ## when the mountain-foot band above it missed, so a forest cell at the
@@ -163,26 +179,31 @@ func _bands(coord: Vector2i) -> Array:
 
 	match biome:
 		TerrainGen.Biome.FOREST:
-			# Wet heart near-solid, dry edge thinned: density rides the
-			# same moisture that classified the cell as forest at all.
+			# Wet heart dense, dry edge thinned: density rides the same
+			# moisture that classified the cell as forest at all.
 			var f := clampf((terrain.moisture_at(space, coord) - TerrainGen.MOISTURE_FOREST)
 				/ (1.0 - TerrainGen.MOISTURE_FOREST), 0.0, 1.0)
-			out.append({"kind": ResourceKind.WOOD, "below": lerpf(0.65, 0.98, f)})
+			out.append({"kind": ResourceKind.WOOD, "below": lerpf(0.39, 0.59, f)})
 		TerrainGen.Biome.GRASSLAND:
 			# Groves thicken toward the forest line (m -> MOISTURE_FOREST),
 			# orchards sit in the mid-moisture band where neither extreme
 			# claims the ground.
 			var g := clampf((terrain.moisture_at(space, coord) - TerrainGen.MOISTURE_DRY)
 				/ (TerrainGen.MOISTURE_FOREST - TerrainGen.MOISTURE_DRY), 0.0, 1.0)
-			var wood := 0.05 + 0.22 * g * g
+			var wood := 0.03 + 0.132 * g * g
 			var food := 0.05 + 0.16 * (1.0 - absf(g - 0.5) * 2.0)
 			out.append({"kind": ResourceKind.WOOD, "below": wood})
 			out.append({"kind": ResourceKind.FOOD, "below": wood + food})
 		TerrainGen.Biome.DRY_GRASSLAND:
-			out.append({"kind": ResourceKind.WOOD, "below": 0.10})
-			out.append({"kind": ResourceKind.GOLD, "below": 0.10 + 0.017})
+			var dry_wood := 0.06
+			out.append({"kind": ResourceKind.WOOD, "below": dry_wood})
+			# Written off `dry_wood` rather than repeating the number,
+			# because gold's own share of this biome is the WIDTH 0.017 and
+			# a wood band edited without the cut point above it moving
+			# would silently re-price gold (D-20260818's clause 2).
+			out.append({"kind": ResourceKind.GOLD, "below": dry_wood + 0.017})
 		TerrainGen.Biome.BEACH:
-			out.append({"kind": ResourceKind.WOOD, "below": 0.10})
+			out.append({"kind": ResourceKind.WOOD, "below": 0.06})
 	return out
 
 

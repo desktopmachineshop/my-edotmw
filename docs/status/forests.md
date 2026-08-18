@@ -49,3 +49,37 @@ it, and `test-client` aims its camera at a spawn — open ground by
 construction, the one place a wood cannot be. `just gen-forest-preview`
 is the instrument that can, and it frames the densest wood on the map
 from a low angle for exactly that reason.
+
+**And there were too many of them (D-20260818, 2026-08-18).** Playtest #30
+read the standard map as woodland with clearings rather than open country
+with woods in it, and issue #94 asked for ~40% less wood. Every WOOD band
+in `Economy._bands` is scaled by **0.60** now (forest `lerpf(0.65, 0.98, f)`
+-> `lerpf(0.39, 0.59, f)`, and so on for grassland, dry grassland and
+beach): **wood nodes 5,553 -> 3,411 on the shipped map, open walkable
+ground 71.3% -> 79.3%, forest biome 70.2% -> 43.8% wooded.** Scaling both
+ENDPOINTS is what keeps D-087's shape and D-108's stands intact — a flat
+subtraction erases the dry edge first, a stride puts the lattice back.
+
+Three things to carry forward:
+
+- **The 98% wet heart in the report was never actually paid.** `f` reaches
+  1 only where moisture does, and over six seeds the wettest single forest
+  cell on the shipped map measured f = 0.57-0.73 — so the realised band was
+  the FLOOR (median forest cell 0.69), and lowering only the ceiling would
+  have changed almost nothing. **An interpolation's endpoints are not its
+  outputs**, and the alarming one may be the one nothing reaches.
+- **The number being complained about had no instrument.**
+  `gen-terrain-preview` reported chunks, water and impassability and no
+  resources at all; `gen-forest-preview` shows one wood and cannot say how
+  much of the map is wood. The recipe prints node counts by kind, the
+  **share of walkable cells that hold no node**, and the forest biome's own
+  share — the last because a whole-map average is dominated by open
+  grassland and stayed healthy-looking throughout.
+- **What was checked before picking 0.60, rather than after.** `TREE_STOCK`
+  stays 105 and total wood falls with the count (358,155 over 20 seats is
+  ~119 barracks each, from natural nodes alone); `RETARGET_RADIUS` stays 8
+  because **0 of 3,411** wood nodes have no wood neighbour within 8 cells,
+  and 0.50 is where the first isolated one appears; the D-104 fairness pass
+  still tops up no wood anywhere, the worst-off start keeping 4 wood nodes
+  in reach against 13. Issue #55's "nodes block 30% of walkable cells" is
+  28.7% -> **20.7%** and should be re-read off the recipe, not assumed.
