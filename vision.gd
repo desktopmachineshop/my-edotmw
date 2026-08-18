@@ -118,6 +118,17 @@ func is_visible(player: int, cell_index: int) -> bool:
 	return coverage.has(cell_index)
 
 
+## Every side with coverage this rebuild, and the cells it covers.
+##
+## Exposed so `TerrainKnowledge.absorb` can fold sight into what a side
+## believes the GROUND to be without walking every squad's disk a second
+## time (D-20260818-pathing-knows-only-what-the-player-knows). Nothing
+## else should read the raw field: `is_visible()` is the answer to "can
+## this player see it".
+func coverage_by_group() -> Dictionary:
+	return _coverage
+
+
 ## Cells any of `player`'s squads currently cover. Exposed for tests that
 ## need to inspect the field directly (e.g. cross-checking against a
 ## brute-force reference); `SquadSim.visible_to()` should use
@@ -182,5 +193,16 @@ var _teams := {}
 ## positive — including the AI seats, which are numbered from 1000 and
 ## would otherwise be a plausible team number one day.
 func _group_of(player: int) -> int:
-	var team := int(_teams.get(player, 0))
+	return group_of_player(player, _teams)
+
+
+## The same answer for a caller that holds the teams table itself rather
+## than a rebuilt Vision: `SquadSim` keying a flow field on whose
+## knowledge solved it, specifically
+## (D-20260818-pathing-knows-only-what-the-player-knows). Static, and the
+## ONE definition -- a second copy of this arithmetic would eventually
+## disagree, and the symptom would be an ally pathing differently from you
+## through ground you both explored.
+static func group_of_player(player: int, teams: Dictionary) -> int:
+	var team := int(teams.get(player, 0))
 	return -team if team != 0 else player

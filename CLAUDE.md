@@ -46,6 +46,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/ground-fog.md
 
+@docs/status/pathing.md
+
 @docs/status/forests.md
 
 @docs/status/world-look.md
@@ -183,6 +185,16 @@ vision.gd                Per-player vision field over cells (D-025).
                         Stamped once per player, then an O(1) lookup
                         per squad — closes the "visible_to() returns
                         every squad" stub D-022 flagged for M1.
+terrain_knowledge.gd     What one SIDE believes the GROUND to be, and so
+                        what its squads may path through
+                        (D-20260818-pathing-knows-only-what-the-player-knows).
+                        Fed from vision.gd's own coverage; keyed by SIDE,
+                        because allies share sight (D-050). Unknown ground
+                        reads PASSABLE, which is what makes a squad take
+                        the shortest route it has no reason to doubt and
+                        find out by walking. THIS, never `_passable`, is
+                        what a flow field is solved against — `_passable`
+                        answers only "may a squad stand here now".
 terrain_gen.gd           Periodic (seam-continuous) terrain noise, plus
                         `build_fields` — heights, colours, biomes and
                         passability in one pass (D-096). `corner_cells`
