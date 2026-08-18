@@ -223,7 +223,24 @@ func _detail_for(world: Vector3) -> int:
 ## and the only symptom would be a slow client.
 var _visible_squads := 0
 var _now := 0.0
+## Whether the ground can be stood on: the fields are built and the sampler is
+## bound. NOT the same as "the ground is fully drawn" since D-106's successor
+## (D-20260818-terrain-builds-a-slice-at-a-time) — the chunk meshes keep
+## arriving for a few seconds after this turns true, and `_terrain_stream`
+## below is the one that says whether they have all landed.
 var _terrain_built := false
+
+## The build in progress, or null between matches and once it is finished.
+## Owns the budget; this file owns the scene tree it feeds.
+var _terrain_stream: TerrainBuild = null
+## The nine lattice copies of the chunk set (D-035), parented up front so a
+## streamed chunk appears in all nine at once rather than the centre copy
+## running ahead of the seams.
+var _terrain_tiles: Array[Node3D] = []
+## Chunks actually hung off those tiles, and when the build started — both
+## only so the report at the end of it can be a measurement (#106).
+var _terrain_chunks_drawn := 0
+var _terrain_began_usec := 0
 
 ## Whether a match is currently being drawn, so the edge into and out of
 ## one can be noticed (D-075). Derived from the server's phase every
@@ -329,6 +346,7 @@ func _ready() -> void:
 	_build_lobby_ui()
 	_build_debug_panel()
 	_build_defeat_screen()
+	_build_loading_screen()
 
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
@@ -384,9 +402,23 @@ func _process(delta: float) -> void:
 	_prune_selection()
 	_pan_camera(delta)
 
-	if _state.welcomed and _state.has_map() and not _terrain_built:
-		_build_terrain()
-		_terrain_built = true
+	# The ground is built a slice at a time now
+	# (D-20260818-terrain-builds-a-slice-at-a-time), behind a loading bar.
+	# Everything below this line either reads the terrain sampler or stands
+	# something on the ground, so a frame whose world is not finished ends at the
+	# bar — with the network serviced and the window responsive, which is the
+	# whole point of not doing it in one pass.
+	if _state.welcomed and _state.has_map():
+		if _run_seconds > 0.0 and not _terrain_built:
+			# Capture mode keeps the one blocking pass, on purpose — see
+			# `_build_terrain()`.
+			_build_terrain()
+		elif not _advance_terrain():
+			_update_loading_screen()
+			return
+	# Takes the bar off the screen on the frame the build finishes, and costs an
+	# early return on every other frame of a match.
+	_update_loading_screen()
 
 	_home_camera_once()
 	_refresh_squads()
@@ -592,6 +624,21 @@ func _service_network() -> void:
 					_state.handle_packet(from_peer.get_packet())
 
 
+## The chunk size the ground is meshed at (D-017).
+##
+## Re-measured on the shipped 168x194 map for #106, which is what D-017 asks
+## for — it was decided by measurement, and every map-size change since
+## invalidated that measurement. Total meshing cost turns out to be FLAT in
+## chunk size (8: 6.9 s, 12: 4.9 s, 16: 5.7 s, 24: 5.3 s, 32: 5.9 s, 48: 4.7 s,
+## all within each other's run-to-run noise), so this knob buys nothing on the
+## total. What it does change is GRANULARITY — the worst single chunk runs
+## 32 ms at size 8 and 374 ms at size 48 — and the count that gets multiplied
+## by nine for the lattice copies (525 chunks becomes 4,725 MeshInstance3D at
+## size 8). 16 sits where the worst chunk is comfortably inside a slice and the
+## instance count is 1,287, so D-017's choice survives its own re-measurement.
+const TERRAIN_CHUNK_SIZE := 16
+
+
 ## Terrain is built once as chunk meshes (D-017) — never one mesh per
 ## cell. The client generates it locally from the map dimensions rather
 ## than receiving it, which is why terrain generation has to be
@@ -606,10 +653,77 @@ func _service_network() -> void:
 ## chunks to a freed node: the meshes were built, discarded, and the world
 ## rendered squads and forests standing on nothing while every number
 ## (chunk counts, soldiers, desyncs) stayed green.
+##
+## **And a slice at a time, not in one pass**
+## (D-20260818-terrain-builds-a-slice-at-a-time). All of the above used to
+## happen inside one `_build_terrain()` call before the first frame of a match,
+## which on the shipped map is five seconds of frozen window — reported by a
+## human who closed it and asked whether the server was down (#106).
+## `TerrainBuild` owns the budget; this owns the scene tree, and the split is
+## the same one `render_cull.gd` makes.
+##
+## Returns whether the world is READY — the fields exist, the sampler is bound
+## and every chunk is in the tree. The player watches a loading bar until it is
+## true (the owner's call: a bar and up to 30 seconds, rather than #106's
+## original "playable in 1.5 s with the ground streaming in around you").
+##
+## Waiting for the WHOLE build, rather than letting a match start on the fields
+## alone, is what keeps the old contract intact: nothing is ever drawn standing
+## on ground that does not exist. A soldier's y comes from those heights, so a
+## caller that drew the world early would derive the founding party at sea
+## level and bury it in hills that are about to exist — the picture D-045 spent
+## a milestone getting rid of.
+func _advance_terrain() -> bool:
+	if _terrain_built:
+		return true
+
+	if _terrain_stream == null:
+		if _state.space == null:
+			# No map to build and nothing to wait for — the same answer the
+			# one-pass version gave by bailing out of its first line.
+			return true
+		_begin_terrain()
+		return false
+
+	_terrain_stream.step()
+	# Parented as they arrive rather than all at the end: a thousand
+	# MeshInstance3D in one frame is its own stall, and the whole point here is
+	# that no frame does a match's worth of work.
+	_parent_new_chunks()
+	if not _terrain_stream.is_complete():
+		return false
+	_bind_terrain_fields()
+	_report_terrain_build()
+	_terrain_stream = null
+	return true
+
+
+## The whole ground, in one blocking pass — `_advance_terrain()` driven to the
+## last chunk without giving a frame back.
+##
+## Kept for the two callers that genuinely want it. CAPTURE MODE
+## (`just test-client`) has no player to keep responsive, and every phase
+## timing in `_drive_m2_scenario` was tuned against a client whose ground
+## existed before its first frame — streaming there would restage the whole
+## harness to fix a freeze nobody is sitting through, which is this project's
+## standing "when the opening changes, every timing tuned against the old one
+## is stale" rule pointed at itself. And `tests/test_return_to_lobby.gd` drives
+## it to check the client's node LIFETIME across a return to the lobby, where
+## the interesting question is which nodes exist afterwards rather than when.
+##
+## A human never reaches this: `_process` streams (#106).
 func _build_terrain() -> void:
+	var ready := _advance_terrain()
+	while not ready or _terrain_stream != null:
+		ready = _advance_terrain()
+
+
+## Everything the ground needs that is not O(cells): the root, the material, the
+## fog field, the nine lattice tiles the chunks will hang off, and the builder
+## itself. Cheap enough to do in one frame, and it has to be — the fog texture
+## must reach the material before anything is drawn.
+func _begin_terrain() -> void:
 	var space := _state.space
-	if space == null:
-		return
 
 	if _terrain_root == null:
 		_terrain_root = Node3D.new()
@@ -620,8 +734,77 @@ func _build_terrain() -> void:
 	# not survive terrain becoming tunable.
 	var terrain := _state.terrain_from_settings()
 	_terrain_gen = terrain
-	var chunk_size := 16
-	var grid := TerrainChunk.chunk_grid(space, chunk_size)
+
+	# One shared definition (D-066), so the benchmark renders what the game
+	# renders. Textured when generated/ has been built, vertex colour alone
+	# when it has not.
+	#
+	# Kept, because the ground is fogged by a texture this client updates as
+	# it explores (D-106) and there is nowhere else to reach the material
+	# from once the chunks are built.
+	_terrain_material = TerrainChunk.make_material()
+	_fog = TerrainFog.new(space)
+	_fog_texture = null
+	_fog_updated_at = -1.0
+	# Bound before the first frame is drawn rather than at the first
+	# throttled update: the shader's default is fully lit, so a material
+	# with no fog yet would flash the whole unexplored map for a frame.
+	_push_fog_to_world()
+
+	# The world is a torus, so it must not visibly END (D-035). Every chunk is
+	# drawn nine times — the centre copy plus its eight neighbours across both
+	# seams — sharing the SAME Mesh resources, so this costs draw calls rather
+	# than memory. Before this, panning far enough left the meshed ground
+	# behind and stared into the void, and a squad mid-seam-crossing drew
+	# outside the map entirely.
+	#
+	# The nine TILES are parented here and filled as chunks arrive, so a
+	# streamed chunk appears in all nine copies at once rather than the centre
+	# copy running ahead of the seams.
+	#
+	# The two lattice vectors come straight from TorusSpace.to_world, and
+	# they are NOT axis-aligned. Stepping `width` in q moves world x by
+	# width*SQRT_3*hex_size. Stepping `height` in r moves z by
+	# height*1.5*hex_size *and* x by height/2*SQRT_3*hex_size, because x
+	# depends on r/2. Offsetting by (x, 0, z) rectangles instead would look
+	# correct straight ahead and tear at the diagonal seams.
+	# `lattice_steps()`, not a copy of that arithmetic — it is the one
+	# definition, shared with culling and the camera wrap, and this file
+	# had been re-deriving it inline. Two spellings of the same geometry is
+	# how the terrain and the things standing on it drift apart, which is
+	# the failure D-035 exists to prevent.
+	var steps := space.lattice_steps()
+	var step_q := steps[0]
+	var step_r := steps[1]
+	_terrain_tiles = []
+	for i in [-1, 0, 1]:
+		for j in [-1, 0, 1]:
+			var tile := Node3D.new()
+			tile.position = step_q * float(i) + step_r * float(j)
+			_terrain_root.add_child(tile)
+			_terrain_tiles.append(tile)
+
+	# Now the map's real dimensions are known, give the minimap its shape.
+	_layout_minimap(space)
+	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
+	_update_camera()
+
+	_terrain_chunks_drawn = 0
+	_terrain_began_usec = Time.get_ticks_usec()
+	# In grid order: the player is watching a bar rather than the ground, so
+	# which chunk lands first is not something anybody can see.
+	_terrain_stream = TerrainBuild.new(space, terrain, TERRAIN_CHUNK_SIZE)
+
+
+## The last step of a build: bind the sampler everything stands on, hand the
+## build preview its passability, paint the minimap, and let the match begin.
+##
+## Deliberately AFTER the meshes rather than as soon as the fields are ready.
+## Binding early would let a match start on a half-drawn map, which is the one
+## thing the loading screen exists to prevent.
+func _bind_terrain_fields() -> void:
+	var space := _state.space
+	var fields := _terrain_stream.fields
 
 	# Stand soldiers ON the terrain rather than at y=0. Without this they
 	# derive at sea level and render buried inside every hill — which is
@@ -640,16 +823,10 @@ func _build_terrain() -> void:
 	#
 	# Since D-067 the ground is a continuous surface rather than one flat
 	# height per cell, so this interpolates within the hex — through the SAME
-	# array the chunks below are built from, and the same code the mesher
+	# array the chunks are built from, and the same code the mesher
 	# uses. That sharing is the point: a sampler that agreed with the mesh
 	# only by construction-in-two-places is a sampler that will eventually
 	# disagree, and the symptom is a floating army with every number green.
-	#
-	# One `build_fields` call rather than a surface call, a colour call and a
-	# passability call: they are all O(cells) over the same noise, and pairing
-	# heights from one build with colours from another is a mistake nothing
-	# would report (D-096).
-	var fields := terrain.build_fields(space)
 	var surface := fields.surface
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(space, surface, x, z)
@@ -660,78 +837,26 @@ func _build_terrain() -> void:
 	# from, for the same reason the height sampler is.
 	_state.terrain_passable = fields.passable
 
-	# One shared definition (D-066), so the benchmark renders what the game
-	# renders. Textured when generated/ has been built, vertex colour alone
-	# when it has not.
-	var material := TerrainChunk.make_material()
-	# Kept, because the ground is fogged by a texture this client updates as
-	# it explores (D-106) and there is nowhere else to reach the material
-	# from once the chunks are built.
-	_terrain_material = material
-	_fog = TerrainFog.new(space)
-	_fog_texture = null
-	_fog_updated_at = -1.0
-	# Bound before the first frame is drawn rather than at the first
-	# throttled update: the shader's default is fully lit, so a material
-	# with no fog yet would flash the whole unexplored map for a frame.
-	_push_fog_to_world()
-
-	var meshes := []
-	for cy in range(grid.y):
-		for cx in range(grid.x):
-			var mesh := TerrainChunk.build_mesh(space, terrain, Vector2i(cx, cy), chunk_size, fields)
-			if mesh != null:
-				meshes.append(mesh)
-
-	# The world is a torus, so it must not visibly END (D-035). Draw the
-	# whole chunk set nine times — the centre copy plus its eight
-	# neighbours across both seams — sharing the SAME Mesh resources, so
-	# this costs draw calls rather than memory. Before this, panning far
-	# enough left the meshed ground behind and stared into the void, and a
-	# squad mid-seam-crossing drew outside the map entirely.
-	#
-	# The two lattice vectors come straight from TorusSpace.to_world, and
-	# they are NOT axis-aligned. Stepping `width` in q moves world x by
-	# width*SQRT_3*hex_size. Stepping `height` in r moves z by
-	# height*1.5*hex_size *and* x by height/2*SQRT_3*hex_size, because x
-	# depends on r/2. Offsetting by (x, 0, z) rectangles instead would look
-	# correct straight ahead and tear at the diagonal seams.
-	# `lattice_steps()`, not a copy of that arithmetic — it is the one
-	# definition, shared with culling and the camera wrap, and this file
-	# had been re-deriving it inline. Two spellings of the same geometry is
-	# how the terrain and the things standing on it drift apart, which is
-	# the failure D-035 exists to prevent.
-	var steps := space.lattice_steps()
-	var step_q := steps[0]
-	var step_r := steps[1]
-
-	for i in [-1, 0, 1]:
-		for j in [-1, 0, 1]:
-			var tile := Node3D.new()
-			tile.position = step_q * float(i) + step_r * float(j)
-			for mesh in meshes:
-				var instance := MeshInstance3D.new()
-				instance.mesh = mesh
-				instance.material_override = material
-				tile.add_child(instance)
-			_terrain_root.add_child(tile)
+	# Passability from the SAME fields that mesh the ground, which the same
+	# TerrainGen built as the server's own (both from the settings on the wire,
+	# D-049). So the build preview agrees with the server about where the water
+	# is by construction rather than by luck.
+	_passable = fields.passable
 
 	# Minimap base: one pixel per cell, painted from the same biome
 	# classification the mesh used (D-037), so the small picture and the
 	# big one cannot disagree about where the water is.
-	# Now the map's real dimensions are known, give the minimap its shape.
-	_layout_minimap(space)
-
-	# Passability from the SAME TerrainGen that built the mesh, which is
-	# the same one the server built its own from (both from the settings
-	# on the wire, D-049). So the build preview agrees with the server
-	# about where the water is by construction rather than by luck.
-	_passable = fields.passable
-
+	#
+	# From `fields.biome`, not from `biome_color` per cell: they are the same
+	# value by construction (`biome_color` is `color_of(biome_at(...))`, and
+	# `fields.biome` is what `biome_at` would answer), but the second spelling
+	# re-evaluates the elevation noise 32,592 times — a 200 ms pass, for the
+	# second time, over a field that is already in hand.
 	_minimap_base = Image.create(space.width, space.height, false, Image.FORMAT_RGBA8)
 	for y in range(space.height):
 		for x in range(space.width):
-			_minimap_base.set_pixel(x, y, terrain.biome_color(space, Vector2i(x, y)))
+			_minimap_base.set_pixel(x, y,
+				TerrainGen.color_of(fields.biome[space.index(Vector2i(x, y))]))
 
 	# How far out this map may be zoomed before the same ground appears
 	# twice. Terrain is drawn nine times (D-035) but every squad, building
@@ -746,19 +871,165 @@ func _build_terrain() -> void:
 	# ultrawide monitor genuinely earns a lower cap.
 	_refresh_camera_cap()
 
-	_camera_target = space.to_world(Vector2i(space.width / 2, space.height / 2))
-	_update_camera()
-	# Reported, not assumed. Both of these fail SILENTLY and identically —
-	# ground that is drawn but wrong — and the fog one is the whole of #58:
-	# a material that never received the field renders the entire map lit,
-	# which is exactly what a healthy frame looks like to every number the
-	# client prints.
+	_terrain_built = true
+
+
+## The loading screen the ground is built behind
+## (D-20260818-terrain-builds-a-slice-at-a-time).
+##
+## #106 asked for a world playable within 1.5 seconds with the terrain
+## streaming in around the player; the owner's call was a LOADING BAR and up to
+## 30 seconds instead. That is the better trade for this game: the slices still
+## have to exist (a bar with nothing to report is a spinner, and a window that
+## does not return to its event loop is one the desktop greys out), but the
+## match starts with its ground entirely there, so nothing is ever drawn
+## standing on fields that have not been computed yet.
+##
+## Laid out with ANCHORS alone — shares of the window, no pixel arithmetic —
+## which is D-20260817-lobby-fits-the-window's lesson honoured without a second
+## layout module to keep in step with the first. The only thing that scales
+## with the window is the font size, and it reads `_hud_scale` rather than
+## working out its own.
+const LOADING_BAR_LEFT := 0.3
+const LOADING_BAR_RIGHT := 0.7
+const LOADING_BAR_TOP := 0.52
+const LOADING_BAR_BOTTOM := 0.545
+
+## What the owner called acceptable, in seconds, and therefore what the report
+## at the end of a build is measured AGAINST rather than merely printed beside.
+## A build that goes over says so in a warning: the number is a decision, and a
+## decision nothing checks is prose.
+const LOADING_BUDGET_SECONDS := 30.0
+
+var _loading_layer: CanvasLayer = null
+var _loading_title: Label = null
+var _loading_detail: Label = null
+var _loading_bar_fill: ColorRect = null
+
+
+func _build_loading_screen() -> void:
+	var layer := CanvasLayer.new()
+	# Above everything, including the lobby: this covers the window, and a
+	# control drawn over it would be one the player can see and cannot use.
+	layer.layer = 100
+	layer.visible = false
+	_loading_layer = layer
+	add_child(layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(backdrop)
+
+	_loading_title = _hud_label(Vector2.ZERO, HudTheme.DISPLAY_SIZE, HudTheme.TEXT_BRIGHT)
+	_loading_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_loading_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_loading_title.anchor_left = 0.0
+	_loading_title.anchor_right = 1.0
+	_loading_title.anchor_top = 0.42
+	_loading_title.anchor_bottom = 0.50
+	layer.add_child(_loading_title)
+
+	var bar_back := ColorRect.new()
+	bar_back.color = HudTheme.BG_ROW
+	bar_back.anchor_left = LOADING_BAR_LEFT
+	bar_back.anchor_right = LOADING_BAR_RIGHT
+	bar_back.anchor_top = LOADING_BAR_TOP
+	bar_back.anchor_bottom = LOADING_BAR_BOTTOM
+	layer.add_child(bar_back)
+
+	# The fill is the same rect with its RIGHT anchor animated, so progress is
+	# a share of the window like everything else here and there is no width in
+	# pixels to recompute when the window changes size.
+	_loading_bar_fill = ColorRect.new()
+	_loading_bar_fill.color = HudTheme.ACCENT
+	_loading_bar_fill.anchor_left = LOADING_BAR_LEFT
+	_loading_bar_fill.anchor_right = LOADING_BAR_LEFT
+	_loading_bar_fill.anchor_top = LOADING_BAR_TOP
+	_loading_bar_fill.anchor_bottom = LOADING_BAR_BOTTOM
+	layer.add_child(_loading_bar_fill)
+
+	_loading_detail = _hud_label(Vector2.ZERO, HudTheme.BODY_SIZE, HudTheme.TEXT_DIM)
+	_loading_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_loading_detail.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_loading_detail.anchor_left = 0.0
+	_loading_detail.anchor_right = 1.0
+	_loading_detail.anchor_top = 0.56
+	_loading_detail.anchor_bottom = 0.62
+	layer.add_child(_loading_detail)
+
+
+## Draw the bar, or take it off the screen once there is nothing left to build.
+##
+## Says WHICH phase is running, because the two are minutes apart in cost on a
+## big map and "47%" alone cannot tell a player whether the bar has stalled or
+## is merely in the expensive half.
+func _update_loading_screen() -> void:
+	if _loading_layer == null:
+		return
+	if _terrain_stream == null:
+		_loading_layer.visible = false
+		return
+
+	var progress := _terrain_stream.progress()
+	_loading_layer.visible = true
+	_loading_bar_fill.anchor_right = LOADING_BAR_LEFT \
+		+ (LOADING_BAR_RIGHT - LOADING_BAR_LEFT) * progress
+	# Font size is the one thing anchors cannot express, so it follows the
+	# window the same way the HUD's does.
+	_loading_title.add_theme_font_size_override("font_size",
+		maxi(1, int(HudTheme.DISPLAY_SIZE * _hud_scale)))
+	_loading_detail.add_theme_font_size_override("font_size",
+		maxi(1, int(HudTheme.BODY_SIZE * _hud_scale)))
+
+	_loading_title.text = "Building the world"
+	var stage := "shaping the ground"
+	if _terrain_stream.fields_ready():
+		stage = "meshing terrain — %d of %d chunks" % [
+			_terrain_stream.chunks_done(), _terrain_stream.chunk_total()]
+	_loading_detail.text = "%d%%  ·  %s  ·  %.1f s" % [
+		int(round(progress * 100.0)), stage,
+		float(Time.get_ticks_usec() - _terrain_began_usec) / 1_000_000.0]
+
+
+## Hang whatever the builder finished this frame off all nine lattice tiles.
+func _parent_new_chunks() -> void:
+	for mesh in _terrain_stream.take_meshes():
+		for tile in _terrain_tiles:
+			var instance := MeshInstance3D.new()
+			instance.mesh = mesh
+			instance.material_override = _terrain_material
+			tile.add_child(instance)
+		_terrain_chunks_drawn += 1
+
+
+## Reported, not assumed. Both `textured` and `fogged` fail SILENTLY and
+## identically — ground that is drawn and wrong — and the fog one is the whole
+## of #58: a material that never received the field renders the entire map lit,
+## which is exactly what a healthy frame looks like to every number the client
+## prints.
+##
+## The slice numbers are #106's other half: a build that spread its work but
+## still had one 400 ms lump in it would look exactly like this line without
+## them.
+func _report_terrain_build() -> void:
 	var shaded := _terrain_material as ShaderMaterial
 	var fogged := shaded != null \
 		and shaded.get_shader_parameter(TerrainFog.SHADER_PARAM) != null
-	print("client: built %d terrain chunks — textured=%s fogged=%s props_fogged=%s" % [
-		_terrain_root.get_child_count(), TerrainChunk.has_atlas(), fogged,
-		PropFog.is_bound()])
+	var seconds := float(Time.get_ticks_usec() - _terrain_began_usec) / 1_000_000.0
+	print("client: built %d terrain chunks in %.1f s — %d slices, worst %.0f ms, fields %.1f s, %.1f s of work — textured=%s fogged=%s props_fogged=%s" % [
+		_terrain_chunks_drawn, seconds, _terrain_stream.slices,
+		float(_terrain_stream.worst_slice_usec) / 1000.0,
+		float(_terrain_stream.fields_usec) / 1_000_000.0,
+		float(_terrain_stream.total_usec) / 1_000_000.0,
+		TerrainChunk.has_atlas(), fogged, PropFog.is_bound()])
+	# The owner's ceiling, checked rather than quoted. A build that goes over it
+	# is not a broken client — it is this file's own measurement saying the map
+	# ladder has outrun the loading screen, which is the next lever in #106's
+	# list (a worker thread) rather than something a bar can fix.
+	if seconds > LOADING_BUDGET_SECONDS:
+		push_warning("client: terrain took %.1f s, over the %.0f s a player was promised" % [
+			seconds, LOADING_BUDGET_SECONDS])
 
 
 ## The D-006 payoff, once per frame: for every squad the client knows
@@ -7701,6 +7972,12 @@ func _teardown_match() -> void:
 		_terrain_root.queue_free()
 		_terrain_root = null
 	_terrain_built = false
+	# The tiles went with the root above; the builder goes because the next
+	# match may be a different map entirely (D-049), and a half-finished build
+	# of the old one would keep handing out its chunks.
+	_terrain_tiles = []
+	_terrain_stream = null
+	_terrain_chunks_drawn = 0
 
 	# The next match may be a different map entirely (D-049), so the field is
 	# dropped rather than cleared — its size and its neighbour table both
