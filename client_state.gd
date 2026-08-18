@@ -66,6 +66,18 @@ var nodes := {}
 ## because `nodes` no longer does.
 var felled := []
 
+## Nodes the server has just told this client about, in arrival order, not
+## yet drawn. The other end of the same idea as `felled`: `nodes` is what is
+## KNOWN and answers questions, this is the NEWS, and the GUI drains it to
+## decide what it still has to grow.
+##
+## Its reason for existing is the drain, not the record. The client used to
+## find newly revealed cells by scanning all of `nodes` — 7,664 of them on
+## the shipped map — and could only afford to do so on frames where the two
+## sides' SIZES disagreed, which stops being a sound test the moment drawing
+## is budgeted and placed lags known on purpose (see `node_placement.gd`).
+var revealed := []
+
 
 ## Fellings not yet animated. Draining hands ownership to the caller; the
 ## headless consumers (bots, AI seats) never call this, and the queue is
@@ -73,6 +85,16 @@ var felled := []
 func take_felled() -> Array:
 	var out := felled
 	felled = []
+	return out
+
+
+## Reveals not yet drawn. Same drain-once contract, same bound — a cell is
+## revealed once (`server.gd`'s `_send_visible_nodes` sends only cells it
+## has not sent before), so the headless consumers that never drain this
+## cannot accumulate more than the map's node count.
+func take_revealed() -> Array:
+	var out := revealed
+	revealed = []
 	return out
 
 var buildings := {}
@@ -251,6 +273,7 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NODES:
 			for entry in NetProtocol.decode_nodes(data):
 				nodes[int(entry["cell"])] = int(entry["kind"])
+				revealed.append(int(entry["cell"]))
 		NetProtocol.S2C_NODES_DEPLETED:
 			for cell in NetProtocol.decode_nodes_depleted(data):
 				if nodes.has(int(cell)):
@@ -960,6 +983,7 @@ func leave_match() -> void:
 	buildings.clear()
 	nodes.clear()
 	felled.clear()
+	revealed.clear()
 	wallet = PackedInt32Array()
 
 	server_tick = 0
