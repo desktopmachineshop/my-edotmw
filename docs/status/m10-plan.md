@@ -48,6 +48,23 @@ server was down.
   `decisions/D-20260818-the-sweep-follows-the-ladder.md`. Read the
   standing warning with it: **a green sweep is not a green server**, and
   where the two disagree the live run wins.
+- **The per-squad rise is attributed (#105, done):** it is the
+  **flow-field expansion slice** (D-040), and the reason no reported phase
+  moved is that the tick had only two reported phases. Every region of
+  `SquadSim.tick()` is timed and printed now, with a computed residual —
+  `decisions/D-20260818-every-microsecond-of-a-tick-has-a-phase.md` has
+  the A/B (same squads, same orders, only the map changes: field expansion
+  52.5 -> 453.1 µs/squad on 4x the cells, every other phase FELL, residual
+  0.03%). The mechanism is a per-TICK cell budget divided by a squad
+  count, which is D-040 working as designed — spending it better is #107,
+  not this. **M6's older 40.8 -> ~77 rise is declared SEPARATE** in the
+  same entry: those two numbers were taken at 120 and ~52 squads on builds
+  with no breakdown, so no attribution can be recovered from them, only
+  invented.
+- **`just profile` currently cannot see the shipped ladder (#108).** Its sweep
+  tops out at 32,768 cells, which is now the *default* map; the largest
+  size is 130,368. The sweep is this project's authority on scaling, so
+  re-basing it is a prerequisite for trusting anything it says.
 - **The biggest item (#110) is the one twice rejected on scope**: drawing
   entities at every visible lattice copy. It deletes the recurring
   copy-choice bug class (armies vanishing at the seam, "half the screen

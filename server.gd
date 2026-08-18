@@ -564,10 +564,11 @@ func _process(delta: float) -> void:
 		if _sim.last_tick_usec > TICK_BUDGET_USEC:
 			_ticks_over_budget += 1
 			if _ticks_over_budget <= 8:
-				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
+				print("server: TICK OVER BUDGET — tick=%d %.1fms squads=%d clients=%d fields=%d waits=%d | field_expand=%.1fms curves=%.1fms vision=%.1fms combat=%.1fms buildings=%.1fms (production=%.1fms) eco=%.1fms" % [
 					_sim.tick_count, float(_sim.last_tick_usec) / 1000.0,
 					_sim.squad_count(), _clients.size(),
 					_sim.fields_built, _sim.field_waits,
+					float(_sim.last_fields_usec) / 1000.0,
 					float(_sim.last_curves_usec) / 1000.0,
 					float(_sim.last_vision_usec) / 1000.0,
 					float(_sim.last_squad_combat_usec) / 1000.0,
@@ -655,13 +656,12 @@ func _print_summary(reason: String) -> void:
 		float(OS.get_static_memory_usage()) / 1048576.0,
 	])
 
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (vision=%.3f combat=%.3f) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
 		_sim.mean_usec_per_squad_update(),
-		_sim.mean_vision_usec_per_squad_update(),
-		_sim.mean_combat_usec_per_squad_update(),
+		_phase_breakdown(),
 		_sim.vision_rebuilds,
 		float(_worst_tick_usec) / 1000.0,
 		_sim.field_waits,
@@ -707,13 +707,25 @@ func _print_status() -> void:
 	# Deliberately avoids the words this project's log scanners look for
 	# (`just test-load` greps for warning/desync), so routine status can
 	# never be mistaken for a fault.
-	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f (vision=%.3f combat=%.3f)" % [
+	print("server: tick=%d time=%.1fs squads=%d clients=%d sent=%dB fields=%d us/squad=%.2f (%s)" % [
 		_sim.tick_count, _sim.time, _sim.squad_count(), _clients.size(),
 		_sim.replicator.bytes_sent_total, _sim.fields_built,
 		_sim.mean_usec_per_squad_update(),
-		_sim.mean_vision_usec_per_squad_update(),
-		_sim.mean_combat_usec_per_squad_update(),
+		_phase_breakdown(),
 	])
+
+
+## The per-squad cost broken down by phase, as `name=us` pairs in tick
+## order (D-20260818). The parts SUM to the us/squad they sit beside —
+## `other` is the difference, not an estimate — so a rise is always
+## attributable to a named phase or visibly to none of them, which is the
+## thing this project has twice been unable to do after the fact.
+func _phase_breakdown() -> String:
+	var parts := []
+	var phases := _sim.phase_usec_per_squad_update()
+	for phase in phases:
+		parts.append("%s=%.2f" % [phase, phases[phase]])
+	return " ".join(parts)
 
 
 func _service_network() -> void:
