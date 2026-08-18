@@ -608,10 +608,17 @@ static func cliff_class_of(biome: Biome) -> CliffClass:
 ## and the lift only makes it tall enough to see.
 ##
 ## Rendering only, like `height_scale` and `pillow`: `build_fields` is the sole
-## reader, `passability` still thresholds the unscaled elevation, and nothing
-## stands on impassable ground for the offset to disagree with. Any cell a
+## reader and `passability` still thresholds the unscaled elevation. Any cell a
 ## soldier can walk on is LAND and is drawn at its own height, which is what
 ## `tests/test_terrain_cliffs.gd`'s band test pins down.
+##
+## This used to add "and nothing stands on impassable ground for the offset to
+## disagree with", which was simply false (#97). Formation slots were pure
+## geometry with no passability input, so a squad on a coastline stamped men
+## onto the shelf behind it and every one of them jumped this whole 2.0 units.
+## They are pulled back onto walkable ground now
+## (D-20260818-a-soldier-stands-where-his-squad-could-walk); the lift stays
+## invisible to the SIMULATION, which is the part that was always the point.
 @export var cliff_rise: float = 2.0
 
 

@@ -76,6 +76,10 @@ var _state: ClientState
 var _now := 0.0
 var _config: MapConfig
 var _terrain_sampler := Callable()
+## The passability half of the terrain sample (#97). Held beside the
+## sampler because a benchmark that skipped the clamp would price a
+## derivation the client does not run.
+var _terrain_passable := PackedByteArray()
 
 
 func _ready() -> void:
@@ -161,6 +165,7 @@ func _build_terrain() -> void:
 	var surface := fields.surface
 	_terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(_space, surface, x, z)
+	_terrain_passable = fields.passable
 
 	# One shared definition (D-066), so the benchmark renders what the game
 	# renders. Textured when generated/ has been built, vertex colour alone
@@ -204,6 +209,7 @@ func _setup_count(count: int) -> void:
 	_sim.set_passable(TerrainGen.new().passability(_space))
 	_state = ClientState.new()
 	_state.terrain_sampler = _terrain_sampler
+	_state.terrain_passable = _terrain_passable
 	_now = 0.0
 
 	if count <= 0:

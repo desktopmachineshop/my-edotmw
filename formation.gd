@@ -8,9 +8,12 @@ class_name Formation
 ##
 ## Every function here is STATIC and PURE. A soldier's position is a
 ## function of (squad curve, formation shape, slot index, terrain sample)
-## and nothing else. There is no per-soldier velocity, no accumulated
-## offset, no history carried between ticks, and deliberately no instance
-## state of any kind — the class is static so there is nowhere to put any.
+## and nothing else. The terrain sample has two halves, and both are
+## supplied by the caller: how high the ground is, and whether the squad
+## could walk on it at all (see `grounded_offset`). There is no
+## per-soldier velocity, no accumulated offset, no history carried between
+## ticks, and deliberately no instance state of any kind — the class is
+## static so there is nowhere to put any.
 ##
 ## That is not a stylistic preference. It is what makes server and client
 ## agree without the server sending a single soldier position: both sides
@@ -44,6 +47,14 @@ const HEADING_EPSILON := 0.05
 # Fallback facing for a squad that has never moved. Arbitrary but fixed —
 # it must be deterministic, because client and server both derive it.
 const DEFAULT_HEADING := Vector2(0.0, 1.0)
+
+# How many times a slot standing on ground its squad could not walk on is
+# pulled back toward the squad before it simply stands where the squad
+# stands. Four, because the pull is along the offset ray and a quarter of
+# a formation's half-width is finer than a hex at every shipped spacing —
+# and because this loop only ever runs for the handful of men actually
+# over water or rock. A soldier on open ground costs one array lookup.
+const PASSABLE_PULL_STEPS := 4
 
 
 ## Offset of one slot within the formation, in formation-local space:
@@ -326,11 +337,74 @@ static func heading(curve: StateCurve, time: float) -> Vector2:
 	return DEFAULT_HEADING
 
 
+## The slot offset a soldier actually stands at: `offset` as the formation
+## drew it, or the furthest fraction of it that still lands on ground the
+## squad itself could walk on.
+##
+## ## Why this is here at all (#97)
+##
+## Passability was enforced on the SQUAD and on nothing else. A squad
+## cannot path into water or onto a mountain, but its slot offsets are
+## pure geometry, so a squad parked on a beach stamped part of its
+## formation into the sea and part of it up the rock behind — and because
+## `TerrainGen.surface_field` draws the impassable HIGH class on its own
+## lifted tier (D-097's `cliff_rise`, 2.0 world units), a slot crossing
+## that boundary did not nudge, it teleported onto the top of the drawn
+## cliff. That is the "popping" the playtest reported.
+##
+## ## Why it stays legal under D-006
+##
+## `passable` is an INPUT, not remembered state. The answer for a slot
+## depends on (curve, shape, slot, alive, spacing, terrain) and nothing
+## else, so the same call gives the same result forever and both sides
+## derive the same man in the same place. There is no per-soldier nudge
+## accumulating anywhere — this is not local avoidance wearing a hat, and
+## a soldier that walks back onto open ground gets its full offset again
+## the very next frame.
+##
+## ## Why the pull is toward the squad rather than to the nearest free cell
+##
+## A nearest-passable-cell walk moves each man his own way, so neighbours
+## separate and the formation tears along the shoreline. Pulling along the
+## offset ray keeps every man on his own line out from the centre, so the
+## block compresses against the water instead of scattering — and the
+## fallback is guaranteed: the squad's own cell is passable, because the
+## simulation would not have routed it anywhere else.
+##
+## An empty `passable` means "fully open", the same convention as
+## `SquadSim.is_passable`, so a caller with no terrain gets exactly the
+## geometry it always got.
+static func grounded_offset(centre: Vector3, offset: Vector3, space: TorusSpace,
+		passable: PackedByteArray) -> Vector3:
+	if passable.is_empty() or _stands_on_passable(centre + offset, space, passable):
+		return offset
+	for step in range(PASSABLE_PULL_STEPS - 1, 0, -1):
+		var pulled := offset * (float(step) / float(PASSABLE_PULL_STEPS))
+		if _stands_on_passable(centre + pulled, space, passable):
+			return pulled
+	return Vector3.ZERO
+
+
+## Whether the cell containing a world point is one a squad could walk on.
+##
+## Terrain passability only — never the server's building-stamped copy.
+## See `ClientState.terrain_passable` for why that distinction is what
+## keeps the two sides deriving the same answer.
+static func _stands_on_passable(at: Vector3, space: TorusSpace,
+		passable: PackedByteArray) -> bool:
+	var index := space.index(space.world_to_cell(at))
+	return index >= 0 and index < passable.size() and passable[index] != 0
+
+
 ## World transform for a single soldier.
 ##
 ## `terrain_height` is the terrain sample from D-006's input tuple. The
 ## caller supplies it because sampling needs the soldier's XZ, which this
 ## function computes — see soldier_transforms() for the assembled form.
+## `passable` is the other half of that sample (see `grounded_offset`);
+## note that a clamped slot moves in XZ, so a height sampled at the
+## unclamped position is a height for the wrong spot. The bulk path below
+## samples after clamping for exactly that reason.
 static func soldier_transform(
 	curve: StateCurve,
 	time: float,
@@ -339,7 +413,8 @@ static func soldier_transform(
 	shape: String,
 	spacing: float,
 	space: TorusSpace,
-	terrain_height: float = 0.0
+	terrain_height: float = 0.0,
+	passable: PackedByteArray = PackedByteArray()
 ) -> Transform3D:
 	var centre := curve.sample_world(time, space)
 	var dir := heading(curve, time)
@@ -351,7 +426,9 @@ static func soldier_transform(
 
 	var local := slot_offset(shape, slot, alive, spacing)
 	# Formation-local +y is forward, which is +z after rotation.
-	var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+	var offset := grounded_offset(
+		centre, Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle),
+		space, passable)
 
 	var basis := Basis(Vector3.UP, angle)
 	var origin := centre + offset
@@ -372,10 +449,11 @@ static func soldier_transforms(
 	shape: String,
 	spacing: float,
 	space: TorusSpace,
-	terrain_sampler := Callable()
+	terrain_sampler := Callable(),
+	passable: PackedByteArray = PackedByteArray()
 ) -> Array[Transform3D]:
 	return soldier_transforms_sampled(
-		curve, time, alive, shape, spacing, space, terrain_sampler, alive)
+		curve, time, alive, shape, spacing, space, terrain_sampler, alive, passable)
 
 
 ## As above, but derives at most `max_count` of the squad's soldiers,
@@ -403,7 +481,8 @@ static func soldier_transforms_sampled(
 	spacing: float,
 	space: TorusSpace,
 	terrain_sampler := Callable(),
-	max_count: int = -1
+	max_count: int = -1,
+	passable: PackedByteArray = PackedByteArray()
 ) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	if curve == null or alive <= 0:
@@ -428,6 +507,10 @@ static func soldier_transforms_sampled(
 	var angle := atan2(world_dir.x, world_dir.z)
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
+	# Hoisted for the same reason everything else here is: without terrain
+	# there is nothing to clamp against, and this path derives every
+	# soldier on screen every frame.
+	var clamp_to_ground := not passable.is_empty()
 
 	out.resize(count)
 	for i in range(count):
@@ -436,7 +519,13 @@ static func soldier_transforms_sampled(
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
 		var local := slot_offset(shape, slot, alive, spacing)
-		var origin := centre + Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+		var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+		# Clamped BEFORE the height is sampled, so a man pulled back off the
+		# rock takes the height of the ground he ends up on rather than of
+		# the cliff top he was briefly aimed at.
+		if clamp_to_ground:
+			offset = grounded_offset(centre, offset, space, passable)
+		var origin := centre + offset
 		origin.y = terrain_sampler.call(origin.x, origin.z) if sample_terrain else 0.0
 		out[i] = Transform3D(basis, origin)
 	return out

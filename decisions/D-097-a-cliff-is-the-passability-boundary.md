@@ -105,6 +105,27 @@ beach-versus-sea-cliff split for free).
   figure that means anything. CLAUDE.md's M6 note about worst ticks
   measured while the host was building containers is the same lesson.
 
+**Amendment, 2026-08-18 (#97): the clause that made the lift free was
+not true.** The consequences list above justified `cliff_rise` as
+rendering only with "`build_fields` is the sole reader, `passability`
+still thresholds the unscaled elevation, and nothing stands on impassable
+ground for the offset to disagree with" — the same wording as
+`TerrainGen.cliff_rise`'s own doc comment. Soldiers stood on impassable
+ground the whole time: D-006's slot offsets are pure geometry and
+passability was never one of their inputs, so a squad on a beach stamped
+part of its formation onto the shelf behind it and a slot crossing the
+boundary jumped `cliff_rise` PLUS the natural step, which reads as
+popping rather than as a slope. The simulation half of the claim survives
+untouched — `passability` still thresholds the unscaled elevation and the
+wall still stands exactly where it changes — and the "soldiers spill
+slightly outside their squad's cell" consequence above was the near miss:
+it bounded `height_at` near an edge and did not ask what happens to a man
+a whole formation-width away. Fixed by
+`D-20260818-a-soldier-stands-where-his-squad-could-walk`, which makes
+passability the second half of the terrain sample. This is the D-058/D-065
+family again: a decision entry asserting an invariant is not evidence that
+the invariant holds.
+
 **Revisit trigger:** elevation acquiring tactical meaning. D-084 noted
 that the rendering/simulation split "stops being free the moment
 elevation acquires tactical meaning", and per-edge blocking (the plan's

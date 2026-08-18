@@ -647,6 +647,12 @@ func _build_terrain() -> void:
 	var surface := fields.surface
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(space, surface, x, z)
+	# The other half of the terrain sample (#97): a formation slot that
+	# lands in the sea or up a mountain is pulled back onto ground the
+	# squad could actually walk on, instead of being stamped there and
+	# lifted onto the drawn cliff. From the SAME fields the mesh is built
+	# from, for the same reason the height sampler is.
+	_state.terrain_passable = fields.passable
 
 	# One shared definition (D-066), so the benchmark renders what the game
 	# renders. Textured when generated/ has been built, vertex colour alone
