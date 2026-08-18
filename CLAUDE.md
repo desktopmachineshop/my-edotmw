@@ -311,6 +311,23 @@ client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
+bot_patrol.gd            What a load-test bot's scouting detachment does
+                        (D-20260817-load-test-bots-must-manoeuvre). All-
+                        static and pure, like formation.gd, so the half of
+                        the load test with the interesting failure mode is
+                        testable without a server. `test-load`'s
+                        `reveal_events` gate asserts a MANOEUVRE — hidden,
+                        then shown again — and the bots had stopped
+                        performing one at all: the rally/recall pair was a
+                        one-shot spent on the founding party, and the raid
+                        pool is empty because every squad a bot owns is a
+                        hauling crew. Leg boundaries are EVENTS (the scout
+                        arrived), never timestamps, and both are stated in
+                        the WATCHER's terms — "they have lost me" is the
+                        condition a conceal actually counts, and on a map
+                        where two starts are 13 cells apart against 11
+                        cells of town-centre sight, "am I home yet" is not
+                        the same question.
 cmd_args.gd              The one parse of `--key=value`, and the one check
                         that a value about to be read as a NUMBER is one
                         (D-20260817-recipe-args-are-positional). All three

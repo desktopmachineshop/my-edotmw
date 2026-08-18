@@ -24,11 +24,21 @@ const ORDER_INTERVAL_SECONDS := 3.0
 ## At ORDER_INTERVAL_SECONDS that is ~24 seconds per leg, which is about
 ## what crossing half a 128x64 map costs — long enough to actually arrive,
 ## fight, and then break contact again.
+##
+## Nothing reads this in a shipped run: the raid rotation it paces is
+## unreachable while every squad a bot owns is a hauling crew — see
+## `_issue_order`'s empty-pool branch.
 const ORDERS_PER_RAID_PHASE := 8
 const CONNECT_TIMEOUT_SECONDS := 10.0
 
-# How many of each bot's squads march on a neighbouring player's known
-# spawn cell, and when they're called back home. Left as random
+## How far from its start a bot will look for somewhere its town hall is
+## allowed to stand. `server.gd`'s BUILD_REACH_CELLS is 3 and a builder has
+## to be within that of the site, so this is the whole of the ground a
+## founding party standing on its start can reach without walking first.
+const BUILD_SITE_SEARCH_CELLS := 3
+
+# WHY a handful of each bot's squads march on a neighbouring player's
+# start rather than wandering. Left as random
 # single-squad orders (the pre-existing periodic behaviour below), two
 # players' squads meeting inside a short DURATION is mostly luck —
 # server.gd._spawn_squads_for deliberately spreads players across the
@@ -59,9 +69,15 @@ const CONNECT_TIMEOUT_SECONDS := 10.0
 # what keeps D-026 criterion 6's "even the most-informed bot knows fewer
 # squads than the server simulates" true even while this is happening —
 # see _max_known_squads() below.
-const SCOUT_SQUADS_PER_BOT := 3
-const RALLY_AT_SECONDS := 0.0
-const RECALL_AT_SECONDS := 8.0
+#
+# How MANY squads scout, how close they come and when a leg is over all
+# live in `bot_patrol.gd` now (D-20260817-load-test-bots-must-manoeuvre,
+# #69/#84), because they are the part of this file worth testing without
+# a server. What used to be here was a pair of absolute timestamps —
+# rally at 0 s, recall at 8 s — that ran ONCE, in the window where D-031's
+# opening leaves a bot holding nothing but the founding party it is about
+# to spend on a town hall. The manoeuvre the fog gates depend on therefore
+# never happened at all, on any run, and `reveal_events` was left to luck.
 
 class VirtualClient:
 	var index: int
@@ -93,9 +109,10 @@ class VirtualClient:
 	var _next_order_at := 1.0
 	var _orders_issued := 0
 
-	## Whether this bot's opening town hall order has actually gone out.
-	## Distinct from `_orders_issued == 0` on purpose — see where it is set.
-	var _town_hall_ordered := false
+	## How many town hall sites this bot has asked for. NOT a latch saying
+	## it has one — see `_owns_a_building`, which is what actually gates the
+	## opening now.
+	var _build_attempts := 0
 
 	## The squad sent to found the town hall, or -1 before that has
 	## happened. Read by `_issue_order` to keep the raid-order pool from
@@ -108,14 +125,48 @@ class VirtualClient:
 	var _order_ticks := 0
 	var _rng := RandomNumberGenerator.new()
 
-	# Rally/recall scripting (see the constants above) — a bounded, one-shot
-	# sequence layered on top of the existing periodic random order, not a
-	# replacement for it.
-	var _scout_squads: Array = []
-	var _home_cell: Dictionary = {}  # squad id -> Vector2i, sampled before rallying
+	# The scouting patrol (BotPatrol) — a REPEATING out-and-back run for the
+	# whole match, layered on top of the periodic order below rather than
+	# replacing it.
+	var _scouts: Array = []
 	var _gather_assigned: Dictionary = {}  # gatherer squad id -> node cell index
-	var _rallied := false
-	var _recalled := false
+	## Which leg the detachment is on: even legs watch the neighbour, odd
+	## legs withdraw home.
+	var _leg := 0
+	## When the current leg's orders went out, or -1 before any have. NOT a
+	## schedule — see bot_patrol.gd's header for why the cycle turns on
+	## arrival rather than on a clock.
+	var _leg_started_at := -1.0
+
+	## The largest detachment this bot ever fielded. Reported, because a
+	## patrol nobody could staff and a patrol that ran are indistinguishable
+	## from `reveal_events` alone — and telling those two apart is the whole
+	## of #69's investigation.
+	var scouts_peak := 0
+
+	## Legs COMPLETED, not legs ordered. `_leg` counts the boundaries the
+	## detachment actually reached, so a run that reports zero of them is a
+	## run in which the manoeuvre the fog gates depend on did not happen —
+	## which is the state `main` was in, undetectably, for a day.
+	func patrol_legs() -> int:
+		return _leg
+
+	## How many sites this bot asked for before one stuck. Reported beside
+	## the building count, because "never asked" and "asked and was refused"
+	## are different faults with the same symptom, and telling them apart is
+	## what found the latch this replaces.
+	func build_attempts() -> int:
+		return _build_attempts
+
+	## Whether the opening has actually HAPPENED — a building this bot owns
+	## exists as far as it can tell. The server files a structure the moment
+	## construction starts, so this goes true while the hall is still going
+	## up, which is exactly when the bot should stop asking for another one.
+	func _owns_a_building() -> bool:
+		for wire_id in state.buildings:
+			if int(state.buildings[wire_id]["owner"]) == state.player:
+				return true
+		return false
 
 	func _init(p_index: int, p_address: String, p_port: int, p_player_count: int) -> void:
 		index = p_index
@@ -157,13 +208,11 @@ class VirtualClient:
 				ENetConnection.EVENT_RECEIVE:
 					_drain(event[1])
 
-		if connected and not _rallied and not state.squads.is_empty() and now >= RALLY_AT_SECONDS:
-			_issue_rally_order(now)
-			_rallied = true
-
-		if _rallied and not _recalled and now >= RECALL_AT_SECONDS:
-			_issue_recall_order()
-			_recalled = true
+		# Before the order tick below, so the detachment is claimed on the
+		# same pass a crew appears rather than one tick after the haul loop
+		# has already sent it to a tree.
+		if connected:
+			_run_patrol(now)
 
 		if connected and now >= _next_order_at:
 			_issue_order()
@@ -202,47 +251,85 @@ class VirtualClient:
 	func _spawn_cell_of(target_player: int) -> Vector2i:
 		return state.spawn_cell_of(target_player)
 
-	## Send a handful of this bot's squads to march directly on a
-	## neighbouring player's known (stationary) squad, guaranteeing contact
-	## well inside the run's time budget instead of hoping a random
-	## destination happens to cross paths — see the header comment on the
-	## constants above for why this is a deliberate scenario choice, not a
-	## fabricated result. Players form a ring (1 -> 2 -> ... -> N -> 1) so
-	## every adjacent pair gets approached from at least one side. Records
-	## each scout's pre-rally cell first, so _issue_recall_order() can send
-	## it home rather than to a fresh random spot.
-	func _issue_rally_order(now: float) -> void:
-		if state.space == null or state.squads.is_empty() or player_count <= 0:
+	## Walk the scouting detachment out to a neighbour and back, over and
+	## over, for the whole match (D-20260817-load-test-bots-must-manoeuvre).
+	##
+	## This is what makes the verdict's fog conditions a MANOEUVRE rather
+	## than a coincidence: a squad the neighbour can see, which then leaves
+	## its sight (conceal) and comes back (reveal). Players form a ring
+	## (1 -> 2 -> ... -> N -> 1), so every adjacent pair is watched from at
+	## least one side. It only shapes a LOAD-TEST SCENARIO — which squads go
+	## where — and never a correctness assertion: the vision field,
+	## concealment and the reveal that follow are the real system responding
+	## to real orders.
+	##
+	## Nothing here is latched. The detachment is re-derived every pass, so
+	## a scout that died is replaced by whatever the bot has now, and a bot
+	## that owns nothing yet simply does not patrol — the predecessor
+	## latched on t=0/t=8 s and was therefore spent before a bot had an army
+	## at all. Where the leg boundaries come from is bot_patrol.gd's job.
+	func _run_patrol(now: float) -> void:
+		if state.space == null or player_count <= 0:
 			return
-		var count := mini(SCOUT_SQUADS_PER_BOT, state.squads.size())
-		_scout_squads = []
-		for i in range(count):
-			_scout_squads.append(state.squads[i])
+		# The opening comes first: a move order cancels a pending build
+		# (D-031), so a bot still trying to plant its town hall has nothing
+		# it may march anywhere. Gated on the building EXISTING rather than
+		# on the order having gone out, for the same reason `_issue_order`
+		# is — a refused opening leaves a bot with one squad, and that squad
+		# is the founder.
+		if not _owns_a_building():
+			return
+		var home := state.spawn_cell_of(state.player)
+		var watching := _spawn_cell_of((state.player % player_count) + 1)
+		if home.x < 0 or watching.x < 0:
+			return
 
-		var neighbour_player := (state.player % player_count) + 1
-		var rally_cell := _spawn_cell_of(neighbour_player)
-		if rally_cell.x < 0:
+		var split := BotPatrol.assign(state.squads, _founding_squad)
+		var scouts: Array = split["scouts"]
+		if scouts.is_empty():
+			_scouts = scouts
 			return
-		for squad in _scout_squads:
-			_home_cell[squad] = state.squad_cell(squad, now)
-			var order := state.encode_order(squad, rally_cell)
+
+		var target := BotPatrol.leg_target(state.space, _leg, home, watching)
+		# Re-order whenever the detachment changed (a scout died, or the
+		# first one has just been produced) as well as when a leg ends, or a
+		# replacement would stand at base for the rest of the run.
+		var reissue := _leg_started_at < 0.0 or scouts != _scouts
+		if not reissue and BotPatrol.leg_done(state.space,
+				_scout_cells(scouts, now), _leg, watching,
+				now - _leg_started_at):
+			_leg += 1
+			target = BotPatrol.leg_target(state.space, _leg, home, watching)
+			reissue = true
+		if not reissue:
+			return
+
+		_scouts = scouts
+		scouts_peak = maxi(scouts_peak, scouts.size())
+		_leg_started_at = now
+		for squad in scouts:
+			# A crew claimed for scouting stops being the haul loop's
+			# business, so its old assignment goes with it — two filters
+			# quietly disagreeing about who owns a squad is the defect this
+			# whole change replaces.
+			_gather_assigned.erase(squad)
+			var order := state.encode_order(squad, target)
 			if not order.is_empty():
 				peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 
-	## Call the scouts back home. A squad that routed during the rally
-	## ignores this (SquadSim.order_move refuses PLAYER orders while
-	## routed, D-024) and keeps fleeing under its own steam instead — which
-	## is also a legitimate way to leave vision and produce a conceal, so
-	## this is additive to that path, not a replacement for it.
-	func _issue_recall_order() -> void:
-		if state.space == null:
-			return
-		for squad in _scout_squads:
-			if not _home_cell.has(squad):
-				continue
-			var order := state.encode_order(squad, _home_cell[squad])
-			if not order.is_empty():
-				peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+	## Where the detachment is, in its own order — `BotPatrol.leg_done`
+	## judges the leg on the FIRST entry, and its header explains at length
+	## why that must not be "whichever of them suits the current leg".
+	##
+	## A squad with no curve yet contributes nothing: `squad_cell` answers
+	## (0, 0) for one it has never been sent, and the map origin is a real
+	## cell that a distance test would take at face value.
+	func _scout_cells(scouts: Array, now: float) -> Array:
+		var out: Array = []
+		for squad in scouts:
+			if state.curves.has(squad):
+				out.append(state.squad_cell(squad, now))
+		return out
 
 	## Train at every finished building this bot owns.
 	##
@@ -287,8 +374,14 @@ class VirtualClient:
 	## Re-ordered only when unassigned or when the assigned node vanished
 	## from `state.nodes` (a felling): the server retargets crews itself,
 	## and a bot that re-ordered every tick would fight it.
+	##
+	## Iterates the WORKERS half of `BotPatrol.assign`, not `state.squads`.
+	## This loop used to claim every crew a bot owned, and a bot's whole
+	## army is crews — so a squad the patrol wanted was already hauling and
+	## a move order would cancel the haul (D-034) every pass. One split, two
+	## halves, no squad in both.
 	func _put_gatherers_to_work() -> void:
-		for squad in state.squads:
+		for squad in BotPatrol.assign(state.squads, _founding_squad)["workers"]:
 			var def: UnitDef = UnitRoster.by_id(StringName(
 				String(state.composition.get(squad, {}).get("def_id", ""))))
 			if def == null or def.carry_capacity <= 0:
@@ -310,6 +403,56 @@ class VirtualClient:
 			_gather_assigned[squad] = best
 			peer.send(0, NetProtocol.encode_order_gather(squad, best),
 				ENetPacketPeer.FLAG_RELIABLE)
+
+	## Ask for a town hall, and keep asking until there IS one (D-031).
+	##
+	## A player starts with founders and nothing else, so this is the
+	## opening move a real player makes — and it is what puts construction,
+	## building replication and the persistent-explored hash under the load
+	## test rather than leaving all three to unit tests.
+	##
+	## Two fixes are layered here and the second is the interesting one. The
+	## guard used to be `_orders_issued == 0`, which asks "is this my first
+	## order" rather than "did I send it", so a bot whose first order tick
+	## beat the WELCOME skipped its opening silently and never tried again.
+	## That was corrected to a flag set on the `peer.send` — and the send is
+	## not the event that matters either.
+	##
+	## A build order the server REFUSES — "Cannot build there, a forest is
+	## in the way" is entirely likely on a start, since D-087 put 1,920
+	## nodes on the map — left the bot with no hall, no production, no crews
+	## and no scouts for the whole run, while its own flag said the opening
+	## had been dealt with. Seen directly in the per-bot line:
+	##
+	##   BOT player=1 squads=1 buildings=0 town_hall_ordered=true
+	##
+	## That is D-107's rule with the names changed: *a latch that records an
+	## INTENT will eventually be read as a record of an OUTCOME. Latch on
+	## the effect — something the actor can SEE — or do not latch.* D-107
+	## was written about `_founded = true` sitting one line above
+	## `send.call(order)` in `ai_player.gd`; this is the same line of code in
+	## the load-test bot.
+	##
+	## So there is no latch: the caller asks `_owns_a_building()`, and each
+	## attempt asks for a DIFFERENT site, walking outward from home through
+	## the nearest-first offset table (D-067 sorted it for exactly this).
+	## Retrying the refused cell forever would be a loop, not a fix. The
+	## radius is `server.gd`'s BUILD_REACH_CELLS, because a builder has to be
+	## within that of the site it is handed.
+	func _found_town_hall() -> void:
+		var builder: int = _founding_squad if _founding_squad in state.squads 			else int(state.squads[0])
+		var home := state.spawn_cell_of(state.player)
+		if home.x < 0:
+			return
+		var offsets := TorusSpace.disk_offsets(BUILD_SITE_SEARCH_CELLS)
+		var site := state.space.normalize(
+			home + offsets[_build_attempts % offsets.size()])
+		var build := state.encode_build(builder, "town_centre", site)
+		if build.is_empty():
+			return
+		peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
+		_build_attempts += 1
+		_founding_squad = builder
 
 	func _issue_order() -> void:
 		if state.space == null:
@@ -337,6 +480,19 @@ class VirtualClient:
 		if state.squads.is_empty():
 			return
 
+		# The opening comes first, and it comes BEFORE `raid_pool` (D-031).
+		#
+		# That ordering is the whole of it. `raid_pool` excludes the founding
+		# party — it must, or a raid order cancels the build it is walking
+		# to — so a bot whose ONLY squad is that founder builds an empty pool
+		# and returns. Put the opening below that and it is unreachable for
+		# exactly the bot that has not managed it yet. Observed, one run
+		# after the retry itself was written: `build_attempts=1 buildings=0`
+		# on a bot that asked once, was refused, and never got another turn.
+		if not _owns_a_building():
+			_found_town_hall()
+			return
+
 		# Never pick the squad that is still walking to found its town
 		# hall as the target of the RAID order below. server.gd's
 		# `_handle_order_move` cancels a pending build the instant its
@@ -360,14 +516,23 @@ class VirtualClient:
 				continue
 			# Working crews stay out of the raid rotation: a move order
 			# cancels a haul the same way it cancels a build (D-034), and a
-			# bot that raids with its own economy exercises neither.
-			if _gather_assigned.has(candidate):
+			# bot that raids with its own economy exercises neither. The
+			# scouting detachment is out for the same reason — its orders
+			# come from `_run_patrol`, and two callers ordering one squad is
+			# how the rally used to cancel the town hall it had just asked
+			# for.
+			if _gather_assigned.has(candidate) or _scouts.has(candidate):
 				continue
 			raid_pool.append(candidate)
 		if raid_pool.is_empty():
-			# The founder is the only squad there is. Leave it be — any
-			# raid order right now has nothing to send but the squad that
-			# must not receive one.
+			# Nothing this bot owns is free to raid with, which today is
+			# EVERY tick after the founding party is spent: a bot only ever
+			# builds a town centre, a town centre `produces` gatherers only
+			# (buildings/town_centre.tres), and every crew is either hauling
+			# or scouting. So this branch is the load test's standing
+			# admission that its bots field no army — issue #123, kept
+			# separate from #69/#84 because military production cannot be
+			# reached inside a 120 s run at all.
 			return
 		var squad: int = raid_pool[_rng.randi_range(0, raid_pool.size() - 1)]
 
@@ -393,37 +558,6 @@ class VirtualClient:
 		# was ever concealed and the verdict correctly reported
 		# conceal_events=0. Raiding in and back out is both more like real
 		# play and what makes vision genuinely gain and lose contact.
-		# First order of the match: found a town hall where we stand
-		# (D-031). A player starts with founders and nothing else, so this
-		# is the opening move a real player makes — and it means the load
-		# test exercises construction, building replication and the
-		# persistent-explored hash in the running system rather than
-		# leaving all three to unit tests.
-		# Retried until it is actually SENT, not attempted once on the first
-		# order. `spawn_cell_of` needs the WELCOME, and a bot whose first
-		# order tick beat that packet skipped its opening move silently and
-		# never tried again — no town hall, so no production, so four
-		# founding parties wandering an empty map for the whole run. The
-		# verdict then failed with `buildings_known=0`, which reads exactly
-		# like a replication bug and is not one.
-		#
-		# It survived because the guard was `_orders_issued == 0` while the
-		# counter below increments unconditionally, so "did I send it" and
-		# "is this my first order" were quietly the same question. They stop
-		# being the same the moment the send does not happen.
-		if not _town_hall_ordered:
-			var home := state.spawn_cell_of(state.player)
-			if home.x >= 0:
-				var build := state.encode_build(squad, "town_centre", home)
-				if not build.is_empty():
-					peer.send(0, build, ENetPacketPeer.FLAG_RELIABLE)
-					_town_hall_ordered = true
-					_founding_squad = squad
-					# Stop here — no raid order for this squad on the same
-					# tick its build order was sent. See the note above
-					# `raid_pool` for what happens if a move order follows.
-					return
-
 		# Flip phase every ORDERS_PER_RAID_PHASE orders, not every order.
 		# Orders go out every 3 seconds while the contested middle is a
 		# good 25 seconds of marching away, so alternating per order made
@@ -635,6 +769,28 @@ func _ghosts_peak() -> int:
 	return n
 
 
+## Patrol legs completed across every bot, and the largest detachment any
+## of them staffed (D-20260817-load-test-bots-must-manoeuvre).
+##
+## Reported rather than gated, deliberately. `reveal_events` is the gate
+## and stays the gate — this is what tells the next person WHY a zero
+## happened, which is the question #69 and #84 each spent a session on. A
+## run with `patrol_legs=0` never manoeuvred and the fog counters mean
+## nothing; a run with legs and no reveals is a fog problem.
+func _patrol_legs() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.patrol_legs()
+	return n
+
+
+func _scouts_peak() -> int:
+	var n := 0
+	for vc in _clients:
+		n += vc.scouts_peak
+	return n
+
+
 ## The single MOST-INFORMED bot's known-squad count — deliberately NOT a
 ## union/sum across every bot. Every squad in this game belongs to exactly
 ## one connected player, and an owner always sees its own squads regardless
@@ -741,12 +897,13 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
 		_state_hash_checks(), _desync_count(),
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
+		_patrol_legs(), _scouts_peak(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
 		_nodes_felled()])
 
@@ -756,6 +913,15 @@ func _report() -> void:
 		for vc in _clients:
 			if vc.state.desync_count > 0:
 				push_error("bot %d: desync — %s" % [vc.index, vc.state.last_desync])
+
+	# Per-bot, because every aggregate above hides WHICH bot. Four of the
+	# five defects behind #69/#84 were "one of them is not doing the thing",
+	# and each cost a three-minute run to localise from sums alone.
+	for vc in _clients:
+		print("bot_client.gd: BOT player=%d squads=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d conceal=%d reveal=%d" % [
+			vc.state.player, vc.state.squads.size(), vc.state.buildings.size(),
+			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(),
+			vc.state.conceal_events, vc.state.reveal_events])
 
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:
