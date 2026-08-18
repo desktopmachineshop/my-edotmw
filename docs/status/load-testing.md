@@ -1,4 +1,6 @@
-**Use `just test-load 4 300`** on the current default map.
+**Use `just test-load 4 420`** on the current default map. 300 s is the
+floor — it clears every gate, but a bot whose barracks lands late has
+almost no army time left (D-20260818-load-test-bots-must-field-an-army).
 
 **The `reveal_events` gate was unreachable on `main` for a day and is
 fixed** (D-20260817-load-test-bots-must-manoeuvre, #69/#84). If you are
@@ -83,8 +85,44 @@ resources by `tests/test_bot_patrol.gd`.
   is why the patrol's boundaries are stated in the WATCHER's terms rather
   than as "am I home yet": on a tight pair, home is inside the
   neighbour's vision.
-- **The bots still field no ARMY.** Nothing they build produces a soldier,
-  so `raid_pool` is empty on every tick and the raid alternation is dead
-  code until that changes. `test-load` therefore exercises the economy,
-  buildings, fog and incidental combat — not military production, and not
-  an engagement between two real armies. Tracked separately as **#123**.
+
+**The bots field an ARMY now** (D-20260818-load-test-bots-must-field-an-army,
+#123), and the verdict gates on their having used it. Until this landed,
+`raid_pool` — the squads free to be sent anywhere — was empty on every tick
+of every match, so `_issue_order` returned before issuing a single raid
+order, for every run there has ever been. A bot only built a town centre, a
+town centre `produces` gatherers only, and the haul loop claimed every crew.
+
+So `test-load` did not exercise military production, an engagement between
+two real armies, `UnitDef.damage_vs_buildings`, D-067's raze rule, or most
+of `/units` — a run only ever fielded `founders` and `gatherers`, both
+`civ = &"neutral"`. **The CIVS_FIELDED check passed throughout**, because
+`_civs_fielded()` counts by the PLAYER's civ rather than the unit's: two
+civs were reported fielded every run while the roster's civ half went
+untouched. Worth knowing before trusting any other count on this page.
+
+Two new keys in the verdict: `raid_orders` is a GATE (a run where no ARMY
+was sent anywhere fails — orders to a hauling crew do not count, and an
+early version that counted them passed on a crew nobody meant to raid
+with), and `military_peak` is the metric beside it, because "there was
+nothing to send" and "there was something and it was never sent" are
+different faults with the same symptom.
+
+Measured on the shipped map: a barracks finishes at **100-205 s** and the
+first soldier is fielded at **135-226 s**, so nothing below ~250 s tests
+any of it. **Two of four bots do not reach a barracks even at 420 s** — a
+town hall costs 150 wood out of a 180-220 opening bank and hauling round
+trips are long on the doubled map. One bot reliably banks a single 60-wood
+delivery and then stalls, wallet `[172, 90, 0, 0]`, in every run measured
+before and after that change; its crews are alive and assigned. Unexplained
+and pre-existing, so worth knowing before reading a low `military_peak` as
+a regression.
+
+**A bot never learns its own civ.** `server.gd` broadcasts the lobby only
+while there IS one and `test-load` starts a match without one, so
+`ClientState.civ_of` answers `""` for every bot in every run. Anything a
+client normally learns from the lobby is simply absent here — which cost a
+run to find, because resolving production per civ matched `gatherers`
+(`civ = &"neutral"`, so it matches anybody) and nothing else, leaving
+barracks standing and `military_peak=0`. The wire carries an ARCHETYPE and
+the server resolves it per civ (D-047), so a bot does not need to know.
