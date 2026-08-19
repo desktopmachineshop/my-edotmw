@@ -49,6 +49,29 @@ class_name Combat
 # away from here", not a tuned game-balance number.
 const ROUT_FLEE_MULTIPLIER := 3
 
+# The morale terms (D-20260819-morale-reads-the-fight). Universal battle
+# rules in ROUT_FLEE_MULTIPLIER's style — constants until a civ or unit
+# identity asks to vary one, at which point they become schema through
+# D-010's log, never a branch here.
+#
+# Morale loss multipliers by where the blow came from. Damage is
+# untouched: Tier 2's frontage already prices the geometry in blood;
+# these price it in terror, which is what makes envelopment BREAK a line
+# rather than merely out-trade it.
+const FLANK_MORALE_MULT := 1.5
+const REAR_MORALE_MULT := 2.5
+# A fleeing squad neither faces nor fights back. Catching it is
+# emergent — a faster pursuer stays in reach — so this one multiplier is
+# the whole pursuit mechanic, and it is what makes a rout a defeat
+# rather than a pause.
+const PURSUIT_DAMAGE_MULT := 2.0
+# Watching a friend break, within this many cells, costs this much
+# morale — and can cascade, which is how battles END. Bounded: a squad
+# routs at most once, and the scan reuses the tick's buckets over
+# TorusSpace.disk_offsets (the standing any-radius-scan rule).
+const CHAIN_ROUT_RADIUS_CELLS := 8
+const CHAIN_ROUT_MORALE_LOSS := 12.0
+
 # The squad pass's bucket map, kept so the buildings pass in the same
 # tick does not rebuild an identical one.
 var _buckets := {}
@@ -148,7 +171,8 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 			# lands more men than a deep column — and the pairing is the
 			# same Engagement function the client's duels draw from.
 			_resolve_attack(sim, attacker, target, tick,
-				_contact_strength(sim, attacker, target, round_alive, attacker_def))
+				_contact_strength(sim, attacker, target, round_alive, attacker_def),
+				round_routed[target] == 1)
 
 	return _diff(sim, before_alive, before_routed)
 
@@ -578,18 +602,15 @@ func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int
 	sim.set_morale(squad, maxf(morale, 0.0))
 
 	# Being shelled by a fortification breaks a squad the same way being
-	# beaten by another squad does. Handled here rather than by calling
-	# _check_rout, which needs an attacking SQUAD to flee from.
+	# beaten by another squad does — through the same _break_squad, so a
+	# tower-driven rout shocks nearby allies exactly like a melee one
+	# (D-20260819-morale-reads-the-fight). _check_rout is not used only
+	# because it wants an attacking SQUAD; the flee-from cell is here.
 	if sim.is_routed(squad) or sim.alive_of(squad) <= 0:
 		return
 	if sim.morale_of(squad) >= def.rout_threshold:
 		return
-	sim.set_routed(squad, true)
-	var here := sim.space.from_index(sim.cell_index_of(squad))
-	var away := sim.space.delta(sim.space.from_index(from_cell_index), here)
-	if away == Vector2i.ZERO:
-		away = Vector2i(1, 0)
-	sim.flee_move(squad, here + away * ROUT_FLEE_MULTIPLIER)
+	_break_squad(sim, squad, from_cell_index)
 
 
 func _diff(sim: SquadSim, before_alive: PackedInt32Array, before_routed: PackedByteArray) -> Array:
@@ -716,8 +737,11 @@ func _should_attack(sim: SquadSim, squad: int, tick: int, attacker_def: UnitDef)
 ## `attacker_strength` is the men IN CONTACT since Tier 2
 ## (D-20260819-only-men-in-contact-fight), not the squad's whole
 ## strength; zero contact resolves as zero damage through the ordinary
-## arithmetic rather than a special case.
-func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int, attacker_strength: int) -> void:
+## arithmetic rather than a special case. `defender_routed` is the ROUND
+## SNAPSHOT's answer, for the same reason the strength is — a defender
+## chain-routed mid-round must not take pursuit damage until next round.
+func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
+		attacker_strength: int, defender_routed: bool = false) -> void:
 	var attacker_def := sim.def_of(attacker)
 	var defender_def := sim.def_of(defender)
 	if attacker_def == null or defender_def == null:
@@ -734,6 +758,11 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int, att
 	# special-casing and adding a counter never means touching this file.
 	var counter := float(attacker_def.bonus_vs.get(defender_def.armour_class, 1.0))
 	var total_damage := attacker_def.damage * float(attacker_strength) * multiplier * counter
+	# Pursuit (D-20260819-morale-reads-the-fight): a fleeing squad
+	# neither faces nor fights back, and cutting it down is what makes a
+	# rout a defeat rather than a pause.
+	if defender_routed:
+		total_damage *= PURSUIT_DAMAGE_MULT
 
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.
@@ -746,9 +775,33 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int, att
 		return
 
 	sim.set_alive(defender, maxi(0, sim.alive_of(defender) - casualties))
-	var morale := sim.morale_of(defender) - float(casualties) * defender_def.morale_loss_per_casualty
+	# Flank/rear shock (D-20260819-morale-reads-the-fight): the morale
+	# cost of a casualty is multiplied by where the blow came from. The
+	# facing is the squad's own derived heading — the one its soldiers
+	# are drawn with — and the attacker's direction pays the torus tax,
+	# or a seam attacker reads as charging from a map away.
+	var morale := sim.morale_of(defender) \
+		- float(casualties) * defender_def.morale_loss_per_casualty \
+			* _aspect_morale_mult(sim, attacker, defender)
 	sim.set_morale(defender, maxf(morale, 0.0))
 	_check_rout(sim, defender, defender_def, attacker)
+
+
+## The shock multiplier for a blow from `attacker` on `defender`.
+func _aspect_morale_mult(sim: SquadSim, attacker: int, defender: int) -> float:
+	var defender_pos := sim.curve_of(defender).sample_world(sim.time, sim.space)
+	var attacker_pos := sim.curve_of(attacker).sample_world(sim.time, sim.space)
+	attacker_pos += Engagement.aligning_offset(
+		defender_pos, attacker_pos, sim.space.lattice_offsets())
+	var facing := sim.space.axial_offset_to_world(
+		Formation.heading(sim.curve_of(defender), sim.time))
+	match Engagement.aspect(facing, defender_pos, attacker_pos):
+		Engagement.ASPECT_REAR:
+			return REAR_MORALE_MULT
+		Engagement.ASPECT_FLANK:
+			return FLANK_MORALE_MULT
+		_:
+			return 1.0
 
 
 func _check_rout(sim: SquadSim, defender: int, defender_def: UnitDef, attacker: int) -> void:
@@ -756,21 +809,54 @@ func _check_rout(sim: SquadSim, defender: int, defender_def: UnitDef, attacker: 
 		return
 	if sim.morale_of(defender) >= defender_def.rout_threshold:
 		return
+	_break_squad(sim, defender, sim.cell_index_of(attacker))
 
-	sim.set_routed(defender, true)
 
-	# Flee as a squad, away from the nearest enemy, torus-aware (D-024).
-	# TorusSpace.delta() already returns the shortest wrapped vector, so
-	# the flee direction is correct across a seam with no extra handling
-	# here. This goes through `force_move`, not `order_move` — a routed
-	# squad ignores PLAYER orders, but this is the sim's own order, and is
-	# exactly the move a routed squad should make.
-	var defender_coord := sim.space.from_index(sim.cell_index_of(defender))
-	var attacker_coord := sim.space.from_index(sim.cell_index_of(attacker))
-	var away := sim.space.delta(attacker_coord, defender_coord)
+## Break one squad: rout it, flee it away from `from_cell_index`, and
+## shock its nearby allies — which can break THEM by the same machinery
+## (D-20260819-morale-reads-the-fight). The cascade terminates because a
+## squad routs at most once (`is_routed` guards every entry) and each
+## break only ever lowers morale.
+##
+## Fleeing is as a squad, away from the threat, torus-aware (D-024):
+## TorusSpace.delta() already returns the shortest wrapped vector, so the
+## direction is correct across a seam. `force_move`, not `order_move` — a
+## routed squad ignores PLAYER orders, but this is the sim's own.
+func _break_squad(sim: SquadSim, squad: int, from_cell_index: int) -> void:
+	sim.set_routed(squad, true)
+	var here := sim.space.from_index(sim.cell_index_of(squad))
+	var from_coord := sim.space.from_index(from_cell_index)
+	var away := sim.space.delta(from_coord, here)
 	if away == Vector2i.ZERO:
 		away = Vector2i(1, 0)  # degenerate same-cell case; any fixed direction is fine
-	sim.flee_move(defender, defender_coord + away * ROUT_FLEE_MULTIPLIER)
+	sim.flee_move(squad, here + away * ROUT_FLEE_MULTIPLIER)
+	_shock_allies(sim, squad, from_cell_index)
+
+
+## Watching a friend break costs morale (D-20260819-morale-reads-the-
+## fight): every allied squad within CHAIN_ROUT_RADIUS_CELLS of the
+## routing one loses CHAIN_ROUT_MORALE_LOSS, and one pushed below its own
+## threshold breaks too, fleeing the same threat. The scan reuses the
+## tick's cell buckets over TorusSpace.disk_offsets — the standing
+## any-radius-scan rule — so it costs the disk, never the squad list.
+func _shock_allies(sim: SquadSim, routed_squad: int, from_cell_index: int) -> void:
+	var owner := sim.owner_of(routed_squad)
+	var centre := sim.space.from_index(sim.cell_index_of(routed_squad))
+	for offset in TorusSpace.disk_offsets(CHAIN_ROUT_RADIUS_CELLS):
+		var cell := sim.space.index(centre + offset)
+		if not _buckets.has(cell):
+			continue
+		for ally in _buckets[cell]:
+			if ally == routed_squad or sim.alive_of(ally) <= 0 \
+					or sim.is_routed(ally):
+				continue
+			if not sim.are_allied(sim.owner_of(ally), owner):
+				continue
+			sim.set_morale(ally,
+				maxf(sim.morale_of(ally) - CHAIN_ROUT_MORALE_LOSS, 0.0))
+			var ally_def := sim.def_of(ally)
+			if ally_def != null and sim.morale_of(ally) < ally_def.rout_threshold:
+				_break_squad(sim, ally, from_cell_index)
 
 
 ## World-units -> cells conversion for attack_range, mirroring

@@ -50,6 +50,37 @@ static func contact_reach(attack_range: float) -> float:
 	return attack_range + 2.0 * MAX_STEP
 
 
+## Where a blow came from, for the morale shock terms
+## (D-20260819-morale-reads-the-fight). Front and rear are ~70° cones
+## (|dot| ≥ FRONT_DOT); everything between is flank.
+const ASPECT_FRONT := 0
+const ASPECT_FLANK := 1
+const ASPECT_REAR := 2
+const FRONT_DOT := 0.34
+
+
+## Classify an attacker's direction against the defender's facing. Both
+## positions must be in the SAME lattice frame — the caller pays the
+## torus tax with `aligning_offset`, exactly as contact does; classified
+## on canonical coordinates, an attacker across the seam would read as
+## charging from a map away in the wrong direction. Degenerate inputs
+## (no facing, same position) read as frontal: shock is a bonus for
+## outmanoeuvring someone, and unknowable geometry must never award it.
+static func aspect(facing: Vector3, defender_pos: Vector3,
+		attacker_pos: Vector3) -> int:
+	var face := Vector2(facing.x, facing.z)
+	var toward := Vector2(attacker_pos.x - defender_pos.x,
+		attacker_pos.z - defender_pos.z)
+	if face.length_squared() < 0.000001 or toward.length_squared() < 0.000001:
+		return ASPECT_FRONT
+	var dot := face.normalized().dot(toward.normalized())
+	if dot >= FRONT_DOT:
+		return ASPECT_FRONT
+	if dot <= -FRONT_DOT:
+		return ASPECT_REAR
+	return ASPECT_FLANK
+
+
 ## The lattice offset that brings `other` to its copy nearest `anchor` —
 ## the torus tax, paid here once so nothing below needs to know the world
 ## wraps. Two engaged squads' canonical positions can legitimately sit a
