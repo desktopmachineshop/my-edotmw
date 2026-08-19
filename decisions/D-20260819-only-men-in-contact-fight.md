@@ -91,6 +91,16 @@ mechanic), worst tick 92.9 → 96.1 ms with 0 dropped both sides. Host
 was running other agents' containers — treat as the shape, not the
 third digit.
 
+**And the real gate, same day:** `just test-load 4 420` on the shipped
+map — VERDICT ok, 0 desyncs over 1,676 state-hash checks, 0 dropped
+ticks, `casualties_applied=499 conceal_events=323 reveal_events=281`,
+**us/squad 96.22 at 48 squads with the combat phase at 9.43 µs/squad**,
+worst tick 59.4 ms. The packed-siege 33 µs above is the worst case;
+spread over a real map where only a few squads fight at once, the
+contact pass costs what aggregate combat cost — which is the design's
+own claim ("paid only by squads actually attacking") measured rather
+than argued.
+
 Two behavioural findings from the same A/B, both intended in direction:
 
 - **casualties_applied 469 → 698.** Fewer men land per exchange, so
