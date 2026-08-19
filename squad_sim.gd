@@ -205,6 +205,10 @@ var _spacing := PackedFloat32Array()
 # so they ride SQUAD_INFO and the composition hash.
 var _facing := PackedInt32Array()
 var _files := PackedInt32Array()
+# The stance byte (D-20260819-stances-are-standing-orders): bit 1 GUARD,
+# bit 2 SKIRMISH, bit 4 HOLD FIRE. Rides SQUAD_INFO for the panel but is
+# NOT hashed — the owner/tier family, a fact the client is told.
+var _stance := PackedByteArray()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
 var _curves: Array[StateCurve] = []
@@ -440,6 +444,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_spacing.append(def.formation_spacing)
 	_facing.append(-1)
 	_files.append(0)
+	_stance.append(0)
 	_def_id.append(def.id)
 	_defs.append(def)
 
@@ -502,6 +507,32 @@ func spacing_of(squad: int) -> float:
 
 func facing_of(squad: int) -> int:
 	return _facing[squad]
+
+
+const STANCE_GUARD := 1
+const STANCE_SKIRMISH := 2
+const STANCE_HOLD_FIRE := 4
+
+
+func stance_of(squad: int) -> int:
+	return _stance[squad]
+
+
+func has_stance(squad: int, bit: int) -> bool:
+	return (_stance[squad] & bit) != 0
+
+
+## A player's standing orders (D-20260819-stances-are-standing-orders).
+## The whole byte at once — the client sends its full toggled state, so
+## there is no read-modify-write race across the wire.
+func set_stance(squad: int, bits: int) -> void:
+	if squad < 0 or squad >= _stance.size():
+		return
+	var clamped := bits & (STANCE_GUARD | STANCE_SKIRMISH | STANCE_HOLD_FIRE)
+	if _stance[squad] == clamped:
+		return
+	_stance[squad] = clamped
+	_shape_dirty[squad] = true
 
 
 func files_of(squad: int) -> int:
@@ -697,6 +728,7 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			# positions derive from them, so the client must hold the
 			# server's exact values.
 			"facing": _facing[id], "files": _files[id],
+			"stance": _stance[id],
 		})
 	return out
 
@@ -1137,6 +1169,11 @@ func is_charging(squad: int) -> bool:
 func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
+	# An explicit attack order is weapons-free: it RELEASES a hold-fire
+	# stance rather than fighting it (D-20260819-stances) — the flag it
+	# would otherwise be gated on is spent by D-034's halt one exchange in.
+	if has_stance(squad, STANCE_HOLD_FIRE):
+		set_stance(squad, _stance[squad] & ~STANCE_HOLD_FIRE)
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
@@ -2298,6 +2335,7 @@ func tick() -> void:
 	# where they stand, and reuses resolve()'s bucket map rather than
 	# rebuilding one.
 	combat.assign_idle_engagements(self, tick_count)
+	combat.apply_skirmish(self, tick_count)
 	# Both halves of the combat phase, not just resolve(): the assignment
 	# scan is combat work and would otherwise land in the residual.
 	last_squad_combat_usec = Time.get_ticks_usec() - combat_started

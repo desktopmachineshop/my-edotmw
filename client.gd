@@ -5194,6 +5194,19 @@ func _squad_control_actions(def_id: StringName) -> Array:
 	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
 		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
 			"kind": "charge_arm", "id": &""})
+		# Standing orders (D-20260819-stances). Pressed state is the wire's
+		# own stance byte, so the panel cannot drift from the server.
+		var stance := _state.stance_of(int(_selected[0]))
+		out.append({"label": "Guard", "hint": "Guard: hold position, no pursuit",
+			"current": (stance & SquadSim.STANCE_GUARD) != 0,
+			"kind": "stance", "id": &"guard"})
+		out.append({"label": "Hold fire", "hint": "Hold fire until ordered to attack",
+			"current": (stance & SquadSim.STANCE_HOLD_FIRE) != 0,
+			"kind": "stance", "id": &"hold_fire"})
+		if def.armour_class == "missile":
+			out.append({"label": "Skirmish", "hint": "Skirmish: step back from enemies that close in, keep shooting",
+				"current": (stance & SquadSim.STANCE_SKIRMISH) != 0,
+				"kind": "stance", "id": &"skirmish"})
 	# Width orders (D-20260819-facing-and-width-are-orders): frontage is
 	# what Tier 2's contact count rewards, so this is an attack control,
 	# not a cosmetic one. Facing rides Alt+right-click — see
@@ -5427,6 +5440,8 @@ func _on_action_pressed(index: int) -> void:
 			_nudge_width(1 if String(action["id"]) == "wider" else -1)
 		"charge_arm":
 			_charge_arming = true
+		"stance":
+			_toggle_stance(String(action["id"]))
 		"target_select":
 			# Arms the pick — the actual order goes out on the next
 			# right-click, handled in `_handle_mouse_button` /
@@ -5558,6 +5573,29 @@ func _face_selected(screen_position: Vector2) -> void:
 		faced += 1
 	if faced > 0:
 		print("client: %d squad(s) ordered to face a point" % faced)
+
+
+## Toggle one standing order for the whole selection (D-20260819-
+## stances). The full byte is sent per squad — the toggle is computed
+## against the FIRST selected squad's state, exactly the squad whose
+## state the button displayed, so what you pressed is what happens.
+func _toggle_stance(which: String) -> void:
+	if not _connected or _selected.is_empty():
+		return
+	var bit := SquadSim.STANCE_GUARD
+	match which:
+		"skirmish":
+			bit = SquadSim.STANCE_SKIRMISH
+		"hold_fire":
+			bit = SquadSim.STANCE_HOLD_FIRE
+	var turning_on := (_state.stance_of(int(_selected[0])) & bit) == 0
+	for squad in _selected:
+		var bits := _state.stance_of(int(squad))
+		bits = (bits | bit) if turning_on else (bits & ~bit)
+		_peer.send(0, NetProtocol.encode_order_stance(int(squad), bits),
+			ENetPacketPeer.FLAG_RELIABLE)
+	print("client: %d squad(s) %s %s" % [_selected.size(),
+		"assume" if turning_on else "drop", which])
 
 
 ## Charge the selection at a clicked point (D-20260819-a-charge-is-

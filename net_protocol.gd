@@ -66,6 +66,8 @@ const C2S_ORDER_WIDTH := 35
 ## A charge (D-20260819-a-charge-is-spent-on-its-impact): attack-move at
 ## sprint speed with one impact blow waiting at the end.
 const C2S_ORDER_CHARGE := 36
+## The stance byte (D-20260819-stances-are-standing-orders).
+const C2S_ORDER_STANCE := 37
 
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
@@ -249,6 +251,23 @@ static func decode_order_charge(data: PackedByteArray) -> Dictionary:
 	return {"squad": buf.get_u32(), "destination": buf.get_u32()}
 
 
+## STANCE: the whole byte at once (D-20260819-stances) — the client sends
+## its full toggled state, so there is no read-modify-write race.
+static func encode_order_stance(squad: int, bits: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_STANCE)
+	buf.put_u32(squad)
+	buf.put_u8(bits & 0xFF)
+	return buf.data_array
+
+
+static func decode_order_stance(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "stance": buf.get_u8()}
+
+
 ## SQUAD_INFO: what each squad actually IS — its UnitDef id and current
 ## strength.
 ##
@@ -307,6 +326,9 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# message that carries shape, not resolved locally.
 		buf.put_u16(int(entry.get("facing", -1)) & 0xFFFF)
 		buf.put_u8(int(entry.get("files", 0)) & 0xFF)
+		# The stance byte (D-20260819-stances): panel display, not hashed
+		# (the owner/tier family).
+		buf.put_u8(int(entry.get("stance", 0)) & 0xFF)
 	return buf.data_array
 
 
@@ -335,6 +357,7 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 			"tier": tier,
 			"facing": -1 if facing_wire == 0xFFFF else facing_wire,
 			"files": int(buf.get_u8()),
+			"stance": int(buf.get_u8()),
 		})
 	return out
 

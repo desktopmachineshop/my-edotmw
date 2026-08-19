@@ -1166,6 +1166,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_formation(peer, data)
 			NetProtocol.C2S_ORDER_CHARGE:
 				_handle_order_charge(peer, data)
+			NetProtocol.C2S_ORDER_STANCE:
+				_handle_order_stance(peer, data)
 			NetProtocol.C2S_ORDER_FACING:
 				_handle_order_facing(peer, data)
 			NetProtocol.C2S_ORDER_WIDTH:
@@ -1262,6 +1264,14 @@ func _handle_order_charge(peer, data: PackedByteArray) -> void:
 		return
 	_pending_builds.erase(squad)
 	_sim.order_charge(squad, _sim.space.from_index(int(order["destination"])))
+
+
+func _handle_order_stance(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_stance(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_stance(squad, int(order["stance"]))
 
 
 ## Change a squad's formation (D-058).

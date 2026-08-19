@@ -266,6 +266,10 @@ func assign_idle_engagements(sim: SquadSim, tick: int) -> void:
 			continue
 		if _engaged.has(squad) or sim.is_attack_moving(squad) or not sim.is_idle(squad):
 			continue
+		# GUARD holds position; HOLD FIRE will not shoot what it catches —
+		# chasing either way is theatre (D-20260819-stances).
+		if sim.has_stance(squad, SquadSim.STANCE_GUARD) 				or sim.has_stance(squad, SquadSim.STANCE_HOLD_FIRE):
+			continue
 		var def := sim.def_of(squad)
 		if def == null or def.damage <= 0.0 or def.carry_capacity > 0:
 			continue
@@ -735,7 +739,45 @@ func _find_target(sim: SquadSim, buckets: Dictionary, attacker: int, attacker_de
 	return best
 
 
+## The skirmish stance (D-20260819-stances-are-standing-orders): an IDLE
+## missile squad holding it steps directly away from an enemy that closes
+## inside the trigger, and keeps shooting. Through the ordinary move
+## order on purpose, so separation, walls and every standing movement
+## rule apply to the step — and only while idle, so a player's live order
+## always outranks the stance (D-065's suggest-vs-set principle).
+const SKIRMISH_TRIGGER_CELLS := 3
+const SKIRMISH_STEP_CELLS := 4
+
+
+func apply_skirmish(sim: SquadSim, tick: int) -> void:
+	var buckets: Dictionary = _buckets if _buckets_tick == tick else _build_buckets(sim)
+	for squad in range(sim.squad_count()):
+		if sim.alive_of(squad) <= 0 or sim.is_routed(squad):
+			continue
+		if not sim.has_stance(squad, SquadSim.STANCE_SKIRMISH):
+			continue
+		if sim.is_attack_moving(squad) or not sim.is_idle(squad):
+			continue
+		var threat := _find_squad_near(sim, buckets, sim.cell_index_of(squad),
+			sim.owner_of(squad), SKIRMISH_TRIGGER_CELLS, sim.tier_of(squad))
+		if threat == -1:
+			continue
+		var here := sim.space.from_index(sim.cell_index_of(squad))
+		var away := sim.space.delta(sim.cell_of(threat), here)
+		if away == Vector2i.ZERO:
+			away = Vector2i(1, 0)
+		sim.order_move(squad, here + away * SKIRMISH_STEP_CELLS)
+
+
 func _should_attack(sim: SquadSim, squad: int, tick: int, attacker_def: UnitDef) -> bool:
+	# HOLD FIRE (D-20260819-stances): no attacks while held. An explicit
+	# attack order RELEASES the hold (see order_attack_move) — gating on
+	# the attack-move flag instead would fall to D-034's halt spending
+	# that flag on contact, and a held squad ordered to attack would fire
+	# once and fall silent. Checked before the interval so a held squad's
+	# cadence is not silently spent.
+	if sim.has_stance(squad, SquadSim.STANCE_HOLD_FIRE):
+		return false
 	# Quantised to whole ticks (D-020's 100 ms minimum round granularity),
 	# not a continuous timer: "every attack_interval seconds" becomes
 	# "every N ticks", which is exactly what D-024 means by a round.

@@ -445,6 +445,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			# locally (the D-058/D-065 lesson).
 			"facing": int(entry.get("facing", -1)),
 			"files": int(entry.get("files", 0)),
+			"stance": int(entry.get("stance", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -792,6 +793,10 @@ func spacing_of(squad: int) -> float:
 ## state, not part of what "the same composition" means for desync
 ## purposes, so a client that hasn't heard about a rout yet still agrees
 ## with the server on strength.
+func stance_of(squad: int) -> int:
+	return int(composition[squad].get("stance", 0)) if composition.has(squad) else 0
+
+
 func facing_of(squad: int) -> int:
 	return int(composition[squad].get("facing", -1)) if composition.has(squad) else -1
 
