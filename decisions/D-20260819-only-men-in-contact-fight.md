@@ -78,11 +78,31 @@ Three load-bearing details:
 
 Paid only by squads actually attacking in melee: one transform
 derivation per engaged squad per tick (cached across its engagements)
-plus one O(attackers × defenders) nearest scan per attack. Measured
-figures belong in this entry's amendment once `just test-load` has run
-on a contested map — quoted with squad counts, per the standing rule.
-The lever if it ever matters is sampling the pairing at reduced
-resolution, not caching it across ticks.
+plus one O(attackers × defenders) nearest scan per attack. The lever if
+it ever matters is sampling the pairing at reduced resolution, not
+caching it across ticks.
+
+**Measured 2026-08-19**, `just test-scenario siege 4 30` A/B against the
+branch base, same host back to back, 24 squads packed at separation 10
+(the worst case — nearly everything fights): **combat phase 9.59 →
+33.19 µs/squad**, whole tick 200.8 → 275.8 µs/squad (the non-combat
+share of that delta is more squads surviving to move, not this
+mechanic), worst tick 92.9 → 96.1 ms with 0 dropped both sides. Host
+was running other agents' containers — treat as the shape, not the
+third digit.
+
+Two behavioural findings from the same A/B, both intended in direction:
+
+- **casualties_applied 469 → 698.** Fewer men land per exchange, so
+  morale drains slower, squads rout less and stay in the grind — fights
+  are longer AND bloodier, which is the RTW shape and points the same
+  way as D-056.
+- **The siege loop's fog-squads gate is pace-marginal and tipped:** the
+  base run passed at `known_squads_max=23` of 24, this branch failed
+  twice at 24-of-24 and then passed at 22 — squads that used to die
+  young now live long enough to be seen. The standing "read a gate
+  failure as a question about the WINDOW before a fault in the change"
+  rule (load-testing.md) applies; the gate itself was not touched.
 
 ## The Tier 3 collapse trigger, tested from both ends now
 

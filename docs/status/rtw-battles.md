@@ -81,10 +81,40 @@ float only while the man falls.
 - **Bots record nothing:** the casualty-site drain only writes when
   `record_corpses` is set, which only the GUI client sets.
 
-**Not yet built:** workstreams 3–12 — Tier 2's contact set, the morale
-terms (flank shock, chain rout, pursuit), facing and width opcodes,
-charge, stances, drag placement and group formations, formation
-specials as data, the D-006 amendment plus Tier 3, fatigue and terrain
-height, generals — plus the VAT death clip follow-up above. The
-decision entry is the map; each workstream cites it and lands as its
-own PR.
+**Workstream 3 — Tier 2's contact set — landed**
+(D-20260819-only-men-in-contact-fight). A squad's damage multiplier is
+its men within fighting reach of the enemy's men over both squads'
+DERIVED positions — frontage is real (a wide line beats a deep column
+of the same troops, played whole with a roster def), envelopment is
+geometry, nothing new on the wire. Four things to know before touching
+it:
+
+- **`engagement.gd` is THE definition of pairing, reach and contact**,
+  read by combat for resolution and the Tier 1 duels for drawing — one
+  function so the fight a player sees is the fight that resolves. It is
+  all-static and a test forbids state: a remembered pairing is the
+  three-tier decision's collapse trigger, and the answer is a
+  re-decision, never a cache.
+- **Contact reach is `attack_range + 2×MAX_STEP`, and the slack is
+  load-bearing:** engaged front ranks stand a cell apart, which exceeds
+  a bare melee reach — measured raw, an engaged pair counts zero contact
+  and melee deletes itself (the D-067 opposed-arithmetic family).
+- **Transforms derive at the ROUND SNAPSHOT** (memoised per tick), or
+  the formation restamp smuggles D-024's simultaneity bias back in. And
+  **the torus tax is paid in `aligning_offset`** — unaligned, a seam
+  battle derives its enemy a map away and resolves zero damage forever
+  (a latent Tier 1 seam wart went with it).
+- **Fights are slower per exchange and bloodier overall** (A/B in the
+  decision: combat 9.59 → 33.19 µs/squad at 24 squads; casualties 469 →
+  698 in the same window — less rout ping-pong, more grind). Any timing
+  or gate tuned against the old kill pace is measuring a different fight
+  now; the siege loop's fog gate already tipped on exactly this and the
+  standing window-before-fault rule applies.
+
+**Not yet built:** workstreams 4–12 — the morale terms (flank shock,
+chain rout, pursuit — these READ the contact set), facing and width
+opcodes, charge, stances, drag placement and group formations,
+formation specials as data, the D-006 amendment plus Tier 3, fatigue
+and terrain height, generals — plus the VAT death clip follow-up above.
+The decision entry is the map; each workstream cites it and lands as
+its own PR.
