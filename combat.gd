@@ -76,6 +76,12 @@ const CHAIN_ROUT_MORALE_LOSS := 12.0
 # casualties carry the aspect shock, so a rear charge compounds — the
 # terms stack because each reads the same replicated state.
 const CHARGE_IMPACT_MULT := 3.0
+# Height (D-20260819-tired-men-fight-uphill): attacking downhill hits
+# harder, uphill softer, read from the sim's discrete per-cell elevation
+# (empty field = flat = 1.0, so every bare test sim is untouched).
+const HEIGHT_STEP := 0.05
+const DOWNHILL_MULT := 1.15
+const UPHILL_MULT := 0.85
 
 # The squad pass's bucket map, kept so the buildings pass in the same
 # tick does not rebuild an identical one.
@@ -830,6 +836,11 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# priced by the same aspect the morale shock below reads.
 	var aspect := _aspect_of(sim, attacker, defender)
 	total_damage *= _formation_taken_mult(sim, attacker_def, defender, aspect)
+	# Tired men hit softer (D-20260819-tired-men-fight-uphill): an
+	# exhausted squad fights at half strength.
+	total_damage *= 0.5 + 0.5 * sim.fatigue_of(attacker) / 100.0
+	# And the slope has a say.
+	total_damage *= _height_mult(sim, attacker, defender)
 
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.
@@ -869,6 +880,21 @@ func _aspect_of(sim: SquadSim, attacker: int, defender: int) -> int:
 		sim.space, sim.facing_angle_of(defender))
 	var facing := Vector3(sin(angle), 0.0, cos(angle))
 	return Engagement.aspect(facing, defender_pos, attacker_pos)
+
+
+## The slope's price (D-20260819-tired-men-fight-uphill). Discrete
+## per-cell elevation, SERVER-side only — D-084's "the picture
+## interpolates, the simulation does not" split survives untouched.
+func _height_mult(sim: SquadSim, attacker: int, defender: int) -> float:
+	if sim.elevation.is_empty():
+		return 1.0
+	var dh := sim.elevation[sim.cell_index_of(attacker)] \
+		- sim.elevation[sim.cell_index_of(defender)]
+	if dh >= HEIGHT_STEP:
+		return DOWNHILL_MULT
+	if dh <= -HEIGHT_STEP:
+		return UPHILL_MULT
+	return 1.0
 
 
 func _morale_mult_for(aspect: int) -> float:

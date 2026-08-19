@@ -209,6 +209,14 @@ var _files := PackedInt32Array()
 # bit 2 SKIRMISH, bit 4 HOLD FIRE. Rides SQUAD_INFO for the panel but is
 # NOT hashed — the owner/tier family, a fact the client is told.
 var _stance := PackedByteArray()
+# Fatigue (D-20260819-tired-men-fight-uphill): one server-only scalar
+# per squad, 0..100. Drains under charge/fight/run, recovers otherwise;
+# never replicated — the panel indicator is its own decision.
+var _fatigue := PackedFloat32Array()
+# Per-cell terrain elevation, set by the SERVER from its own TerrainGen
+# (empty in bare test sims — empty means flat, so every pre-existing
+# test is untouched). Read-only here; combat prices the slope.
+var elevation := PackedFloat32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
 var _curves: Array[StateCurve] = []
@@ -445,6 +453,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_facing.append(-1)
 	_files.append(0)
 	_stance.append(0)
+	_fatigue.append(100.0)
 	_def_id.append(def.id)
 	_defs.append(def)
 
@@ -512,6 +521,28 @@ func facing_of(squad: int) -> int:
 const STANCE_GUARD := 1
 const STANCE_SKIRMISH := 2
 const STANCE_HOLD_FIRE := 4
+## Run (D-20260819-tired-men-fight-uphill): pace for fatigue. Refused as
+## a free lever until fatigue existed to price it (the ws7 entry says
+## so); it spends what charging spends.
+const STANCE_RUN := 8
+
+const FATIGUE_CHARGE_DRAIN := 12.0
+const FATIGUE_FIGHT_DRAIN := 2.0
+const FATIGUE_RUN_DRAIN := 6.0
+const FATIGUE_RECOVERY := 4.0
+const CHARGE_MIN_FATIGUE := 40.0
+const CHARGE_EXHAUST_FLOOR := 25.0
+const RUN_MIN_FATIGUE := 20.0
+const RUN_PACE_MULT := 1.3
+
+
+func fatigue_of(squad: int) -> float:
+	return _fatigue[squad]
+
+
+## Test access. Fatigue is otherwise the tick's own business.
+func set_fatigue(squad: int, value: float) -> void:
+	_fatigue[squad] = clampf(value, 0.0, 100.0)
 
 
 func stance_of(squad: int) -> int:
@@ -528,7 +559,7 @@ func has_stance(squad: int, bit: int) -> bool:
 func set_stance(squad: int, bits: int) -> void:
 	if squad < 0 or squad >= _stance.size():
 		return
-	var clamped := bits & (STANCE_GUARD | STANCE_SKIRMISH | STANCE_HOLD_FIRE)
+	var clamped := bits & (STANCE_GUARD | STANCE_SKIRMISH | STANCE_HOLD_FIRE | STANCE_RUN)
 	if _stance[squad] == clamped:
 		return
 	_stance[squad] = clamped
@@ -1138,11 +1169,11 @@ func order_move(squad: int, destination: Vector2i) -> void:
 ## A charge: attack-move at CHARGE_SPEED_MULT with one x-damage impact
 ## waiting at the end (D-20260819-a-charge-is-spent-on-its-impact).
 ## Point-blank orders get no flag — re-ordering a charge against the man
-## in front of you must not be a free impact every click — and the flag
-## expires (CHARGE_TICKS) so "charge" is not the strictly better move
-## order everywhere; fatigue replaces that deadline in workstream 11.
+## in front of you must not be a free impact every click. The sprint now
+## ends when FATIGUE gives out (D-20260819-tired-men-fight-uphill),
+## which replaced the original tick deadline outright: the cost lingers,
+## so charge-rest-charge is no longer free.
 const CHARGE_SPEED_MULT := 1.5
-const CHARGE_TICKS := 80
 const MIN_CHARGE_CELLS := 3
 
 # squad -> the tick its charge expires. Squad-level state, exactly what
@@ -1153,17 +1184,21 @@ var _charge_until := {}
 func order_charge(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
-	if space.distance(cell_of(squad), destination) < MIN_CHARGE_CELLS:
+	if space.distance(cell_of(squad), destination) < MIN_CHARGE_CELLS \
+			or _fatigue[squad] < CHARGE_MIN_FATIGUE:
+		# Too close, or too spent (D-20260819-tired-men-fight-uphill):
+		# either way the order degrades to an honest attack-move.
 		order_attack_move(squad, destination)
 		return
 	# Flag FIRST: the order below rebuilds the curve, and the rebuild
-	# must already see the charge speed.
-	_charge_until[squad] = tick_count + CHARGE_TICKS
+	# must already see the charge speed. Membership is the flag; the
+	# fatigue sweep is what ends it.
+	_charge_until[squad] = true
 	order_attack_move(squad, destination)
 
 
 func is_charging(squad: int) -> bool:
-	return _charge_until.has(squad) and tick_count < int(_charge_until[squad])
+	return _charge_until.has(squad)
 
 
 func order_attack_move(squad: int, destination: Vector2i) -> void:
@@ -1652,6 +1687,8 @@ func _rebuild_curve(squad: int) -> void:
 	# rather than at the destination.
 	if is_charging(squad):
 		speed *= CHARGE_SPEED_MULT
+	elif has_stance(squad, STANCE_RUN) and _fatigue[squad] > RUN_MIN_FATIGUE:
+		speed *= RUN_PACE_MULT
 	# A fighting style's mobility price (D-20260819-a-formation-is-a-
 	# fighting-style): a testudo crawls because its data says so.
 	var style := FormationRoster.by_id(StringName(_shape[squad]))
@@ -2244,14 +2281,34 @@ func tick() -> void:
 
 	var started := Time.get_ticks_usec()
 
-	# Lapsed charges slow back down (D-20260819): the flag drops and the
-	# curve rebuilds at walking pace. Without the rebuild the fast curve
-	# would coast to its destination at sprint speed anyway.
-	for squad in _charge_until.keys():
-		if tick_count >= int(_charge_until[squad]):
+	# The fatigue economy (D-20260819-tired-men-fight-uphill), replacing
+	# the charge deadline outright as the charge entry promised: sprint
+	# and fight spend, rest recovers, and the cost LINGERS — a squad
+	# cannot charge, rest a moment, and charge again for free.
+	var fatigue_dt := 1.0 / float(TICK_HZ)
+	for squad in range(_fatigue.size()):
+		if _alive[squad] <= 0:
+			continue
+		var moving := _destination[squad] != _cell[squad]
+		var drain := -FATIGUE_RECOVERY
+		if is_charging(squad):
+			drain = FATIGUE_CHARGE_DRAIN
+		elif combat != null and combat.is_engaged(squad):
+			drain = FATIGUE_FIGHT_DRAIN
+		elif moving and has_stance(squad, STANCE_RUN):
+			drain = FATIGUE_RUN_DRAIN
+		var was := _fatigue[squad]
+		_fatigue[squad] = clampf(was - drain * fatigue_dt, 0.0, 100.0)
+		# A sprint ends when the legs give out — with a curve rebuild so
+		# the squad slows at the next keyframe, not at the destination.
+		if _charge_until.has(squad) and _fatigue[squad] <= CHARGE_EXHAUST_FLOOR:
 			_charge_until.erase(squad)
-			if _destination[squad] != _cell[squad] and _alive[squad] > 0:
+			if moving:
 				_rebuild_curve(squad)
+		# A runner who crosses the floor drops to a walk the same way.
+		elif moving and has_stance(squad, STANCE_RUN) \
+				and was > RUN_MIN_FATIGUE and _fatigue[squad] <= RUN_MIN_FATIGUE:
+			_rebuild_curve(squad)
 
 	# Fresh field-build budget each tick (D-038).
 	_fields_built_this_tick = 0

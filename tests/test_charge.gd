@@ -111,16 +111,37 @@ func test_a_point_blank_charge_is_an_attack_move() -> void:
 	assert_true(sim.is_attack_moving(attacker), "but it still attacks")
 
 
-func test_a_charge_expires_and_the_squad_slows() -> void:
+func test_a_charge_ends_when_the_legs_give_out() -> void:
+	# The tick deadline is GONE (D-20260819-tired-men-fight-uphill):
+	# fatigue is what ends a sprint now, and the cost lingers.
 	var sim := _sim()
 	var squad := sim.add_squad(_fighter(), 1, Vector2i(4, 8))
-	sim.order_charge(squad, Vector2i(40, 8))  # much farther than 8 s of sprint
+	sim.order_charge(squad, Vector2i(40, 8))  # farther than the legs allow
 	assert_true(sim.is_charging(squad))
-	for _t in range(SquadSim.CHARGE_TICKS + 2):
+	var lasted := 0
+	for _t in range(300):
 		sim.tick()
+		if not sim.is_charging(squad):
+			break
+		lasted += 1
 	assert_false(sim.is_charging(squad),
-		"an unexpired flag would make Charge the strictly better move "
-		+ "order everywhere; fatigue replaces this deadline in ws11")
+		"an unending sprint would make Charge the strictly better move "
+		+ "order everywhere")
+	assert_between(lasted, 30, 100,
+		"the sprint lasts what the fatigue economy prices, not forever "
+		+ "and not an instant")
+	assert_lte(sim.fatigue_of(squad), SquadSim.CHARGE_EXHAUST_FLOOR + 1.0,
+		"and what ended it was the legs")
+
+
+func test_an_exhausted_squad_cannot_charge_at_all() -> void:
+	var sim := _sim()
+	var squad := sim.add_squad(_fighter(), 1, Vector2i(4, 8))
+	sim.set_fatigue(squad, SquadSim.CHARGE_MIN_FATIGUE - 5.0)
+	sim.order_charge(squad, Vector2i(24, 8))
+	assert_false(sim.is_charging(squad),
+		"too spent: the order degrades to an honest attack-move")
+	assert_true(sim.is_attack_moving(squad))
 
 
 func test_a_plain_move_or_a_rout_cancels_a_charge() -> void:

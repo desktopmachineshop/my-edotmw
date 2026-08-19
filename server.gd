@@ -478,6 +478,10 @@ func _build_world() -> void:
 	_terrain = terrain
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
+	# The slope combat prices (D-20260819-tired-men-fight-uphill) — the
+	# same memoised field the client's renderer samples, so the two
+	# sides cannot disagree about what high ground is.
+	_sim.elevation = terrain.elevation_field(space)
 
 	# Spawns are scattered randomly with a minimum spacing (D-039), so they
 	# are sampled ONCE here and reused. Two reasons that matters: sampling

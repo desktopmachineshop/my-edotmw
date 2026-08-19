@@ -5220,6 +5220,9 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		out.append({"label": "Hold fire", "hint": "Hold fire until ordered to attack",
 			"current": (stance & SquadSim.STANCE_HOLD_FIRE) != 0,
 			"kind": "stance", "id": &"hold_fire"})
+		out.append({"label": "Run", "hint": "Run: faster while fresh, spends fatigue",
+			"current": (stance & SquadSim.STANCE_RUN) != 0,
+			"kind": "stance", "id": &"run"})
 		if def.armour_class == "missile":
 			out.append({"label": "Skirmish", "hint": "Skirmish: step back from enemies that close in, keep shooting",
 				"current": (stance & SquadSim.STANCE_SKIRMISH) != 0,
@@ -5605,6 +5608,8 @@ func _toggle_stance(which: String) -> void:
 			bit = SquadSim.STANCE_SKIRMISH
 		"hold_fire":
 			bit = SquadSim.STANCE_HOLD_FIRE
+		"run":
+			bit = SquadSim.STANCE_RUN
 	var turning_on := (_state.stance_of(int(_selected[0])) & bit) == 0
 	for squad in _selected:
 		var bits := _state.stance_of(int(squad))
