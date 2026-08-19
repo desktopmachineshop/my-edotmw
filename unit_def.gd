@@ -58,6 +58,12 @@ class_name UnitDef
 ## know the shield wall while another's do not, with no script naming
 ## either (D-047). Validated server-side against offered-or-granted.
 @export var formations: Array[StringName] = []
+
+## A general (D-20260819-a-general-holds-the-line): presence steadies
+## nearby allies (double morale recovery, half the chain-rout shock) and
+## his death shocks them. Limited to one ALIVE per player, enforced where
+## production is validated.
+@export var is_general: bool = false
 @export var morale: float = 100.0
 @export var rout_threshold: float = 25.0
 

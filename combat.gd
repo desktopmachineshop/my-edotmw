@@ -71,6 +71,11 @@ const PURSUIT_DAMAGE_MULT := 2.0
 # TorusSpace.disk_offsets (the standing any-radius-scan rule).
 const CHAIN_ROUT_RADIUS_CELLS := 8
 const CHAIN_ROUT_MORALE_LOSS := 12.0
+# A general (D-20260819-a-general-holds-the-line): within his aura,
+# morale recovers at double rate and a chain-rout shock costs half; his
+# death is twice a chain rout, through the same shock machinery.
+const GENERAL_AURA_CELLS := 10
+const GENERAL_DEATH_MORALE_LOSS := 24.0
 # A charge's one impact blow (D-20260819-a-charge-is-spent-on-its-impact)
 # multiplies CONTACT damage, so a wide charge hits with more men, and its
 # casualties carry the aspect shock, so a rear charge compounds — the
@@ -95,6 +100,12 @@ var _buckets_tick := -1
 # contact count, which is D-024's simultaneity bias sneaking back in
 # through the formation restamp.
 var _round_transforms := {}
+
+# Cells inside some allied general's aura this tick: cell index -> Array
+# of general owners. Stamped in resolve() from the handful of living
+# generals (one per player), so every "near a general?" question is one
+# dictionary lookup — the vision.gd shape, never a per-squad disk scan.
+var _general_cover := {}
 
 # Squads that found an enemy SQUAD to fight this tick, so the siege pass
 # can leave them to it. Cleared at the top of each round.
@@ -144,6 +155,7 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	var buckets := _build_buckets(sim)
 	_engaged.clear()
 	_round_transforms.clear()
+	_stamp_general_cover(sim)
 
 	# Kept for the buildings pass, which runs later in the same tick and
 	# would otherwise rebuild an identical map. Wiring the two passes
@@ -662,7 +674,11 @@ func _recover_morale_and_check_rally(sim: SquadSim, dt: float) -> void:
 		var def := sim.def_of(i)
 		if def == null:
 			continue
-		var morale := minf(sim.morale_of(i) + def.morale_recovery_per_second * dt, def.morale)
+		# A general's presence steadies (D-20260819-a-general-holds-the-
+		# line): morale returns at double rate inside an allied aura.
+		var steadied := 2.0 if _near_allied_general(sim, i) else 1.0
+		var morale := minf(sim.morale_of(i) \
+			+ def.morale_recovery_per_second * steadied * dt, def.morale)
 		sim.set_morale(i, morale)
 		if sim.is_routed(i) and morale > def.rout_threshold + def.rout_rally_margin:
 			sim.set_routed(i, false)
@@ -861,6 +877,11 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 		- float(casualties) * defender_def.morale_loss_per_casualty \
 			* _morale_mult_for(aspect)
 	sim.set_morale(defender, maxf(morale, 0.0))
+	# A general's death shocks (D-20260819-a-general-holds-the-line):
+	# twice a chain rout, through the same machinery, cascading like one.
+	if defender_def.is_general and sim.alive_of(defender) <= 0:
+		_shock_allies(sim, defender, sim.cell_index_of(attacker),
+			GENERAL_DEATH_MORALE_LOSS)
 	_check_rout(sim, defender, defender_def, attacker)
 
 
@@ -895,6 +916,35 @@ func _height_mult(sim: SquadSim, attacker: int, defender: int) -> float:
 	if dh <= -HEIGHT_STEP:
 		return UPHILL_MULT
 	return 1.0
+
+
+## Stamp every living general's aura (D-20260819-a-general-holds-the-
+## line). A handful of stamps per tick — generals are at most one per
+## player — buys O(1) lookups for a thousand squads.
+func _stamp_general_cover(sim: SquadSim) -> void:
+	_general_cover.clear()
+	for i in range(sim.squad_count()):
+		if sim.alive_of(i) <= 0 or sim.is_routed(i):
+			continue
+		var def := sim.def_of(i)
+		if def == null or not def.is_general:
+			continue
+		var centre := sim.space.from_index(sim.cell_index_of(i))
+		var owner := sim.owner_of(i)
+		for offset in TorusSpace.disk_offsets(GENERAL_AURA_CELLS):
+			var cell := sim.space.index(centre + offset)
+			if not _general_cover.has(cell):
+				_general_cover[cell] = []
+			_general_cover[cell].append(owner)
+
+
+## Whether `squad` stands inside an ALLIED general's aura this tick.
+func _near_allied_general(sim: SquadSim, squad: int) -> bool:
+	var owners: Array = _general_cover.get(sim.cell_index_of(squad), [])
+	for owner in owners:
+		if sim.are_allied(sim.owner_of(squad), int(owner)):
+			return true
+	return false
 
 
 func _morale_mult_for(aspect: int) -> float:
@@ -962,7 +1012,8 @@ func _break_squad(sim: SquadSim, squad: int, from_cell_index: int) -> void:
 ## threshold breaks too, fleeing the same threat. The scan reuses the
 ## tick's cell buckets over TorusSpace.disk_offsets — the standing
 ## any-radius-scan rule — so it costs the disk, never the squad list.
-func _shock_allies(sim: SquadSim, routed_squad: int, from_cell_index: int) -> void:
+func _shock_allies(sim: SquadSim, routed_squad: int, from_cell_index: int,
+		loss: float = CHAIN_ROUT_MORALE_LOSS) -> void:
 	var owner := sim.owner_of(routed_squad)
 	var centre := sim.space.from_index(sim.cell_index_of(routed_squad))
 	for offset in TorusSpace.disk_offsets(CHAIN_ROUT_RADIUS_CELLS):
@@ -975,8 +1026,10 @@ func _shock_allies(sim: SquadSim, routed_squad: int, from_cell_index: int) -> vo
 				continue
 			if not sim.are_allied(sim.owner_of(ally), owner):
 				continue
-			sim.set_morale(ally,
-				maxf(sim.morale_of(ally) - CHAIN_ROUT_MORALE_LOSS, 0.0))
+			# A general's presence steadies (D-20260819): the shock of
+			# watching a friend break costs half inside an allied aura.
+			var paid := loss * (0.5 if _near_allied_general(sim, ally) else 1.0)
+			sim.set_morale(ally, maxf(sim.morale_of(ally) - paid, 0.0))
 			var ally_def := sim.def_of(ally)
 			if ally_def != null and sim.morale_of(ally) < ally_def.rout_threshold:
 				_break_squad(sim, ally, from_cell_index)

@@ -536,6 +536,18 @@ const RUN_MIN_FATIGUE := 20.0
 const RUN_PACE_MULT := 1.3
 
 
+## Whether `player` already fields a living general
+## (D-20260819-a-general-holds-the-line) — the one-alive limit's
+## question, answered here so a test can ask it without a server.
+func has_live_general(player: int) -> bool:
+	for i in range(_cell.size()):
+		if _owner[i] == player and _alive[i] > 0:
+			var def := def_of(i)
+			if def != null and def.is_general:
+				return true
+	return false
+
+
 func fatigue_of(squad: int) -> float:
 	return _fatigue[squad]
 

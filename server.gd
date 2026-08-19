@@ -1944,6 +1944,12 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 		_notify(peer, "Your people do not field %s" % archetype)
 		return
 
+	# One living general per player (D-20260819-a-general-holds-the-
+	# line) — checked at the production gate like every other refusal,
+	# and against the SIM, never a cached count (the D-038 lesson).
+	if def.is_general and _sim.has_live_general(player):
+		_notify(peer, "You already have a general in the field")
+		return
 	# ONE cap covering military and gatherers alike (D-033): every
 	# villager crew is an army slot not spent.
 	if not _match.has_squad_capacity(_sim, player):
