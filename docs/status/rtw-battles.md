@@ -111,10 +111,24 @@ it:
   now; the siege loop's fog gate already tipped on exactly this and the
   standing window-before-fault rule applies.
 
-**Not yet built:** workstreams 4–12 — the morale terms (flank shock,
-chain rout, pursuit — these READ the contact set), facing and width
-opcodes, charge, stances, drag placement and group formations,
-formation specials as data, the D-006 amendment plus Tier 3, fatigue
-and terrain height, generals — plus the VAT death clip follow-up above.
-The decision entry is the map; each workstream cites it and lands as
-its own PR.
+**Workstream 4 — morale reads the fight — landed**
+(D-20260819-morale-reads-the-fight). Three squad-level scalar terms,
+server-only, nothing on the wire: a casualty's morale cost is
+multiplied by the blow's aspect (front ×1, flank ×1.5, rear ×2.5, from
+`Engagement.aspect` over the squad's own derived facing, torus tax
+paid); a breaking squad costs every ally within 8 cells 12 morale and
+can cascade (`_break_squad` is the one machinery — melee and tower
+routs shock identically); a routed defender takes ×2 damage, gated on
+the round snapshot. Envelopment now BREAKS a line rather than merely
+out-trading it, battles can cascade to a decision, and a rout is a
+defeat rather than a pause. The multipliers are `combat.gd` constants
+in `ROUT_FLEE_MULTIPLIER`'s style — the decision records exactly when
+they become schema (a civ or unit identity asking to vary one), and
+the first tuning lever if battles DECIDE too fast is
+`CHAIN_ROUT_MORALE_LOSS`, then the radius.
+
+**Not yet built:** workstreams 5–12 — facing and width opcodes, charge,
+stances, drag placement and group formations, formation specials as
+data, the D-006 amendment plus Tier 3, fatigue and terrain height,
+generals — plus the VAT death clip follow-up above. The decision entry
+is the map; each workstream cites it and lands as its own PR.
