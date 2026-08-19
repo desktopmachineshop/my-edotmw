@@ -63,6 +63,9 @@ const C2S_ORDER_BUILD_QUEUE := 29
 ## its grid formation forms (0 = the formation's default).
 const C2S_ORDER_FACING := 34
 const C2S_ORDER_WIDTH := 35
+## A charge (D-20260819-a-charge-is-spent-on-its-impact): attack-move at
+## sprint speed with one impact blow waiting at the end.
+const C2S_ORDER_CHARGE := 36
 
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
@@ -223,6 +226,23 @@ static func encode_order_attack_move(squad: int, destination_index: int) -> Pack
 
 
 static func decode_order_attack_move(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "destination": buf.get_u32()}
+
+
+## CHARGE: attack-move's sprinting cousin (D-20260819). Same payload; the
+## difference is entirely in what the sim does with it.
+static func encode_order_charge(squad: int, destination_index: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_CHARGE)
+	buf.put_u32(squad)
+	buf.put_u32(destination_index)
+	return buf.data_array
+
+
+static func decode_order_charge(data: PackedByteArray) -> Dictionary:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = data
 	buf.get_u8()

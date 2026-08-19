@@ -1083,6 +1083,10 @@ func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 ## the tier the destination implies, this is an ordinary same-tier move;
 ## otherwise it is a cross-tier request, handled by `_begin_tier_crossing`.
 func order_move(squad: int, destination: Vector2i) -> void:
+	# A plain move is not a charge (D-20260819): walking somewhere must
+	# not carry a three-times blow eight seconds after somebody clicked
+	# Charge and changed their mind.
+	_charge_until.erase(squad)
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
@@ -1099,6 +1103,37 @@ func order_move(squad: int, destination: Vector2i) -> void:
 ## than sticking around to re-halt the squad every tick it stays engaged.
 ##
 ## Tier inference (D-076) works exactly as `order_move`'s does — see there.
+## A charge: attack-move at CHARGE_SPEED_MULT with one x-damage impact
+## waiting at the end (D-20260819-a-charge-is-spent-on-its-impact).
+## Point-blank orders get no flag — re-ordering a charge against the man
+## in front of you must not be a free impact every click — and the flag
+## expires (CHARGE_TICKS) so "charge" is not the strictly better move
+## order everywhere; fatigue replaces that deadline in workstream 11.
+const CHARGE_SPEED_MULT := 1.5
+const CHARGE_TICKS := 80
+const MIN_CHARGE_CELLS := 3
+
+# squad -> the tick its charge expires. Squad-level state, exactly what
+# D-024 permits squads to have.
+var _charge_until := {}
+
+
+func order_charge(squad: int, destination: Vector2i) -> void:
+	if is_routed(squad):
+		return
+	if space.distance(cell_of(squad), destination) < MIN_CHARGE_CELLS:
+		order_attack_move(squad, destination)
+		return
+	# Flag FIRST: the order below rebuilds the curve, and the rebuild
+	# must already see the charge speed.
+	_charge_until[squad] = tick_count + CHARGE_TICKS
+	order_attack_move(squad, destination)
+
+
+func is_charging(squad: int) -> bool:
+	return _charge_until.has(squad) and tick_count < int(_charge_until[squad])
+
+
 func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
@@ -1182,6 +1217,10 @@ func is_attack_moving(squad: int) -> bool:
 func stop(squad: int) -> void:
 	if is_routed(squad):
 		return
+	# A halt spends or cancels any charge — Combat holds its own halt
+	# until the impact fires, so by the time the sim's stop runs the blow
+	# has already landed (D-20260819-a-charge-is-spent-on-its-impact).
+	_charge_until.erase(squad)
 	_attack_move[squad] = 0
 	# A squad mid-approach to a tower's door is stopping short of climbing
 	# it (D-076) — the same "an order in progress is spent" rule a move
@@ -1212,6 +1251,9 @@ var rout_quantum: int = 8
 
 ## Flee, sharing a field with everyone fleeing the same way.
 func flee_move(squad: int, destination: Vector2i) -> void:
+	# A broken squad is not charging anything (D-20260819) — without this
+	# a routed ex-charger would flee at sprint speed until the deadline.
+	_charge_until.erase(squad)
 	var previous := destination_quantum
 	destination_quantum = rout_quantum
 	_apply_move_order(squad, destination, true)
@@ -1568,6 +1610,11 @@ func _rebuild_curve(squad: int) -> void:
 	var cells := PackedInt32Array([current])
 
 	var speed := _speed[squad]
+	# The sprint (D-20260819-a-charge-is-spent-on-its-impact). Expiry
+	# rebuilds the curve, so a lapsed charge slows on the next keyframe
+	# rather than at the destination.
+	if is_charging(squad):
+		speed *= CHARGE_SPEED_MULT
 	# Set when a planned step turns out to cross ground this side now knows
 	# is blocked: the field that produced it was solved against older
 	# knowledge, so it is dropped and the give-up rule below is held off
@@ -2154,6 +2201,15 @@ func tick() -> void:
 			push_error("SquadSim: %s" % invalid)
 
 	var started := Time.get_ticks_usec()
+
+	# Lapsed charges slow back down (D-20260819): the flag drops and the
+	# curve rebuilds at walking pace. Without the rebuild the fast curve
+	# would coast to its destination at sprint speed anyway.
+	for squad in _charge_until.keys():
+		if tick_count >= int(_charge_until[squad]):
+			_charge_until.erase(squad)
+			if _destination[squad] != _cell[squad] and _alive[squad] > 0:
+				_rebuild_curve(squad)
 
 	# Fresh field-build budget each tick (D-038).
 	_fields_built_this_tick = 0

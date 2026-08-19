@@ -1164,6 +1164,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_building_target(peer, data)
 			NetProtocol.C2S_ORDER_FORMATION:
 				_handle_order_formation(peer, data)
+			NetProtocol.C2S_ORDER_CHARGE:
+				_handle_order_charge(peer, data)
 			NetProtocol.C2S_ORDER_FACING:
 				_handle_order_facing(peer, data)
 			NetProtocol.C2S_ORDER_WIDTH:
@@ -1248,6 +1250,18 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 		return
 	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## A charge (D-20260819-a-charge-is-spent-on-its-impact) — validated like
+## every squad order; the point-blank and expiry guards live in the sim,
+## so a hand-crafted packet can order nothing a button could not.
+func _handle_order_charge(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_charge(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_pending_builds.erase(squad)
+	_sim.order_charge(squad, _sim.space.from_index(int(order["destination"])))
 
 
 ## Change a squad's formation (D-058).

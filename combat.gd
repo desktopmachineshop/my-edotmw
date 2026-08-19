@@ -71,6 +71,11 @@ const PURSUIT_DAMAGE_MULT := 2.0
 # TorusSpace.disk_offsets (the standing any-radius-scan rule).
 const CHAIN_ROUT_RADIUS_CELLS := 8
 const CHAIN_ROUT_MORALE_LOSS := 12.0
+# A charge's one impact blow (D-20260819-a-charge-is-spent-on-its-impact)
+# multiplies CONTACT damage, so a wide charge hits with more men, and its
+# casualties carry the aspect shock, so a rear charge compounds — the
+# terms stack because each reads the same replicated state.
+const CHARGE_IMPACT_MULT := 3.0
 
 # The squad pass's bucket map, kept so the buildings pass in the same
 # tick does not rebuild an identical one.
@@ -161,7 +166,13 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 		# sim.stop() clears the flag, so a squad that stays engaged is not
 		# re-halted every tick and does not rebuild its curve every tick
 		# for no change (D-003's zero-cost-when-idle).
-		if sim.is_attack_moving(attacker):
+		#
+		# A CHARGING squad skips the halt until its blow actually fires:
+		# stop() spends the charge, and spending it one line before the
+		# attack it was meant to carry is the misfire
+		# D-20260819-a-charge-is-spent-on-its-impact exists to close.
+		var charging := sim.is_charging(attacker)
+		if sim.is_attack_moving(attacker) and not charging:
 			sim.stop(attacker)
 
 		if _should_attack(sim, attacker, tick, attacker_def):
@@ -172,7 +183,11 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 			# same Engagement function the client's duels draw from.
 			_resolve_attack(sim, attacker, target, tick,
 				_contact_strength(sim, attacker, target, round_alive, attacker_def),
-				round_routed[target] == 1)
+				round_routed[target] == 1, charging)
+			if charging:
+				# The charge is spent ON the blow: halt here, once, and
+				# the flag goes with the halt.
+				sim.stop(attacker)
 
 	return _diff(sim, before_alive, before_routed)
 
@@ -743,7 +758,8 @@ func _should_attack(sim: SquadSim, squad: int, tick: int, attacker_def: UnitDef)
 ## SNAPSHOT's answer, for the same reason the strength is — a defender
 ## chain-routed mid-round must not take pursuit damage until next round.
 func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
-		attacker_strength: int, defender_routed: bool = false) -> void:
+		attacker_strength: int, defender_routed: bool = false,
+		charging: bool = false) -> void:
 	var attacker_def := sim.def_of(attacker)
 	var defender_def := sim.def_of(defender)
 	if attacker_def == null or defender_def == null:
@@ -765,6 +781,9 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# rout a defeat rather than a pause.
 	if defender_routed:
 		total_damage *= PURSUIT_DAMAGE_MULT
+	# The impact blow (D-20260819-a-charge-is-spent-on-its-impact).
+	if charging:
+		total_damage *= CHARGE_IMPACT_MULT
 
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.

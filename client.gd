@@ -3181,6 +3181,10 @@ var _placing_drag_start_world := Vector3.INF
 ## already selected skips this entirely and sends the order directly
 ## (see `_order_selected`); this is only for the button-driven path.
 var _targeting_building := -1
+# The Charge button's arming half (D-20260819-a-charge-is-spent-on-its-
+# impact): the next right-click orders the charge, mirroring the Target
+# button's arm/click split.
+var _charge_arming := false
 
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
@@ -5187,6 +5191,9 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
+		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
+			"kind": "charge_arm", "id": &""})
 	# Width orders (D-20260819-facing-and-width-are-orders): frontage is
 	# what Tier 2's contact count rewards, so this is an attack control,
 	# not a cosmetic one. Facing rides Alt+right-click — see
@@ -5418,6 +5425,8 @@ func _on_action_pressed(index: int) -> void:
 			_set_formation(StringName(action["id"]))
 		"width":
 			_nudge_width(1 if String(action["id"]) == "wider" else -1)
+		"charge_arm":
+			_charge_arming = true
 		"target_select":
 			# Arms the pick — the actual order goes out on the next
 			# right-click, handled in `_handle_mouse_button` /
@@ -5549,6 +5558,21 @@ func _face_selected(screen_position: Vector2) -> void:
 		faced += 1
 	if faced > 0:
 		print("client: %d squad(s) ordered to face a point" % faced)
+
+
+## Charge the selection at a clicked point (D-20260819-a-charge-is-
+## spent-on-its-impact). The sim holds the guards (point-blank orders
+## degrade to attack-move; the sprint expires), so this only says where.
+func _charge_selected(screen_position: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var cell := _cell_under(screen_position)
+	if cell.x < 0:
+		return
+	for squad in _selected:
+		_peer.send(0, NetProtocol.encode_order_charge(int(squad),
+			_state.space.index(cell)), ENetPacketPeer.FLAG_RELIABLE)
+	print("client: %d squad(s) charging cell %s" % [_selected.size(), cell])
 
 
 ## Widen or narrow the selection by one file (D-20260819). The starting
@@ -5916,6 +5940,14 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			# never falls through to an ordinary order.
 			if event.pressed and _targeting_building >= 0:
 				_finish_target_pick(event.position)
+				return
+			# The Charge button's pick half (D-20260819): this click is
+			# spent on the charge, armed or cancelled, and never falls
+			# through to an ordinary order.
+			if event.pressed and _charge_arming:
+				_charge_arming = false
+				if _minimap_cell_at(event.position).x < 0:
+					_charge_selected(event.position)
 				return
 			# Alt+right-click: the selection FACES the clicked point while
 			# standing (D-20260819-facing-and-width-are-orders) — one

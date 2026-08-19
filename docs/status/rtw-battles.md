@@ -142,8 +142,25 @@ the orders column. The torus tax is paid in the facing click too (the
 clicked point may be a lattice copy away from the squad's canonical
 position).
 
-**Not yet built:** workstreams 6–12 — charge, stances, drag placement
-and group formations, formation specials as data, the D-006 amendment
-plus Tier 3, fatigue and terrain height, generals — plus the VAT death
-clip follow-up above. The decision entry is the map; each workstream
-cites it and lands as its own PR.
+**Workstream 6 — charge — landed**
+(D-20260819-a-charge-is-spent-on-its-impact). A charge is attack-move at
+×1.5 speed with ONE ×3 impact blow waiting at the end, all squad-level.
+The rules each close an exploit or a misfire: the charge is spent ON THE
+BLOW, not on contact (a charging squad skips D-034's halt until its
+attack fires — halting first killed the flag one line before the attack
+it carried); point-blank orders degrade to attack-move (no free impact
+per click); the sprint expires after 8 s (fatigue replaces the deadline
+in ws11); a plain move, a player stop or a rout cancels. The impact
+multiplies CONTACT damage and its casualties carry ASPECT shock, so a
+wide rear cavalry charge compounds through three mechanics that never
+read each other's internals. Nothing is cavalry-cased — a knight hits
+harder because his data says so. The Charge button arms the next
+right-click, mirroring the Target button's split; the visible half of a
+charge is SPEED, which no still can show — the owner's playtest is the
+instrument, per the decision.
+
+**Not yet built:** workstreams 7–12 — stances, drag placement and group
+formations, formation specials as data, the D-006 amendment plus
+Tier 3, fatigue and terrain height, generals — plus the VAT death clip
+follow-up above. The decision entry is the map; each workstream cites
+it and lands as its own PR.
