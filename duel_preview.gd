@@ -176,12 +176,54 @@ func _build_melee() -> void:
 
 	_spawn_squad(defs[0], 0, drawn_a)
 	_spawn_squad(defs[1], 1, drawn_b)
+	_lay_corpses(defs)
 	# Gaps are measured DRAWN man to DRAWN man — both sides step, and the
 	# first version measured against the enemy's authoritative slots,
 	# reporting "swinging at the air" about men the picture showed nose
 	# to nose.
 	_report(line_a, engaged_a, engaged_b, paired_a)
 	_time_the_duel(line_a, line_b)
+
+
+## The fallen (D-20260819-a-casualty-is-visible), through the REAL corpse
+## path — CorpseLayer, its ledger, its shader. Each side has lost men in
+## earlier rounds: their bodies lie in and behind the contact seam, most
+## long settled, one per side still mid-fall so the picture shows the tip
+## as well as the rest. Fog is deliberately unbound (the prop_fog
+## bargain: a renderer with no player draws the world fully lit).
+func _lay_corpses(defs: Array) -> void:
+	var layer := CorpseLayer.new()
+	add_child(layer)
+	layer.set_offsets([Vector3.ZERO] as Array[Vector3])
+
+	for side in range(2):
+		var def: UnitDef = defs[side]
+		var angle := 0.0 if side == 0 else PI
+		var forward := Vector3(sin(angle), 0.0, cos(angle))
+		var centre: Vector3 = _centre \
+			+ Vector3(0.0, 0.0, -LINE_SEPARATION / 2.0 if side == 0 else LINE_SEPARATION / 2.0)
+		# The dead of earlier rounds: slots the restamp vacated, derived
+		# exactly as the living were, then pushed into the seam and toward
+		# the CAMERA side of it — the first framing laid them faithfully
+		# under the standing crowd, and eleven of twelve bodies were
+		# invisible, which makes a poor instrument for "the corpse is
+		# still there a minute later". Yaw varies per body: men do not
+		# fall on parade.
+		var fallen := _line_transforms(centre, angle)
+		for i in range(6):
+			var slot := (i * 7 + side * 3) % fallen.size()
+			var xform: Transform3D = fallen[slot]
+			xform.origin += forward * (0.6 + 0.5 * float(i % 3))
+			xform.origin.x += 1.0 + 0.85 * float(i)
+			xform.origin.y = _ground(xform.origin.x, xform.origin.z)
+			xform.basis = Basis(Vector3.UP, angle + float(i * (side + 2)) * 0.9)
+			# One per side mid-fall (phase ~0.5); the rest settled long ago.
+			var age := CorpseLedger.FALL_SECONDS * (0.5 if i == 0 else 30.0)
+			layer.spawn(def.model_id, side, xform, -age, Vector2.ZERO,
+				PlayerColours.of_index(side))
+	layer.update(0.0)
+	print("duel_preview: %d corpses laid, %d skipped"
+		% [layer.corpses_drawn, layer.corpses_skipped])
 
 
 func _line_transforms(centre: Vector3, angle: float) -> Array[Transform3D]:

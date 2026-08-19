@@ -114,6 +114,9 @@ var _connected := false
 var _unit_def: UnitDef
 var _squad_nodes := {}  # squad id -> PrimitiveUnit
 var _terrain_root: Node3D
+# The fallen (D-20260819-a-casualty-is-visible). Built with the terrain,
+# freed with the match; its lattice mirrors are its own children.
+var _corpse_layer: CorpseLayer = null
 var _camera: Camera3D
 var _camera_target := Vector3.ZERO
 var _camera_height := 40.0
@@ -746,6 +749,14 @@ func _begin_terrain() -> void:
 	_fog = TerrainFog.new(space)
 	_fog_texture = null
 	_fog_updated_at = -1.0
+
+	# The corpse layer tiles the way the terrain does — the whole layer at
+	# every lattice copy — and the drain that feeds it only records while
+	# this flag says a renderer is reading (D-20260819).
+	_state.record_corpses = true
+	_corpse_layer = CorpseLayer.new()
+	add_child(_corpse_layer)
+	_corpse_layer.set_offsets(space.lattice_offsets())
 	# Bound before the first frame is drawn rather than at the first
 	# throttled update: the shader's default is fully lit, so a material
 	# with no fog yet would flash the whole unexplored map for a frame.
@@ -1051,6 +1062,14 @@ func _refresh_squads() -> void:
 	_visible_squads = 0
 	var offsets := _state.space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
+
+	# The fallen, before the living: casualty events recorded this frame
+	# become corpses at the slots the restamp is about to vacate
+	# (D-20260819-a-casualty-is-visible), and the falls still playing get
+	# their one phase write.
+	_drain_casualty_sites()
+	if _corpse_layer != null:
+		_corpse_layer.update(_now)
 
 	for squad_id in _state.curves:
 		# Nothing to draw until the server has said what this squad is.
@@ -2812,6 +2831,43 @@ var _motion := SoldierMotion.new()
 ## This frame's delta, so the render path can ease at a framerate-
 ## independent rate without every function taking a delta parameter.
 var _frame_delta := 0.0
+
+
+## Lay down the men this frame's casualty events subtracted
+## (D-20260819-a-casualty-is-visible). The wire said which squads lost men
+## and that they FELL; the slots the restamp vacates are [after, before)
+## (D-024), and their transforms are derived here exactly as the living
+## are drawn — same curve, same formation function, same sampler — so a
+## body lies where the man was standing.
+func _drain_casualty_sites() -> void:
+	if _corpse_layer == null:
+		return
+	for site in _state.take_casualty_sites():
+		var id := int(site["id"])
+		if not _state.composition.has(id) or not _state.curves.has(id):
+			# Wiped and concealed in the same tick — nothing to derive
+			# from, and inventing a place for the bodies is worse than
+			# skipping them.
+			continue
+		var info: Dictionary = _state.composition[id]
+		var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
+		if def == null or def.model_id == &"":
+			# Primitive-tier squads have no VAT to pose a corpse from;
+			# missing art costs the bodies, never the game (D-081).
+			continue
+		var before := int(site["before"])
+		var after := int(site["after"])
+		var transforms := Formation.soldier_transforms(
+			_state.curves[id], _now, before, String(info.get("shape", "line")),
+			float(info.get("spacing", 1.0)), _state.space,
+			_state.terrain_sampler, _state.terrain_passable)
+		var owner := int(info.get("owner", -1))
+		var colour := _state.colour_of(owner)
+		for slot in range(after, mini(before, transforms.size())):
+			var xform: Transform3D = transforms[slot]
+			var cell := _state.space.world_to_cell(xform.origin)
+			_corpse_layer.spawn(def.model_id, owner, xform, _now,
+				TerrainChunk.fog_uv(_state.space, cell, -1), colour)
 
 
 ## Every live squad's position and owner, rebuilt ONCE per frame.
@@ -5633,6 +5689,11 @@ func _push_fog_to_world() -> void:
 		# binding that only walked what already existed would leave every
 		# forest scouted after the first frame fully lit.
 		PropFog.set_fog(_fog_texture)
+		# And the fallen (D-20260819): a corpse is knowledge, drawn
+		# forever and dimmed with the ground it lies on, or it is #81
+		# with bodies instead of canopies.
+		if _corpse_layer != null:
+			_corpse_layer.set_fog(_fog_texture)
 	else:
 		_fog_texture.update(image)
 
@@ -8047,6 +8108,12 @@ func _teardown_match() -> void:
 	if _terrain_root != null:
 		_terrain_root.queue_free()
 		_terrain_root = null
+	# The dead do not follow the players back to the lobby. Mirrors are the
+	# layer's own children, so one free takes the lot; the drain flag stays
+	# on — it is a property of being a renderer, not of one match.
+	if _corpse_layer != null:
+		_corpse_layer.queue_free()
+		_corpse_layer = null
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build

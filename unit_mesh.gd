@@ -28,6 +28,7 @@ const VAT_DIR := "res://generated/vat"
 
 const OPAQUE_SHADER := "res://shaders/unit_anim.gdshader"
 const STATIC_SHADER := "res://shaders/building_static.gdshader"
+const CORPSE_SHADER := "res://shaders/unit_corpse.gdshader"
 
 static var _manifest := {}
 static var _manifest_loaded := false
@@ -156,6 +157,59 @@ static func material_for(model_id: StringName, team_colour: Color) -> ShaderMate
 		float(layout.get("frames_per_clip", 16)))
 	material.set_shader_parameter("team_colour", team_colour)
 	return material
+
+
+## A material for one (model, owner) bucket of the corpse layer
+## (D-20260819-a-casualty-is-visible). Same VAT and layout as
+## `material_for`, a different program: the corpse shader remaps the
+## per-instance floats to (fall phase, fog UV, fog flag) and takes its one
+## clip as the `corpse_clip` uniform — "death" when the bake carries it,
+## whatever pose the renderer chose while it does not (D-081's fallback:
+## a missing clip costs fidelity, never the game).
+static func corpse_material_for(model_id: StringName, team_colour: Color,
+		fog: Texture2D) -> ShaderMaterial:
+	var vat := vat_for(model_id)
+	if vat == null:
+		return null
+
+	var material := ShaderMaterial.new()
+	if not _shaders.has(CORPSE_SHADER):
+		_shaders[CORPSE_SHADER] = load(CORPSE_SHADER) as Shader
+	material.shader = _shaders[CORPSE_SHADER]
+
+	var layout := layout_for(model_id)
+	material.set_shader_parameter("vat", vat)
+	material.set_shader_parameter("vat_size", vat.get_size())
+	material.set_shader_parameter("total_frames",
+		float(layout.get("total_frames", 64)))
+	material.set_shader_parameter("colour_row",
+		float(layout.get("colour_row", 128)))
+	material.set_shader_parameter("frames_per_clip",
+		float(layout.get("frames_per_clip", 16)))
+	material.set_shader_parameter("team_colour", team_colour)
+	material.set_shader_parameter("corpse_clip", float(death_clip_for(model_id)))
+	if fog != null:
+		material.set_shader_parameter("fog", fog)
+	return material
+
+
+## The clip index a corpse of `model_id` samples, from the manifest's own
+## clip list — the upgrade path D-20260819 records: the moment a rebuilt
+## bake ships a "death" clip, corpses use it with no code change here.
+## Until then the pose is the idle clip's and the renderer tips the whole
+## transform instead. -1 only when the model has no clips at all.
+static func death_clip_for(model_id: StringName) -> int:
+	var clips: Array = layout_for(model_id).get("clips", [])
+	var death := clips.find("death")
+	if death >= 0:
+		return death
+	return clips.find("idle")
+
+
+## Whether `model_id`'s bake carries a real death clip, or corpses of it
+## fall by the renderer's tip-over instead.
+static func has_death_clip(model_id: StringName) -> bool:
+	return Array(layout_for(model_id).get("clips", [])).has("death")
 
 
 ## A material for an authored model with no VAT — buildings (D-064).

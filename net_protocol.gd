@@ -860,6 +860,13 @@ static func encode_squad_combat(tick: int, events: Array) -> PackedByteArray:
 		buf.put_u32(int(event["id"]))
 		buf.put_u32(int(event["alive"]))
 		buf.put_u8(1 if bool(event["routed"]) else 0)
+		# Whether the men this event subtracts FELL — died by violence —
+		# as opposed to being spent founding a building (D-031) or wiped
+		# by a disconnect (D-033), which deliberately share this message.
+		# The default makes those sites honest without being edited: only
+		# combat resolution sets the key at all
+		# (D-20260819-a-casualty-is-visible).
+		buf.put_u8(1 if bool(event.get("fell", false)) else 0)
 	return buf.data_array
 
 
@@ -874,7 +881,8 @@ static func decode_squad_combat(data: PackedByteArray) -> Dictionary:
 		var id := buf.get_u32()
 		var alive := buf.get_u32()
 		var routed := buf.get_u8() != 0
-		events.append({"id": id, "alive": alive, "routed": routed})
+		var fell := buf.get_u8() != 0
+		events.append({"id": id, "alive": alive, "routed": routed, "fell": fell})
 	return {"tick": tick, "events": events}
 
 

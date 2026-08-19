@@ -56,9 +56,35 @@ Three things worth knowing:
   exists because `test-client` frames a spawn, which is the one place a
   melee is not (the same lesson as cliffs, forests and the fog edge).
 
-**Not yet built:** workstreams 2–12 — visible deaths, Tier 2's contact
-set, the morale terms (flank shock, chain rout, pursuit), facing and
-width opcodes, charge, stances, drag placement and group formations,
-formation specials as data, the D-006 amendment plus Tier 3, fatigue
-and terrain height, generals. The decision entry is the map; each
-workstream cites it and lands as its own PR.
+**Workstream 2 — visible deaths — landed, with its art half blocked by
+the HOST** (D-20260819-a-casualty-is-visible). A casualty event now says
+whether its men FELL (one wire byte; consumption per D-031 and
+disconnect wipes per D-033 share combat's message and decode as
+not-fallen without being edited), and the client lays a corpse at every
+slot the restamp vacates — derived by the same formation function that
+drew the man, capped in a ring (`CorpseLedger`, pure and tested
+headless), dimmed by fog like the props (#81's rule: a corpse is
+knowledge, drawn forever like a building, never a ghost), and drawn at
+every visible lattice copy. The fall phase is
+`clamp((now − event_time)/FALL_SECONDS)` — derived from the replicated
+event, never accumulated — written into the shader's rate-zero phase
+float only while the man falls.
+
+- **The VAT has no death clip yet, and cannot get one on this machine:**
+  a Windows Application Control policy now blocks `bpy`'s DLL in every
+  worktree's venv, so `just build-assets` fails host-wide and any edit
+  under `art/` reds the staleness test until the owner unblocks it.
+  Corpses therefore TIP at the feet (the felled-tree language) with the
+  pose frozen; the moment a rebuilt bake ships a `death` clip, every
+  model upgrades through the manifest (`UnitMesh.has_death_clip`) with
+  no code change. The clip itself is specified in the decision.
+- **Bots record nothing:** the casualty-site drain only writes when
+  `record_corpses` is set, which only the GUI client sets.
+
+**Not yet built:** workstreams 3–12 — Tier 2's contact set, the morale
+terms (flank shock, chain rout, pursuit), facing and width opcodes,
+charge, stances, drag placement and group formations, formation
+specials as data, the D-006 amendment plus Tier 3, fatigue and terrain
+height, generals — plus the VAT death clip follow-up above. The
+decision entry is the map; each workstream cites it and lands as its
+own PR.

@@ -267,10 +267,14 @@ func resolve_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Arra
 
 	# Same before/after diff the squad pass uses, and for the same reason:
 	# it reports only what actually changed and cannot invent an event.
+	# `fell` marks men killed by violence — building fire counts — so the
+	# client may lay corpses for them (D-20260819-a-casualty-is-visible).
 	var events := []
 	for i in range(sim.squad_count()):
 		if sim.alive_of(i) != before_alive[i]:
-			events.append({"id": i, "alive": sim.alive_of(i), "routed": sim.is_routed(i)})
+			events.append({"id": i, "alive": sim.alive_of(i),
+				"routed": sim.is_routed(i),
+				"fell": sim.alive_of(i) < before_alive[i]})
 	return events
 
 
@@ -545,11 +549,17 @@ func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int
 
 
 func _diff(sim: SquadSim, before_alive: PackedInt32Array, before_routed: PackedByteArray) -> Array:
+	# `fell` is true only when this event actually subtracts men — a pure
+	# rout-state flip carries fell=false, and the two non-combat writers of
+	# this event shape (consume_squad, eliminate_player) never set the key
+	# at all, which the encoder defaults to false
+	# (D-20260819-a-casualty-is-visible).
 	var events := []
 	for i in range(sim.squad_count()):
 		var routed_now := sim.is_routed(i)
 		if sim.alive_of(i) != before_alive[i] or routed_now != (before_routed[i] == 1):
-			events.append({"id": i, "alive": sim.alive_of(i), "routed": routed_now})
+			events.append({"id": i, "alive": sim.alive_of(i), "routed": routed_now,
+				"fell": sim.alive_of(i) < before_alive[i]})
 	return events
 
 

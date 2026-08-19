@@ -97,6 +97,26 @@ func take_revealed() -> Array:
 	revealed = []
 	return out
 
+
+## Casualty events whose men FELL and have not yet been laid down as
+## corpses (D-20260819-a-casualty-is-visible). Same drain-once contract as
+## `take_felled` — but unlike those queues this one has no natural bound,
+## so it is only ever WRITTEN when `record_corpses` is true, which only a
+## renderer that drains it sets. Bots and AI seats leave it off and the
+## list stays empty for the length of a run.
+##
+## Entries are {"id", "before", "after"}: the men to lay down are slots
+## [after, before) of that squad's formation, derived by the caller at its
+## own frame time — this class records the NEWS, not the geometry.
+var record_corpses := false
+var _casualty_sites := []
+
+
+func take_casualty_sites() -> Array:
+	var out := _casualty_sites
+	_casualty_sites = []
+	return out
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -452,6 +472,18 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 		# no-op (D-026 criterion 9).
 		if new_alive < previous_alive:
 			casualties_applied += previous_alive - new_alive
+			# Where men FELL, for the corpse layer
+			# (D-20260819-a-casualty-is-visible). Recorded only when a
+			# renderer has said it will drain the list — the load-test
+			# bots run this class too, and an unread list would grow for
+			# the length of a run. `fell` is the wire's word that these
+			# men died by violence rather than being spent on a founding
+			# (D-031) or wiped by a disconnect (D-033); slots
+			# [after, before) are the men the restamp removes (D-024).
+			if record_corpses and bool(event.get("fell", false)):
+				_casualty_sites.append({
+					"id": id, "before": previous_alive, "after": new_alive,
+				})
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
