@@ -31,11 +31,12 @@ Each sheet must carry:
 
 ## Hard art constraints (engine facts, not taste)
 
-- **Silhouette first.** In-game models are stylised low-poly at roughly
-  **300 triangles per soldier**. A unit must be readable at RTS zoom in
-  a crowd of thousands. Design shapes, not surface detail: helmet
-  profile, weapon angle, mount vs foot, tall vs squat, banner vs none.
-  Your sheet illustrations should be silhouette-forward for the same
+- **Silhouette first.** In-game models are stylised low-poly, authored
+  at roughly **10,000 triangles per unit** and automatically simplified
+  at distance. A unit must be readable at RTS zoom in a crowd of
+  thousands, so shape comes before surface detail: helmet profile,
+  weapon angle, mount vs foot, tall vs squat, banner vs none. Your
+  sheet illustrations should be silhouette-forward for the same
   reason — they are the reference the 3D models will be built to.
 - **Colour belongs to the PLAYER, not the civ.** In a match, armies are
   tinted by per-player colour; a civ's swatch appears only in the

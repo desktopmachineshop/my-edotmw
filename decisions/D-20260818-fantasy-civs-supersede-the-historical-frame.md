@@ -40,7 +40,7 @@ dwarves). Nothing is implemented; no `.tres` exists for any of it.
   and their eight units) become placeholder content to be replaced, not
   extended.
 
-**Two consequences that need their own decisions before implementation:**
+**Three consequences that need their own decisions before implementation:**
 
 1. **Issue #158 becomes load-bearing.** Two of the six fantasy
    identities (Gravesworn, Gildedreach) lean on `squad_cap_bonus` /
@@ -53,6 +53,14 @@ dwarves). Nothing is implemented; no `.tres` exists for any of it.
    D-081's "a new civ is a content job" principle) or shared archetypes
    need race-neutral models, which centaurs make impossible. This wants
    its own decision entry when implementation is scheduled.
+3. **The authored triangle budget moves ~300 → ~10,000 per unit**
+   (owner's call, 2026-08-19, in `docs/plans/unit-model-briefs.md`),
+   superseding D-081's budget. 10k-tri meshes drawn raw do not fit the
+   measured frame (D-085/D-086: ~54 ms at 27,300 soldiers at ~300
+   tris), so this commits the build pipeline to generating decimated
+   LOD tiers, and `bench-render` must be re-measured on them before
+   any of this content is called shippable. Amend D-081 properly when
+   this entry is accepted.
 
 **Rejected alternatives:** none recorded — this pivot is owner-initiated
 taste, not a technical trade-off. The alternative is the status quo

@@ -28,11 +28,14 @@ Part 3. Each sheet should carry:
 
 **Art constraints that are real, not stylistic preference:**
 
-- **Silhouette first.** Models are stylised low-poly at **~300 triangles
-  per soldier**, generated procedurally (Blender headless from committed
-  Python — D-081). A unit must be readable at RTS zoom among up to
-  40,000 soldiers on screen. Design shapes, not surface detail: helmet
-  profile, weapon angle, mount vs foot, tall vs squat, banner vs none.
+- **Silhouette first.** Models are stylised low-poly, authored at
+  **~10,000 triangles per unit** (owner's call 2026-08-19, superseding
+  D-081's ~300 — in-game meshes ship through decimated LOD tiers),
+  generated procedurally (Blender headless from committed Python —
+  D-081). A unit must be readable at RTS zoom among up to 40,000
+  soldiers on screen, and must survive decimation. Design shapes first,
+  surface detail second: helmet profile, weapon angle, mount vs foot,
+  tall vs squat, banner vs none.
 - **Colour belongs to the PLAYER, not the civ.** In a match, ownership
   is shown by per-player colour (D-052); a civ's swatch appears only in
   the lobby. So two civs must be distinguishable **by shape alone** —
