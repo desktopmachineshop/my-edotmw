@@ -3185,6 +3185,14 @@ var _targeting_building := -1
 # impact): the next right-click orders the charge, mirroring the Target
 # button's arm/click split.
 var _charge_arming := false
+# The drag-order gesture (D-20260819-a-drag-draws-the-battle-line):
+# right-press records, release decides click vs stroke. INF = no press
+# pending.
+var _order_press := Vector2.INF
+var _order_press_alt := false
+var _order_press_ctrl := false
+var _order_press_shift := false
+var _order_drag_line: MeshInstance3D = null
 
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
@@ -5613,6 +5621,82 @@ func _charge_selected(screen_position: Vector2) -> void:
 	print("client: %d squad(s) charging cell %s" % [_selected.size(), cell])
 
 
+## Compile a dragged stroke into a battle line (D-20260819-a-drag-draws-
+## the-battle-line): BattleLine.plan owns every decision; this gathers
+## the inputs and sends what it returns through workstream 5's orders.
+func _finish_order_drag(press: Vector2, release: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var from := _world_under(press)
+	var to := _world_under(release)
+	if from == Vector3.INF or to == Vector3.INF:
+		_order_selected(press, _order_press_ctrl, _order_press_shift)
+		return
+	var squads := []
+	for squad in _selected:
+		squads.append({
+			"id": int(squad),
+			"at": _state.squad_world_position(int(squad), _now),
+			"alive": _state.alive_of(int(squad)),
+			"spacing": float(_state.composition.get(int(squad), {}).get("spacing", 1.0)),
+		})
+	var plan := BattleLine.plan(from, to, squads)
+	if plan.is_empty():
+		_order_selected(press, _order_press_ctrl, _order_press_shift)
+		return
+	for entry in plan:
+		var squad := int(entry["id"])
+		var cell := _state.space.world_to_cell(entry["destination"] as Vector3)
+		var index := _state.space.index(cell)
+		if _order_press_ctrl:
+			_peer.send(0, NetProtocol.encode_order_attack_move(squad, index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		else:
+			_peer.send(0, NetProtocol.encode_order_move(squad, index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		_peer.send(0, NetProtocol.encode_order_facing(squad,
+			int(entry["facing_quantised"])), ENetPacketPeer.FLAG_RELIABLE)
+		_peer.send(0, NetProtocol.encode_order_width(squad,
+			int(entry["files"])), ENetPacketPeer.FLAG_RELIABLE)
+	print("client: battle line — %d squad(s) formed along a %.1f-unit stroke"
+		% [plan.size(), Vector2(to.x - from.x, to.z - from.z).length()])
+
+
+## The stroke on the ground while the right button drags. A transient
+## input hint on the canonical copy only — not world state, so the
+## lattice-copy rule does not apply (the decision says so out loud).
+func _update_order_drag_line(cursor: Vector2) -> void:
+	if _order_press == Vector2.INF:
+		return
+	if _order_press.distance_to(cursor) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
+		if _order_drag_line != null:
+			_order_drag_line.visible = false
+		return
+	var from := _world_under(_order_press)
+	var to := _world_under(cursor)
+	if from == Vector3.INF or to == Vector3.INF:
+		return
+	if _order_drag_line == null:
+		_order_drag_line = MeshInstance3D.new()
+		_order_drag_line.mesh = ImmediateMesh.new()
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.albedo_color = Color(1.0, 0.95, 0.4, 0.9)
+		_order_drag_line.material_override = material
+		add_child(_order_drag_line)
+	var mesh := _order_drag_line.mesh as ImmediateMesh
+	mesh.clear_surfaces()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	for i in range(17):
+		var t := float(i) / 16.0
+		var at := from.lerp(to, t)
+		if _state.terrain_sampler.is_valid():
+			at.y = float(_state.terrain_sampler.call(at.x, at.z)) + 0.15
+		mesh.surface_add_vertex(at)
+	mesh.surface_end()
+	_order_drag_line.visible = true
+
+
 ## Widen or narrow the selection by one file (D-20260819). The starting
 ## point is the squad's CURRENT effective width — its ordered files, or
 ## the formation's own default when it has never been ordered — through
@@ -5867,6 +5951,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton:
 		_handle_mouse_button(event)
+	elif event is InputEventMouseMotion and _order_press != Vector2.INF:
+		_update_order_drag_line(event.position)
 	elif event is InputEventMouseMotion and _dragging:
 		_update_selection_rect(event.position)
 	elif event is InputEventKey and event.pressed and not event.echo:
@@ -5987,15 +6073,33 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				if _minimap_cell_at(event.position).x < 0:
 					_charge_selected(event.position)
 				return
-			# Alt+right-click: the selection FACES the clicked point while
-			# standing (D-20260819-facing-and-width-are-orders) — one
-			# modifier on the order gesture that already exists, until
-			# workstream 8's drag replaces it.
-			if event.pressed and event.alt_pressed 					and _minimap_cell_at(event.position).x < 0:
-				_face_selected(event.position)
+			# The drag-order gesture (D-20260819-a-drag-draws-the-battle-
+			# line): the press RECORDS, the release DECIDES. A release
+			# within BattleLine.DRAG_ORDER_THRESHOLD_PX is yesterday's
+			# click exactly — order at the press point, Alt still means
+			# face — and a real stroke forms the selection into a battle
+			# line along it: position, facing and width in one motion,
+			# compiled into the orders workstream 5 built.
+			if event.pressed:
+				if _minimap_cell_at(event.position).x < 0:
+					_order_press = event.position
+					_order_press_alt = event.alt_pressed
+					_order_press_ctrl = event.ctrl_pressed
+					_order_press_shift = event.shift_pressed
 				return
-			if event.pressed and _minimap_cell_at(event.position).x < 0:
-				_order_selected(event.position, event.ctrl_pressed, event.shift_pressed)
+			if _order_press == Vector2.INF:
+				return
+			var press := _order_press
+			_order_press = Vector2.INF
+			if _order_drag_line != null:
+				_order_drag_line.visible = false
+			if press.distance_to(event.position) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
+				if _order_press_alt:
+					_face_selected(press)
+				else:
+					_order_selected(press, _order_press_ctrl, _order_press_shift)
+			else:
+				_finish_order_drag(press, event.position)
 
 
 ## Which cell a screen position corresponds to on the minimap, or
@@ -8261,6 +8365,10 @@ func _teardown_match() -> void:
 	if _corpse_layer != null:
 		_corpse_layer.queue_free()
 		_corpse_layer = null
+	if _order_drag_line != null:
+		_order_drag_line.queue_free()
+		_order_drag_line = null
+	_order_press = Vector2.INF
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build

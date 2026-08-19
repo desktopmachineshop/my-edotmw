@@ -159,8 +159,30 @@ right-click, mirroring the Target button's split; the visible half of a
 charge is SPEED, which no still can show — the owner's playtest is the
 instrument, per the decision.
 
-**Not yet built:** workstreams 7–12 — stances, drag placement and group
-formations, formation specials as data, the D-006 amendment plus
-Tier 3, fatigue and terrain height, generals — plus the VAT death clip
-follow-up above. The decision entry is the map; each workstream cites
-it and lands as its own PR.
+**Workstream 7 — stances — landed**
+(D-20260819-stances-are-standing-orders). One stance byte, ordered
+whole, on SQUAD_INFO but not hashed: GUARD opts out of idle pursuit
+(the control combat.gd's pursuit header always named as future work),
+SKIRMISH steps an idle missile squad away from a closing enemy through
+the ordinary move order, HOLD FIRE holds until an explicit attack order
+RELEASES it (gating on the attack-move flag falls to D-034's halt
+spending it on contact — a held squad ordered to attack would fire once
+and fall silent). Walk/run deliberately waits for fatigue (ws11).
+
+**Workstream 8 — a drag draws the battle line — landed**
+(D-20260819-a-drag-draws-the-battle-line). Right-press, drag, release:
+the selection forms along the stroke — position, facing and width in
+one motion, several squads at once, compiled entirely into workstream
+5's orders so the server learns nothing new. `battle_line.gd` owns the
+arithmetic (all-static — the D-061 "client geometry nobody can test"
+lesson as code): segments dealt by projection so lines never cross
+while forming, facing the stroke's perpendicular away from the troops,
+files what fits shoulder to shoulder. A short release is yesterday's
+click exactly, Alt still means face; ctrl-drag forms with attack-moves.
+A ground stroke previews while dragging (canonical copy only — a
+transient input hint, not world state).
+
+**Not yet built:** workstreams 9–12 — formation specials as data, the
+D-006 amendment plus Tier 3, fatigue and terrain height, generals —
+plus the VAT death clip follow-up above. The decision entry is the map;
+each workstream cites it and lands as its own PR.
