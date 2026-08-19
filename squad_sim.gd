@@ -487,6 +487,10 @@ func shape_of(squad: int) -> String:
 	return _shape[squad]
 
 
+func spacing_of(squad: int) -> float:
+	return _spacing[squad]
+
+
 ## Change a squad's formation (D-058).
 ##
 ## Shape is REPLICATED squad state and is part of `composition_hash`, so a

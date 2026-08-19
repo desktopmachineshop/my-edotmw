@@ -54,6 +54,14 @@ const ROUT_FLEE_MULTIPLIER := 3
 var _buckets := {}
 var _buckets_tick := -1
 
+# This tick's derived soldier transforms, at the ROUND SNAPSHOT strengths
+# (D-20260819-only-men-in-contact-fight). A memo of a pure function,
+# cleared every round — NOT state: deriving from live `alive` mid-round
+# would let an earlier attack's casualties shrink a later attack's
+# contact count, which is D-024's simultaneity bias sneaking back in
+# through the formation restamp.
+var _round_transforms := {}
+
 # Squads that found an enemy SQUAD to fight this tick, so the siege pass
 # can leave them to it. Cleared at the top of each round.
 var _engaged := {}
@@ -101,6 +109,7 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 
 	var buckets := _build_buckets(sim)
 	_engaged.clear()
+	_round_transforms.clear()
 
 	# Kept for the buildings pass, which runs later in the same tick and
 	# would otherwise rebuild an identical map. Wiring the two passes
@@ -133,9 +142,44 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 			sim.stop(attacker)
 
 		if _should_attack(sim, attacker, tick, attacker_def):
-			_resolve_attack(sim, attacker, target, tick, round_alive[attacker])
+			# Tier 2 (D-20260819-only-men-in-contact-fight): the damage
+			# multiplier is the men actually IN CONTACT, not the squad's
+			# whole strength. Frontage becomes real here — a wide line
+			# lands more men than a deep column — and the pairing is the
+			# same Engagement function the client's duels draw from.
+			_resolve_attack(sim, attacker, target, tick,
+				_contact_strength(sim, attacker, target, round_alive, attacker_def))
 
 	return _diff(sim, before_alive, before_routed)
+
+
+## The attacker's men within fighting reach of the defender's, over both
+## squads' derived positions at the round snapshot. Pure per tick; the
+## per-squad derivation is memoised for the round in `_round_transforms`.
+func _contact_strength(sim: SquadSim, attacker: int, defender: int,
+		round_alive: PackedInt32Array, attacker_def: UnitDef) -> int:
+	var attackers := _snapshot_transforms(sim, attacker, round_alive)
+	var defenders := _snapshot_transforms(sim, defender, round_alive)
+	if attackers.is_empty() or defenders.is_empty():
+		return 0
+	# The torus tax: an engaged pair straddling a seam derives a whole map
+	# apart in canonical coordinates. Engagement's own header has the
+	# failure this prevents.
+	var aligned := Engagement.shifted(defenders, Engagement.aligning_offset(
+		attackers[0].origin, defenders[0].origin, sim.space.lattice_offsets()))
+	return Engagement.contact_count(attackers, aligned,
+		Engagement.contact_reach(attacker_def.attack_range))
+
+
+func _snapshot_transforms(sim: SquadSim, squad: int,
+		round_alive: PackedInt32Array) -> Array[Transform3D]:
+	if _round_transforms.has(squad):
+		return _round_transforms[squad]
+	var out := Formation.soldier_transforms(
+		sim.curve_of(squad), sim.time, round_alive[squad],
+		sim.shape_of(squad), sim.spacing_of(squad), sim.space)
+	_round_transforms[squad] = out
+	return out
 
 
 ## Whether this squad has something in reach THIS TICK — an enemy squad
@@ -669,6 +713,10 @@ func _should_attack(sim: SquadSim, squad: int, tick: int, attacker_def: UnitDef)
 ## round, passed in rather than read live — that is what makes the round
 ## simultaneous. See resolve()'s comment for why id order used to decide
 ## mirror matchups.
+## `attacker_strength` is the men IN CONTACT since Tier 2
+## (D-20260819-only-men-in-contact-fight), not the squad's whole
+## strength; zero contact resolves as zero damage through the ordinary
+## arithmetic rather than a special case.
 func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int, attacker_strength: int) -> void:
 	var attacker_def := sim.def_of(attacker)
 	var defender_def := sim.def_of(defender)

@@ -1183,7 +1183,14 @@ func _refresh_squads() -> void:
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
 			dueling = not enemy_transforms.is_empty()
-		if dueling:
+		if dueling and not transforms.is_empty():
+			# The torus tax (Engagement's own note): an enemy engaged
+			# across the seam derives a whole map away in canonical
+			# coordinates, and unaligned the duel would pair every man
+			# with a phantom on the far side of the world.
+			enemy_transforms = Engagement.shifted(enemy_transforms,
+				Engagement.aligning_offset(transforms[0].origin,
+					enemy_transforms[0].origin, offsets))
 			paired = CosmeticDuel.opponents(transforms, enemy_transforms)
 			transforms = CosmeticDuel.engage(
 				transforms, enemy_transforms, paired, _state.terrain_sampler)
