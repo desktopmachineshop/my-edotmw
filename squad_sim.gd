@@ -1652,6 +1652,11 @@ func _rebuild_curve(squad: int) -> void:
 	# rather than at the destination.
 	if is_charging(squad):
 		speed *= CHARGE_SPEED_MULT
+	# A fighting style's mobility price (D-20260819-a-formation-is-a-
+	# fighting-style): a testudo crawls because its data says so.
+	var style := FormationRoster.by_id(StringName(_shape[squad]))
+	if style != null:
+		speed *= style.pace_scale
 	# Set when a planned step turns out to cross ground this side now knows
 	# is blocked: the field that produced it was solved against older
 	# knowledge, so it is dropped and the give-up rule below is held off

@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="FormationDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://formation_def.gd" id="1_fdef"]
+
+[resource]
+script = ExtResource("1_fdef")
+id = &"shield_wall"
+display_name = "Shield wall"
+kind = "grid"
+spacing_scale = 0.75
+ranks = 2
+files = 0
+jitter = 0.0
+offered = false
+order = 10
+taken_front = 0.5
+taken_flank = 1.0
+taken_rear = 1.2
+missile_taken = 0.75
+pace_scale = 0.6

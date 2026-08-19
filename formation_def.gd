@@ -67,3 +67,22 @@ class_name FormationDef
 ## Sort order in the UI, so the offered set has a deliberate order rather
 ## than whatever the filesystem returns.
 @export var order: int = 0
+
+## A formation is a fighting style, not just a shape
+## (D-20260819-a-formation-is-a-fighting-style). Every knob defaults to
+## 1.0, so every formation that predates them is bit-for-bit unchanged.
+##
+## Damage-taken multipliers by the blow's ASPECT — the same
+## Engagement.aspect the morale shock reads, so the defence and the
+## terror agree about where the blow came from. A wall is hard from the
+## front AND still soft from behind, in one schema.
+@export var taken_front: float = 1.0
+@export var taken_flank: float = 1.0
+@export var taken_rear: float = 1.0
+
+## Damage taken from missile-class attackers, whatever the aspect.
+@export var missile_taken: float = 1.0
+
+## Movement speed while formed. Protection costs mobility, or the
+## strongest wall is simply the best button.
+@export var pace_scale: float = 1.0

@@ -5185,7 +5185,16 @@ func _squad_control_actions(def_id: StringName) -> Array:
 	# Formation, for any unit (D-058). First, because it is the thing a
 	# player changes most often once they know it exists.
 	var current := String(_state.composition.get(_selected[0], {}).get("shape", ""))
-	for formation in FormationRoster.offered():
+	var choices: Array = FormationRoster.offered().duplicate()
+	# Plus whatever this unit's def GRANTS it (D-20260819-a-formation-is-
+	# a-fighting-style) — a spearman civ's shield wall appears here with
+	# no script naming the civ.
+	if def != null:
+		for granted in def.formations:
+			var extra := FormationRoster.by_id(StringName(granted))
+			if extra != null and not choices.has(extra):
+				choices.append(extra)
+	for formation in choices:
 		out.append({
 			# The current one is marked rather than hidden: a row where one
 			# is ticked says "these are your options and this is where you

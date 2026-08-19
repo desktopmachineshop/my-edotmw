@@ -1291,9 +1291,15 @@ func _handle_order_formation(peer, data: PackedByteArray) -> void:
 	# A formation a player is not offered is not one they may order, and
 	# an unknown one would fall through to a line with only a push_error
 	# nobody reads.
+	# Offered to everyone, or GRANTED to this unit by its own def
+	# (D-20260819-a-formation-is-a-fighting-style) — how a civ's spearmen
+	# know the shield wall without any script naming a civ.
 	if not FormationRoster.offered_ids().has(StringName(shape)):
-		_notify(peer, "No such formation")
-		return
+		var def := _sim.def_of(squad)
+		if def == null or not def.formations.has(StringName(shape)) \
+				or FormationRoster.by_id(StringName(shape)) == null:
+			_notify(peer, "No such formation")
+			return
 	_sim.set_shape(squad, shape)
 
 

@@ -826,6 +826,10 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# The impact blow (D-20260819-a-charge-is-spent-on-its-impact).
 	if charging:
 		total_damage *= CHARGE_IMPACT_MULT
+	# The formation's fighting style (D-20260819): directional defence,
+	# priced by the same aspect the morale shock below reads.
+	var aspect := _aspect_of(sim, attacker, defender)
+	total_damage *= _formation_taken_mult(sim, attacker_def, defender, aspect)
 
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.
@@ -839,19 +843,21 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 
 	sim.set_alive(defender, maxi(0, sim.alive_of(defender) - casualties))
 	# Flank/rear shock (D-20260819-morale-reads-the-fight): the morale
-	# cost of a casualty is multiplied by where the blow came from. The
-	# facing is the squad's own derived heading — the one its soldiers
-	# are drawn with — and the attacker's direction pays the torus tax,
-	# or a seam attacker reads as charging from a map away.
+	# cost of a casualty is multiplied by where the blow came from — the
+	# SAME aspect the formation's defence already priced above, so the
+	# terror and the shield agree about where the blow landed.
 	var morale := sim.morale_of(defender) \
 		- float(casualties) * defender_def.morale_loss_per_casualty \
-			* _aspect_morale_mult(sim, attacker, defender)
+			* _morale_mult_for(aspect)
 	sim.set_morale(defender, maxf(morale, 0.0))
 	_check_rout(sim, defender, defender_def, attacker)
 
 
-## The shock multiplier for a blow from `attacker` on `defender`.
-func _aspect_morale_mult(sim: SquadSim, attacker: int, defender: int) -> float:
+## Where a blow from `attacker` lands on `defender` — computed ONCE per
+## landed attack and read by BOTH consumers (the formation's directional
+## defence and the morale shock); two aspect computations would
+## eventually disagree at a cone boundary.
+func _aspect_of(sim: SquadSim, attacker: int, defender: int) -> int:
 	var defender_pos := sim.curve_of(defender).sample_world(sim.time, sim.space)
 	var attacker_pos := sim.curve_of(attacker).sample_world(sim.time, sim.space)
 	attacker_pos += Engagement.aligning_offset(
@@ -862,13 +868,37 @@ func _aspect_morale_mult(sim: SquadSim, attacker: int, defender: int) -> float:
 	var angle := Formation.facing_angle(sim.curve_of(defender), sim.time,
 		sim.space, sim.facing_angle_of(defender))
 	var facing := Vector3(sin(angle), 0.0, cos(angle))
-	match Engagement.aspect(facing, defender_pos, attacker_pos):
+	return Engagement.aspect(facing, defender_pos, attacker_pos)
+
+
+func _morale_mult_for(aspect: int) -> float:
+	match aspect:
 		Engagement.ASPECT_REAR:
 			return REAR_MORALE_MULT
 		Engagement.ASPECT_FLANK:
 			return FLANK_MORALE_MULT
 		_:
 			return 1.0
+
+
+## The defender's formation as a fighting style
+## (D-20260819-a-formation-is-a-fighting-style): directional damage-taken
+## plus the missile multiplier. 1.0 whenever the shape resolves to
+## nothing — a missing def must cost nothing, not crash a fight.
+func _formation_taken_mult(sim: SquadSim, attacker_def: UnitDef,
+		defender: int, aspect: int) -> float:
+	var style := FormationRoster.by_id(StringName(sim.shape_of(defender)))
+	if style == null:
+		return 1.0
+	var mult := style.taken_front
+	match aspect:
+		Engagement.ASPECT_REAR:
+			mult = style.taken_rear
+		Engagement.ASPECT_FLANK:
+			mult = style.taken_flank
+	if attacker_def.armour_class == "missile":
+		mult *= style.missile_taken
+	return mult
 
 
 func _check_rout(sim: SquadSim, defender: int, defender_def: UnitDef, attacker: int) -> void:
