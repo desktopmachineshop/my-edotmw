@@ -98,6 +98,13 @@ static func archetype_for(building_def: BuildingDef, civ: StringName,
 			continue
 		if def.carry_capacity > 0 and hauling_crews >= MAX_HAULING_CREWS:
 			continue
+		# A command figure is not a load-test instrument
+		# (D-20260819-a-general-holds-the-line): the bots' brains read no
+		# morale, so a general would be gold spent making the load LESS
+		# representative. By FIELD, not by name — the same discipline
+		# carry_capacity above uses.
+		if def.is_general:
+			continue
 		return archetype
 	return &""
 
