@@ -1164,6 +1164,10 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_building_target(peer, data)
 			NetProtocol.C2S_ORDER_FORMATION:
 				_handle_order_formation(peer, data)
+			NetProtocol.C2S_ORDER_FACING:
+				_handle_order_facing(peer, data)
+			NetProtocol.C2S_ORDER_WIDTH:
+				_handle_order_width(peer, data)
 			NetProtocol.C2S_ORDER_GATE_STATE:
 				_handle_order_gate_state(peer, data)
 			NetProtocol.C2S_ORDER_GATE_MODE:
@@ -1267,6 +1271,26 @@ func _handle_order_formation(peer, data: PackedByteArray) -> void:
 		_notify(peer, "No such formation")
 		return
 	_sim.set_shape(squad, shape)
+
+
+## Facing and width orders (D-20260819-facing-and-width-are-orders).
+## Validated exactly like every other squad order — the shared helper IS
+## the authority — and clamped in the sim, so a hand-crafted packet can
+## order nothing a button could not.
+func _handle_order_facing(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_facing(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_facing(squad, int(order["facing"]))
+
+
+func _handle_order_width(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_width(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_files(squad, int(order["files"]))
 
 
 ## Set where a building sends what it produces.

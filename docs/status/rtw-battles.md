@@ -127,8 +127,23 @@ they become schema (a civ or unit identity asking to vary one), and
 the first tuning lever if battles DECIDE too fast is
 `CHAIN_ROUT_MORALE_LOSS`, then the radius.
 
-**Not yet built:** workstreams 5–12 — facing and width opcodes, charge,
-stances, drag placement and group formations, formation specials as
-data, the D-006 amendment plus Tier 3, fatigue and terrain height,
-generals — plus the VAT death clip follow-up above. The decision entry
-is the map; each workstream cites it and lands as its own PR.
+**Workstream 5 — facing and width are orders — landed**
+(D-20260819-facing-and-width-are-orders). Two new replicated squad
+values riding D-058's exact machinery (validated through the shared
+helper, SQUAD_INFO rebroadcast, hashed on both sides): ordered FACING —
+quantised to 1/4096 of a turn so both machines reconstruct one integer,
+resolved in ONE place (`Formation.facing_angle`: path while moving,
+order while standing) that soldier derivation AND combat's rear-shock
+aspect read, so bracing a line is a defence — and ordered FILES (width),
+which frontage, footprint, culling and separation all read, so widening
+a line is an attack. Interim UI until workstream 8's drag: Alt+right-
+click faces the selection at the clicked point; Widen/Narrow buttons in
+the orders column. The torus tax is paid in the facing click too (the
+clicked point may be a lattice copy away from the squad's canonical
+position).
+
+**Not yet built:** workstreams 6–12 — charge, stances, drag placement
+and group formations, formation specials as data, the D-006 amendment
+plus Tier 3, fatigue and terrain height, generals — plus the VAT death
+clip follow-up above. The decision entry is the map; each workstream
+cites it and lands as its own PR.

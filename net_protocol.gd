@@ -58,6 +58,12 @@ const C2S_ORDER_BUILD_QUEUE := 29
 ## (a "key=value" pair, same as a map slider) rather than opcodes of their
 ## own, since they are admin-gated MATCH settings, not one-shot player
 ## actions the way these three are.
+## Facing and width orders (D-20260819-facing-and-width-are-orders):
+## which way a standing squad faces (1/4096 of a turn) and how many files
+## its grid formation forms (0 = the formation's default).
+const C2S_ORDER_FACING := 34
+const C2S_ORDER_WIDTH := 35
+
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
 const C2S_CHEAT_SPAWN_BUILDING := 32
@@ -274,6 +280,13 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# silence. 0 (ground) for every squad that predates the wall-top
 		# tier existing.
 		buf.put_u8(int(entry.get("tier", 0)))
+		# The player's ordered facing (1/4096 of a turn, 0xFFFF = never
+		# ordered) and width in files (0 = the formation's default) —
+		# D-20260819-facing-and-width-are-orders. Soldier positions derive
+		# from both, so the D-058/D-065 rule applies: they are HERE, in the
+		# message that carries shape, not resolved locally.
+		buf.put_u16(int(entry.get("facing", -1)) & 0xFFFF)
+		buf.put_u8(int(entry.get("files", 0)) & 0xFF)
 	return buf.data_array
 
 
@@ -293,10 +306,15 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var alive := buf.get_u32()
 		var shape_length := buf.get_u16()
 		var shape_bytes: PackedByteArray = buf.get_data(shape_length)[1]
+		var owner := buf.get_u32()
+		var tier := int(buf.get_u8())
+		var facing_wire := buf.get_u16()
 		out.append({
 			"id": id, "def_id": def_id, "alive": alive,
-			"shape": shape_bytes.get_string_from_utf8(), "owner": buf.get_u32(),
-			"tier": int(buf.get_u8()),
+			"shape": shape_bytes.get_string_from_utf8(), "owner": owner,
+			"tier": tier,
+			"facing": -1 if facing_wire == 0xFFFF else facing_wire,
+			"files": int(buf.get_u8()),
 		})
 	return out
 
@@ -953,6 +971,11 @@ static func composition_hash(entries: Array) -> int:
 		# hash identically, and float bit patterns are a bad thing to
 		# depend on across a wire.
 		h = _hash_int(h, int(round(float(entry["spacing"]) * 10000.0)))
+		# Ordered facing and width (D-20260819) are already integers by
+		# construction — the facing is quantised at the order, for exactly
+		# the reason the comment above gives.
+		h = _hash_int(h, int(entry.get("facing", -1)))
+		h = _hash_int(h, int(entry.get("files", 0)))
 	return h
 
 
@@ -976,6 +999,44 @@ static func _hash_string(h: int, text: String) -> int:
 
 static func opcode_of(data: PackedByteArray) -> int:
 	return -1 if data.is_empty() else data[0]
+
+
+## FACING: the selection faces this way while standing
+## (D-20260819-facing-and-width-are-orders). The angle is QUANTISED to
+## 1/4096 of a turn before it ever leaves the client, so the sim, the
+## hash and every client reconstruct bit-identical geometry from one
+## integer — a raw float here is the hash trap composition_hash warns
+## about.
+static func encode_order_facing(squad: int, quantised: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_FACING)
+	buf.put_u32(squad)
+	buf.put_u16(clampi(quantised, 0, 4095))
+	return buf.data_array
+
+
+static func decode_order_facing(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "facing": buf.get_u16()}
+
+
+## WIDTH: how many files the selection forms (D-20260819). 0 restores
+## the formation's own default.
+static func encode_order_width(squad: int, files: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_WIDTH)
+	buf.put_u32(squad)
+	buf.put_u8(clampi(files, 0, 255))
+	return buf.data_array
+
+
+static func decode_order_width(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32(), "files": buf.get_u8()}
 
 
 ## Deterministic seed derivation for anything that needs a map-derived

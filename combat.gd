@@ -201,7 +201,9 @@ func _snapshot_transforms(sim: SquadSim, squad: int,
 		return _round_transforms[squad]
 	var out := Formation.soldier_transforms(
 		sim.curve_of(squad), sim.time, round_alive[squad],
-		sim.shape_of(squad), sim.spacing_of(squad), sim.space)
+		sim.shape_of(squad), sim.spacing_of(squad), sim.space,
+		Callable(), PackedByteArray(), sim.files_of(squad),
+		sim.facing_angle_of(squad))
 	_round_transforms[squad] = out
 	return out
 
@@ -793,8 +795,12 @@ func _aspect_morale_mult(sim: SquadSim, attacker: int, defender: int) -> float:
 	var attacker_pos := sim.curve_of(attacker).sample_world(sim.time, sim.space)
 	attacker_pos += Engagement.aligning_offset(
 		defender_pos, attacker_pos, sim.space.lattice_offsets())
-	var facing := sim.space.axial_offset_to_world(
-		Formation.heading(sim.curve_of(defender), sim.time))
+	# THE facing resolver (D-20260819-facing-and-width-are-orders): a
+	# braced line's ordered facing is exactly what the shock term reads,
+	# which is what makes bracing a defence.
+	var angle := Formation.facing_angle(sim.curve_of(defender), sim.time,
+		sim.space, sim.facing_angle_of(defender))
+	var facing := Vector3(sin(angle), 0.0, cos(angle))
 	match Engagement.aspect(facing, defender_pos, attacker_pos):
 		Engagement.ASPECT_REAR:
 			return REAR_MORALE_MULT

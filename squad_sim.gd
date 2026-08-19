@@ -198,6 +198,13 @@ var _shape_dirty := {}
 ## set rather than an array: it is read once per gathering crew per tick.
 var _shape_chosen := {}
 var _spacing := PackedFloat32Array()
+# The player's ordered facing, quantised to 1/4096 of a turn, -1 = never
+# ordered — and ordered files (width), 0 = the formation's own default
+# (D-20260819-facing-and-width-are-orders). Both are REPLICATED squad
+# state like _shape: soldier positions derive from them on both machines,
+# so they ride SQUAD_INFO and the composition hash.
+var _facing := PackedInt32Array()
+var _files := PackedInt32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
 var _curves: Array[StateCurve] = []
@@ -431,6 +438,8 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_speed.append(_cells_per_second(def))
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
+	_facing.append(-1)
+	_files.append(0)
 	_def_id.append(def.id)
 	_defs.append(def)
 
@@ -489,6 +498,52 @@ func shape_of(squad: int) -> String:
 
 func spacing_of(squad: int) -> float:
 	return _spacing[squad]
+
+
+func facing_of(squad: int) -> int:
+	return _facing[squad]
+
+
+func files_of(squad: int) -> int:
+	return _files[squad]
+
+
+## The ordered facing as the world angle Formation.facing_angle wants,
+## NAN when never ordered. THE quantised-to-angle conversion — the client
+## carries an identical one (ClientState.facing_angle_of), and both
+## reconstruct from the same wire integer so the two machines cannot
+## disagree by a bit (D-20260819-facing-and-width-are-orders).
+func facing_angle_of(squad: int) -> float:
+	var q := _facing[squad]
+	return NAN if q < 0 else TAU * float(q) / 4096.0
+
+
+## A player's facing order (D-20260819). Quantised on the way in; takes
+## effect the moment the squad stands (Formation.facing_angle). Rides the
+## shape-dirty channel: a SQUAD_INFO rebroadcast carries every field.
+func set_facing(squad: int, quantised: int) -> void:
+	if squad < 0 or squad >= _facing.size():
+		return
+	var clamped := clampi(quantised, 0, 4095)
+	if _facing[squad] == clamped:
+		return
+	_facing[squad] = clamped
+	_shape_dirty[squad] = true
+
+
+## A player's width order (D-20260819). 0 restores the formation's own
+## default; otherwise clamped to something a squad can actually form.
+## Footprint changes with width, so the cache is invalidated exactly as a
+## shape change does it.
+func set_files(squad: int, files: int) -> void:
+	if squad < 0 or squad >= _files.size():
+		return
+	var clamped := clampi(files, 0, 255)
+	if _files[squad] == clamped:
+		return
+	_files[squad] = clamped
+	_shape_dirty[squad] = true
+	_dirty_footprint(squad)
 
 
 ## Change a squad's formation (D-058).
@@ -638,6 +693,10 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			# D-076: an explicit fact, not something inferred from a curve
 			# going quiet — the same principle D-004/D-025 apply to conceal.
 			"tier": _tier[id],
+			# The player's ordered facing and width (D-20260819) — soldier
+			# positions derive from them, so the client must hold the
+			# server's exact values.
+			"facing": _facing[id], "files": _files[id],
 		})
 	return out
 
@@ -653,6 +712,8 @@ func composition_hash(squad_ids: Array) -> int:
 			"alive": _alive[id],
 			"shape": _shape[id],
 			"spacing": _spacing[id],
+			"facing": _facing[id],
+			"files": _files[id],
 		})
 	return NetProtocol.composition_hash(entries)
 
@@ -885,7 +946,7 @@ func footprint_cells(squad: int) -> int:
 	if squad < 0 or squad >= _alive.size() or _alive[squad] <= 0:
 		return 0
 	var world: float = Formation.footprint(
-		_shape[squad], _alive[squad], _spacing[squad])["radius"]
+		_shape[squad], _alive[squad], _spacing[squad], _files[squad])["radius"]
 	return ceili(world / (TorusSpace.SQRT_3 * space.hex_size))
 
 
@@ -2352,7 +2413,8 @@ func _mean_usec_per_squad_update(total: int) -> float:
 func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]:
 	var sample_at := time if at_time < 0.0 else at_time
 	return Formation.soldier_transforms(
-		_curves[squad], sample_at, _alive[squad], _shape[squad], _spacing[squad], space
+		_curves[squad], sample_at, _alive[squad], _shape[squad], _spacing[squad],
+		space, Callable(), PackedByteArray(), _files[squad], facing_angle_of(squad)
 	)
 
 

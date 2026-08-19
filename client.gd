@@ -1120,7 +1120,8 @@ func _refresh_squads() -> void:
 		var comp_info: Dictionary = _state.composition.get(squad_id, {})
 		var world_radius: float = Formation.footprint(
 			String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
-			float(comp_info.get("spacing", 1.0)))["radius"]
+			float(comp_info.get("spacing", 1.0)),
+			_state.files_of(squad_id))["radius"]
 
 		# Every lattice copy that is on screen, and the squad is drawn at
 		# ALL of them (D-20260818-entities-are-drawn-at-every-visible-copy).
@@ -5186,6 +5187,14 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	# Width orders (D-20260819-facing-and-width-are-orders): frontage is
+	# what Tier 2's contact count rewards, so this is an attack control,
+	# not a cosmetic one. Facing rides Alt+right-click — see
+	# _face_selected — because a direction wants a point, not a button.
+	out.append({"label": "Widen", "hint": "One file wider — more men fight (Alt+right-click sets facing)",
+		"kind": "width", "id": &"wider"})
+	out.append({"label": "Narrow", "hint": "One file narrower — deeper, tougher to flank",
+		"kind": "width", "id": &"narrower"})
 	if def != null and def.carry_capacity > 0:
 		out.append({"label": "Gather", "hint": "Gather here, or right-click a node", "kind": "gather", "id": &""})
 	return out
@@ -5407,6 +5416,8 @@ func _on_action_pressed(index: int) -> void:
 			_stop_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
+		"width":
+			_nudge_width(1 if String(action["id"]) == "wider" else -1)
 		"target_select":
 			# Arms the pick — the actual order goes out on the next
 			# right-click, handled in `_handle_mouse_button` /
@@ -5509,6 +5520,57 @@ func _set_formation(shape: StringName) -> void:
 		_peer.send(0, NetProtocol.encode_order_formation(int(squad), String(shape)),
 			ENetPacketPeer.FLAG_RELIABLE)
 	print("client: %d squad(s) to %s formation" % [_selected.size(), shape])
+
+
+## Face the selection at a clicked point (D-20260819). The angle is
+## QUANTISED to 1/4096 of a turn before it leaves the client — the sim,
+## the hash and every machine reconstruct from the same integer.
+func _face_selected(screen_position: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var world := _world_under(screen_position)
+	if world == Vector3.INF:
+		return
+	var offsets := _state.space.lattice_offsets()
+	var faced := 0
+	for squad in _selected:
+		var here := _state.squad_world_position(int(squad), _now)
+		# The clicked point may be on a different lattice copy than the
+		# squad's canonical position — the torus tax, paid the same way
+		# combat pays it.
+		var target := world + Engagement.aligning_offset(here, world, offsets)
+		var toward := target - here
+		if Vector2(toward.x, toward.z).length_squared() < 0.0001:
+			continue
+		var angle := atan2(toward.x, toward.z)
+		var quantised := wrapi(roundi(fposmod(angle, TAU) / TAU * 4096.0), 0, 4096)
+		_peer.send(0, NetProtocol.encode_order_facing(int(squad), quantised),
+			ENetPacketPeer.FLAG_RELIABLE)
+		faced += 1
+	if faced > 0:
+		print("client: %d squad(s) ordered to face a point" % faced)
+
+
+## Widen or narrow the selection by one file (D-20260819). The starting
+## point is the squad's CURRENT effective width — its ordered files, or
+## the formation's own default when it has never been ordered — through
+## Formation.default_files, the same arithmetic the geometry uses.
+func _nudge_width(delta: int) -> void:
+	if not _connected or _selected.is_empty():
+		return
+	for squad in _selected:
+		var info: Dictionary = _state.composition.get(int(squad), {})
+		var alive := _state.alive_of(int(squad))
+		if alive <= 0:
+			continue
+		var ordered := _state.files_of(int(squad))
+		var current := ordered if ordered > 0 			else Formation.default_files(String(info.get("shape", "line")), alive)
+		var wanted := clampi(current + delta, 1, alive)
+		if wanted == current and ordered > 0:
+			continue
+		_peer.send(0, NetProtocol.encode_order_width(int(squad), wanted),
+			ENetPacketPeer.FLAG_RELIABLE)
+	print("client: selection width %s" % ("+1 file" if delta > 0 else "-1 file"))
 
 
 ## Repaint the minimap a few times a second rather than every frame:
@@ -5855,6 +5917,13 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			if event.pressed and _targeting_building >= 0:
 				_finish_target_pick(event.position)
 				return
+			# Alt+right-click: the selection FACES the clicked point while
+			# standing (D-20260819-facing-and-width-are-orders) — one
+			# modifier on the order gesture that already exists, until
+			# workstream 8's drag replaces it.
+			if event.pressed and event.alt_pressed 					and _minimap_cell_at(event.position).x < 0:
+				_face_selected(event.position)
+				return
 			if event.pressed and _minimap_cell_at(event.position).x < 0:
 				_order_selected(event.position, event.ctrl_pressed, event.shift_pressed)
 
@@ -5976,16 +6045,17 @@ func _squad_footprint(squad: int) -> Dictionary:
 	var alive := _state.alive_of(squad)
 	var shape := String(info.get("shape", "line"))
 	var spacing := float(info.get("spacing", 1.0))
-	var print := Formation.footprint(shape, alive, spacing)
+	var print := Formation.footprint(shape, alive, spacing,
+		_state.files_of(squad))
 
-	# Rotated by the squad's heading exactly as Formation.soldier_transform
-	# does it — local +y is forward, which is +z after rotating about UP —
-	# so the marker sits on the troops rather than near them.
+	# Rotated exactly as Formation.soldier_transform does it — through the
+	# ONE facing resolver, so a braced squad's marker turns with its men
+	# (D-20260819) — local +y is forward, which is +z after rotating about
+	# UP, so the marker sits on the troops rather than near them.
 	var local: Vector2 = print["centre"]
 	if _state.curves.has(squad) and _state.space != null:
-		var world_dir := _state.space.axial_offset_to_world(
-			Formation.heading(_state.curves[squad], _now))
-		var angle := atan2(world_dir.x, world_dir.z)
+		var angle := Formation.facing_angle(_state.curves[squad], _now,
+			_state.space, _state.facing_angle_of(squad))
 		centre += Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
 	else:
 		centre += Vector3(local.x, 0.0, local.y)

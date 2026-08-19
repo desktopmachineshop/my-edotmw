@@ -439,6 +439,12 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			# fact the client is TOLD explicitly (never inferred), so a
 			# lagging hash comparison has nothing to disagree about.
 			"tier": int(entry.get("tier", 0)),
+			# The player's ordered facing and width (D-20260819) — soldier
+			# positions derive from both, and both ARE hashed, so these
+			# must be exactly the server's integers, never resolved
+			# locally (the D-058/D-065 lesson).
+			"facing": int(entry.get("facing", -1)),
+			"files": int(entry.get("files", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -786,6 +792,22 @@ func spacing_of(squad: int) -> float:
 ## state, not part of what "the same composition" means for desync
 ## purposes, so a client that hasn't heard about a rout yet still agrees
 ## with the server on strength.
+func facing_of(squad: int) -> int:
+	return int(composition[squad].get("facing", -1)) if composition.has(squad) else -1
+
+
+func files_of(squad: int) -> int:
+	return int(composition[squad].get("files", 0)) if composition.has(squad) else 0
+
+
+## The mirror of SquadSim.facing_angle_of — the SAME reconstruction from
+## the SAME wire integer, so the two machines' derived soldiers cannot
+## disagree by a bit (D-20260819-facing-and-width-are-orders).
+func facing_angle_of(squad: int) -> float:
+	var q := facing_of(squad)
+	return NAN if q < 0 else TAU * float(q) / 4096.0
+
+
 func routed_of(squad: int) -> bool:
 	return bool(composition[squad].get("routed", false)) if composition.has(squad) else false
 
@@ -862,6 +884,8 @@ func composition_hash() -> int:
 			"alive": alive_of(id),
 			"shape": shape_of(id),
 			"spacing": spacing_of(id),
+			"facing": facing_of(id),
+			"files": files_of(id),
 		})
 	return NetProtocol.composition_hash(entries)
 
@@ -879,7 +903,8 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 		return empty
 	return Formation.soldier_transforms(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now), terrain_passable)
+		_sampler_for(squad, now), terrain_passable, files_of(squad),
+		facing_angle_of(squad))
 
 
 ## As above, but drawing at most `max_soldiers` of them — the render LOD
@@ -897,7 +922,8 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 		return empty
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now), max_soldiers, terrain_passable)
+		_sampler_for(squad, now), max_soldiers, terrain_passable,
+		files_of(squad), facing_angle_of(squad))
 
 
 ## Total soldiers this client would be drawing — the number that makes
