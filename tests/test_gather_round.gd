@@ -14,6 +14,10 @@ func test_ring_points_are_even_exact_and_deterministic() -> void:
 		assert_almost_eq(ring[i].origin.distance_to(centre), 2.0, 0.001,
 			"every point sits exactly on the ring")
 	var gap0 := ring[0].origin.distance_to(ring[1].origin)
+	assert_gt(gap0, 0.5,
+		"the points are SPREAD — collapsed-to-one-spot passes every "
+		+ "equal-gaps assert vacuously, which is how the first "
+		+ "perturbation of this file stayed green")
 	for i in range(11):
 		assert_almost_eq(ring[i].origin.distance_to(ring[i + 1].origin),
 			gap0, 0.001, "even spacing — nothing jitters frame to frame")
