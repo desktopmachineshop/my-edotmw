@@ -1472,7 +1472,14 @@ gen-duel-preview SECONDS="0.6": _import
         echo "VERDICT: FAIL - nobody reached contact; two squads are swinging at the air"
         exit 1
     fi
-    echo "VERDICT: ok - $summary; LOOK AT artifacts/duel-godot.png"
+    # The fallen (D-20260819-a-casualty-is-visible): the same picture is the
+    # instrument for exit criterion 2, so a frame with no bodies in it fails.
+    corpses="$(grep -o '[0-9]* corpses laid' "$log" | head -n 1 | sed 's/ corpses laid//')"
+    if [ -z "$corpses" ] || [ "$corpses" -eq 0 ]; then
+        echo "VERDICT: FAIL - no corpses were laid; the battlefield has no memory"
+        exit 1
+    fi
+    echo "VERDICT: ok - $summary, $corpses corpses; LOOK AT artifacts/duel-godot.png"
 
 # A rendered picture of a WOOD, framed on the densest one on the patch.
 #

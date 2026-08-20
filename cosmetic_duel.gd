@@ -42,18 +42,13 @@ class_name CosmeticDuel
 ## desync — the OUTCOME arithmetic never reads any of this.
 ## `tests/test_cosmetic_duel.gd` scans the sources to keep it that way.
 
-## How far short of his opponent a man stands, in world units. Roughly
-## two capsule radii — close enough to read as contact, far enough that
-## authored models do not embed in each other when both sides step in.
-const CONTACT_GAP := 0.7
-
-## The farthest a man may be drawn from his authoritative slot, in world
-## units. Front ranks reach contact inside this; rear ranks lean toward
-## the fight and hold their place, which is what a queued-up melee looks
-## like. Bounded so the duel can never scatter a formation — the squad's
-## true footprint (selection, culling, separation) is still the derived
-## one.
-const MAX_STEP := 1.1
+## Both moved to `Engagement` when Tier 2 landed
+## (D-20260819-only-men-in-contact-fight): the reach a man FIGHTS at is
+## the reach he is DRAWN at, so the constants live where both readers
+## share them. Re-exported here so the duel's own arithmetic reads
+## naturally.
+const CONTACT_GAP := Engagement.CONTACT_GAP
+const MAX_STEP := Engagement.MAX_STEP
 
 ## Opponents farther than this from a man's slot are not worth stepping
 ## toward at all — the squad is "fighting" because ONE end of its line is
@@ -71,30 +66,13 @@ const ENGAGE_RANGE := 6.0
 const REAR_LEAN := 0.3
 
 
-## For each attacker transform, the index of the nearest defender
-## transform (horizontal distance; first-found wins ties, so the answer
-## is deterministic for identical inputs). O(attackers × defenders), paid
-## only by squads in a melee — measured by `gen-duel-preview`, quoted
-## with its squad sizes.
+## The pairing is `Engagement`'s since Tier 2 landed — one definition for
+## the fight the client draws and the fight the server resolves
+## (D-20260819-only-men-in-contact-fight). Kept as an entry point here so
+## the render path's callers read as duel operations.
 static func opponents(attackers: Array[Transform3D],
 		defenders: Array[Transform3D]) -> PackedInt32Array:
-	var out := PackedInt32Array()
-	out.resize(attackers.size())
-	if defenders.is_empty():
-		out.fill(-1)
-		return out
-	for i in range(attackers.size()):
-		var here := attackers[i].origin
-		var best := 0
-		var best_d := INF
-		for j in range(defenders.size()):
-			var d := Vector2(defenders[j].origin.x - here.x,
-				defenders[j].origin.z - here.z).length_squared()
-			if d < best_d:
-				best_d = d
-				best = j
-		out[i] = best
-	return out
+	return Engagement.opponents(attackers, defenders)
 
 
 ## Face each man at his opponent and step him toward contact. Returns a

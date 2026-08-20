@@ -478,6 +478,10 @@ func _build_world() -> void:
 	_terrain = terrain
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
+	# The slope combat prices (D-20260819-tired-men-fight-uphill) — the
+	# same memoised field the client's renderer samples, so the two
+	# sides cannot disagree about what high ground is.
+	_sim.elevation = terrain.elevation_field(space)
 
 	# Spawns are scattered randomly with a minimum spacing (D-039), so they
 	# are sampled ONCE here and reused. Two reasons that matters: sampling
@@ -1164,6 +1168,14 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_building_target(peer, data)
 			NetProtocol.C2S_ORDER_FORMATION:
 				_handle_order_formation(peer, data)
+			NetProtocol.C2S_ORDER_CHARGE:
+				_handle_order_charge(peer, data)
+			NetProtocol.C2S_ORDER_STANCE:
+				_handle_order_stance(peer, data)
+			NetProtocol.C2S_ORDER_FACING:
+				_handle_order_facing(peer, data)
+			NetProtocol.C2S_ORDER_WIDTH:
+				_handle_order_width(peer, data)
 			NetProtocol.C2S_ORDER_GATE_STATE:
 				_handle_order_gate_state(peer, data)
 			NetProtocol.C2S_ORDER_GATE_MODE:
@@ -1246,6 +1258,26 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
 
 
+## A charge (D-20260819-a-charge-is-spent-on-its-impact) — validated like
+## every squad order; the point-blank and expiry guards live in the sim,
+## so a hand-crafted packet can order nothing a button could not.
+func _handle_order_charge(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_charge(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_pending_builds.erase(squad)
+	_sim.order_charge(squad, _sim.space.from_index(int(order["destination"])))
+
+
+func _handle_order_stance(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_stance(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_stance(squad, int(order["stance"]))
+
+
 ## Change a squad's formation (D-058).
 ##
 ## The shape is checked against the offered set here rather than trusted:
@@ -1263,10 +1295,36 @@ func _handle_order_formation(peer, data: PackedByteArray) -> void:
 	# A formation a player is not offered is not one they may order, and
 	# an unknown one would fall through to a line with only a push_error
 	# nobody reads.
+	# Offered to everyone, or GRANTED to this unit by its own def
+	# (D-20260819-a-formation-is-a-fighting-style) — how a civ's spearmen
+	# know the shield wall without any script naming a civ.
 	if not FormationRoster.offered_ids().has(StringName(shape)):
-		_notify(peer, "No such formation")
-		return
+		var def := _sim.def_of(squad)
+		if def == null or not def.formations.has(StringName(shape)) \
+				or FormationRoster.by_id(StringName(shape)) == null:
+			_notify(peer, "No such formation")
+			return
 	_sim.set_shape(squad, shape)
+
+
+## Facing and width orders (D-20260819-facing-and-width-are-orders).
+## Validated exactly like every other squad order — the shared helper IS
+## the authority — and clamped in the sim, so a hand-crafted packet can
+## order nothing a button could not.
+func _handle_order_facing(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_facing(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_facing(squad, int(order["facing"]))
+
+
+func _handle_order_width(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_width(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	_sim.set_files(squad, int(order["files"]))
 
 
 ## Set where a building sends what it produces.
@@ -1886,6 +1944,12 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 		_notify(peer, "Your people do not field %s" % archetype)
 		return
 
+	# One living general per player (D-20260819-a-general-holds-the-
+	# line) — checked at the production gate like every other refusal,
+	# and against the SIM, never a cached count (the D-038 lesson).
+	if def.is_general and _sim.has_live_general(player):
+		_notify(peer, "You already have a general in the field")
+		return
 	# ONE cap covering military and gatherers alike (D-033): every
 	# villager crew is an army slot not spent.
 	if not _match.has_squad_capacity(_sim, player):

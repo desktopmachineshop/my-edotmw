@@ -31,3 +31,4 @@ cost_food = 70
 cost_wood = 30
 cost_gold = 0
 vision_range = 12.0
+formations = Array[StringName]([&"shield_wall"])

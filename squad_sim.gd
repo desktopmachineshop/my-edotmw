@@ -198,6 +198,25 @@ var _shape_dirty := {}
 ## set rather than an array: it is read once per gathering crew per tick.
 var _shape_chosen := {}
 var _spacing := PackedFloat32Array()
+# The player's ordered facing, quantised to 1/4096 of a turn, -1 = never
+# ordered — and ordered files (width), 0 = the formation's own default
+# (D-20260819-facing-and-width-are-orders). Both are REPLICATED squad
+# state like _shape: soldier positions derive from them on both machines,
+# so they ride SQUAD_INFO and the composition hash.
+var _facing := PackedInt32Array()
+var _files := PackedInt32Array()
+# The stance byte (D-20260819-stances-are-standing-orders): bit 1 GUARD,
+# bit 2 SKIRMISH, bit 4 HOLD FIRE. Rides SQUAD_INFO for the panel but is
+# NOT hashed — the owner/tier family, a fact the client is told.
+var _stance := PackedByteArray()
+# Fatigue (D-20260819-tired-men-fight-uphill): one server-only scalar
+# per squad, 0..100. Drains under charge/fight/run, recovers otherwise;
+# never replicated — the panel indicator is its own decision.
+var _fatigue := PackedFloat32Array()
+# Per-cell terrain elevation, set by the SERVER from its own TerrainGen
+# (empty in bare test sims — empty means flat, so every pre-existing
+# test is untouched). Read-only here; combat prices the slope.
+var elevation := PackedFloat32Array()
 var _def_id: Array[StringName] = []
 var _defs: Array[UnitDef] = []
 var _curves: Array[StateCurve] = []
@@ -431,6 +450,10 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_speed.append(_cells_per_second(def))
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
+	_facing.append(-1)
+	_files.append(0)
+	_stance.append(0)
+	_fatigue.append(100.0)
 	_def_id.append(def.id)
 	_defs.append(def)
 
@@ -485,6 +508,116 @@ func curve_of(squad: int) -> StateCurve:
 
 func shape_of(squad: int) -> String:
 	return _shape[squad]
+
+
+func spacing_of(squad: int) -> float:
+	return _spacing[squad]
+
+
+func facing_of(squad: int) -> int:
+	return _facing[squad]
+
+
+const STANCE_GUARD := 1
+const STANCE_SKIRMISH := 2
+const STANCE_HOLD_FIRE := 4
+## Run (D-20260819-tired-men-fight-uphill): pace for fatigue. Refused as
+## a free lever until fatigue existed to price it (the ws7 entry says
+## so); it spends what charging spends.
+const STANCE_RUN := 8
+
+const FATIGUE_CHARGE_DRAIN := 12.0
+const FATIGUE_FIGHT_DRAIN := 2.0
+const FATIGUE_RUN_DRAIN := 6.0
+const FATIGUE_RECOVERY := 4.0
+const CHARGE_MIN_FATIGUE := 40.0
+const CHARGE_EXHAUST_FLOOR := 25.0
+const RUN_MIN_FATIGUE := 20.0
+const RUN_PACE_MULT := 1.3
+
+
+## Whether `player` already fields a living general
+## (D-20260819-a-general-holds-the-line) — the one-alive limit's
+## question, answered here so a test can ask it without a server.
+func has_live_general(player: int) -> bool:
+	for i in range(_cell.size()):
+		if _owner[i] == player and _alive[i] > 0:
+			var def := def_of(i)
+			if def != null and def.is_general:
+				return true
+	return false
+
+
+func fatigue_of(squad: int) -> float:
+	return _fatigue[squad]
+
+
+## Test access. Fatigue is otherwise the tick's own business.
+func set_fatigue(squad: int, value: float) -> void:
+	_fatigue[squad] = clampf(value, 0.0, 100.0)
+
+
+func stance_of(squad: int) -> int:
+	return _stance[squad]
+
+
+func has_stance(squad: int, bit: int) -> bool:
+	return (_stance[squad] & bit) != 0
+
+
+## A player's standing orders (D-20260819-stances-are-standing-orders).
+## The whole byte at once — the client sends its full toggled state, so
+## there is no read-modify-write race across the wire.
+func set_stance(squad: int, bits: int) -> void:
+	if squad < 0 or squad >= _stance.size():
+		return
+	var clamped := bits & (STANCE_GUARD | STANCE_SKIRMISH | STANCE_HOLD_FIRE | STANCE_RUN)
+	if _stance[squad] == clamped:
+		return
+	_stance[squad] = clamped
+	_shape_dirty[squad] = true
+
+
+func files_of(squad: int) -> int:
+	return _files[squad]
+
+
+## The ordered facing as the world angle Formation.facing_angle wants,
+## NAN when never ordered. THE quantised-to-angle conversion — the client
+## carries an identical one (ClientState.facing_angle_of), and both
+## reconstruct from the same wire integer so the two machines cannot
+## disagree by a bit (D-20260819-facing-and-width-are-orders).
+func facing_angle_of(squad: int) -> float:
+	var q := _facing[squad]
+	return NAN if q < 0 else TAU * float(q) / 4096.0
+
+
+## A player's facing order (D-20260819). Quantised on the way in; takes
+## effect the moment the squad stands (Formation.facing_angle). Rides the
+## shape-dirty channel: a SQUAD_INFO rebroadcast carries every field.
+func set_facing(squad: int, quantised: int) -> void:
+	if squad < 0 or squad >= _facing.size():
+		return
+	var clamped := clampi(quantised, 0, 4095)
+	if _facing[squad] == clamped:
+		return
+	_facing[squad] = clamped
+	_shape_dirty[squad] = true
+
+
+## A player's width order (D-20260819). 0 restores the formation's own
+## default; otherwise clamped to something a squad can actually form.
+## Footprint changes with width, so the cache is invalidated exactly as a
+## shape change does it.
+func set_files(squad: int, files: int) -> void:
+	if squad < 0 or squad >= _files.size():
+		return
+	var clamped := clampi(files, 0, 255)
+	if _files[squad] == clamped:
+		return
+	_files[squad] = clamped
+	_shape_dirty[squad] = true
+	_dirty_footprint(squad)
 
 
 ## Change a squad's formation (D-058).
@@ -634,6 +767,11 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			# D-076: an explicit fact, not something inferred from a curve
 			# going quiet — the same principle D-004/D-025 apply to conceal.
 			"tier": _tier[id],
+			# The player's ordered facing and width (D-20260819) — soldier
+			# positions derive from them, so the client must hold the
+			# server's exact values.
+			"facing": _facing[id], "files": _files[id],
+			"stance": _stance[id],
 		})
 	return out
 
@@ -649,6 +787,8 @@ func composition_hash(squad_ids: Array) -> int:
 			"alive": _alive[id],
 			"shape": _shape[id],
 			"spacing": _spacing[id],
+			"facing": _facing[id],
+			"files": _files[id],
 		})
 	return NetProtocol.composition_hash(entries)
 
@@ -881,7 +1021,7 @@ func footprint_cells(squad: int) -> int:
 	if squad < 0 or squad >= _alive.size() or _alive[squad] <= 0:
 		return 0
 	var world: float = Formation.footprint(
-		_shape[squad], _alive[squad], _spacing[squad])["radius"]
+		_shape[squad], _alive[squad], _spacing[squad], _files[squad])["radius"]
 	return ceili(world / (TorusSpace.SQRT_3 * space.hex_size))
 
 
@@ -1018,6 +1158,10 @@ func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 ## the tier the destination implies, this is an ordinary same-tier move;
 ## otherwise it is a cross-tier request, handled by `_begin_tier_crossing`.
 func order_move(squad: int, destination: Vector2i) -> void:
+	# A plain move is not a charge (D-20260819): walking somewhere must
+	# not carry a three-times blow eight seconds after somebody clicked
+	# Charge and changed their mind.
+	_charge_until.erase(squad)
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
@@ -1034,9 +1178,49 @@ func order_move(squad: int, destination: Vector2i) -> void:
 ## than sticking around to re-halt the squad every tick it stays engaged.
 ##
 ## Tier inference (D-076) works exactly as `order_move`'s does — see there.
+## A charge: attack-move at CHARGE_SPEED_MULT with one x-damage impact
+## waiting at the end (D-20260819-a-charge-is-spent-on-its-impact).
+## Point-blank orders get no flag — re-ordering a charge against the man
+## in front of you must not be a free impact every click. The sprint now
+## ends when FATIGUE gives out (D-20260819-tired-men-fight-uphill),
+## which replaced the original tick deadline outright: the cost lingers,
+## so charge-rest-charge is no longer free.
+const CHARGE_SPEED_MULT := 1.5
+const MIN_CHARGE_CELLS := 3
+
+# squad -> the tick its charge expires. Squad-level state, exactly what
+# D-024 permits squads to have.
+var _charge_until := {}
+
+
+func order_charge(squad: int, destination: Vector2i) -> void:
+	if is_routed(squad):
+		return
+	if space.distance(cell_of(squad), destination) < MIN_CHARGE_CELLS \
+			or _fatigue[squad] < CHARGE_MIN_FATIGUE:
+		# Too close, or too spent (D-20260819-tired-men-fight-uphill):
+		# either way the order degrades to an honest attack-move.
+		order_attack_move(squad, destination)
+		return
+	# Flag FIRST: the order below rebuilds the curve, and the rebuild
+	# must already see the charge speed. Membership is the flag; the
+	# fatigue sweep is what ends it.
+	_charge_until[squad] = true
+	order_attack_move(squad, destination)
+
+
+func is_charging(squad: int) -> bool:
+	return _charge_until.has(squad)
+
+
 func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
+	# An explicit attack order is weapons-free: it RELEASES a hold-fire
+	# stance rather than fighting it (D-20260819-stances) — the flag it
+	# would otherwise be gated on is spent by D-034's halt one exchange in.
+	if has_stance(squad, STANCE_HOLD_FIRE):
+		set_stance(squad, _stance[squad] & ~STANCE_HOLD_FIRE)
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
@@ -1117,6 +1301,10 @@ func is_attack_moving(squad: int) -> bool:
 func stop(squad: int) -> void:
 	if is_routed(squad):
 		return
+	# A halt spends or cancels any charge — Combat holds its own halt
+	# until the impact fires, so by the time the sim's stop runs the blow
+	# has already landed (D-20260819-a-charge-is-spent-on-its-impact).
+	_charge_until.erase(squad)
 	_attack_move[squad] = 0
 	# A squad mid-approach to a tower's door is stopping short of climbing
 	# it (D-076) — the same "an order in progress is spent" rule a move
@@ -1147,6 +1335,9 @@ var rout_quantum: int = 8
 
 ## Flee, sharing a field with everyone fleeing the same way.
 func flee_move(squad: int, destination: Vector2i) -> void:
+	# A broken squad is not charging anything (D-20260819) — without this
+	# a routed ex-charger would flee at sprint speed until the deadline.
+	_charge_until.erase(squad)
 	var previous := destination_quantum
 	destination_quantum = rout_quantum
 	_apply_move_order(squad, destination, true)
@@ -1503,6 +1694,18 @@ func _rebuild_curve(squad: int) -> void:
 	var cells := PackedInt32Array([current])
 
 	var speed := _speed[squad]
+	# The sprint (D-20260819-a-charge-is-spent-on-its-impact). Expiry
+	# rebuilds the curve, so a lapsed charge slows on the next keyframe
+	# rather than at the destination.
+	if is_charging(squad):
+		speed *= CHARGE_SPEED_MULT
+	elif has_stance(squad, STANCE_RUN) and _fatigue[squad] > RUN_MIN_FATIGUE:
+		speed *= RUN_PACE_MULT
+	# A fighting style's mobility price (D-20260819-a-formation-is-a-
+	# fighting-style): a testudo crawls because its data says so.
+	var style := FormationRoster.by_id(StringName(_shape[squad]))
+	if style != null:
+		speed *= style.pace_scale
 	# Set when a planned step turns out to cross ground this side now knows
 	# is blocked: the field that produced it was solved against older
 	# knowledge, so it is dropped and the give-up rule below is held off
@@ -2090,6 +2293,35 @@ func tick() -> void:
 
 	var started := Time.get_ticks_usec()
 
+	# The fatigue economy (D-20260819-tired-men-fight-uphill), replacing
+	# the charge deadline outright as the charge entry promised: sprint
+	# and fight spend, rest recovers, and the cost LINGERS — a squad
+	# cannot charge, rest a moment, and charge again for free.
+	var fatigue_dt := 1.0 / float(TICK_HZ)
+	for squad in range(_fatigue.size()):
+		if _alive[squad] <= 0:
+			continue
+		var moving := _destination[squad] != _cell[squad]
+		var drain := -FATIGUE_RECOVERY
+		if is_charging(squad):
+			drain = FATIGUE_CHARGE_DRAIN
+		elif combat != null and combat.is_engaged(squad):
+			drain = FATIGUE_FIGHT_DRAIN
+		elif moving and has_stance(squad, STANCE_RUN):
+			drain = FATIGUE_RUN_DRAIN
+		var was := _fatigue[squad]
+		_fatigue[squad] = clampf(was - drain * fatigue_dt, 0.0, 100.0)
+		# A sprint ends when the legs give out — with a curve rebuild so
+		# the squad slows at the next keyframe, not at the destination.
+		if _charge_until.has(squad) and _fatigue[squad] <= CHARGE_EXHAUST_FLOOR:
+			_charge_until.erase(squad)
+			if moving:
+				_rebuild_curve(squad)
+		# A runner who crosses the floor drops to a walk the same way.
+		elif moving and has_stance(squad, STANCE_RUN) \
+				and was > RUN_MIN_FATIGUE and _fatigue[squad] <= RUN_MIN_FATIGUE:
+			_rebuild_curve(squad)
+
 	# Fresh field-build budget each tick (D-038).
 	_fields_built_this_tick = 0
 
@@ -2177,6 +2409,7 @@ func tick() -> void:
 	# where they stand, and reuses resolve()'s bucket map rather than
 	# rebuilding one.
 	combat.assign_idle_engagements(self, tick_count)
+	combat.apply_skirmish(self, tick_count)
 	# Both halves of the combat phase, not just resolve(): the assignment
 	# scan is combat work and would otherwise land in the residual.
 	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
@@ -2348,7 +2581,8 @@ func _mean_usec_per_squad_update(total: int) -> float:
 func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]:
 	var sample_at := time if at_time < 0.0 else at_time
 	return Formation.soldier_transforms(
-		_curves[squad], sample_at, _alive[squad], _shape[squad], _spacing[squad], space
+		_curves[squad], sample_at, _alive[squad], _shape[squad], _spacing[squad],
+		space, Callable(), PackedByteArray(), _files[squad], facing_angle_of(squad)
 	)
 
 

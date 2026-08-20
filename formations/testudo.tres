@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="FormationDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://formation_def.gd" id="1_fdef"]
+
+[resource]
+script = ExtResource("1_fdef")
+id = &"testudo"
+display_name = "Testudo"
+kind = "grid"
+spacing_scale = 0.7
+ranks = 0
+files = 0
+jitter = 0.0
+offered = false
+order = 11
+taken_front = 0.8
+taken_flank = 0.9
+taken_rear = 1.0
+missile_taken = 0.35
+pace_scale = 0.5

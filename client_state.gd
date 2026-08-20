@@ -97,6 +97,26 @@ func take_revealed() -> Array:
 	revealed = []
 	return out
 
+
+## Casualty events whose men FELL and have not yet been laid down as
+## corpses (D-20260819-a-casualty-is-visible). Same drain-once contract as
+## `take_felled` — but unlike those queues this one has no natural bound,
+## so it is only ever WRITTEN when `record_corpses` is true, which only a
+## renderer that drains it sets. Bots and AI seats leave it off and the
+## list stays empty for the length of a run.
+##
+## Entries are {"id", "before", "after"}: the men to lay down are slots
+## [after, before) of that squad's formation, derived by the caller at its
+## own frame time — this class records the NEWS, not the geometry.
+var record_corpses := false
+var _casualty_sites := []
+
+
+func take_casualty_sites() -> Array:
+	var out := _casualty_sites
+	_casualty_sites = []
+	return out
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -419,6 +439,13 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			# fact the client is TOLD explicitly (never inferred), so a
 			# lagging hash comparison has nothing to disagree about.
 			"tier": int(entry.get("tier", 0)),
+			# The player's ordered facing and width (D-20260819) — soldier
+			# positions derive from both, and both ARE hashed, so these
+			# must be exactly the server's integers, never resolved
+			# locally (the D-058/D-065 lesson).
+			"facing": int(entry.get("facing", -1)),
+			"files": int(entry.get("files", 0)),
+			"stance": int(entry.get("stance", 0)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -452,6 +479,18 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 		# no-op (D-026 criterion 9).
 		if new_alive < previous_alive:
 			casualties_applied += previous_alive - new_alive
+			# Where men FELL, for the corpse layer
+			# (D-20260819-a-casualty-is-visible). Recorded only when a
+			# renderer has said it will drain the list — the load-test
+			# bots run this class too, and an unread list would grow for
+			# the length of a run. `fell` is the wire's word that these
+			# men died by violence rather than being spent on a founding
+			# (D-031) or wiped by a disconnect (D-033); slots
+			# [after, before) are the men the restamp removes (D-024).
+			if record_corpses and bool(event.get("fell", false)):
+				_casualty_sites.append({
+					"id": id, "before": previous_alive, "after": new_alive,
+				})
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
@@ -754,6 +793,26 @@ func spacing_of(squad: int) -> float:
 ## state, not part of what "the same composition" means for desync
 ## purposes, so a client that hasn't heard about a rout yet still agrees
 ## with the server on strength.
+func stance_of(squad: int) -> int:
+	return int(composition[squad].get("stance", 0)) if composition.has(squad) else 0
+
+
+func facing_of(squad: int) -> int:
+	return int(composition[squad].get("facing", -1)) if composition.has(squad) else -1
+
+
+func files_of(squad: int) -> int:
+	return int(composition[squad].get("files", 0)) if composition.has(squad) else 0
+
+
+## The mirror of SquadSim.facing_angle_of — the SAME reconstruction from
+## the SAME wire integer, so the two machines' derived soldiers cannot
+## disagree by a bit (D-20260819-facing-and-width-are-orders).
+func facing_angle_of(squad: int) -> float:
+	var q := facing_of(squad)
+	return NAN if q < 0 else TAU * float(q) / 4096.0
+
+
 func routed_of(squad: int) -> bool:
 	return bool(composition[squad].get("routed", false)) if composition.has(squad) else false
 
@@ -830,6 +889,8 @@ func composition_hash() -> int:
 			"alive": alive_of(id),
 			"shape": shape_of(id),
 			"spacing": spacing_of(id),
+			"facing": facing_of(id),
+			"files": files_of(id),
 		})
 	return NetProtocol.composition_hash(entries)
 
@@ -847,7 +908,8 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 		return empty
 	return Formation.soldier_transforms(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now), terrain_passable)
+		_sampler_for(squad, now), terrain_passable, files_of(squad),
+		facing_angle_of(squad))
 
 
 ## As above, but drawing at most `max_soldiers` of them — the render LOD
@@ -865,7 +927,8 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 		return empty
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
-		_sampler_for(squad, now), max_soldiers, terrain_passable)
+		_sampler_for(squad, now), max_soldiers, terrain_passable,
+		files_of(squad), facing_angle_of(squad))
 
 
 ## Total soldiers this client would be drawing — the number that makes

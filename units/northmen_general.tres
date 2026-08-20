@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"northmen_general"
+display_name = "Warlord"
+civ = &"northmen"
+archetype = &"general"
+squad_size = 8
+health = 220.0
+damage = 14.0
+move_speed = 3.6
+attack_range = 1.9
+attack_interval = 1.0
+formation_shape = "tight"
+formation_spacing = 0.9
+morale = 160.0
+rout_threshold = 18.0
+armour_class = "infantry"
+bonus_vs = {}
+mesh_primitive = "capsule"
+mesh_color = Color(0.2, 0.35, 0.7, 1)
+model_id = &""
+build_time = 24.0
+cost = 220
+cost_food = 120
+cost_wood = 0
+cost_gold = 100
+vision_range = 14.0
+is_general = true
