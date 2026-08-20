@@ -1184,6 +1184,27 @@ func _refresh_squads() -> void:
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
 			dueling = not enemy_transforms.is_empty()
+		elif doing.has("ring_centre") and not transforms.is_empty():
+			# A STATIC target (D-20260820-men-gather-round-what-they-
+			# strike): perimeter points stand in for the duel's
+			# defenders, dealt ONE PER MAN so the squad wraps the ring
+			# instead of piling onto the near arc. Everything downstream
+			# — engage's bounds, the strike, the easing — is the same
+			# pipeline a melee runs.
+			var ring := Engagement.ring_points(doing["ring_centre"],
+				float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
+				transforms.size())
+			var men := PackedVector3Array()
+			men.resize(transforms.size())
+			for i in range(transforms.size()):
+				men[i] = transforms[i].origin
+			var ring_positions := PackedVector3Array()
+			ring_positions.resize(ring.size())
+			for i in range(ring.size()):
+				ring_positions[i] = ring[i].origin
+			paired = SoldierMotion.assign(ring_positions, transforms)
+			enemy_transforms = ring
+			dueling = true
 		if dueling and not transforms.is_empty():
 			# The torus tax (Engagement's own note): an enemy engaged
 			# across the seam derives a whole map away in canonical
@@ -1192,7 +1213,8 @@ func _refresh_squads() -> void:
 			enemy_transforms = Engagement.shifted(enemy_transforms,
 				Engagement.aligning_offset(transforms[0].origin,
 					enemy_transforms[0].origin, offsets))
-			paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			if paired.is_empty():
+				paired = CosmeticDuel.opponents(transforms, enemy_transforms)
 			transforms = CosmeticDuel.engage(
 				transforms, enemy_transforms, paired, _state.terrain_sampler)
 
@@ -2930,10 +2952,15 @@ func _activity_for(squad_id) -> Dictionary:
 	# wire — so "is this crew working?" needs nothing new. The node is
 	# under the crew's own centre, so leaning inward IS leaning at it.
 	if String(info.get("shape", "")) == "ring":
+		# A working crew gathers round its node
+		# (D-20260820-men-gather-round-what-they-strike): the node sits
+		# under the crew's own centre, and the ring target is its cell.
+		var node_at := _state.squad_world_position(squad_id, _now)
 		return {
 			"activity": CosmeticOffset.Activity.WORKING,
-			"toward": _state.squad_world_position(squad_id, _now),
+			"toward": node_at,
 			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
+			"ring_centre": node_at, "ring_radius": 0.9,
 		}
 
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
@@ -2955,6 +2982,20 @@ func _activity_for(squad_id) -> Dictionary:
 			toward = entry["at"]
 			enemy_squad = int(entry["id"])
 	if toward == Vector3.ZERO:
+		# No enemy SQUAD in reach — but a melee squad battering an enemy
+		# BUILDING should gather round it, not stand in a line swinging
+		# at air (D-20260820-men-gather-round-what-they-strike). Known
+		# buildings only, which is all a client ever has (D-030).
+		if def.armour_class != "missile":
+			var ring := _building_ring_near(here, mine, def.attack_range)
+			if not ring.is_empty():
+				return {
+					"activity": CosmeticOffset.Activity.FIGHTING,
+					"toward": ring["centre"],
+					"is_ranged": false, "interval": def.attack_interval,
+					"enemy_squad": -1,
+					"ring_centre": ring["centre"], "ring_radius": ring["radius"],
+				}
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
 	# see UnitDef's header on the field: a squad's cadence toward the arrow
@@ -2965,6 +3006,35 @@ func _activity_for(squad_id) -> Dictionary:
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
 		"enemy_squad": enemy_squad,
 	}
+
+
+## The nearest ENEMY building whose footprint a melee squad at `here`
+## can reach, as a ring target for the gather-round treatment
+## (D-20260820). Footprint radius from BuildingDef, the same field the
+## minimap draws from (D-101) — never a list of ids.
+func _building_ring_near(here: Vector3, mine: int, reach: float) -> Dictionary:
+	if _state.space == null:
+		return {}
+	var best := {}
+	var best_d := INF
+	for id in _state.buildings:
+		var info: Dictionary = _state.buildings[id]
+		if int(info.get("owner", -1)) == mine or bool(info.get("destroyed", false)):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
+		if def == null:
+			continue
+		var centre := _state.space.to_world(
+			_state.space.from_index(int(info.get("cell", 0))))
+		# The building's copy nearest this squad — the torus tax.
+		centre += Engagement.aligning_offset(here, centre,
+			_state.space.lattice_offsets())
+		var radius := maxf(float(def.footprint_radius), 0.5) 			* _state.space.hex_size * TorusSpace.SQRT_3 * 0.5 + 0.6
+		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
+		if d - radius <= reach and d < best_d:
+			best_d = d
+			best = {"centre": centre, "radius": radius}
+	return best
 
 
 ## Arrow visuals for ranged attacks (squads and buildings alike). Purely
