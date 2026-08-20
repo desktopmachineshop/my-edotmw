@@ -182,7 +182,44 @@ click exactly, Alt still means face; ctrl-drag forms with attack-moves.
 A ground stroke previews while dragging (canonical copy only — a
 transient input hint, not world state).
 
-**Not yet built:** workstreams 9–12 — formation specials as data, the
-D-006 amendment plus Tier 3, fatigue and terrain height, generals —
-plus the VAT death clip follow-up above. The decision entry is the map;
-each workstream cites it and lands as its own PR.
+**Workstream 9 — a formation is a fighting style — landed**
+(D-20260819-a-formation-is-a-fighting-style). FormationDef carries
+directional damage-taken, missile_taken and pace_scale (all default 1.0,
+pinned); combat computes each blow's aspect ONCE for both the defence
+and the morale shock; shield_wall and testudo ship as .tres, granted per
+unit through UnitDef.formations — no script names a civ.
+
+**Workstream 11 — tired men, and men fighting uphill — landed**
+(D-20260819-tired-men-fight-uphill). Fatigue (server-only scalar):
+sprint -12/s, fight -2/s, run -6/s, rest +4/s; damage scales
+0.5+0.5·f/100; charges refused under 40 and ENDED at 25 — the charge
+tick deadline is GONE, replaced as promised, so charge-rest-charge is
+priced. RUN joined the stance byte. Height: the sim carries the
+server's own elevation field (empty = flat) and combat prices the
+slope ×1.15/×0.85 past a 0.05 step — discrete, server-side, D-084's
+interpolation split untouched.
+
+**Workstream 12 — a general holds the line — landed**
+(D-20260819-a-general-holds-the-line). UnitDef.is_general; one per civ
+as .tres from the town centre; double recovery and half chain shock in
+a 10-cell aura (stamped per tick from the few generals — O(1) per
+squad, the vision.gd shape); death = twice a chain rout through the
+same machinery; one alive per player at the production gate; the load
+bots skip generals BY FIELD (their brains read no morale).
+
+**Workstream 10 — Tier 3 lives on the render side — landed**
+(D-20260819-tier-three-lives-on-the-render-side; **D-006 amended, in
+its own file, 2026-08-19**). D-006's fired trigger honoured in the
+open: clause 2 now permits bounded, one-way, outcome-blind per-soldier
+render state, and `soldier_motion.gd` is where it lives — survivors are
+DEALT to restamped slots by nearest-match and WALK in (the vacated-slot
+behaviour the old trigger named first), and drawn men JOSTLE apart with
+the drift clamped to MAX_RENDER_DRIFT where it is made. The new revisit
+trigger: any OUTCOME wanting a drawn position reopens the
+40k-entities-vs-divergence choice as a decision, never a patch.
+
+**The programme's twelve workstreams are all landed.** Open ends, none
+of them code on this stack: the VAT death clip (host bpy policy), exit
+criterion 8 (the player-count MEASUREMENT that supersedes D-018's 20 —
+to be taken once the stack merges, on hardware named), and criterion 9
+(the owner plays a battle and says the fight reads as a fight).
