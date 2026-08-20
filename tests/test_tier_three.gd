@@ -66,19 +66,30 @@ func test_overlapping_men_push_apart_and_separated_men_stand() -> void:
 
 
 func test_the_amendments_bound_holds_where_the_drift_is_made() -> void:
-	# A pathological pile: many men on one spot. However hard they shove,
-	# nobody may end farther than MAX_RENDER_DRIFT from his own anchor.
-	var pile := PackedVector3Array()
-	var anchors_points := []
-	for i in range(8):
-		pile.append(Vector3(0.01 * float(i), 0, 0))
-		anchors_points.append(Vector3(0.01 * float(i), 0, 0))
-	var jostled := SoldierMotion.jostle(pile, _t(anchors_points))
-	for i in range(jostled.size()):
-		assert_lte(Vector2(jostled[i].x - anchors_points[i].x,
-			jostled[i].z - anchors_points[i].z).length(),
-			SoldierMotion.MAX_RENDER_DRIFT + 0.001,
-			"the bound is enforced where the drift is made, not promised")
+	# Positions handed in ALREADY past the bound (a hostile caller, or
+	# accumulated drift): the clamp must pull them back. The first
+	# version piled men on one spot, and one jostle iteration could not
+	# push anyone past the bound anyway — a fixture that cannot violate
+	# the rule cannot see the rule removed.
+	var drifted := PackedVector3Array([Vector3(3.0, 0, 0), Vector3(9, 0, 9)])
+	var anchors := _t([Vector3.ZERO, Vector3(9, 0, 9)])
+	var clamped := SoldierMotion.jostle(drifted, anchors)
+	assert_lte(Vector2(clamped[0].x, clamped[0].z).length(),
+		SoldierMotion.MAX_RENDER_DRIFT + 0.001,
+		"the bound is enforced where the drift is made, not promised")
+	assert_almost_eq(clamped[1].distance_to(Vector3(9, 0, 9)), 0.0, 0.001,
+		"a man on his anchor is untouched")
+
+
+func test_ease_actually_jostles() -> void:
+	# The caller-exists half (the D-055 rule): jostle() being correct
+	# says nothing if ease() never calls it. Two men whose SLOTS overlap
+	# must come out of ease() separated.
+	var motion := SoldierMotion.new()
+	var crowded := _t([Vector3(0, 0, 0), Vector3(0.1, 0, 0)])
+	var drawn := motion.ease(1, crowded, 0.1)
+	assert_gt(drawn[0].origin.distance_to(drawn[1].origin), 0.15,
+		"drawn men breathe apart even when their slots do not")
 
 
 func test_the_duel_step_fits_inside_the_bound() -> void:
