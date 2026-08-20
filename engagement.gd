@@ -118,6 +118,22 @@ static func shifted(transforms: Array[Transform3D],
 	return out
 
 
+## `count` points evenly around a circle — the stand-ins the duel
+## pipeline uses for a STATIC target's "defenders"
+## (D-20260820-men-gather-round-what-they-strike). Pure and phase-fixed,
+## so every frame deals the same ring and nothing jitters.
+static func ring_points(centre: Vector3, radius: float,
+		count: int) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	var n := maxi(count, 1)
+	out.resize(n)
+	for i in range(n):
+		var angle := TAU * float(i) / float(n)
+		out[i] = Transform3D(Basis(),
+			centre + Vector3(sin(angle) * radius, 0.0, cos(angle) * radius))
+	return out
+
+
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer is
 ## deterministic for identical inputs). O(attackers × defenders), paid
