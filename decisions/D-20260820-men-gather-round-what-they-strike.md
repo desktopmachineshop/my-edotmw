@@ -64,6 +64,17 @@ geometry for that purpose — that was a bandaid."* Done at the root:
 - The `ring` FORMATION itself survives as an ordinary player choice;
   only its conscription as a gathering signal ends.
 
+## Second amendment, same playtest — a building is a box
+
+The owner: *"use buildings' actual shape (rectangle), not a ring, where
+appropriate."* `Engagement.rect_points` deals the perimeter of the
+RECTANGLE the client actually draws (mesh_size, or the square
+footprint stand-in), rotated by the building's own facing byte through
+`PlacementJitter.radians_of_byte` — the renderer's one conversion — so
+men line the faces of a wall segment along its length instead of
+standing on a circle through its corners. Trees keep the ring; a
+canopy is round.
+
 ## Revisit trigger
 
 Builders raising a wall are the same picture and are NOT covered yet

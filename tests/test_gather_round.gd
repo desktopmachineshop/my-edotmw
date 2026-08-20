@@ -75,3 +75,32 @@ func test_only_men_at_their_mark_swing() -> void:
 		"a man at his mark swings at it")
 	assert_almost_eq(waiting[0].origin.distance_to(plain_far.origin), 0.0,
 		0.001, "a man six units back waits — he does not windmill at air")
+
+
+func test_rect_points_line_the_faces_of_the_box() -> void:
+	# A building is a BOX (D-20260820, second amendment): every dealt
+	# point sits ON the rectangle's own perimeter, spread along it, and
+	# the box's yaw turns the whole deal with it.
+	var half := Vector2(3.0, 1.5)
+	var rect := Engagement.rect_points(Vector3(5, 0, 7), half, 0.0, 16)
+	assert_eq(rect.size(), 16)
+	var on_left_or_right := 0
+	for point in rect:
+		var local := Vector2(point.origin.x - 5.0, point.origin.z - 7.0)
+		var edge := maxf(absf(local.x) / half.x, absf(local.y) / half.y)
+		assert_almost_eq(edge, 1.0, 0.01,
+			"a point off the perimeter is a man inside or away from the wall")
+		if absf(absf(local.x) - half.x) < 0.01:
+			on_left_or_right += 1
+	assert_gt(on_left_or_right, 2,
+		"the short faces are manned too — spread, not collapsed (the "
+		+ "vacuous-collapse lesson from the ring)")
+
+	# Yaw: a quarter turn swaps the long axis.
+	var turned := Engagement.rect_points(Vector3.ZERO, half, PI / 2.0, 4)
+	var spread_z := 0.0
+	for point in turned:
+		spread_z = maxf(spread_z, absf(point.origin.z))
+	assert_almost_eq(spread_z, 3.0, 0.05,
+		"the box's facing rotates the deal — a wall is lined along its "
+		+ "own length, not the world axes")

@@ -134,6 +134,37 @@ static func ring_points(centre: Vector3, radius: float,
 	return out
 
 
+## `count` points evenly (by arc length) around a RECTANGLE's perimeter —
+## the stand-ins for a BOX-shaped static target
+## (D-20260820-men-gather-round-what-they-strike, second amendment: a
+## building is a box, and men lining a box stand on its faces, not on a
+## circle through its corners). `half` is the half-extents in the box's
+## own frame, `yaw` its world rotation. Pure and phase-fixed.
+static func rect_points(centre: Vector3, half: Vector2, yaw: float,
+		count: int) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	var n := maxi(count, 1)
+	out.resize(n)
+	var hx := maxf(half.x, 0.01)
+	var hz := maxf(half.y, 0.01)
+	var perimeter := 4.0 * (hx + hz)
+	for i in range(n):
+		var t := perimeter * float(i) / float(n)
+		var local := Vector2.ZERO
+		if t < 2.0 * hx:                      # front face, +z, right to left
+			local = Vector2(hx - t, hz)
+		elif t < 2.0 * (hx + hz):             # left face, -x
+			local = Vector2(-hx, hz - (t - 2.0 * hx))
+		elif t < 4.0 * hx + 2.0 * hz:         # back face, -z, left to right
+			local = Vector2(-hx + (t - 2.0 * hx - 2.0 * hz), -hz)
+		else:                                  # right face, +x
+			local = Vector2(hx, -hz + (t - 4.0 * hx - 2.0 * hz))
+		var turned := local.rotated(-yaw)
+		out[i] = Transform3D(Basis(),
+			centre + Vector3(turned.x, 0.0, turned.y))
+	return out
+
+
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer is
 ## deterministic for identical inputs). O(attackers × defenders), paid

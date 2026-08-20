@@ -1184,16 +1184,25 @@ func _refresh_squads() -> void:
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
 			dueling = not enemy_transforms.is_empty()
-		elif doing.has("ring_centre") and not transforms.is_empty():
+		elif (doing.has("ring_centre") or doing.has("rect_centre")) \
+				and not transforms.is_empty():
 			# A STATIC target (D-20260820-men-gather-round-what-they-
 			# strike): perimeter points stand in for the duel's
-			# defenders, dealt ONE PER MAN so the squad wraps the ring
-			# instead of piling onto the near arc. Everything downstream
-			# — engage's bounds, the strike, the easing — is the same
-			# pipeline a melee runs.
-			var ring := Engagement.ring_points(doing["ring_centre"],
-				float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
-				transforms.size())
+			# defenders, dealt ONE PER MAN so the squad wraps the target
+			# instead of piling onto the near arc. A building is a BOX
+			# and gets its rectangle (second amendment); a tree keeps
+			# the ring. Everything downstream — engage's bounds, the
+			# strike, the easing — is the same pipeline a melee runs.
+			var ring: Array[Transform3D]
+			if doing.has("rect_centre"):
+				ring = Engagement.rect_points(doing["rect_centre"],
+					(doing["rect_half"] as Vector2)
+						+ Vector2(Engagement.CONTACT_GAP, Engagement.CONTACT_GAP),
+					float(doing["rect_yaw"]), transforms.size())
+			else:
+				ring = Engagement.ring_points(doing["ring_centre"],
+					float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
+					transforms.size())
 			var men := PackedVector3Array()
 			men.resize(transforms.size())
 			for i in range(transforms.size()):
@@ -2996,14 +3005,15 @@ func _activity_for(squad_id) -> Dictionary:
 		# at air (D-20260820-men-gather-round-what-they-strike). Known
 		# buildings only, which is all a client ever has (D-030).
 		if def.armour_class != "missile":
-			var ring := _building_ring_near(here, mine, def.attack_range)
-			if not ring.is_empty():
+			var box := _building_box_near(here, mine, def.attack_range)
+			if not box.is_empty():
 				return {
 					"activity": CosmeticOffset.Activity.FIGHTING,
-					"toward": ring["centre"],
+					"toward": box["centre"],
 					"is_ranged": false, "interval": def.attack_interval,
 					"enemy_squad": -1,
-					"ring_centre": ring["centre"], "ring_radius": ring["radius"],
+					"rect_centre": box["centre"], "rect_half": box["half"],
+					"rect_yaw": box["yaw"],
 				}
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
@@ -3017,11 +3027,14 @@ func _activity_for(squad_id) -> Dictionary:
 	}
 
 
-## The nearest ENEMY building whose footprint a melee squad at `here`
-## can reach, as a ring target for the gather-round treatment
-## (D-20260820). Footprint radius from BuildingDef, the same field the
-## minimap draws from (D-101) — never a list of ids.
-func _building_ring_near(here: Vector3, mine: int, reach: float) -> Dictionary:
+## The nearest ENEMY building a melee squad at `here` can reach, as a
+## BOX target for the gather-round treatment (D-20260820, second
+## amendment: a building is a rectangle, and men line its faces). Half
+## extents from what the client actually DRAWS — mesh_size when the def
+## carries one (the wall family, oblong on purpose), else the square
+## footprint_radius * 1.9 stand-in the build markers and culling extents
+## use — and the yaw from the same facing byte the renderer rotates by.
+func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 	if _state.space == null:
 		return {}
 	var best := {}
@@ -3038,22 +3051,18 @@ func _building_ring_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 		# The building's copy nearest this squad — the torus tax.
 		centre += Engagement.aligning_offset(here, centre,
 			_state.space.lattice_offsets())
-		# The building's HALF-EXTENT as the client actually draws it:
-		# mesh_size when the def carries one (the wall family), else the
-		# same footprint_radius * 1.9 stand-in the build markers and the
-		# culling extents already use — the first version derived ~half
-		# the true size from cell arithmetic and dealt ring points INSIDE
-		# the box, which the owner's screenshot showed as men standing in
-		# the building.
-		var radius := 0.4
+		var half := Vector2.ZERO
 		if def.mesh_size != Vector3.ZERO:
-			radius += maxf(def.mesh_size.x, def.mesh_size.z) * 0.5
+			half = Vector2(def.mesh_size.x, def.mesh_size.z) * 0.5
 		else:
-			radius += maxf(1.0, float(def.footprint_radius)) * 1.9
+			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
+			half = Vector2(span, span)
+		half += Vector2(0.4, 0.4)
 		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
-		if d - radius <= reach and d < best_d:
+		if d - maxf(half.x, half.y) <= reach and d < best_d:
 			best_d = d
-			best = {"centre": centre, "radius": radius}
+			best = {"centre": centre, "half": half,
+				"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0)))}
 	return best
 
 
