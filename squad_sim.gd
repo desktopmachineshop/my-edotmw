@@ -193,10 +193,6 @@ var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
 ## Squads whose shape changed and whose clients have not been told yet.
 var _shape_dirty := {}
-## Squads whose player has chosen a formation, and which therefore ignore
-## the simulation's automatic switching (see set_shape/suggest_shape). A
-## set rather than an array: it is read once per gathering crew per tick.
-var _shape_chosen := {}
 var _spacing := PackedFloat32Array()
 # The player's ordered facing, quantised to 1/4096 of a turn, -1 = never
 # ordered — and ordered files (width), 0 = the formation's own default
@@ -642,24 +638,17 @@ func set_files(squad: int, files: int) -> void:
 func set_shape(squad: int, shape: String) -> void:
 	if squad < 0 or squad >= _shape.size():
 		return
-	# Latched even when the shape is unchanged: choosing the shape a squad
-	# is already in is still a choice, and it must stop the economy
-	# switching away from it on the next phase change.
-	_shape_chosen[squad] = true
 	_apply_shape(squad, shape)
 
 
-## The SIMULATION's entry point for shape: a default, not an override.
-##
-## Identical to `set_shape` except that a squad whose player has chosen a
-## formation ignores it. Automatic switching (D-058's ring-while-working)
-## is a convenience for crews nobody has given an opinion about; a player
-## who has expressed one outranks it, and keeps it for the rest of the
-## match.
-func suggest_shape(squad: int, shape: String) -> void:
-	if squad < 0 or squad >= _shape.size() or _shape_chosen.has(squad):
-		return
-	_apply_shape(squad, shape)
+## `suggest_shape` — the per-tick assertion channel D-065 built for
+## D-058's ring-while-working — is GONE with its only caller
+## (D-20260820-men-gather-round-what-they-strike, amended): nothing in
+## the simulation asserts shapes any more, so the latch that protected a
+## player's choice from it has nothing to protect against. D-065's rule
+## still stands: if any future system wants to assert a squad's shape
+## per tick, it re-reads that entry and rebuilds the suggest/latch pair
+## rather than calling set_shape in a loop.
 
 
 func _apply_shape(squad: int, shape: String) -> void:

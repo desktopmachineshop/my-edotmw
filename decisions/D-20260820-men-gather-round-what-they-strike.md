@@ -44,6 +44,26 @@ queues behind a melee line.
   each target's size would put target geometry into the composition
   hash. The render deals with geometry; the shape stays what it is.
 
+## Amended same day — the ring bandaid comes out entirely
+
+The owner's follow-up from the same playtest: *"remove the use of ring
+geometry for that purpose — that was a bandaid."* Done at the root:
+
+- **The economy no longer touches a crew's shape at all.** The
+  ring-while-working switch (D-058) existed to fake a surround the
+  render layer could not draw; it can now, so the switch and the whole
+  `suggest_shape`/latch machinery (D-065's channel) go WITH their only
+  caller — leaving them would be the declared-and-unread landmine this
+  project keeps finding. D-065's rule stands dormant: a future per-tick
+  shape assertion rebuilds the pair, it does not call `set_shape` in a
+  loop.
+- **The client's "is this crew working?" signal moves** from "the wire
+  says ring" to "a CARRIER standing on a cell this client KNOWS holds a
+  node" — both halves already on the client (D-030's node knowledge,
+  the def's own field), so nothing new crosses the wire.
+- The `ring` FORMATION itself survives as an ordinary player choice;
+  only its conscription as a gathering signal ends.
+
 ## Revisit trigger
 
 Builders raising a wall are the same picture and are NOT covered yet

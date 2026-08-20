@@ -2951,20 +2951,29 @@ func _activity_for(squad_id) -> Dictionary:
 	# A gathering crew rings its node, and that shape reaches us over the
 	# wire — so "is this crew working?" needs nothing new. The node is
 	# under the crew's own centre, so leaning inward IS leaning at it.
-	if String(info.get("shape", "")) == "ring":
-		# A working crew gathers round its node
-		# (D-20260820-men-gather-round-what-they-strike): the node sits
-		# under the crew's own centre, and the ring target is its cell.
-		var node_at := _state.squad_world_position(squad_id, _now)
-		return {
-			"activity": CosmeticOffset.Activity.WORKING,
-			"toward": node_at,
-			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
-			"ring_centre": node_at, "ring_radius": 0.9,
-		}
-
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
-	if def == null or def.damage <= 0.0:
+	if def == null:
+		return idle
+
+	# A working crew gathers round its node
+	# (D-20260820-men-gather-round-what-they-strike, as amended): the
+	# signal is no longer a shape the economy set — that bandaid is
+	# gone — but the crew itself: a CARRIER standing on a cell this
+	# client KNOWS holds a node is working it. Both halves were already
+	# on this client (D-030's node knowledge, the def's own field).
+	if def.carry_capacity > 0:
+		var crew_at := _state.squad_world_position(squad_id, _now)
+		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
+		if _state.nodes.has(crew_cell):
+			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
+			return {
+				"activity": CosmeticOffset.Activity.WORKING,
+				"toward": node_at,
+				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
+				"ring_centre": node_at, "ring_radius": 0.9,
+			}
+
+	if def.damage <= 0.0:
 		return idle
 
 	_refresh_enemy_scan()

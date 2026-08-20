@@ -552,20 +552,12 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 			Phase.TO_DROP_OFF:
 				_try_unload(sim, squad, haul, buildings, changed)
 
-		# A crew standing at a node works AROUND it; a crew on the road
-		# walks spread out (D-058). Suggested every tick rather than on the
-		# transition, because `suggest_shape` ignores a no-op — so this
-		# costs nothing on the ticks where nothing changed, and cannot be
-		# left wrong by a phase change that took some other path out.
-		# A released crew goes back to walking order too — a worked-out
-		# node erases the haul, and leaving them ringed around a bare patch
-		# would be the one case this misses.
-		#
-		# SUGGEST, not set: a player who has chosen this crew's formation
-		# outranks the automatic switch. Asserting it here every tick is
-		# exactly what made the formation buttons look inert on workers.
-		var working := _hauls.has(squad) and int(haul["phase"]) == Phase.GATHERING
-		sim.suggest_shape(squad, "ring" if working else "sparse")
+		# The economy no longer touches a crew's SHAPE at all
+		# (D-20260820-men-gather-round-what-they-strike, amended on the
+		# owner's follow-up): the ring-while-working switch was a bandaid
+		# for the picture, and the render layer now gathers a working
+		# crew round its node properly. A crew keeps whatever formation
+		# it has — the player's, or its def's.
 
 		# Only write back a haul that still exists. A helper above may have
 		# ended it — a worked-out node releases its crew — and assigning
