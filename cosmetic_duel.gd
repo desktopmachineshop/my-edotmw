@@ -135,6 +135,12 @@ static func engage(attackers: Array[Transform3D],
 ## replacement for `CosmeticOffset.decorate_activity`, which leans a
 ## whole squad at one squad-level point. Runs after `SoldierMotion.ease`,
 ## exactly where decorate_activity ran.
+## A man only SWINGS when his mark is actually in front of him: queued
+## rear ranks lean and wait. Without the gate, every crowded man behind
+## a siege windmilled at air — the owner's screenshot, in one clause.
+const STRIKE_REACH := Engagement.CONTACT_GAP + 1.0
+
+
 static func strike_decorate(eased: Array[Transform3D],
 		defenders: Array[Transform3D], paired: PackedInt32Array,
 		time: float, speed: float) -> Array[Transform3D]:
@@ -144,8 +150,9 @@ static func strike_decorate(eased: Array[Transform3D],
 		var decorated := CosmeticOffset.decorate(eased[i], i, time, speed)
 		var j := paired[i] if i < paired.size() else -1
 		if j >= 0 and j < defenders.size():
-			decorated.origin += CosmeticOffset.work_swing(i, time,
-				defenders[j].origin - eased[i].origin,
-				CosmeticOffset.Activity.FIGHTING)
+			var toward := defenders[j].origin - eased[i].origin
+			if Vector2(toward.x, toward.z).length() <= STRIKE_REACH:
+				decorated.origin += CosmeticOffset.work_swing(i, time,
+					toward, CosmeticOffset.Activity.FIGHTING)
 		out[i] = decorated
 	return out

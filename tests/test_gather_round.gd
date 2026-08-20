@@ -55,3 +55,23 @@ func test_the_dealt_ring_runs_the_ordinary_duel_bounds() -> void:
 	assert_lte(engaged[0].origin.distance_to(Vector3(0, 0, -8)),
 		Engagement.MAX_STEP + 0.001,
 		"a static target grants no exemption from the drift bounds")
+
+
+func test_only_men_at_their_mark_swing() -> void:
+	# The owner's screenshot: crowded men far from the wall windmilling
+	# at air. A man swings only within STRIKE_REACH of his dealt mark;
+	# a queued man leans and waits.
+	var near: Array[Transform3D] = [Transform3D(Basis(), Vector3(0, 0, 0))]
+	var far: Array[Transform3D] = [Transform3D(Basis(), Vector3(0, 0, -6))]
+	var mark: Array[Transform3D] = [Transform3D(Basis(), Vector3(0, 0, 1))]
+	var strike_time := 1.5 / 5.5
+	var swinging := CosmeticDuel.strike_decorate(near, mark,
+		PackedInt32Array([0]), strike_time, 0.0)
+	var waiting := CosmeticDuel.strike_decorate(far, mark,
+		PackedInt32Array([0]), strike_time, 0.0)
+	var plain_near := CosmeticOffset.decorate(near[0], 0, strike_time, 0.0)
+	var plain_far := CosmeticOffset.decorate(far[0], 0, strike_time, 0.0)
+	assert_gt(swinging[0].origin.distance_to(plain_near.origin), 0.05,
+		"a man at his mark swings at it")
+	assert_almost_eq(waiting[0].origin.distance_to(plain_far.origin), 0.0,
+		0.001, "a man six units back waits — he does not windmill at air")

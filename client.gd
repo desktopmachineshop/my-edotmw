@@ -3038,7 +3038,18 @@ func _building_ring_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 		# The building's copy nearest this squad — the torus tax.
 		centre += Engagement.aligning_offset(here, centre,
 			_state.space.lattice_offsets())
-		var radius := maxf(float(def.footprint_radius), 0.5) 			* _state.space.hex_size * TorusSpace.SQRT_3 * 0.5 + 0.6
+		# The building's HALF-EXTENT as the client actually draws it:
+		# mesh_size when the def carries one (the wall family), else the
+		# same footprint_radius * 1.9 stand-in the build markers and the
+		# culling extents already use — the first version derived ~half
+		# the true size from cell arithmetic and dealt ring points INSIDE
+		# the box, which the owner's screenshot showed as men standing in
+		# the building.
+		var radius := 0.4
+		if def.mesh_size != Vector3.ZERO:
+			radius += maxf(def.mesh_size.x, def.mesh_size.z) * 0.5
+		else:
+			radius += maxf(1.0, float(def.footprint_radius)) * 1.9
 		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
 		if d - radius <= reach and d < best_d:
 			best_d = d
