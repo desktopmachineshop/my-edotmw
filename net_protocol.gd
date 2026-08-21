@@ -853,7 +853,7 @@ static func decode_cheat_spawn_unit(data: PackedByteArray) -> Dictionary:
 ## building never looks broken even though every game-balance rule around
 ## it is skipped.
 static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing: int = 0,
-		enemy := false) -> PackedByteArray:
+		enemy := false, offset := Vector2.ZERO) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_CHEAT_SPAWN_BUILDING)
 	var name_bytes := def_id.to_utf8_buffer()
@@ -862,6 +862,11 @@ static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing:
 	buf.put_u32(cell_index)
 	buf.put_u8(facing & 0xFF)
 	buf.put_u8(1 if enemy else 0)
+	# The sub-cell offset the placement ghost promised (D-096's shared-
+	# pose rule): the cheat rides the ordinary placement flow, so the
+	# spawn has to land exactly where the preview stood.
+	buf.put_float(offset.x)
+	buf.put_float(offset.y)
 	return buf.data_array
 
 
@@ -885,6 +890,7 @@ static func decode_cheat_spawn_building(data: PackedByteArray) -> Dictionary:
 		"cell": buf.get_u32(),
 		"facing": buf.get_u8(),
 		"enemy": buf.get_u8() == 1,
+		"offset": Vector2(buf.get_float(), buf.get_float()),
 	}
 
 
@@ -1157,7 +1163,7 @@ const LOBBY_SET_TEAM := 5
 ## what every caller that predates the scoreboard means.
 static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
 		sandbox := false, instant_build := false, ai_economy_only := false,
-		resources := true) -> PackedByteArray:
+		resources := true, ai_frozen := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u8(phase)
@@ -1176,6 +1182,7 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 	buf.put_u8(1 if instant_build else 0)
 	buf.put_u8(1 if ai_economy_only else 0)
 	buf.put_u8(1 if resources else 0)
+	buf.put_u8(1 if ai_frozen else 0)
 	return buf.data_array
 
 
@@ -1211,6 +1218,7 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		"instant_build": buf.get_u8() == 1,
 		"ai_economy_only": buf.get_u8() == 1,
 		"resources": buf.get_u8() == 1,
+		"ai_frozen": buf.get_u8() == 1,
 	}
 
 

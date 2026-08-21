@@ -771,6 +771,12 @@ var ai_economy_only := false
 ## (D-20260821-the-sandbox-panel-runs-the-world).
 var resources_enabled := true
 
+## While true, every AI brain is skipped entirely on the server's tick —
+## no thinking, no orders, so the AI "makes no movements" (its squads
+## finish any march already in flight; a curve is not an order). A dev
+## freeze for staging fights from the sandbox panel (D-20260821).
+var ai_frozen := false
+
 
 ## Admin-only toggle for one of the sandbox flags above. `key` is
 ## "sandbox", "instant_build", "ai_economy_only" or "resources" — a tiny
@@ -789,6 +795,8 @@ func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
 			ai_economy_only = enabled
 		"resources":
 			resources_enabled = enabled
+		"ai_frozen":
+			ai_frozen = enabled
 		_:
 			return false
 	return true

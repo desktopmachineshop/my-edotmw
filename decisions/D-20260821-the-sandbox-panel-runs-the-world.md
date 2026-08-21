@@ -70,3 +70,26 @@ its safety structure does not move).
 If sandbox iteration ever wants regen WITHOUT losing placed test
 armies, that is the in-place reset above — a new decision with the
 client cache inventory as its first section.
+
+## Amended same day — placement, freeze, and a window that fits
+
+The owner's first session with the panel asked for three more things:
+
+- **A cheat building spawn rides the ORDINARY placement flow.** Arm from
+  the panel and the real ghost follows the cursor — facing (V / scroll),
+  validity colouring, wall snapping — with no builder-squad requirement;
+  the commit sends the cheat packet instead of a build order, honouring
+  the enemy checkbox. The wire grew the sub-cell OFFSET for it, because
+  the ghost promises one and a spawn that ignored it would drift from
+  the preview — D-096's shared-pose rule, which is precisely the defect
+  that decision records. Walls place one piece per click in cheat mode:
+  the placement DRAG compiles build orders, which a cheat has no builder
+  to execute.
+- **Freeze AI** — a fifth sandbox option (`ai_frozen`, same admin-gated
+  channel). The server SKIPS the brains entirely rather than feeding
+  them a no-op, so a frozen brain does not advance its own timers and
+  thawing does not fire a backlog of queued decisions. Squads already
+  marching finish the march: a curve is not an order.
+- **The panel window sizes itself to its content**, deferred one frame
+  so theme fonts resolve, capped below the screen height — the fixed
+  300x500 was clipping a control per session as the panel grew.

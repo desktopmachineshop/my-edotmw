@@ -675,9 +675,13 @@ func _process(delta: float) -> void:
 		# AI seats think on the server's clock, after the world has moved
 		# but before it is replicated, so they act on the same tick a human
 		# would be reacting to (D-051).
-		for brain in _ai_players:
-			brain.set_time(_sim.time)
-			brain.update(_sim.time)
+		# The sandbox freeze (D-20260821): skipped entirely, not fed a
+		# no-op — a frozen brain must not advance its own timers either,
+		# or thawing it fires every decision it queued while "frozen".
+		if not _match.ai_frozen:
+			for brain in _ai_players:
+				brain.set_time(_sim.time)
+				brain.update(_sim.time)
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
@@ -943,7 +947,7 @@ func _admit_player(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only,
-		_match.resources_enabled), ENetPacketPeer.FLAG_RELIABLE)
+		_match.resources_enabled, _match.ai_frozen), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -2114,7 +2118,8 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 	# one place that knows whether `def` wants a 6-way hex direction or a
 	# continuous byte.
 	var facing := posmod(int(order.get("facing", 0)), 256)
-	_buildings.add_building(def, player, cell, true, -1, facing)
+	_buildings.add_building(def, player, cell, true, -1, facing,
+		order.get("offset", Vector2.ZERO))
 	_refresh_passability()
 	_notify(peer, "Cheat: spawned a %s%s" % [def.display_name,
 		" for the enemy" if player != int(record["player"]) else ""])
@@ -2698,7 +2703,8 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 				# as a bool rather than a float and MUST NOT fall through
 				# to set_map_option's float() cast on something like "1"
 				# meant as true.
-				if ["sandbox", "instant_build", "ai_economy_only", "resources"].has(parts[0]):
+				if ["sandbox", "instant_build", "ai_economy_only", "resources",
+						"ai_frozen"].has(parts[0]):
 					ok = _match.set_sandbox_option(player, parts[0], parts[1] != "0")
 					if ok and parts[0] == "ai_economy_only":
 						for brain in _ai_players:
@@ -3004,7 +3010,7 @@ func _broadcast_lobby() -> void:
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only,
-		_match.resources_enabled)
+		_match.resources_enabled, _match.ai_frozen)
 	# `_recipients()`, not `_clients` — the third time this exact drift has
 	# been found, and see that function's own doc for the first two. An AI
 	# seat is a client (D-051), it is told the lobby once at admission, and

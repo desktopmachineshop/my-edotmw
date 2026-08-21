@@ -219,3 +219,36 @@ func test_enemy_of_finds_a_hostile_seat_and_only_a_hostile_seat() -> void:
 	assert_true(m.set_team(1, m.seat_of(1), 1))
 	assert_true(m.set_team(2, m.seat_of(2), 1))
 	assert_eq(m.enemy_of(1), -1, "an ally is not an enemy, and there is no one else")
+
+
+func test_ai_frozen_is_an_admin_gated_sandbox_option() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	assert_false(m.ai_frozen, "off by default — a frozen AI is a dev request, never a state a match wakes up in")
+	assert_false(m.set_sandbox_option(2, "ai_frozen", true), "not the admin")
+	assert_true(m.set_sandbox_option(1, "ai_frozen", true))
+	assert_true(m.ai_frozen)
+
+
+func test_lobby_packet_round_trips_the_ai_frozen_flag() -> void:
+	var frozen := NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0, true, false, false, true, true))
+	assert_true(bool(frozen["ai_frozen"]))
+	var default_off := NetProtocol.decode_lobby(NetProtocol.encode_lobby(1, [], {}, 0))
+	assert_false(bool(default_off["ai_frozen"]))
+
+
+func test_cheat_spawn_building_round_trips_facing_and_offset() -> void:
+	# The cheat rides the SAME placement flow as an ordinary build now
+	# (ghost, facing, sub-cell offset) — so the wire has to carry what the
+	# ghost promised, or the spawn drifts from the preview, which is the
+	# exact defect D-096's shared-pose rule exists to prevent.
+	var decoded := NetProtocol.decode_cheat_spawn_building(
+		NetProtocol.encode_cheat_spawn_building("tower", 42, 137, true,
+			Vector2(0.25, -0.4)))
+	assert_eq(int(decoded["facing"]), 137)
+	assert_true(bool(decoded["enemy"]))
+	assert_almost_eq((decoded["offset"] as Vector2).x, 0.25, 0.001)
+	assert_almost_eq((decoded["offset"] as Vector2).y, -0.4, 0.001)

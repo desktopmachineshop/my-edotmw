@@ -3392,6 +3392,11 @@ func _update_missiles() -> void:
 ## The building armed for placement, or "" — a ghost of it follows the
 ## cursor until you click the ground or cancel.
 var _placing: StringName = &""
+## Whether the armed placement is a sandbox CHEAT spawn rather than an
+## ordinary build order (D-20260821 follow-up): same ghost, same pose,
+## same controls — the commit sends the cheat packet (honouring the
+## enemy checkbox) instead of a build order, and needs no builder squad.
+var _placing_cheat := false
 var _placement_ghost: MeshInstance3D = null
 
 ## Pool of ghost boxes previewing a drag-to-build-a-line's whole line
@@ -6307,7 +6312,10 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				# actually a drag or just a click.
 				if _placing != &"":
 					var armed_def := BuildingSim.def_by_id(_placing)
-					if armed_def != null and armed_def.footprint_radius == 0:
+					# A cheat spawn places one piece per click, walls
+					# included — the drag path compiles BUILD orders,
+					# which need a builder squad a cheat does not have.
+					if armed_def != null and armed_def.footprint_radius == 0 							and not _placing_cheat:
 						_placing_drag = true
 						_placing_drag_start = _snapped_placement_cell(event.position)
 						# The SNAPPED start, not the raw cursor point. A run
@@ -7198,6 +7206,22 @@ func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
 
 ## Place the armed building, or do nothing if none is armed.
 ## Returns true if the click was consumed by placement.
+## Arm a sandbox building spawn through the ordinary placement flow —
+## ghost, facing controls, validity colouring — with no builder-squad or
+## selection requirement (D-20260821 follow-up: "the same as the way
+## spawning for me works").
+func _arm_cheat_building(def_id: String) -> void:
+	if not _connected or _state.space == null:
+		return
+	_cheat_arm_kind = ""
+	_placing = StringName(def_id)
+	_placing_cheat = true
+	_placing_facing = 0
+	_placing_free_facing = -1
+	_last_snap_cell = Vector2i(-1, -1)
+	_update_placement_ghost()
+
+
 func _place_armed_building(screen_position: Vector2) -> bool:
 	if _placing == &"":
 		return false
@@ -7205,11 +7229,24 @@ func _place_armed_building(screen_position: Vector2) -> bool:
 	# no inferable type and the whole script fails to parse.
 	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
 	var def_id := _placing
+	var cheat := _placing_cheat
 	var free_def := _free_rotating_armed_def()
 	var pose := _armed_pose(screen_position, free_def)
 	_cancel_placement()
 	var cell: Vector2i = pose["cell"]
-	if cell.x < 0 or squad < 0:
+	if cell.x < 0 or (squad < 0 and not cheat):
+		return true
+
+	# The sandbox spawn rides the SAME pose the ghost drew (D-096's
+	# shared-answer rule): cell, facing and sub-cell offset all travel,
+	# so the building lands exactly where the preview stood — for the
+	# sender or, with the enemy box ticked, for the first hostile seat.
+	if cheat:
+		_peer.send(0, NetProtocol.encode_cheat_spawn_building(
+			String(def_id), _state.space.index(cell), int(pose["facing"]),
+			_cheat_spawn_enemy, pose["offset"]), ENetPacketPeer.FLAG_RELIABLE)
+		print("client: cheat-spawned a %s at %s%s" % [def_id, cell,
+			" (enemy)" if _cheat_spawn_enemy else ""])
 		return true
 
 	# No signed-range dance any more: `facing` is an UNSIGNED 0-255 byte on
@@ -7475,6 +7512,7 @@ func _round_axial(q: float, r: float) -> Vector2i:
 
 func _cancel_placement() -> void:
 	_placing = &""
+	_placing_cheat = false
 	_placing_drag = false
 	_placing_free_facing = -1
 	if _placement_ghost != null:
@@ -9335,10 +9373,10 @@ func _build_debug_panel() -> void:
 		var idx := building_picker.selected
 		if idx < 0 or idx >= defs.size():
 			return
-		_cheat_arm_kind = "building"
-		_cheat_arm_id = String((defs[idx] as BuildingDef).id)
-		_debug_status_label.text = "Armed: %s — click the ground (right-click cancels)" \
-			% _cheat_arm_id)
+		var def_id := String((defs[idx] as BuildingDef).id)
+		_arm_cheat_building(def_id)
+		_debug_status_label.text = ("Placing: %s — the ghost follows the cursor; "
+			+ "click to spawn, V or scroll rotates, right-click cancels") % def_id)
 	building_row.add_child(building_arm_button)
 
 	var enemy_box := CheckBox.new()
@@ -9364,6 +9402,7 @@ func _build_debug_panel() -> void:
 		{"key": "instant_build", "label": "Instant construction & production"},
 		{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
 		{"key": "resources", "label": "Resource nodes (applies on regen)"},
+		{"key": "ai_frozen", "label": "Freeze AI (no thinking, no orders)"},
 	]:
 		var key := String(option["key"])
 		var box := CheckBox.new()
@@ -9385,6 +9424,9 @@ func _build_debug_panel() -> void:
 	_debug_status_label.add_theme_font_size_override("font_size", 12)
 	_debug_status_label.modulate = Color(0.9, 0.85, 0.4)
 	_debug_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# Two wrapped lines' worth of reserve, so the content-fitted window
+	# below does not measure an EMPTY label and then clip the armed text.
+	_debug_status_label.custom_minimum_size = Vector2(0.0, 34.0)
 	col.add_child(_debug_status_label)
 
 	col.add_child(HSeparator.new())
@@ -9409,6 +9451,18 @@ func _build_debug_panel() -> void:
 	_debug_nodes_label.add_theme_font_size_override("font_size", 12)
 	_debug_nodes_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_debug_nodes_label)
+
+	# Size the window to its CONTENT (owner request): the fixed 300x500
+	# was clipping as the panel grew a control per session. Deferred a
+	# frame so theme fonts have resolved and the column knows its real
+	# minimum; capped so a tall panel never runs off the screen.
+	(func():
+		if _debug_window == null:
+			return
+		var wanted := col.get_combined_minimum_size() + Vector2(24.0, 20.0)
+		var cap := DisplayServer.screen_get_size().y - 120
+		_debug_window.size = Vector2i(int(wanted.x), mini(int(wanted.y), cap))
+	).call_deferred()
 
 
 ## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
@@ -9448,10 +9502,9 @@ func _fire_armed_cheat(screen_position: Vector2) -> bool:
 			_peer.send(0, NetProtocol.encode_cheat_spawn_unit(
 				_cheat_arm_id, cell_index, _cheat_arm_count, _cheat_spawn_enemy),
 				ENetPacketPeer.FLAG_RELIABLE)
-		"building":
-			_peer.send(0, NetProtocol.encode_cheat_spawn_building(
-				_cheat_arm_id, cell_index, 0, _cheat_spawn_enemy),
-				ENetPacketPeer.FLAG_RELIABLE)
+		# "building" is gone: cheat building spawns arm the ordinary
+		# placement flow now (_arm_cheat_building) and commit through
+		# _place_armed_building, never through this click handler.
 		_:
 			return false
 	return true

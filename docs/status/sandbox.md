@@ -23,3 +23,11 @@ lobby page ~38 design units shorter, which un-shortened a
 `test_lobby_layout` fixture window — the "too short" fixture moved to
 1366x700, the same "a fixture must actually be what it claims" rule as
 the wiped-window trap.
+
+**Same-day follow-ups (amendment in the decision):** cheat building
+spawns arm the ORDINARY placement ghost (facing, validity, wall snap; no
+builder needed; the wire carries the sub-cell offset so the spawn lands
+exactly where the preview stood — D-096's shared-pose rule); a **Freeze
+AI** checkbox (fifth sandbox option) makes the server skip the brains
+entirely — not a no-op feed, so thawing fires no backlog; and the panel
+window sizes itself to its content, capped below the screen.
