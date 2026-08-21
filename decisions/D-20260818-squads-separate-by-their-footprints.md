@@ -250,3 +250,15 @@ not know about one of them will quietly delete the feature.
   over-budget tick (D-038's instrumentation). The next lever is a coarse
   bucket grid sized to the widest footprint, which turns the per-squad
   disk scan into a fixed nine-bucket lookup.
+
+
+**Amended 2026-08-21 (D-20260821-a-fight-loosens-a-formation, the
+owner's call):** the ALLY half of this rule is reverted — allies keep
+D-060's original one-cell centre rule again, like enemies always did.
+Displacing a whole allied squad by two footprints was exactly the
+"whole squad snaps or moves" a player sees from above; overlap is
+resolved at the individual DRAWN man now (the cross-squad jostle, D-006
+as amended), which is where the owner asked for it. The engagement and
+gathering exemptions in `_separate_arrivals` stand unchanged, and this
+file keeps the record of why the footprint number exists — the marker
+lesson above is still true even though the sim no longer enforces it.

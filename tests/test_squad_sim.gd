@@ -507,24 +507,26 @@ func test_a_displaced_squad_steps_aside_rather_than_teleporting() -> void:
 		sim.tick()
 
 	var apart := space.distance(sim.cell_of(first), sim.cell_of(second))
-	var wanted := sim.footprint_cells(first) + sim.footprint_cells(second)
-	assert_eq(apart, wanted,
-		"the two squads settled %d cells apart where %d is what clears them — " % [apart, wanted]
-		+ "a squad shoved aside should take the NEAREST ground it fits on, not "
-		+ "the first one a scan finds")
+	# The contract since D-20260821-a-fight-loosens-a-formation (the
+	# owner's call, reverting #104's ally half): D-060's original rule —
+	# no two settled squads share a CENTRE CELL — and nothing more.
+	# Overlapping formations are resolved at the individual DRAWN man by
+	# the cross-squad jostle, not by teleporting a whole squad sideways.
+	assert_gte(apart, 1,
+		"two settled squads may overlap but never share a centre cell")
 
 
-# --- squads take up their REAL room (#104) -----------------------------
+# --- squads hold distinct centres; their men sort out the rest ---------
 
-func test_settled_squads_do_not_stand_inside_each_other() -> void:
-	# Playtest P06: "units all pile on top of each other". Separation was
-	# a rule about CENTRE CELLS, so it guaranteed one cell of clearance —
-	# while a 36-strong line is eleven cells across. The squads were
-	# obeying the rule and overlapping almost completely.
-	#
-	# A shipped def, not a caricature: the mechanism was correct all along
-	# and the whole question is whether the shipped numbers separate
-	# anybody (the D-066 lesson).
+func test_settled_squads_keep_distinct_centres_and_nothing_more() -> void:
+	# This test carried #104's footprint rule (playtest P06's "units all
+	# pile on top of each other"). D-20260821-a-fight-loosens-a-formation
+	# reverted that by the owner's call: displacing a whole allied squad
+	# by two footprints IS the "whole squad snaps or moves" a player
+	# sees, and overlap is resolved at the individual DRAWN man now (the
+	# cross-squad jostle). What the SIM still guarantees — and what this
+	# test now guards — is D-060's original rule: distinct centre cells,
+	# so stacking is never total.
 	var space := TorusSpace.new(64, 32, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var def := UnitRoster.by_id(&"legion_militia")
@@ -543,12 +545,10 @@ func test_settled_squads_do_not_stand_inside_each_other() -> void:
 		for b in squads:
 			if a >= b:
 				continue
-			var apart := space.distance(sim.cell_of(a), sim.cell_of(b))
-			var clearance: int = sim.footprint_cells(a) + sim.footprint_cells(b)
-			assert_true(apart >= clearance,
-				"squads %d and %d settled %d cells apart but cover %d — their "
-					% [a, b, apart, clearance]
-				+ "soldiers are standing inside each other")
+			assert_gte(space.distance(sim.cell_of(a), sim.cell_of(b)), 1,
+				"squads %d and %d share a centre cell — even loosened "
+					% [a, b]
+				+ "battle order never stacks two squads on one point")
 
 
 func test_a_squad_claims_the_room_its_formation_actually_covers() -> void:

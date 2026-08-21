@@ -980,20 +980,16 @@ func _crowded(held: Dictionary, cell: Vector2i, asking: int, widest: int) -> boo
 ## because every other radius rule here is a hex-disk scan and
 ## `TorusSpace.disk_offsets` is how this project does those.
 ##
-## Allies keep out of each other's formations: the sum of the ground the
-## two of them cover, which for a pair of lines is very nearly shoulder
-## to shoulder.
-##
-## ENEMIES keep D-060's original ONE cell, and that distinction is not a
-## nicety. A melee squad's `attack_range` is under two world units — a
-## little over one cell — so separating a squad from its opponent by its
-## own footprint would shove every engagement out of its own reach and no
-## melee could ever land. Interpenetrating enemies is what a fight looks
-## like; combat (D-024) is what resolves it, not spacing.
-func _clearance(asking: int, other: int) -> int:
-	if not are_allied(_owner[asking], _owner[other]):
-		return 1
-	return footprint_cells(asking) + footprint_cells(other)
+## EVERYONE keeps D-060's original ONE cell since
+## D-20260821-a-fight-loosens-a-formation (the owner's call, reverting
+## #104's ally half): displacing a whole ALLIED squad by two footprints
+## was exactly the "whole squad snaps or moves" a player sees, and
+## overlap is resolved at the individual drawn man now — the
+## cross-squad jostle — not by teleporting forty men sideways. Enemies
+## were always here: interpenetrating enemies is what a fight looks
+## like; combat (D-024) resolves it, not spacing.
+func _clearance(_asking: int, _other: int) -> int:
+	return 1
 
 
 ## The ground a squad's soldiers actually cover, as a radius in CELLS.

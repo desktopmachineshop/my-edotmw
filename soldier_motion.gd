@@ -59,7 +59,12 @@ const EASE_RATE := 7.0
 ## one that matters: a wrapped squad legitimately jumps a whole map width
 ## in one frame (D-035), and easing that would be a stream of soldiers
 ## crossing the entire world.
-const SNAP_DISTANCE := 6.0
+## Raised 6 -> 12 by D-20260821-a-fight-loosens-a-formation: a new
+## engagement's far-side mark used to clear the old threshold and men
+## BLINKED there. Every legitimate retarget walks now; the seam jump
+## this guards (a whole map width in one frame, D-035) is still a
+## hundred times the threshold.
+const SNAP_DISTANCE := 12.0
 
 ## The amendment's bound (D-006, 2026-08-19): a drawn man never strays
 ## farther than this from his authoritative slot, so selection, culling
@@ -81,7 +86,13 @@ var _eased := {}
 ## `alive` may shrink between calls (casualties) or grow (a reveal), so
 ## the stored array is resized rather than assumed — a formation restamp
 ## after losses re-slots everyone, and the eased positions simply follow.
-func ease(squad_id, transforms: Array[Transform3D], delta: float) -> Array[Transform3D]:
+## `others` — drawn men of OVERLAPPING squads (previous frame's, one
+## frame of lag) — lets the jostle work ACROSS squads
+## (D-20260821-a-fight-loosens-a-formation): squads may stand on each
+## other, and their men sort it out individually instead of a whole
+## squad snapping away.
+func ease(squad_id, transforms: Array[Transform3D], delta: float,
+		others: PackedVector3Array = PackedVector3Array()) -> Array[Transform3D]:
 	if transforms.is_empty():
 		_eased.erase(squad_id)
 		return transforms
@@ -123,7 +134,7 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float) -> Array[Trans
 	# Tier 3 (D-006 as amended): the scrum breathes. Fed BACK into the
 	# stored positions — genuine per-soldier integration, which is
 	# exactly what the amendment legalises here and nowhere else.
-	stored = jostle(stored, transforms)
+	stored = jostle(stored, transforms, others)
 	_eased[squad_id] = stored
 
 	var out: Array[Transform3D] = []
@@ -169,7 +180,8 @@ static func assign(old: PackedVector3Array,
 ## each clamped to MAX_RENDER_DRIFT of his own authoritative anchor —
 ## the amendment's bound, enforced where the drift is made. PURE.
 static func jostle(positions: PackedVector3Array,
-		anchors: Array[Transform3D]) -> PackedVector3Array:
+		anchors: Array[Transform3D],
+		others: PackedVector3Array = PackedVector3Array()) -> PackedVector3Array:
 	var out := positions.duplicate()
 	var n := out.size()
 	for i in range(n):
@@ -182,6 +194,17 @@ static func jostle(positions: PackedVector3Array,
 			var direction := between / d
 			out[i] += Vector3(-direction.x * push, 0.0, -direction.y * push)
 			out[j] += Vector3(direction.x * push, 0.0, direction.y * push)
+	# Foreign men push OUR men only (theirs move in their own pass, so
+	# nobody is displaced twice) — the cross-squad half of D-20260821.
+	for i in range(n):
+		for k in range(others.size()):
+			var between := Vector2(others[k].x - out[i].x, others[k].z - out[i].z)
+			var d := between.length()
+			if d >= JOSTLE_RADIUS or d < 0.0001:
+				continue
+			var direction := between / d
+			var push := JOSTLE_RADIUS - d
+			out[i] += Vector3(-direction.x * push, 0.0, -direction.y * push)
 	for i in range(n):
 		var anchor: Vector3 = anchors[i].origin
 		var drift := out[i] - anchor

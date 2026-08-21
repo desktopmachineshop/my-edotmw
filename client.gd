@@ -1207,11 +1207,20 @@ func _refresh_squads() -> void:
 			men.resize(transforms.size())
 			for i in range(transforms.size()):
 				men[i] = transforms[i].origin
-			var ring_positions := PackedVector3Array()
-			ring_positions.resize(ring.size())
-			for i in range(ring.size()):
-				ring_positions[i] = ring[i].origin
-			paired = SoldierMotion.assign(ring_positions, transforms)
+			# The deal HOLDS while the target and the strength hold
+			# (D-20260821): recomputing it every frame hopped every
+			# man's mark along the wall as his slot drifted.
+			var deal_key: String = str(doing.get("target_key", "")) 				+ "|" + str(transforms.size())
+			var cached: Dictionary = _static_deal.get(squad_id, {})
+			if String(cached.get("key", "")) == deal_key:
+				paired = cached["paired"]
+			else:
+				var ring_positions := PackedVector3Array()
+				ring_positions.resize(ring.size())
+				for i in range(ring.size()):
+					ring_positions[i] = ring[i].origin
+				paired = SoldierMotion.assign(ring_positions, transforms)
+				_static_deal[squad_id] = {"key": deal_key, "paired": paired}
 			enemy_transforms = ring
 			dueling = true
 		if dueling and not transforms.is_empty():
@@ -1251,7 +1260,23 @@ func _refresh_squads() -> void:
 		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta)
+		# Foreign drawn men within overlap range (previous frame's — one
+		# frame of lag), so OUR men adjust to THEIRS individually
+		# (D-20260821) instead of squads snapping apart.
+		var neighbours := PackedVector3Array()
+		for other_id in _drawn_cache:
+			if other_id == squad_id:
+				continue
+			var record: Dictionary = _drawn_cache[other_id]
+			if (record["centre"] as Vector3).distance_to(centre + offset) 					<= world_radius + float(record["radius"]) + 1.0:
+				neighbours.append_array(record["men"])
+		var eased := _motion.ease(squad_id, transforms, _frame_delta, neighbours)
+		var drawn_men := PackedVector3Array()
+		drawn_men.resize(eased.size())
+		for i in range(eased.size()):
+			drawn_men[i] = eased[i].origin
+		_drawn_cache[squad_id] = {"men": drawn_men,
+			"centre": centre + offset, "radius": world_radius}
 		var speed := _state.squad_speed(squad_id, _now)
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
@@ -3001,6 +3026,7 @@ func _activity_for(squad_id) -> Dictionary:
 				"toward": node_at,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
+				"target_key": "n:%d" % crew_cell,
 			}
 
 	if def.damage <= 0.0:
@@ -3035,6 +3061,7 @@ func _activity_for(squad_id) -> Dictionary:
 					"enemy_squad": -1,
 					"rect_centre": box["centre"], "rect_half": box["half"],
 					"rect_yaw": box["yaw"],
+					"target_key": "b:%d" % int(box.get("id", -1)),
 				}
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
@@ -3052,6 +3079,15 @@ func _activity_for(squad_id) -> Dictionary:
 ## budget (D-20260820, third amendment). Larger than the melee bound on
 ## purpose; still pure in replicated state, still finite.
 const SURROUND_STEP := 4.0
+
+# The static-target deal, CACHED per squad (D-20260821): recomputed only
+# when the target or the strength changes, so a man's mark holds instead
+# of hopping along the wall as his slot drifts. Per-soldier render
+# memory — the amendment's territory. squad -> {"key", "paired"}
+var _static_deal := {}
+# Last frame's drawn men per squad, for the cross-squad jostle:
+# squad -> {"men": PackedVector3Array, "centre": Vector3, "radius": float}
+var _drawn_cache := {}
 
 ## Every known building's box, resolved ONCE per frame — canonical
 ## position, half extents, yaw, owner. The first version resolved defs
@@ -3084,6 +3120,7 @@ func _refresh_building_scan() -> void:
 			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
 			half = Vector2(span, span)
 		_building_scan.append({
+			"id": int(id),
 			"at": _state.space.to_world(
 				_state.space.from_index(int(info.get("cell", 0)))),
 			"half": half,
@@ -3134,7 +3171,8 @@ func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
 		if d - maxf(half.x, half.y) <= reach and d < best_d:
 			best_d = d
-			best = {"centre": centre, "half": half, "yaw": entry["yaw"]}
+			best = {"centre": centre, "half": half, "yaw": entry["yaw"],
+				"id": entry["id"]}
 	return best
 
 
@@ -8554,6 +8592,8 @@ func _teardown_match() -> void:
 		_order_drag_line.queue_free()
 		_order_drag_line = null
 	_order_press = Vector2.INF
+	_static_deal.clear()
+	_drawn_cache.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
