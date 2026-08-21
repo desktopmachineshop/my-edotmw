@@ -41,8 +41,9 @@ if _ROOT not in sys.path:
 
 from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
 from art.buildings import build as build_building                  # noqa: E402
+from art.lib import blend_source                                  # noqa: E402
 from art.lib.bake import (                                        # noqa: E402
-    door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
+    bake_frames, door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
 )
 from art.lib.godot_import import (                               # noqa: E402
     ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
@@ -64,37 +65,36 @@ BUILDING_TRIANGLE_BUDGET = 400
 GENERATED = os.path.join(_ROOT, "generated")
 
 
+# What the staleness hash covers. `.blend` is in the list because authored
+# sources ARE the source of truth now (D-20260821-game-assets-are-files): a
+# model edited in Blender and not rebuilt leaves `generated/` stale in exactly
+# the way an edited generator does, and the whole job of this hash is to make
+# that fail loudly instead of shipping yesterday's mesh.
+SOURCE_SUFFIXES = (".py", ".blend")
+
 # Files under art/ that CANNOT change a single byte of `generated/`, and are
-# therefore excluded from the staleness hash. Keyed by path relative to art/,
-# and duplicated in tests/test_art_assets.gd — the two must agree or the test
-# reports a stale build on a clean tree.
+# therefore excluded. Keyed by path relative to art/, and duplicated in
+# tests/test_art_assets.gd — the two must agree or the test reports a stale
+# build on a clean tree.
 #
-# `gui.py` is a VIEWER (D-20260821): it opens the real Blender GUI on the
-# generators and bakes only by calling `main()` below. Hashing it would mean
-# every edit to a panel label marked `generated/` stale and demanded a rebuild
-# that produces byte-identical output — a staleness signal that cries wolf
-# stops being read, which is the whole value of this hash.
+# `seed_source.py` writes the initial `art/source/*.blend` from the legacy
+# generators. `main()` below never calls it, and it refuses to overwrite an
+# existing source, so editing it cannot change any output — while hashing it
+# would mark every model stale over a change to a migration script that will
+# not be run again. A staleness signal that cries wolf stops being read, which
+# is the whole value of this hash.
 #
-# What makes the exclusion SAFE rather than merely convenient is
-# `tests/test_blender_gui.gd`, which fails if `gui.py` ever grows geometry of
-# its own or bakes by any route but this file. Without that test this list
-# would be a hole in the invariant; with it, it is a statement the invariant
-# is checked somewhere else.
-#
-# Do NOT add a generator here to avoid a rebuild. `preview.py` is deliberately
-# absent despite also being a viewer: it has been in the hash since M7 and
-# taking it out now would change the hash of an unchanged tree, which is the
-# exact false alarm this list exists to prevent.
-NOT_A_GENERATOR = frozenset({"gui.py"})
+# Do NOT add a real generator here to avoid a rebuild.
+NOT_A_GENERATOR = frozenset({"seed_source.py"})
 
 
 def source_hash() -> str:
-    """A stable hash over every generator source file."""
+    """A stable hash over every asset source: generators AND authored files."""
     digest = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(_HERE):
         dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
         for name in sorted(filenames):
-            if not name.endswith(".py"):
+            if not name.endswith(SOURCE_SUFFIXES):
                 continue
             relative = os.path.relpath(os.path.join(dirpath, name), _HERE)
             if relative.replace("\\", "/") in NOT_A_GENERATOR:
@@ -117,23 +117,22 @@ def build_units(only: str | None) -> dict:
         if only and archetype != only:
             continue
         params = ROSTER[archetype]
-        model = build_soldier(archetype, params)
+        flat, frames, source = _unit_geometry(archetype, params)
 
         budget = MOUNTED_TRIANGLE_BUDGET if params.mount else TRIANGLE_BUDGET
-        tris = model.triangle_count()
+        tris = len(flat["triangles"])
         if tris > budget:
             raise SystemExit(
                 f"{archetype}: {tris} triangles exceeds the {budget} budget "
                 f"(D-064). Simplify the model or change the budget deliberately."
             )
 
-        flat = flatten(model)
         glb_path = os.path.join(models_dir, f"{archetype}.glb")
         vat_path = os.path.join(vat_dir, f"{archetype}.exr")
-        write_glb(model, flat, glb_path)
+        write_glb(archetype, flat, glb_path)
         # LODs and vertex compression off — see MODEL_PARAMS.
         ensure_import_params(glb_path, MODEL_PARAMS)
-        layout = write_vat(model, flat, vat_path)
+        layout = write_vat(archetype, flat, vat_path, frames)
         # A VAT that Godot re-imports as a compressed 3D texture is silently
         # ruined; see godot_import.py.
         ensure_import_params(vat_path, VAT_PARAMS)
@@ -144,11 +143,32 @@ def build_units(only: str | None) -> dict:
             "triangles": tris,
             "vertices": len(flat["positions"]),
             "mounted": params.mount,
+            "source": source,
             **layout,
         }
         print(f"  {archetype:16s} {tris:4d} tris  {len(flat['positions']):5d} verts  "
-              f"vat {layout['width']}x{layout['height']}")
+              f"vat {layout['width']}x{layout['height']}  [{source}]")
     return entries
+
+
+def _unit_geometry(archetype: str, params):
+    """The flattened mesh and its animation frames, from whichever source owns
+    this archetype (D-20260821-game-assets-are-files).
+
+    An authored `art/source/<name>.blend` WINS. The generated path is the
+    fallback, kept because props and the terrain atlas still use it, because a
+    model can be migrated one at a time rather than on a flag day, and because
+    a clone that has never authored anything still builds.
+
+    Which one ran is recorded in the manifest rather than inferred, so a
+    surprising `.glb` can be traced to a file rather than guessed at.
+    """
+    if blend_source.has_source(archetype):
+        flat, frames = blend_source.bake(archetype)
+        return flat, frames, "authored"
+    model = build_soldier(archetype, params)
+    flat = flatten(model)
+    return flat, bake_frames(model, flat), "generated"
 
 
 def build_buildings() -> dict:
@@ -158,16 +178,23 @@ def build_buildings() -> dict:
 
     entries: dict[str, dict] = {}
     for building in sorted(BUILDING_ROSTER):
-        model = build_building(building, BUILDING_ROSTER[building])
-        tris = model.triangle_count()
+        if blend_source.has_source(building):
+            # A building has no VAT, so only the rest frame is wanted; the
+            # frames are evaluated and discarded rather than given a second
+            # code path that could disagree about the rest pose.
+            flat, _frames = blend_source.bake(building)
+            source = "authored"
+        else:
+            flat = flatten(build_building(building, BUILDING_ROSTER[building]))
+            source = "generated"
+        tris = len(flat["triangles"])
         if tris > BUILDING_TRIANGLE_BUDGET:
             raise SystemExit(
                 f"{building}: {tris} triangles exceeds the "
                 f"{BUILDING_TRIANGLE_BUDGET} budget (D-064).")
 
-        flat = flatten(model)
         glb_path = os.path.join(models_dir, f"{building}.glb")
-        write_glb(model, flat, glb_path, uv1_override=door_hinge_uv(model, flat))
+        write_glb(building, flat, glb_path, uv1_override=door_hinge_uv(flat))
         # Critical HERE specifically: this is the call that smuggles the
         # door hinge through UV2, which LOD welding and UV quantisation
         # both destroy. See MODEL_PARAMS.
@@ -177,8 +204,10 @@ def build_buildings() -> dict:
             "model": f"generated/models/{building}.glb",
             "triangles": tris,
             "vertices": len(flat["positions"]),
+            "source": source,
         }
-        print(f"  {building:16s} {tris:4d} tris  {len(flat['positions']):5d} verts")
+        print(f"  {building:16s} {tris:4d} tris  {len(flat['positions']):5d} verts"
+              f"  [{source}]")
     return entries
 
 

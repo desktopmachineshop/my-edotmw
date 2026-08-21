@@ -1,85 +1,95 @@
-**There is a Blender GUI now, and there was not one for two milestones
-because `bpy` is a library** (D-20260821-the-blender-gui-is-a-window-on-the-generators,
-2026-08-21). `just bootstrap-art` installs Blender's Python module with the
-window manager compiled out — no flag opens a window on it, which is why
-D-081's pipeline is described as "headless as a library" and why nobody had
-ever *looked* at these models from an angle they chose.
+**Game assets are FILES now** (D-20260821-game-assets-are-files, 2026-08-21).
+`art/source/<name>.blend` is the source of truth for every unit and building —
+an ordinary Blender file you open, model, rig, animate and save, which
+`just build-assets` bakes into the same `.glb` + VAT the client already
+consumes. This supersedes D-081's generated roster; D-081's *pipeline* (bpy,
+committed `generated/`, enforced triangle budgets, generated import settings)
+is unchanged.
 
-`just blender-gui [TARGET]` opens the **real Blender application** on this
-project's own generators — **your own local install**, with your preferences
-and add-ons. This repo does not download, pin or manage it: install Blender the
-way you install anything else and `blender-path.sh` finds it
-(`EDOTMW_BLENDER` names one if you keep several). It is THE definition of where
-Blender is, in the same role `instance-id.sh` holds for instance identity, and
-`just doctor` prints the wheel pin, the installed application and the wheel
-separately because the two programs are easy to confuse.
+```
+just blender-gui              # what is authored
+just blender-gui militia      # open it in YOUR Blender
+#   ... model, Ctrl-S ...
+just build-assets militia     # bake it into the game
+```
 
-**Only the WHEEL is pinned**, because it bakes `generated/` and D-081 requires
-two runs to be byte-identical. The application's version is reported, not
-enforced — a difference is a reason to bake with `just build-assets`, not a
-reason to refuse to open a model.
+**Nothing in the engine, shader, wire or simulation changed**, and that is the
+fact that made this cheap: D-082's VAT stores final vertex positions and has
+never had an opinion about how they were produced. The bake steps the file's
+timeline and flattens each frame through the dependency graph, so an armature,
+shape keys, parented objects or a modifier stack are all equally invisible to
+it.
 
-What it buys that headless `bpy` cannot: an angle you chose, a **scrubbable**
-animation, and a change-look-change loop measured in seconds (edit
-`art/units/`, press Rebuild in the N-panel, look — no restart, no `--import`,
-no engine).
+Six things to know before touching it:
 
-Four things to know before touching it:
+- **Vertex order is the mesh/VAT column contract, and it is enforced.** Objects
+  are visited in NAME order, so adding one cannot renumber the columns of the
+  others; and the topology is asserted constant across all 64 frames. A
+  generative modifier whose output varies with the pose — Remesh, Decimate on a
+  driven ratio, Boolean against a moving object — breaks the contract *quietly*:
+  the bake succeeds and the model comes apart at one frame in sixty-four.
+- **`.blend` is in the staleness hash** (`SOURCE_SUFFIXES` in `art/build.py`,
+  mirrored in `tests/test_art_assets.gd`). This is the clause the arrangement
+  stands on: `generated/` is committed and nothing at runtime reads a `.blend`,
+  so the hash is the only thing between "I edited the model" and "the game
+  still draws the old one".
+- **Props and the terrain atlas stay GENERATED, permanently.** Eighteen
+  interchangeable ground-cover clumps and an eight-biome atlas are cases where
+  a script is genuinely the better authoring tool — `art/scatter/props.py`
+  fails its own build on an inside-out part or one tall enough to hide a
+  soldier, a check no file can carry. Generation was never wrong; it was wrong
+  *for characters*.
+- **The legacy generators survive as a fallback and as the seeder.**
+  `just seed-art-source` wrote the initial nineteen files from them, so opening
+  `militia.blend` gives the militia that is in the game rather than an empty
+  scene. It refuses to overwrite an existing source — that file is an artist's
+  work now. A new archetype can still be generated and then hand-finished.
+- **The migration is provably lossless, and was checked rather than asserted.**
+  Baking `militia.blend` back reproduces the generated model to **2 x 10^-7
+  world units** across all 64 frames — float32 precision. Every triangle count,
+  vertex count and VAT dimension in the manifest is unchanged; the only new
+  field is `source`, which records which path produced each model.
+- **A model is no longer editable by Claude Code**, and that is the real price.
+  It can be baked, measured, rendered and checked; it cannot be shaped. Adding
+  an archetype means opening Blender where it used to be a few numbers in
+  `art/units/__init__.py`. `git diff` on a `.blend` says "binary files differ",
+  so the manifest's counts and the pictures in `docs/playtest/` are the
+  reviewable surface.
 
-- **The GUI owns no geometry, and a test enforces that.** `art/gui.py` has no
-  `box()`, no `prism()`, no `Model`/`Part` construction, and never binds
-  `art.lib.geom`; it bakes only by calling `art/build.py`.
-  `tests/test_blender_gui.gd` fails if any of that changes. Without the rule
-  `generated/` gets a second source of truth that the manifest — which hashes
-  art/'s **sources** — structurally cannot see.
-- **The timeline IS the VAT.** The mesh comes from `bake.flatten` and the
-  frames from `bake.bake_frames`, so viewport frame *N* is row *N* of
-  `generated/vat/<archetype>.exr`. Anything that rebuilt either here would be
-  a second implementation of the mesh/VAT column contract, free to drift, and
-  the drift shows as a model that previews right and animates wrong.
-- **Only the viewing transform is a lie.** `geom.py` authors Y-up to match
-  Godot, so the authored coordinates lay a soldier flat on Blender's Z-up
-  floor. The OBJECT is rotated; the mesh data is not.
-- **It is not the authority on appearance.** No VAT sampling, no
-  `world_look.gd` rig, no tonemap. `just gen-model-preview` and
-  `just test-client` still answer "is the picture right"; this answers "is the
-  SHAPE right", which nothing else did well.
-- **It is not host-gated and does not start from factory settings**, unlike
-  every other heavy recipe. Both were in the first version and both came out
-  the same day: a gate cannot protect a binary the owner can launch from the
-  desktop, and `--factory-startup` was guarding the bake — which does not run
-  in this session, and uses the wheel when it does. See the decision entry's
-  amendment; the rule it leaves behind is that **isolation has to be paid for
-  by somebody, and here that was the only human who uses the tool.**
+**Blender itself is a normal desktop install this repo does not manage.**
+Install it however you normally would and `blender-path.sh` finds it
+(`EDOTMW_BLENDER` names one if you keep several); there is no bootstrap recipe
+and nothing is downloaded into `tools/`. It opens with YOUR preferences and
+add-ons — no `--factory-startup`, no host gate. Both were in the first version
+of this work and both came out the same day: a gate cannot protect a binary the
+owner can launch from the desktop, and factory startup was guarding a bake that
+does not run in that session. **Isolation has to be paid for by somebody, and
+here that was the only human who uses the tool.**
 
-**A hazard found building it, which is not about the GUI: a
-`frame_change_post` handler left registered makes the bpy WHEEL hang forever
-at interpreter shutdown.** Measured at 4.5.12 — the same script exits in 1 s
+Only the `bpy` WHEEL is pinned (`.blender-version`), because it is what bakes
+and D-081 requires two runs to be byte-identical. The application's version is
+reported, never enforced — a difference is a reason to bake with
+`just build-assets`, not a reason to refuse to open a model. `just doctor`
+prints all three.
+
+**A hazard found on the way, which is not about assets at all: a
+`frame_change_post` handler left registered makes the bpy WHEEL hang forever at
+interpreter shutdown.** Measured at 4.5.12 — the same script exits in 1 s
 without one and never exits with one, printing "Not freed memory blocks" and
 then spinning in the leak detector. Everything has already printed by then, so
 the symptom is a script that completes its whole job and refuses to end, which
-reads as a slow build rather than a leak. `art/gui.py` has `detach()` and
-`--check` calls it. The real application unregisters handlers on quit and does
-not do this, so it is a hazard of the headless path — and therefore of
-anything that ever tests this file.
+reads as a slow build rather than a leak. The real application unregisters
+handlers on quit and does not do this, so it is a hazard of the headless path
+— and therefore of anything that ever scripts `bpy`.
 
-**Two things about `generated/` that were true before this and are now written
-down:**
-
-- **It is byte-identical between two runs on ONE platform and not across
-  platforms.** The committed VATs are Windows-built; a Linux rebuild of the
-  same sources differs by ~31 bytes of EXR header on every archetype, with
-  every `.glb`, every triangle count and every VAT dimension identical.
-  D-081's determinism requirement is therefore per-platform, and the staleness
-  test cannot see the difference because it hashes sources rather than
-  outputs. Rebuild assets on one machine and say which.
-- **`art/build.py` now excludes non-generators from the staleness hash**
-  (`NOT_A_GENERATOR`, currently just `gui.py`, mirrored in
-  `tests/test_art_assets.gd`). Hashing a viewer would mark `generated/` stale
-  over an edit to a panel label and demand a rebuild producing identical
-  output — and a staleness signal that cries wolf stops being read. What makes
-  the exclusion safe rather than convenient is the no-geometry test above.
-  **Do not add a generator to that list to avoid a rebuild.**
+**And one thing about `generated/` that was true before this and is now written
+down: it is byte-identical between two runs on ONE platform and not across
+platforms.** The committed VATs are Windows-built; a Linux rebuild of the same
+sources differs by ~31 bytes of EXR header on every archetype, with every
+`.glb`, every triangle count and every VAT dimension identical. D-081's
+determinism requirement is therefore per-platform, and the staleness test
+cannot see the difference because it hashes sources rather than outputs.
+Rebuild assets on one machine and say which.
 
 ---
 

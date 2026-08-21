@@ -1308,12 +1308,15 @@ bootstrap-art:
     : > "{{tools_dir}}/.gdignore"
     "{{blender_python}}" -c "import bpy; print('bpy', bpy.app.version_string)"
 
-# Open the generators in the LOCALLY INSTALLED Blender
-# (D-20260821-the-blender-gui-is-a-window-on-the-generators).
+# Open an authored asset in your LOCALLY INSTALLED Blender
+# (D-20260821-game-assets-are-files).
 #
-# TARGET is an archetype/building/prop id, or one of: all, units,
-# buildings, props. Defaults to every unit, which is the view worth
-# opening on when the question is "do these read as soldiers".
+# TARGET is a unit or building id — `art/source/<TARGET>.blend`, which is
+# an ordinary Blender file and the SOURCE OF TRUTH for that model. Model
+# it, rig it, animate it, save it, then `just build-assets`.
+#
+# With no TARGET it lists what is there. There is deliberately no "open
+# everything": these are files now, and a file is opened one at a time.
 #
 # Blender is a NORMAL DESKTOP INSTALL, not something this repo manages.
 # There is no bootstrap recipe and nothing is downloaded into tools/:
@@ -1322,10 +1325,8 @@ bootstrap-art:
 # EDOTMW_BLENDER names one outright if you keep several.
 #
 # It opens with YOUR Blender — your preferences, your add-ons, your
-# startup file. An earlier version passed --factory-startup to keep the
-# session pristine; that is isolation a standard desktop tool does not
-# want, and the thing it was protecting (the bake) does not run here
-# unless you press the button.
+# startup file. No --factory-startup, no wrapper script and no custom
+# panel: it is your Blender opening your file, which is the point.
 #
 # NATIVE ONLY, for the same reason as run-client (D-014): it opens a
 # window for a human to look at. It ignores EDOTMW_RUNTIME.
@@ -1336,18 +1337,50 @@ bootstrap-art:
 # application; they can launch the same binary from the desktop with no
 # queue at all, so a gate here protects nothing and only puts a wait in
 # front of a double-click.
-[doc("Open a model in your locally installed Blender")]
-blender-gui TARGET="units":
+[doc("Open art/source/<TARGET>.blend in your locally installed Blender")]
+blender-gui TARGET="":
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ -z "{{TARGET}}" ]; then
+        echo "Authored sources in art/source/ — pass one as TARGET:"
+        for f in art/source/*.blend; do
+            [ -e "$f" ] || { echo "  (none yet — {{just_executable()}} seed-art-source)"; break; }
+            echo "  $(basename "$f" .blend)"
+        done
+        echo
+        echo "  {{just_executable()}} blender-gui militia"
+        exit 0
+    fi
+    blend="art/source/{{TARGET}}.blend"
+    if [ ! -f "$blend" ]; then
+        echo "FAIL: no $blend" >&2
+        echo "      {{just_executable()}} blender-gui   # lists what exists" >&2
+        exit 1
+    fi
     blender="$(bash blender-path.sh find)"
     bash blender-path.sh check >/dev/null
+    echo "blender-gui: $blend in $blender"
+    echo "  edit, save (Ctrl-S), then: {{just_executable()}} build-assets {{TARGET}}"
+    "$blender" "$blend"
+
+# Seed art/source/*.blend from the LEGACY generators (D-20260821).
+#
+# A migration, run once per model, and never part of the build. It
+# refuses to overwrite an existing source file, because that file is the
+# source of truth now and a generator writing over it would be a script
+# discarding an artist's work.
+[doc("Create art/source/*.blend from the legacy generators (one-time)")]
+seed-art-source ONLY="":
+    #!/usr/bin/env bash
+    set -euo pipefail
     if [ ! -x "{{blender_python}}" ]; then
-        echo "NOTE: no bpy wheel at {{blender_venv}} — the GUI will open, but"
-        echo "      the Bake button needs it. Run: {{just_executable()}} bootstrap-art"
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
     fi
-    echo "blender-gui: {{TARGET}} in $blender"
-    "$blender" --python art/gui.py -- --target={{TARGET}}
+    args=""
+    [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
+    "{{blender_python}}" art/seed_source.py $args
 
 # Contact sheet of every authored model, animated, on real terrain (D-063).
 #
