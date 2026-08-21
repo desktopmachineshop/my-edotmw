@@ -1262,14 +1262,25 @@ func _refresh_squads() -> void:
 		# with sway, footfall and whatever the squad is visibly doing.
 		# Foreign drawn men within overlap range (previous frame's — one
 		# frame of lag), so OUR men adjust to THEIRS individually
-		# (D-20260821) instead of squads snapping apart.
+		# (D-20260821) instead of squads snapping apart. Two bounds keep
+		# this out of the frame budget at 72-squad scale: MARCHING squads
+		# skip the gather entirely (columns interpenetrate by design —
+		# the jostle is for the scrum, the decision says so), and foreign
+		# men are prefiltered per MAN to the overlap disk rather than
+		# copied wholesale per squad.
 		var neighbours := PackedVector3Array()
-		for other_id in _drawn_cache:
-			if other_id == squad_id:
-				continue
-			var record: Dictionary = _drawn_cache[other_id]
-			if (record["centre"] as Vector3).distance_to(centre + offset) 					<= world_radius + float(record["radius"]) + 1.0:
-				neighbours.append_array(record["men"])
+		if speed <= MOVING_SPEED_EPSILON:
+			var own_at := centre + offset
+			for other_id in _drawn_cache:
+				if other_id == squad_id:
+					continue
+				var record: Dictionary = _drawn_cache[other_id]
+				if (record["centre"] as Vector3).distance_to(own_at) 						> world_radius + float(record["radius"]) + 1.0:
+					continue
+				var men: PackedVector3Array = record["men"]
+				for k in range(men.size()):
+					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
+						neighbours.append(men[k])
 		var eased := _motion.ease(squad_id, transforms, _frame_delta, neighbours)
 		var drawn_men := PackedVector3Array()
 		drawn_men.resize(eased.size())
