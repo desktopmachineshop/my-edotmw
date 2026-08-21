@@ -75,6 +75,28 @@ men line the faces of a wall segment along its length instead of
 standing on a circle through its corners. Trees keep the ring; a
 canopy is round.
 
+## Third amendment, next playtest — surround for real, and never inside
+
+Two faults in the owner's second screenshot, one sentence: *"units
+still inside building when attacking; they hold formation too hard
+rather than fully engaging and surrounding."*
+
+- **The surround budget.** The melee step bound (MAX_STEP, 1.1) is
+  right against men who hit back and wrong against masonry: a slot
+  inside a 4-unit building cannot escape on 1.1 units, and a line
+  politely held its shape beside a wall it should flow around. A STATIC
+  target now engages with `SURROUND_STEP` (4.0) — still finite, still a
+  pure function of replicated state; the drift-bound clause is scoped:
+  `MAX_RENDER_DRIFT` governs the jostle about its targets, while
+  surround travel is bounded by its own budget and by the target's
+  reach condition.
+- **No drawn man stands inside a known building, ever.**
+  `Engagement.push_out_of_box` projects any drawn man out through the
+  nearest face of any nearby known box (any owner — your own town hall
+  included), applied before easing so men WALK out. This is the
+  render-side answer to the formation clamp's deliberate terrain-only
+  scope, which both screenshots ultimately traced to.
+
 ## Revisit trigger
 
 Builders raising a wall are the same picture and are NOT covered yet

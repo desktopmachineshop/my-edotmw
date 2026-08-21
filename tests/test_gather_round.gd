@@ -104,3 +104,45 @@ func test_rect_points_line_the_faces_of_the_box() -> void:
 	assert_almost_eq(spread_z, 3.0, 0.05,
 		"the box's facing rotates the deal — a wall is lined along its "
 		+ "own length, not the world axes")
+
+
+func test_no_drawn_man_stands_inside_a_box() -> void:
+	# The owner's second screenshot: slots clamp against terrain only, so
+	# a line's slots land inside a footprint. Any position inside the box
+	# projects out through the NEAREST face; outside positions and the
+	# man's height are untouched.
+	var centre := Vector3(10, 0, 10)
+	var half := Vector2(3.0, 2.0)
+	var inside := Engagement.push_out_of_box(
+		Vector3(11.0, 0.4, 10.5), centre, half, 0.0)
+	# (11, 10.5) is 1.85 from the +z face and 2.35 from the +x face: the
+	# NEAREST exit is +z. (The first version of this assert eyeballed +x
+	# and the function corrected the test.)
+	assert_almost_eq(inside.z, 12.35, 0.01,
+		"out through the nearest face, margin included")
+	assert_almost_eq(inside.x, 11.0, 0.01, "along the face, not the corner")
+	assert_almost_eq(inside.y, 0.4, 0.001, "height untouched")
+	var outside := Vector3(20, 0, 10)
+	assert_eq(Engagement.push_out_of_box(outside, centre, half, 0.0), outside,
+		"a man already clear is not touched")
+	# Rotated box: a point inside only BECAUSE of the yaw is caught.
+	var yawed := Engagement.push_out_of_box(
+		Vector3(10.0, 0, 12.6), centre, half, PI / 2.0)
+	assert_ne(yawed, Vector3(10.0, 0, 12.6),
+		"the test is in the box's own frame, not the world axes")
+
+
+func test_the_surround_budget_reaches_where_melee_may_not() -> void:
+	# "They hold formation too hard": a man 5 units from his dealt mark
+	# walks nearly all the way there on the surround budget, where the
+	# melee bound leaves him leaning.
+	var man: Array[Transform3D] = [Transform3D(Basis(), Vector3(0, 0, 0))]
+	var mark: Array[Transform3D] = [Transform3D(Basis(), Vector3(0, 0, 5))]
+	var melee := CosmeticDuel.engage(man, mark, PackedInt32Array([0]))
+	var siege := CosmeticDuel.engage(man, mark, PackedInt32Array([0]),
+		Callable(), 4.0)
+	assert_lte(melee[0].origin.distance_to(Vector3.ZERO),
+		Engagement.MAX_STEP + 0.001, "against men, the tight bound holds")
+	assert_gt(siege[0].origin.z, 1.5,
+		"against masonry, he actually goes — formation gives way to the "
+		+ "assault")

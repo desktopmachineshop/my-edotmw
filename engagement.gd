@@ -165,6 +165,31 @@ static func rect_points(centre: Vector3, half: Vector2, yaw: float,
 	return out
 
 
+## A drawn man never stands INSIDE a building
+## (D-20260820, third amendment): a position inside the box is projected
+## to its nearest face, margin included. Pure; the caller decides which
+## boxes are near enough to test. This exists because formation slots
+## clamp against TERRAIN passability by design (the building-stamped
+## array is the sim's own and cannot be reproduced under fog), so a
+## line's slots can legitimately land inside a footprint — and the
+## owner's screenshots showed exactly that, twice.
+static func push_out_of_box(position: Vector3, centre: Vector3,
+		half: Vector2, yaw: float, margin: float = 0.35) -> Vector3:
+	var local := Vector2(position.x - centre.x, position.z - centre.z).rotated(yaw)
+	var hx := half.x + margin
+	var hz := half.y + margin
+	if absf(local.x) >= hx or absf(local.y) >= hz:
+		return position
+	# Inside: exit through the nearest face.
+	var out := local
+	if hx - absf(local.x) <= hz - absf(local.y):
+		out.x = hx if local.x >= 0.0 else -hx
+	else:
+		out.y = hz if local.y >= 0.0 else -hz
+	var turned := out.rotated(-yaw)
+	return Vector3(centre.x + turned.x, position.y, centre.z + turned.y)
+
+
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer is
 ## deterministic for identical inputs). O(attackers × defenders), paid

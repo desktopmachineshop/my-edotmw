@@ -1222,10 +1222,31 @@ func _refresh_squads() -> void:
 			enemy_transforms = Engagement.shifted(enemy_transforms,
 				Engagement.aligning_offset(transforms[0].origin,
 					enemy_transforms[0].origin, offsets))
+			var surround := doing.has("rect_centre") or doing.has("ring_centre")
 			if paired.is_empty():
 				paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			# A static target grants the SURROUND budget (D-20260820,
+			# third amendment): a building does not hit back, so men may
+			# leave formation properly to wrap it — "they hold formation
+			# too hard" was the owner's exact reading of the tight melee
+			# bound applied to a siege.
 			transforms = CosmeticDuel.engage(
-				transforms, enemy_transforms, paired, _state.terrain_sampler)
+				transforms, enemy_transforms, paired, _state.terrain_sampler,
+				SURROUND_STEP if surround else Engagement.MAX_STEP)
+
+		# No drawn man stands inside a building (D-20260820, third
+		# amendment): slots clamp against terrain only, so a line's slots
+		# can land inside a footprint — projected out to the nearest face
+		# here, BEFORE easing, so men walk out rather than popping.
+		if not transforms.is_empty():
+			var boxes := _nearby_building_boxes(centre, world_radius + 6.0)
+			if not boxes.is_empty():
+				for i in range(transforms.size()):
+					var pushed := transforms[i]
+					for box in boxes:
+						pushed.origin = Engagement.push_out_of_box(
+							pushed.origin, box["centre"], box["half"], box["yaw"])
+					transforms[i] = pushed
 
 		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
@@ -3025,6 +3046,43 @@ func _activity_for(squad_id) -> Dictionary:
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
 		"enemy_squad": enemy_squad,
 	}
+
+
+## How far a man may travel to wrap a static target — the surround
+## budget (D-20260820, third amendment). Larger than the melee bound on
+## purpose; still pure in replicated state, still finite.
+const SURROUND_STEP := 4.0
+
+
+## Every KNOWN building box (any owner — a man stands inside his own
+## town hall no more than an enemy's) within `range` of `centre`, in the
+## squad's lattice frame. A handful at most; the per-man test is cheap.
+func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
+	var out := []
+	if _state.space == null:
+		return out
+	for id in _state.buildings:
+		var info: Dictionary = _state.buildings[id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
+		if def == null:
+			continue
+		var at := _state.space.to_world(
+			_state.space.from_index(int(info.get("cell", 0))))
+		at += Engagement.aligning_offset(centre, at,
+			_state.space.lattice_offsets())
+		var half := Vector2.ZERO
+		if def.mesh_size != Vector3.ZERO:
+			half = Vector2(def.mesh_size.x, def.mesh_size.z) * 0.5
+		else:
+			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
+			half = Vector2(span, span)
+		if Vector2(at.x - centre.x, at.z - centre.z).length() \
+				<= search + maxf(half.x, half.y):
+			out.append({"centre": at, "half": half,
+				"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0)))})
+	return out
 
 
 ## The nearest ENEMY building a melee squad at `here` can reach, as a
