@@ -1268,6 +1268,7 @@ func _refresh_squads() -> void:
 		# the jostle is for the scrum, the decision says so), and foreign
 		# men are prefiltered per MAN to the overlap disk rather than
 		# copied wholesale per squad.
+		var speed := _state.squad_speed(squad_id, _now)
 		var neighbours := PackedVector3Array()
 		if speed <= MOVING_SPEED_EPSILON:
 			var own_at := centre + offset
@@ -1288,7 +1289,6 @@ func _refresh_squads() -> void:
 			drawn_men[i] = eased[i].origin
 		_drawn_cache[squad_id] = {"men": drawn_men,
 			"centre": centre + offset, "radius": world_radius}
-		var speed := _state.squad_speed(squad_id, _now)
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
 			else CosmeticOffset.decorate_activity(
