@@ -53,6 +53,28 @@ the mode boundary that already existed rather than a new rule.
   timer would add invisible state for a symptom two purer fixes remove.
   Revisit if mode flicker is still visible in play.
 
+## Amended same day — physical limits for individual men
+
+The owner's next session: *"individual units should collide with trees
+& other resources... flow around and return to marching formation...
+units should never teleport or exceed their limits — individual units
+may rise to the sprint speed of the squad to catch up, but no faster."*
+
+- **The ease is a VELOCITY CLAMP now, not a blend.** A drawn man moves
+  toward his mark at most `move_speed × CHARGE_SPEED_MULT` — the
+  squad's own sprint — per second. `SNAP_DISTANCE` is GONE: the two
+  legitimate jumps it papered over are handled as what they are. A
+  torus seam crossing (or a reveal) moves EVERY mark by one common
+  vector, so the whole stored set is SHIFTED by it — a coordinate
+  change, not movement, and invisible because the camera wraps the same
+  way. Everything else walks, at a speed the squad could actually run.
+- **Trees are obstacles for drawn men.** Node cells within a squad's
+  extent push men out (`push_out_of_disc`, the box rule's round
+  sibling) — a marching line filters around a tree man by man and the
+  clamp walks each one back to his slot on the far side, which IS the
+  "return to marching formation". The one exemption: a crew's OWN
+  worked node, where standing at the tree is the job.
+
 ## Revisit trigger
 
 If cross-squad jostle at a big pile-up shows up in frame time, the

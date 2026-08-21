@@ -138,3 +138,44 @@ func _all_scripts(path: String, out: Array) -> void:
 		var normalised := String(file_name).trim_suffix(".remap")
 		if normalised.ends_with(".gd"):
 			out.append(path.path_join(normalised))
+
+
+func test_no_drawn_man_outruns_the_cap() -> void:
+	# The owner's rule, verbatim: a man may rise to the squad's sprint to
+	# catch up, but no faster — and NEVER teleport, however far the mark.
+	var motion := SoldierMotion.new()
+	var start := _t([Vector3.ZERO])
+	motion.ease(1, start, 0.1, PackedVector3Array(), 4.0)
+	# A mark INSIDE the wrap threshold: a whole-set jump past it is a
+	# coordinate change and shifts instead (its own test below) — the
+	# clamp governs everything nearer, which is every real walk.
+	var far := _t([Vector3(0, 0, 5)])
+	var drawn := motion.ease(1, far, 0.1, PackedVector3Array(), 4.0)
+	assert_almost_eq(drawn[0].origin.distance_to(Vector3.ZERO), 0.4, 0.01,
+		"one tenth of a second at sprint 4 is 0.4 ground — exactly")
+
+
+func test_a_seam_crossing_shifts_instead_of_walking() -> void:
+	# Every mark displacing by one common huge vector is a COORDINATE
+	# change (a torus wrap, a reveal), not movement: the whole stored set
+	# shifts with it and the formation arrives already formed.
+	var motion := SoldierMotion.new()
+	var here := _t([Vector3(0, 0, 0), Vector3(2, 0, 0)])
+	motion.ease(1, here, 0.1)
+	var wrapped := _t([Vector3(50, 0, 0), Vector3(52, 0, 0)])
+	var drawn := motion.ease(1, wrapped, 0.016)
+	for i in range(2):
+		assert_lt(drawn[i].origin.distance_to(wrapped[i].origin), 0.5,
+			"after a wrap the men are AT their marks, not marching a "
+			+ "map-width — the camera wrapped the same way")
+
+
+func test_a_tree_pushes_a_drawn_man_to_its_rim() -> void:
+	var inside := Engagement.push_out_of_disc(
+		Vector3(10.2, 0.3, 10), Vector3(10, 0, 10), 0.7)
+	assert_almost_eq(Vector2(inside.x - 10, inside.z - 10).length(), 0.7,
+		0.001, "out to the rim, along his own bearing")
+	assert_almost_eq(inside.y, 0.3, 0.001, "height untouched")
+	var outside := Vector3(15, 0, 10)
+	assert_eq(Engagement.push_out_of_disc(outside, Vector3(10, 0, 10), 0.7),
+		outside, "a man clear of the canopy is not touched")

@@ -64,7 +64,11 @@ const EASE_RATE := 7.0
 ## BLINKED there. Every legitimate retarget walks now; the seam jump
 ## this guards (a whole map width in one frame, D-035) is still a
 ## hundred times the threshold.
-const SNAP_DISTANCE := 12.0
+const TELEPORT_SHIFT := 8.0
+
+## The fallback speed cap when a caller does not supply the squad's own:
+## a generous sprint, so tests and stray callers still see men WALK.
+const DEFAULT_MAX_SPEED := 12.0
 
 ## The amendment's bound (D-006, 2026-08-19): a drawn man never strays
 ## farther than this from his authoritative slot, so selection, culling
@@ -78,6 +82,8 @@ const JOSTLE_RADIUS := 0.45
 # squad id -> PackedVector3Array of eased render positions, parallel to
 # the transforms handed in. Client-side render state, nothing more.
 var _eased := {}
+# squad id -> last frame's target centroid, for the wrap-shift.
+var _centroids := {}
 
 
 ## Ease `transforms` toward their authoritative values and return the
@@ -91,10 +97,15 @@ var _eased := {}
 ## (D-20260821-a-fight-loosens-a-formation): squads may stand on each
 ## other, and their men sort it out individually instead of a whole
 ## squad snapping away.
+## `max_speed` is the squad's own sprint (move_speed x the charge
+## multiplier): no drawn man may cross ground faster than his squad
+## could run — the owner's rule, verbatim (D-20260821, amended).
 func ease(squad_id, transforms: Array[Transform3D], delta: float,
-		others: PackedVector3Array = PackedVector3Array()) -> Array[Transform3D]:
+		others: PackedVector3Array = PackedVector3Array(),
+		max_speed: float = DEFAULT_MAX_SPEED) -> Array[Transform3D]:
 	if transforms.is_empty():
 		_eased.erase(squad_id)
+		_centroids.erase(squad_id)
 		return transforms
 
 	var stored: PackedVector3Array = _eased.get(squad_id, PackedVector3Array())
@@ -119,17 +130,26 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float,
 		for i in range(count):
 			stored[i] = transforms[i].origin
 
-	# Exponential smoothing, so the rate is independent of framerate: at
-	# any dt the soldier covers the same FRACTION of the remaining gap per
-	# unit time. A plain lerp(a, b, k * dt) is not, and would make troops
-	# visibly slower on a slow machine.
-	var blend := 1.0 - exp(-EASE_RATE * maxf(delta, 0.0))
-
+	# A seam crossing or a reveal displaces every mark by one common
+	# vector: shift the stored set by the CENTROID's own jump and nobody
+	# walks a map-width (D-20260821, amended).
+	var target_centroid := Vector3.ZERO
 	for i in range(count):
-		var target: Vector3 = transforms[i].origin
-		var current: Vector3 = stored[i]
-		stored[i] = target if current.distance_to(target) > SNAP_DISTANCE \
-			else current.lerp(target, blend)
+		target_centroid += transforms[i].origin
+	target_centroid /= float(count)
+	if _centroids.has(squad_id):
+		var jump: Vector3 = target_centroid - _centroids[squad_id]
+		if jump.length() > TELEPORT_SHIFT:
+			for i in range(count):
+				stored[i] += jump
+	_centroids[squad_id] = target_centroid
+
+	# The velocity clamp — the whole model now: a man WALKS toward his
+	# mark, at most `max_speed` ground per second, and that is the only
+	# way a drawn man ever moves.
+	var budget := maxf(max_speed, 0.1) * maxf(delta, 0.0)
+	for i in range(count):
+		stored[i] = stored[i].move_toward(transforms[i].origin, budget)
 
 	# Tier 3 (D-006 as amended): the scrum breathes. Fed BACK into the
 	# stored positions — genuine per-soldier integration, which is
@@ -219,6 +239,7 @@ static func jostle(positions: PackedVector3Array,
 ## the dictionary does not grow for the length of a match.
 func forget(squad_id) -> void:
 	_eased.erase(squad_id)
+	_centroids.erase(squad_id)
 
 
 ## How many squads are being eased. For tests and for anyone checking this

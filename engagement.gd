@@ -190,6 +190,21 @@ static func push_out_of_box(position: Vector3, centre: Vector3,
 	return Vector3(centre.x + turned.x, position.y, centre.z + turned.y)
 
 
+## The box rule's round sibling (D-20260821, amended): a drawn man
+## inside a tree's disc steps out to its rim. Pure.
+static func push_out_of_disc(position: Vector3, centre: Vector3,
+		radius: float) -> Vector3:
+	var flat := Vector2(position.x - centre.x, position.z - centre.z)
+	var d := flat.length()
+	if d >= radius:
+		return position
+	if d < 0.0001:
+		flat = Vector2(radius, 0.0)
+	else:
+		flat = flat / d * radius
+	return Vector3(centre.x + flat.x, position.y, centre.z + flat.y)
+
+
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer is
 ## deterministic for identical inputs). O(attackers × defenders), paid

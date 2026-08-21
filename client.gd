@@ -1249,12 +1249,22 @@ func _refresh_squads() -> void:
 		# here, BEFORE easing, so men walk out rather than popping.
 		if not transforms.is_empty():
 			var boxes := _nearby_building_boxes(centre, world_radius + 6.0)
-			if not boxes.is_empty():
+			# Trees are obstacles for drawn men too (D-20260821, amended):
+			# a marching line filters around a wood man by man and the
+			# velocity clamp walks each one back to his slot beyond it.
+			# A crew's OWN worked node is exempt — standing at the tree
+			# is the job.
+			var discs := _nearby_node_discs(centre, world_radius,
+				String(doing.get("target_key", "")))
+			if not boxes.is_empty() or not discs.is_empty():
 				for i in range(transforms.size()):
 					var pushed := transforms[i]
 					for box in boxes:
 						pushed.origin = Engagement.push_out_of_box(
 							pushed.origin, box["centre"], box["half"], box["yaw"])
+					for disc in discs:
+						pushed.origin = Engagement.push_out_of_disc(
+							pushed.origin, disc["centre"], disc["radius"])
 					transforms[i] = pushed
 
 		# Eased so soldiers walk to their slots when the squad turns
@@ -1282,7 +1292,14 @@ func _refresh_squads() -> void:
 				for k in range(men.size()):
 					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
 						neighbours.append(men[k])
-		var eased := _motion.ease(squad_id, transforms, _frame_delta, neighbours)
+		# No drawn man outruns his own squad's sprint (D-20260821,
+		# amended) — the cap travels with the def, resolved through the
+		# cached roster.
+		var speed_def := UnitRoster.by_id(
+			StringName(String(comp_info.get("def_id", ""))))
+		var speed_cap := 12.0 if speed_def == null 			else speed_def.move_speed * SquadSim.CHARGE_SPEED_MULT
+		var eased := _motion.ease(squad_id, transforms, _frame_delta,
+			neighbours, speed_cap)
 		var drawn_men := PackedVector3Array()
 		drawn_men.resize(eased.size())
 		for i in range(eased.size()):
@@ -3139,6 +3156,29 @@ func _refresh_building_scan() -> void:
 			"owner": int(info.get("owner", -1)),
 			"reach": maxf(half.x, half.y),
 		})
+
+
+## Node-cell discs within a squad's extent (D-20260821, amended): the
+## trees its drawn men must not stand inside. `worked_key` skips the
+## crew's own node.
+func _nearby_node_discs(centre: Vector3, radius: float,
+		worked_key: String) -> Array:
+	var out := []
+	if _state.space == null or _state.nodes.is_empty():
+		return out
+	var centre_cell := _state.space.world_to_cell(centre)
+	var cells := ceili(radius / (_state.space.hex_size * TorusSpace.SQRT_3)) + 1
+	for offset in TorusSpace.disk_offsets(mini(cells, 6)):
+		var cell := _state.space.index(centre_cell + offset)
+		if not _state.nodes.has(cell):
+			continue
+		if worked_key == "n:%d" % cell:
+			continue
+		var at := _state.space.to_world(_state.space.from_index(cell))
+		at += Engagement.aligning_offset(centre, at,
+			_state.space.lattice_offsets())
+		out.append({"centre": at, "radius": 0.7})
+	return out
 
 
 ## The cached scan, aligned to `centre`'s lattice frame and filtered to
