@@ -1113,19 +1113,41 @@ func is_passable(cell: Vector2i, tier: int = 0) -> bool:
 ##
 ## Walks the hex ring at increasing radius, so it prefers to stand a new
 ## squad right at the door and only spreads out when the door is blocked.
-## Deterministic: `disk_offsets` enumerates in a fixed order, so server and
-## replay agree about where a unit appeared.
+## Within the smallest workable ring, the door FACES THE RALLY POINT
+## (D-20260821-a-recruit-steps-out-the-near-door): a recruit appears on
+## the side his orders will take him, instead of popping out wherever the
+## enumeration happened to start and marching around his own building.
+## The ring outranks the bearing — at the door beats two cells further
+## out on a better heading. Deterministic: `disk_offsets` enumerates in a
+## fixed order and the improvement test is strict, so ties resolve to the
+## earlier candidate and server and replay agree about where a unit
+## appeared.
 func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 	var home := buildings.cell_of(building)
+	var rally := buildings.rally_of(building)
+	var best := Vector2i.ZERO
+	var best_dist := 0
+	var best_ring := 0
+	var found := false
 	for offset in TorusSpace.disk_offsets(4):
-		if TorusSpace.hex_length(offset) < 2:
+		var ring := TorusSpace.hex_length(offset)
+		if ring < 2:
 			continue  # under the building itself
+		if found and ring > best_ring:
+			break  # sorted nearest-first (D-067): the workable ring is done
 		var candidate := space.normalize(home + offset)
 		if not is_passable(candidate):
 			continue
 		if buildings.building_at(candidate) >= 0:
 			continue
-		return candidate
+		var dist := space.distance(candidate, rally)
+		if not found or dist < best_dist:
+			found = true
+			best = candidate
+			best_dist = dist
+			best_ring = ring
+	if found:
+		return best
 	# Hemmed in on every side: put them at the door anyway rather than
 	# losing a squad somebody paid for.
 	return space.normalize(home + Vector2i(2, 0))

@@ -1503,3 +1503,33 @@ func test_building_info_defaults_gate_fields_for_a_non_gate_entry() -> void:
 	var decoded := NetProtocol.decode_building_info(NetProtocol.encode_building_info(entries))
 	assert_false(bool(decoded[0]["gate_open"]))
 	assert_eq(int(decoded[0]["gate_mode"]), BuildingSim.GATE_MODE_MANUAL)
+
+
+# --- D-20260821-a-recruit-steps-out-the-near-door ----------------------
+
+func test_a_recruit_appears_on_the_rally_side_of_its_building() -> void:
+	var space := _space()
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	var home := Vector2i(9, 9)
+	var id := buildings.add_building(_building_def(), 1, home, true)
+
+	# Two opposite rallies must produce two different doors, each on its
+	# own side. The enumeration-order spawn put every recruit on the same
+	# lattice-chosen side regardless of the rally, and the squad then
+	# marched around its own building.
+	var east_rally := space.normalize(home + Vector2i(6, 0))
+	var west_rally := space.normalize(home + Vector2i(-6, 0))
+	buildings.set_rally(id, east_rally)
+	var east_door := sim._spawn_cell_near(buildings, id)
+	buildings.set_rally(id, west_rally)
+	var west_door := sim._spawn_cell_near(buildings, id)
+
+	assert_ne(east_door, west_door, "the door follows the rally point")
+	assert_lt(space.distance(east_door, east_rally),
+		space.distance(west_door, east_rally),
+		"the east recruit stands nearer the east rally than the west one")
+	assert_eq(space.distance(east_door, home), 2,
+		"the bearing never costs the ring — a recruit still stands at the door")
+	assert_eq(space.distance(west_door, home), 2,
+		"same on the far side")
