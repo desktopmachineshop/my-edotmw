@@ -64,6 +64,30 @@ BUILDING_TRIANGLE_BUDGET = 400
 GENERATED = os.path.join(_ROOT, "generated")
 
 
+# Files under art/ that CANNOT change a single byte of `generated/`, and are
+# therefore excluded from the staleness hash. Keyed by path relative to art/,
+# and duplicated in tests/test_art_assets.gd — the two must agree or the test
+# reports a stale build on a clean tree.
+#
+# `gui.py` is a VIEWER (D-20260821): it opens the real Blender GUI on the
+# generators and bakes only by calling `main()` below. Hashing it would mean
+# every edit to a panel label marked `generated/` stale and demanded a rebuild
+# that produces byte-identical output — a staleness signal that cries wolf
+# stops being read, which is the whole value of this hash.
+#
+# What makes the exclusion SAFE rather than merely convenient is
+# `tests/test_blender_gui.gd`, which fails if `gui.py` ever grows geometry of
+# its own or bakes by any route but this file. Without that test this list
+# would be a hole in the invariant; with it, it is a statement the invariant
+# is checked somewhere else.
+#
+# Do NOT add a generator here to avoid a rebuild. `preview.py` is deliberately
+# absent despite also being a viewer: it has been in the hash since M7 and
+# taking it out now would change the hash of an unchanged tree, which is the
+# exact false alarm this list exists to prevent.
+NOT_A_GENERATOR = frozenset({"gui.py"})
+
+
 def source_hash() -> str:
     """A stable hash over every generator source file."""
     digest = hashlib.sha256()
@@ -71,6 +95,9 @@ def source_hash() -> str:
         dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
         for name in sorted(filenames):
             if not name.endswith(".py"):
+                continue
+            relative = os.path.relpath(os.path.join(dirpath, name), _HERE)
+            if relative.replace("\\", "/") in NOT_A_GENERATOR:
                 continue
             path = os.path.join(dirpath, name)
             digest.update(os.path.relpath(path, _ROOT).replace("\\", "/").encode())

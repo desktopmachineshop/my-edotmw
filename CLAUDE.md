@@ -42,6 +42,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m7.md
 
+@docs/status/art-pipeline.md
+
 @docs/status/terrain.md
 
 @docs/status/spawns.md
@@ -432,6 +434,19 @@ art/scatter/props.py     The ground-cover props (D-100). Fails its own
                         Props carry real glTF MATERIALS, not vertex
                         colours: they are drawn from a MultiMesh, and a
                         MultiMesh overrides COLOR (see art/lib/bake.py).
+art/gui.py               The generators, open in the REAL Blender GUI
+                        (D-20260821). A WINDOW, never a workshop: it owns
+                        no geometry, never binds `art.lib.geom`, and bakes
+                        only by calling art/build.py — a test fails if any
+                        of that changes, because `generated/`'s manifest
+                        hashes art/'s SOURCES and could not see a shape
+                        authored in a GUI session. Its mesh comes from
+                        `bake.flatten` and its TIMELINE from
+                        `bake.bake_frames`, so viewport frame N is VAT row
+                        N. `--check` builds the scene headlessly and
+                        asserts the scrub moves vertices; it must
+                        `detach()` first, or the bpy WHEEL hangs forever
+                        at interpreter shutdown.
 model_preview.gd         Renders every authored model, animated, and
                         screenshots it. The picture is the point.
 cover_preview.gd         The same idea for ground cover: every prop, on
@@ -455,6 +470,16 @@ instance-id.sh           THE definition of this checkout's dev-instance
                         derives its per-worktree compose project, ports
                         and container names from this — nothing may
                         re-derive it. See "Multi-agent isolation" below.
+blender-path.sh          THE definition of where the Blender APPLICATION is
+                        (D-20260821). instance-id.sh's sibling for a third
+                        thing nothing else may re-derive. The `bpy` wheel
+                        `bootstrap-art` installs has the window manager
+                        COMPILED OUT — no flag opens a window on it — so
+                        the GUI needs the separate application, and the
+                        two must be one version or a model shaped in one
+                        and baked by the other is only accidentally the
+                        same model. Warns rather than refusing on a
+                        mismatch; `just doctor` prints all three.
 gate-check.sh            THE log comparisons a real multi-client run must
                         survive (D-20260818-the-fast-loop-carries-the-
                         gate): fog gating of squads and of resource
@@ -557,9 +582,24 @@ built:
   and a clone that has never run `build-assets` all still work — a failed
   art build costs fidelity, not the game.
 
+**The models read as blocks because of their SILHOUETTE, not their edges**
+(D-20260821, and `docs/status/art-pipeline.md` for the pictures). Bevelling
+every rigid part costs **5.7x to 23.7x the triangles and is not visually
+distinguishable**; an articulated figure — thigh+shin, upper arm+forearm,
+boots, pauldrons — fits in **288 of the 300 budget**. The ceiling is neither
+the budget nor the runtime: **a VAT stores final vertex positions and has no
+opinion about how they were produced**, so the client could already draw
+skinned, subdivided animation at today's cost. The ceiling is `Part`, which
+has one pivot and one group and so cannot express a knee. Nothing is wired
+up; the direction is the owner's call.
+
 **Both the generators and their output are committed** (D-081). The
 generators are the source of truth; `generated/` is committed anyway so a
-fresh clone plays without installing anything. Two runs of
+fresh clone plays without installing anything. Note `generated/` is
+byte-identical between two runs on ONE platform and **not** across them —
+the committed VATs are Windows-built and a Linux rebuild differs by ~31
+bytes of EXR header per archetype with identical geometry. Rebuild on one
+machine and say which. Two runs of
 `build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
 no timestamps — and a test fails if `generated/` is stale with respect to
 `art/`.
@@ -828,7 +868,19 @@ Dev loop and tests:
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running
-  and testing the game, works from the committed `generated/`.
+  and testing the game, works from the committed `generated/`. This is
+  the WHEEL, which bakes and has no window.
+- `just bootstrap-blender-gui` — fetch the pinned Blender APPLICATION,
+  which has a window and bakes nothing this project ships. Skipped if a
+  matching Blender is already installed; `EDOTMW_BLENDER` names one
+  outright. Neither bootstrap is needed to play, test or ship.
+- `just blender-gui [TARGET]` — open TARGET (an archetype/building/prop
+  id, or `all`/`units`/`buildings`/`props`) in the real Blender GUI
+  (D-20260821). Native only, for the same reason as `run-client`. Edit a
+  generator, press Rebuild in the N-panel, look. The TIMELINE is the VAT.
+  It takes the `medium` host gate, deliberately NOT the exclusive `gpu`
+  one: `gpu` is exclusive because two simultaneous MEASUREMENTS on one
+  integrated GPU are two useless measurements, and this measures nothing.
 - `just build-assets [ARCHETYPE]` — rebuild models and textures from
   `art/`. Ends in an `--import`, because Godot serves assets from its
   cache and a rebuild it has not imported is invisible.
