@@ -3053,14 +3053,23 @@ func _activity_for(squad_id) -> Dictionary:
 ## purpose; still pure in replicated state, still finite.
 const SURROUND_STEP := 4.0
 
+## Every known building's box, resolved ONCE per frame — canonical
+## position, half extents, yaw, owner. The first version resolved defs
+## and worlds inside the per-squad loop and froze the game: the SIXTH
+## appearance of the lookup-inside-the-loop defect this project keeps
+## paying for, written one screen below _refresh_enemy_scan, which
+## exists to prevent exactly this.
+var _building_scan: Array = []
+var _building_scan_at := -1.0
 
-## Every KNOWN building box (any owner — a man stands inside his own
-## town hall no more than an enemy's) within `range` of `centre`, in the
-## squad's lattice frame. A handful at most; the per-man test is cheap.
-func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
-	var out := []
+
+func _refresh_building_scan() -> void:
+	if is_equal_approx(_building_scan_at, _now):
+		return
+	_building_scan_at = _now
+	_building_scan = []
 	if _state.space == null:
-		return out
+		return
 	for id in _state.buildings:
 		var info: Dictionary = _state.buildings[id]
 		if bool(info.get("destroyed", false)):
@@ -3068,20 +3077,36 @@ func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
 		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
 		if def == null:
 			continue
-		var at := _state.space.to_world(
-			_state.space.from_index(int(info.get("cell", 0))))
-		at += Engagement.aligning_offset(centre, at,
-			_state.space.lattice_offsets())
 		var half := Vector2.ZERO
 		if def.mesh_size != Vector3.ZERO:
 			half = Vector2(def.mesh_size.x, def.mesh_size.z) * 0.5
 		else:
 			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
 			half = Vector2(span, span)
+		_building_scan.append({
+			"at": _state.space.to_world(
+				_state.space.from_index(int(info.get("cell", 0)))),
+			"half": half,
+			"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0))),
+			"owner": int(info.get("owner", -1)),
+			"reach": maxf(half.x, half.y),
+		})
+
+
+## The cached scan, aligned to `centre`'s lattice frame and filtered to
+## `search`. Per squad this is B alignments over precomputed entries —
+## the cheap half of what used to freeze the frame.
+func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
+	_refresh_building_scan()
+	var out := []
+	var offsets := _state.space.lattice_offsets()
+	for entry in _building_scan:
+		var at: Vector3 = entry["at"]
+		at += Engagement.aligning_offset(centre, at, offsets)
 		if Vector2(at.x - centre.x, at.z - centre.z).length() \
-				<= search + maxf(half.x, half.y):
-			out.append({"centre": at, "half": half,
-				"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0)))})
+				<= search + float(entry["reach"]):
+			out.append({"centre": at, "half": entry["half"],
+				"yaw": entry["yaw"]})
 	return out
 
 
@@ -3095,32 +3120,21 @@ func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
 func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 	if _state.space == null:
 		return {}
+	_refresh_building_scan()
 	var best := {}
 	var best_d := INF
-	for id in _state.buildings:
-		var info: Dictionary = _state.buildings[id]
-		if int(info.get("owner", -1)) == mine or bool(info.get("destroyed", false)):
+	var offsets := _state.space.lattice_offsets()
+	for entry in _building_scan:
+		if int(entry["owner"]) == mine:
 			continue
-		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
-		if def == null:
-			continue
-		var centre := _state.space.to_world(
-			_state.space.from_index(int(info.get("cell", 0))))
+		var centre: Vector3 = entry["at"]
 		# The building's copy nearest this squad — the torus tax.
-		centre += Engagement.aligning_offset(here, centre,
-			_state.space.lattice_offsets())
-		var half := Vector2.ZERO
-		if def.mesh_size != Vector3.ZERO:
-			half = Vector2(def.mesh_size.x, def.mesh_size.z) * 0.5
-		else:
-			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
-			half = Vector2(span, span)
-		half += Vector2(0.4, 0.4)
+		centre += Engagement.aligning_offset(here, centre, offsets)
+		var half: Vector2 = (entry["half"] as Vector2) + Vector2(0.4, 0.4)
 		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
 		if d - maxf(half.x, half.y) <= reach and d < best_d:
 			best_d = d
-			best = {"centre": centre, "half": half,
-				"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0)))}
+			best = {"centre": centre, "half": half, "yaw": entry["yaw"]}
 	return best
 
 
