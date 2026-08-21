@@ -762,11 +762,20 @@ var instant_build := false
 ## instances by server.gd the moment this is toggled.
 var ai_economy_only := false
 
+## Whether the world grows resource nodes at all. Consulted by
+## server.gd's `_build_world` at GENERATION time, so flipping it takes
+## effect on the next map regen (the panel says so beside the Regen
+## button) — a live bulk node clear would need either a fog-violating
+## broadcast or a ghost forest of stale trees (D-087's conceal
+## semantics), and regen is one click away on the same panel
+## (D-20260821-the-sandbox-panel-runs-the-world).
+var resources_enabled := true
 
-## Admin-only toggle for one of the three sandbox flags above. `key` is
-## "sandbox", "instant_build", or "ai_economy_only" — a tiny generic
-## message in the same spirit as `set_map_option`'s key/value pairing,
-## rather than three near-identical opcodes. Not phase-gated on purpose —
+
+## Admin-only toggle for one of the sandbox flags above. `key` is
+## "sandbox", "instant_build", "ai_economy_only" or "resources" — a tiny
+## generic message in the same spirit as `set_map_option`'s key/value
+## pairing, rather than one opcode per flag. Not phase-gated on purpose —
 ## see `sandbox`'s own doc.
 func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
 	if not is_admin(by_player):
@@ -778,6 +787,22 @@ func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
 			instant_build = enabled
 		"ai_economy_only":
 			ai_economy_only = enabled
+		"resources":
+			resources_enabled = enabled
 		_:
 			return false
 	return true
+
+
+## The first seat hostile to `player`, or -1 when nobody is — the enemy
+## the sandbox panel's "spawn for the ENEMY" cheats resolve to
+## (D-20260821). First-hostile rather than a picker on purpose: right
+## for the solo-vs-AI session the panel serves, and a client never names
+## a player id on the wire, so it cannot aim a cheat at an arbitrary
+## seat.
+func enemy_of(player: int) -> int:
+	for seat in seats:
+		var other := int(seat["player"])
+		if other != player and not are_allied(player, other):
+			return other
+	return -1

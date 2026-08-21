@@ -160,3 +160,62 @@ func test_the_same_scenario_without_economy_only_does_attack() -> void:
 		if NetProtocol.opcode_of(packet) == NetProtocol.C2S_ORDER_ATTACK_MOVE:
 			attacked = true
 	assert_true(attacked, "setup: an ordinary AI should attack a visible enemy right beside it")
+
+
+# --- D-20260821-the-sandbox-panel-runs-the-world -------------------------
+
+func test_spawn_cheats_round_trip_the_enemy_flag() -> void:
+	var unit := NetProtocol.decode_cheat_spawn_unit(
+		NetProtocol.encode_cheat_spawn_unit("militia", 77, 5, true))
+	assert_true(bool(unit["enemy"]))
+	var mine := NetProtocol.decode_cheat_spawn_unit(
+		NetProtocol.encode_cheat_spawn_unit("militia", 77, 5))
+	assert_false(bool(mine["enemy"]), "the default spawns for the sender")
+	var building := NetProtocol.decode_cheat_spawn_building(
+		NetProtocol.encode_cheat_spawn_building("tower", 42, 3, true))
+	assert_true(bool(building["enemy"]))
+
+
+func test_regen_map_has_its_own_opcode_and_no_payload() -> void:
+	var bytes := NetProtocol.encode_cheat_regen_map()
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.C2S_CHEAT_REGEN_MAP)
+	assert_eq(bytes.size(), 1, "who asked is read from the connection")
+
+
+func test_lobby_packet_round_trips_the_resources_flag() -> void:
+	var off := NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0, true, false, false, false))
+	assert_false(bool(off["resources"]))
+	var default_on := NetProtocol.decode_lobby(NetProtocol.encode_lobby(1, [], {}, 0))
+	assert_true(bool(default_on["resources"]),
+		"resources default ON — a world with no nodes is the sandbox exception")
+
+
+func test_resources_is_a_fourth_admin_gated_sandbox_option() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	assert_true(m.resources_enabled, "on by default")
+	assert_false(m.set_sandbox_option(2, "resources", false), "not the admin")
+	assert_true(m.resources_enabled)
+	assert_true(m.set_sandbox_option(1, "resources", false))
+	assert_false(m.resources_enabled)
+	assert_false(m.sandbox, "flags stay independent (D-077)")
+
+
+func test_enemy_of_finds_a_hostile_seat_and_only_a_hostile_seat() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	# Free-for-all (team 0 is not a team, D-050): each is the other's enemy.
+	assert_eq(m.enemy_of(1), 2)
+	assert_eq(m.enemy_of(2), 1)
+	# Allied: nobody left to spawn for — the handler must refuse, loudly.
+	# Each player sets their OWN seat (the permission a human seat has;
+	# the first version had the admin set player 2's seat, which is
+	# refused, and the refusal made this assertion test nothing).
+	assert_true(m.set_team(1, m.seat_of(1), 1))
+	assert_true(m.set_team(2, m.seat_of(2), 1))
+	assert_eq(m.enemy_of(1), -1, "an ally is not an enemy, and there is no one else")

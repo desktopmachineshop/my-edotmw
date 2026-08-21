@@ -9161,11 +9161,19 @@ func _refresh_lobby() -> void:
 ## `LOBBY_SET_OPTION` channel a map slider sends through (a "key=value"
 ## pair, not one opcode per flag). Visible to everyone so a non-admin can
 ## at least see the flags a host has enabled; only the admin can flip them.
+## ONE checkbox since D-20260821-the-sandbox-panel-runs-the-world: the
+## other flags (instant build, AI economy-only, resources) live on the
+## in-match dev panel, where the person iterating actually is — they ride
+## the same admin-gated LOBBY_SET_OPTION channel, which D-077
+## deliberately never phase-locked.
 const SANDBOX_OPTIONS := [
-	{"key": "sandbox", "label": "Sandbox mode (enables cheats below)"},
-	{"key": "instant_build", "label": "Instant construction & production"},
-	{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+	{"key": "sandbox", "label": "Sandbox mode (opens the dev tools panel in match)"},
 ]
+
+## The dev panel's own copies of the match-wide sandbox flags — synced
+## from `_state.lobby` on every refresh so another admin's toggle shows
+## up here too. key -> CheckBox.
+var _debug_option_boxes := {}
 
 
 func _refresh_sandbox_panel() -> void:
@@ -9234,6 +9242,10 @@ var _debug_visible_last := false
 var _cheat_arm_kind: String = ""
 var _cheat_arm_id: String = ""
 var _cheat_arm_count: int = 1
+## Whether the next armed spawn is for the first HOSTILE seat instead of
+## the sender (D-20260821) — resolved server-side, so this client never
+## names a player id.
+var _cheat_spawn_enemy := false
 
 
 func _build_debug_panel() -> void:
@@ -9329,9 +9341,45 @@ func _build_debug_panel() -> void:
 			% _cheat_arm_id)
 	building_row.add_child(building_arm_button)
 
+	var enemy_box := CheckBox.new()
+	enemy_box.text = "Spawn for the ENEMY (first hostile seat)"
+	enemy_box.add_theme_font_size_override("font_size", 13)
+	enemy_box.toggled.connect(func(pressed: bool): _cheat_spawn_enemy = pressed)
+	col.add_child(enemy_box)
+
 	var cancel_button := _styled_button("Cancel spawn mode", Color(0.7, 0.4, 0.4))
 	cancel_button.pressed.connect(_on_cheat_cancel_pressed)
 	col.add_child(cancel_button)
+
+	col.add_child(HSeparator.new())
+
+	# Match-wide settings, moved here from the lobby (D-20260821): the
+	# same admin-gated LOBBY_SET_OPTION messages the lobby checkboxes
+	# sent — D-077 never phase-locked them, so they work mid-match.
+	var settings_label := Label.new()
+	settings_label.text = "Match settings (host only):"
+	settings_label.add_theme_font_size_override("font_size", 13)
+	col.add_child(settings_label)
+	for option in [
+		{"key": "instant_build", "label": "Instant construction & production"},
+		{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+		{"key": "resources", "label": "Resource nodes (applies on regen)"},
+	]:
+		var key := String(option["key"])
+		var box := CheckBox.new()
+		box.text = String(option["label"])
+		box.add_theme_font_size_override("font_size", 13)
+		box.toggled.connect(_on_sandbox_option_toggled.bind(key))
+		col.add_child(box)
+		_debug_option_boxes[key] = box
+
+	var regen_button := _styled_button("Regen map (new seed)", Color(0.5, 0.65, 0.8))
+	regen_button.pressed.connect(func():
+		if not _connected:
+			return
+		_debug_status_label.text = "Regenerating the world - the match restarts on a fresh map..."
+		_peer.send(0, NetProtocol.encode_cheat_regen_map(), ENetPacketPeer.FLAG_RELIABLE))
+	col.add_child(regen_button)
 
 	_debug_status_label = Label.new()
 	_debug_status_label.add_theme_font_size_override("font_size", 12)
@@ -9398,9 +9446,11 @@ func _fire_armed_cheat(screen_position: Vector2) -> bool:
 	match _cheat_arm_kind:
 		"unit":
 			_peer.send(0, NetProtocol.encode_cheat_spawn_unit(
-				_cheat_arm_id, cell_index, _cheat_arm_count), ENetPacketPeer.FLAG_RELIABLE)
+				_cheat_arm_id, cell_index, _cheat_arm_count, _cheat_spawn_enemy),
+				ENetPacketPeer.FLAG_RELIABLE)
 		"building":
-			_peer.send(0, NetProtocol.encode_cheat_spawn_building(_cheat_arm_id, cell_index),
+			_peer.send(0, NetProtocol.encode_cheat_spawn_building(
+				_cheat_arm_id, cell_index, 0, _cheat_spawn_enemy),
 				ENetPacketPeer.FLAG_RELIABLE)
 		_:
 			return false
@@ -9415,6 +9465,15 @@ func _refresh_debug_panel() -> void:
 	if _debug_window == null:
 		return
 	var showing: bool = bool(_state.lobby.get("sandbox", false)) and not _state.in_lobby()
+	if showing:
+		# Reflect the server's own answer, not this client's last click —
+		# another admin (or the launch flag) may have set these.
+		for key in _debug_option_boxes:
+			var box: CheckBox = _debug_option_boxes[key]
+			var lobby_key := "resources" if String(key) == "resources" else String(key)
+			box.set_pressed_no_signal(bool(_state.lobby.get(lobby_key,
+				String(key) == "resources")))
+			box.disabled = not _state.is_admin()
 	if showing and _debug_sync_label != null:
 		var desyncs := _state.desync_count + _state.building_desync_count
 		_debug_sync_label.text = "State sync: %s" % _state.desync_summary()
