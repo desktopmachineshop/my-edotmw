@@ -225,13 +225,20 @@ static func jostle(positions: PackedVector3Array,
 			var direction := between / d
 			var push := JOSTLE_RADIUS - d
 			out[i] += Vector3(-direction.x * push, 0.0, -direction.y * push)
+	# The bound is on the jostle's OWN displacement — how far shoving
+	# moved a man from where his walk had him — never on his distance to
+	# the mark. Clamping to the ANCHOR was a hidden teleport: any man
+	# legitimately walking in from beyond the bound was snapped to
+	# bound-from-target, defeating the velocity clamp entirely, and it
+	# shipped red before this line caught it (D-20260821, amended —
+	# "MAX_RENDER_DRIFT governs the jostle about its targets").
 	for i in range(n):
-		var anchor: Vector3 = anchors[i].origin
-		var drift := out[i] - anchor
-		var flat := Vector2(drift.x, drift.z)
+		var moved := out[i] - positions[i]
+		var flat := Vector2(moved.x, moved.z)
 		if flat.length() > MAX_RENDER_DRIFT:
 			var clamped := flat.normalized() * MAX_RENDER_DRIFT
-			out[i] = Vector3(anchor.x + clamped.x, out[i].y, anchor.z + clamped.y)
+			out[i] = Vector3(positions[i].x + clamped.x, out[i].y,
+				positions[i].z + clamped.y)
 	return out
 
 

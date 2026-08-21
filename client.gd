@@ -3181,6 +3181,9 @@ func _nearby_node_discs(centre: Vector3, radius: float,
 		# pile is squatter and wider than a tree trunk, and a disc sized
 		# for canopies let men wade through the piles.
 		var kind := int(_state.nodes[cell])
+		# FOOD orchards and WOOD forests are both trees (the owner named
+		# the food trees explicitly); the mineral piles are squatter and
+		# wider.
 		var footprint := 0.7
 		if kind == Economy.ResourceKind.GOLD or kind == Economy.ResourceKind.STONE:
 			footprint = 1.0
