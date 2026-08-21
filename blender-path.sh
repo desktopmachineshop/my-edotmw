@@ -13,33 +13,36 @@
 # `just bootstrap-art` installs `bpy` from PyPI. That is Blender's Python
 # module with the window manager compiled out — there is no flag that opens a
 # window on it, and `just build-assets` neither needs nor wants one. Seeing the
-# GUI needs the real application, which is a separate ~300 MB download that
-# `just bootstrap-blender-gui` fetches into tools/.
+# GUI needs the real application.
 #
-# They must be the SAME version. The mesh API, the glTF exporter and the EXR
-# writer all move between releases, so a model shaped in one and baked by the
-# other is only accidentally the same model. `check` below is what says so,
-# and it warns rather than refusing: looking at a model in the wrong Blender
-# is a reasonable thing to do knowingly, and being unable to look at all
-# because a point release drifted is not.
+# **This repo does not install that application and does not manage it.** It is
+# an ordinary desktop program: install it from blender.org, winget, brew or
+# your package manager, exactly as you would if this project did not exist.
+# Nothing is downloaded into tools/ and there is no bootstrap recipe. Models
+# are rebuilt rarely, and a standard desktop tool does not want a
+# repo-pinned private copy of itself.
+#
+# The version is therefore only CHECKED, never enforced. `check` warns when the
+# installed Blender is a different series from the `bpy` wheel that bakes,
+# because the mesh API and the glTF exporter do move between releases — but it
+# warns and continues, since looking at a model in the Blender you happen to
+# have is a perfectly reasonable thing to do.
 #
 # ## Resolution order, most explicit first
 #
 #   1. $EDOTMW_BLENDER          — the owner naming one outright
-#   2. tools/blender/blender    — what bootstrap-blender-gui installs
-#   3. the platform's usual install locations
-#   4. `blender` on PATH
+#   2. the platform's usual install locations
+#   3. `blender` on PATH
+#   4. tools/blender/blender    — a portable build, if you chose to drop one
+#                                 there yourself; nothing here creates it
 #
-# A machine that already has Blender installed should not be made to download
-# a second copy, which is why 3 and 4 exist; a worktree that wants a specific
-# one must be able to say so, which is why 1 does.
+# 2 and 3 are the normal case: an ordinary install, found without configuring
+# anything. 1 exists for a machine with several Blenders on it.
 #
 # Usage:
 #   blender-path.sh find      absolute path of the Blender to launch (exit 1 if none)
 #   blender-path.sh version   its version string, e.g. 4.5.12
 #   blender-path.sh check     compare that against .blender-version; warns on stderr
-#   blender-path.sh asset     the download file name for this platform
-#   blender-path.sh url       where bootstrap-blender-gui fetches it from
 #   blender-path.sh explain   everything above, for `just doctor`
 set -euo pipefail
 
@@ -51,8 +54,6 @@ series="$(echo "$pinned" | cut -d. -f1,2)"
 
 _candidates() {
     [ -n "${EDOTMW_BLENDER:-}" ] && echo "$EDOTMW_BLENDER"
-    echo "$here/tools/blender/blender"
-    echo "$here/tools/blender/blender.exe"
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             # Git Bash sees the Windows filesystem at /c. Newest first, so a
@@ -71,6 +72,10 @@ _candidates() {
             ;;
     esac
     command -v blender 2>/dev/null || true
+    # Last, and only if someone unpacked one here by hand. Nothing in this
+    # repo puts a Blender in tools/.
+    echo "$here/tools/blender/blender"
+    echo "$here/tools/blender/blender.exe"
 }
 
 _find() {
@@ -92,17 +97,25 @@ _version() {
     "$1" --version 2>/dev/null | head -n 1 | awk '{print $2}'
 }
 
-_asset() {
+_install_hint() {
+    # Where a person gets Blender on this platform. Guidance only — nothing
+    # here downloads or installs anything, by design (see the header).
     case "$(uname -s)" in
-        MINGW*|MSYS*|CYGWIN*) echo "blender-${pinned}-windows-x64.zip" ;;
+        MINGW*|MSYS*|CYGWIN*)
+            echo "  winget install BlenderFoundation.Blender"
+            echo "  or the installer from https://www.blender.org/download/" ;;
         Darwin)
-            if [ "$(uname -m)" = "arm64" ]; then
-                echo "blender-${pinned}-macos-arm64.dmg"
-            else
-                echo "blender-${pinned}-macos-x64.dmg"
-            fi ;;
-        *) echo "blender-${pinned}-linux-x64.tar.xz" ;;
+            echo "  brew install --cask blender"
+            echo "  or the .dmg from https://www.blender.org/download/" ;;
+        *)
+            echo "  your package manager (apt/dnf/pacman), or:"
+            echo "  snap install blender --classic"
+            echo "  or the tarball from https://www.blender.org/download/" ;;
     esac
+    echo
+    echo "  Blender $pinned matches the bpy wheel that bakes generated/, but any"
+    echo "  recent 4.x opens the models fine — the version is checked, not enforced."
+    echo "  If you keep several, name one: export EDOTMW_BLENDER=/path/to/blender"
 }
 
 case "${1:-explain}" in
@@ -111,15 +124,16 @@ case "${1:-explain}" in
             cat >&2 <<EOF
 FAIL: no Blender application found.
 
-  Looked at: \$EDOTMW_BLENDER, tools/blender/, the usual install
-  locations for this platform, and PATH.
+  Looked at: \$EDOTMW_BLENDER, this platform's usual install locations,
+  PATH, and tools/blender/.
 
-  Either:  just bootstrap-blender-gui      (downloads $(_asset))
-  or:      export EDOTMW_BLENDER=/path/to/blender
+  Blender is an ordinary desktop application and this repo deliberately
+  does not install or manage one. Install it however you normally would:
 
-  Note this is NOT the same thing as \`just bootstrap-art\`, which installs
-  the bpy wheel. The wheel bakes assets and has no GUI; this needs the
-  application. Both should be $pinned.
+$(_install_hint)
+
+  Note this is NOT \`just bootstrap-art\`, which installs the bpy WHEEL.
+  The wheel bakes assets and has no window; this needs the application.
 EOF
             exit 1
         fi ;;
@@ -130,51 +144,28 @@ EOF
         found="$(_version "$path")"
         case "$found" in
             "$series"*) ;;
-            *) echo "WARNING: Blender $found at $path, but this project pins" \
-                    "$pinned. Shape it here if you like, but BAKE with" \
-                    "\`just build-assets\` (bpy $pinned)." >&2 ;;
+            *) echo "NOTE: Blender $found at $path; the bpy wheel that bakes is" \
+                    "$pinned. Fine for looking and shaping — but BAKE with" \
+                    "\`just build-assets\`, not from a different Blender." >&2 ;;
         esac
         echo "$found" ;;
-    asset) _asset ;;
-    url)   echo "https://download.blender.org/release/Blender${series}/$(_asset)" ;;
-    install-hint)
-        # Printed by `just bootstrap-blender-gui` when it will not install
-        # unattended. It lives HERE rather than in the recipe because it names
-        # a platform install path, and this file is the only one allowed to
-        # know where Blender lives — tests/test_blender_gui.gd fails if the
-        # justfile learns one.
-        case "$(uname -s)" in
-            Darwin)
-                echo "macOS ships Blender as a .dmg, which this recipe will not mount"
-                echo "unattended. Install it from:"
-                echo "  https://download.blender.org/release/Blender${series}/$(_asset)"
-                echo "then point this checkout at it:"
-                echo "  export EDOTMW_BLENDER=/Applications/Blender.app/Contents/MacOS/Blender" ;;
-            *)
-                echo "Set EDOTMW_BLENDER to a Blender $pinned binary, or unpack one" \
-                     "into $here/tools/blender/." ;;
-        esac ;;
-    unattended)
-        # Whether `bootstrap-blender-gui` can install without a human. Only
-        # the .dmg cannot.
-        case "$(_asset)" in *.dmg) exit 1 ;; *) exit 0 ;; esac ;;
+    install-hint) _install_hint ;;
     explain)
-        echo "pinned:  $pinned  (.blender-version)"
+        echo "wheel pin: $pinned  (.blender-version) — what bakes generated/"
         if path="$(_find 2>/dev/null)"; then
-            echo "app:     $path  ($(_version "$path"))"
+            echo "app:       $path  ($(_version "$path"))"
         else
-            echo "app:     NOT FOUND — just bootstrap-blender-gui"
+            echo "app:       NOT FOUND — install Blender normally; see 'install-hint'"
         fi
         venv="$here/tools/blender-venv"
         py="$venv/bin/python"; [ -x "$py" ] || py="$venv/Scripts/python.exe"
         if [ -x "$py" ]; then
-            echo "wheel:   $("$py" -c 'import bpy; print(bpy.app.version_string)' 2>/dev/null || echo 'present, not importable')"
+            echo "wheel:     $("$py" -c 'import bpy; print(bpy.app.version_string)' 2>/dev/null || echo 'present, not importable')"
         else
-            echo "wheel:   NOT INSTALLED — just bootstrap-art"
+            echo "wheel:     NOT INSTALLED — just bootstrap-art (only asset builds need it)"
         fi
-        echo "asset:   $(_asset)"
         ;;
     *)
-        echo "usage: blender-path.sh {find|version|check|asset|url|install-hint|unattended|explain}" >&2
+        echo "usage: blender-path.sh {find|version|check|install-hint|explain}" >&2
         exit 2 ;;
 esac

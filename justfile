@@ -1308,26 +1308,35 @@ bootstrap-art:
     : > "{{tools_dir}}/.gdignore"
     "{{blender_python}}" -c "import bpy; print('bpy', bpy.app.version_string)"
 
-# Open the generators in the real Blender GUI
+# Open the generators in the LOCALLY INSTALLED Blender
 # (D-20260821-the-blender-gui-is-a-window-on-the-generators).
 #
 # TARGET is an archetype/building/prop id, or one of: all, units,
 # buildings, props. Defaults to every unit, which is the view worth
 # opening on when the question is "do these read as soldiers".
 #
-# NATIVE ONLY, and for the same reason as run-client (D-014): this opens a
-# window for a human to look at. It ignores EDOTMW_RUNTIME and says so.
+# Blender is a NORMAL DESKTOP INSTALL, not something this repo manages.
+# There is no bootstrap recipe and nothing is downloaded into tools/:
+# install Blender the way you install any other application and this
+# finds it. blender-path.sh is the one definition of where it looks, and
+# EDOTMW_BLENDER names one outright if you keep several.
 #
-# It does NOT take the `gpu` gate, and that is a deliberate call rather
-# than an oversight. `gpu` is EXCLUSIVE machine-wide because two
-# simultaneous render measurements on one integrated GPU are "two useless
-# measurements" (host-budget.sh) — a validity argument, not a memory one.
-# This measures nothing; it is a window onto a mesh. Holding the whole
-# machine's GPU slot would stop the owner comparing a model against the
-# running game, and would let another agent's bench-render lock them out
-# of looking at art at all. It is still ~1.3 GB on a laptop that rarely
-# has 2.4 GB free, so it takes `medium` — gated, not exclusive.
-[doc("Open a model in the real Blender GUI (needs bootstrap-blender-gui)")]
+# It opens with YOUR Blender — your preferences, your add-ons, your
+# startup file. An earlier version passed --factory-startup to keep the
+# session pristine; that is isolation a standard desktop tool does not
+# want, and the thing it was protecting (the bake) does not run here
+# unless you press the button.
+#
+# NATIVE ONLY, for the same reason as run-client (D-014): it opens a
+# window for a human to look at. It ignores EDOTMW_RUNTIME.
+#
+# NOT host-gated, deliberately. Every other heavy recipe is admitted
+# against the machine budget (D-20260818) because it is agent work
+# competing with other agents. This is the owner opening their modelling
+# application; they can launch the same binary from the desktop with no
+# queue at all, so a gate here protects nothing and only puts a wait in
+# front of a double-click.
+[doc("Open a model in your locally installed Blender")]
 blender-gui TARGET="units":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1337,72 +1346,8 @@ blender-gui TARGET="units":
         echo "NOTE: no bpy wheel at {{blender_venv}} — the GUI will open, but"
         echo "      the Bake button needs it. Run: {{just_executable()}} bootstrap-art"
     fi
-    gate="$(bash host-gate.sh acquire medium 'blender-gui' $$)"
-    export EDOTMW_GATE_HELD="$gate"
-    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     echo "blender-gui: {{TARGET}} in $blender"
-    # `--factory-startup` so the scene the owner sees is this project's and
-    # not their own Blender preferences, add-ons and startup file. An
-    # add-on that swaps the vertex-colour space or the unit scale would
-    # otherwise make the GUI disagree with the bake for reasons neither
-    # this repo nor its logs can see.
-    "$blender" --factory-startup --python art/gui.py -- --target={{TARGET}}
-
-# Fetch the Blender APPLICATION into tools/ (D-20260821).
-#
-# Separate from `bootstrap-art`, which installs the `bpy` WHEEL. They are
-# two different programs pinned to one version: the wheel bakes
-# generated/ and has no window, the application has a window and does not
-# bake anything this project ships. blender-path.sh is the one definition
-# of where the application is and refuses to confuse the two.
-#
-# Skipped entirely if a matching Blender is already installed — a machine
-# with Blender on it should not be made to download a second copy.
-[doc("Install the pinned Blender application for `just blender-gui`")]
-bootstrap-blender-gui:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if path="$(bash blender-path.sh find 2>/dev/null)"; then
-        echo "OK: Blender $(bash blender-path.sh version) already at $path"
-        bash blender-path.sh check >/dev/null
-        exit 0
-    fi
-    mkdir -p "{{tools_dir}}/blender"
-    asset="$(bash blender-path.sh asset)"
-    url="$(bash blender-path.sh url)"
-    # Whether this platform can be installed unattended, and the guidance if
-    # not, both come from blender-path.sh — it is the only file allowed to
-    # know where Blender lives or comes from (tests/test_blender_gui.gd).
-    if ! bash blender-path.sh unattended; then
-        echo "FAIL: cannot install Blender unattended on this platform." >&2
-        bash blender-path.sh install-hint >&2
-        exit 1
-    fi
-    echo "Fetching ${asset} (~300 MB) ..."
-    case "$asset" in
-        *.zip)
-            curl -fsSL -o "{{tools_dir}}/blender.zip" "$url"
-            unzip -o -q "{{tools_dir}}/blender.zip" -d "{{tools_dir}}"
-            rm -f "{{tools_dir}}/blender.zip" ;;
-        *.tar.xz)
-            curl -fsSL -o "{{tools_dir}}/blender.tar.xz" "$url"
-            tar -xJf "{{tools_dir}}/blender.tar.xz" -C "{{tools_dir}}"
-            rm -f "{{tools_dir}}/blender.tar.xz" ;;
-    esac
-    # Both archives unpack to a versioned directory. Normalise it to
-    # tools/blender so blender-path.sh has one place to look and a version
-    # bump does not strand the old one where it will still be found.
-    extracted="$(find "{{tools_dir}}" -maxdepth 1 -type d -name 'blender-{{blender_version}}*' | head -n 1)"
-    if [ -z "$extracted" ]; then
-        echo "FAIL: could not find the unpacked Blender under {{tools_dir}}" >&2
-        exit 1
-    fi
-    rm -rf "{{tools_dir}}/blender"
-    mv "$extracted" "{{tools_dir}}/blender"
-    # Godot scans every directory under the project, and this one holds a
-    # whole Blender. Same reason bootstrap-art writes it.
-    : > "{{tools_dir}}/.gdignore"
-    echo "OK: Blender $(bash blender-path.sh version) at $(bash blender-path.sh find)"
+    "$blender" --python art/gui.py -- --target={{TARGET}}
 
 # Contact sheet of every authored model, animated, on real terrain (D-063).
 #

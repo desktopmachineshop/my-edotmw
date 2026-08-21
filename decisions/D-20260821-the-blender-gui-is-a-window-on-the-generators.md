@@ -26,13 +26,16 @@ onto the VAT** so the animation can be scrubbed, and bakes only by invoking
    authored coordinates lay a soldier flat on Blender's Z-up floor. The
    **object** is rotated; the mesh data is not. The vertices selected in the
    viewport are the numbers that go into the glTF.
-4. **The wheel and the application are two programs, pinned to one version.**
-   `just bootstrap-art` installs `bpy` from PyPI — Blender with the window
-   manager compiled out, no flag opens a window on it. `just
-   bootstrap-blender-gui` fetches the application. `blender-path.sh` is THE
-   definition of where the application is, in the same role `instance-id.sh`
-   holds for instance identity, and it *warns* rather than refusing on a
-   version mismatch.
+4. **The wheel and the application are two programs, and only the wheel is
+   this repo's business.** `just bootstrap-art` installs `bpy` from PyPI —
+   Blender with the window manager compiled out, no flag opens a window on it
+   — and it stays pinned, because it bakes `generated/` and D-081 requires two
+   runs to be byte-identical. The **application is an ordinary desktop
+   install**: nothing downloads it, nothing pins it, there is no bootstrap
+   recipe for it. `blender-path.sh` FINDS one, in the same role
+   `instance-id.sh` holds for instance identity, and reports a version
+   difference rather than refusing. The GUI opens with the owner's own
+   preferences, add-ons and keymap.
 5. **Baking goes through `art/build.py`.** The Bake button calls
    `art.build.main()`, which is what applies the triangle budgets, writes the
    manifest and re-imports. Calling `write_glb`/`write_vat` directly would
@@ -82,9 +85,10 @@ application. What the GUI genuinely buys, that headless `bpy` cannot:
 
 **Consequences:**
 
-- Two bootstraps now exist and they are easy to confuse. `just doctor` prints
-  `blender-path.sh explain`, which names the pin, the application and the
-  wheel separately and says which is missing.
+- There is still one bootstrap (`bootstrap-art`, the wheel). `just doctor`
+  prints `blender-path.sh explain`, which names the wheel pin, the installed
+  application and the wheel separately, and says how to install Blender when
+  there is none.
 - **Neither is required to play, test or ship.** `generated/` is committed
   (D-081), so a clone with no Blender at all is a working game. The test file
   needs neither.
@@ -118,6 +122,40 @@ one, and the staleness test cannot see the difference because it hashes
 sources rather than outputs. Nothing here changes it and no `generated/` churn
 is committed with this entry; it is written down because the next person to
 rebuild assets on a different machine will otherwise read it as a real diff.
+
+**Amended 2026-08-21, same day, by the owner:** the first version of this
+entry had `just bootstrap-blender-gui` download a pinned Blender into `tools/`
+and launch it with `--factory-startup`, and took the `medium` host-gate slot.
+All three are removed. The owner's reasoning, which is right: Blender is a
+standard desktop tool, the models are rebuilt rarely, and none of that
+isolation is worth its cost.
+
+Taken one at a time, because each was wrong for its own reason:
+
+- **The download.** A repo-managed private copy of a desktop application buys
+  reproducibility that only the *wheel* actually needs — the wheel is what
+  bakes, and it is still pinned. The application only has to open a mesh.
+  `blender-path.sh` already resolved an installed Blender ahead of the
+  downloaded one, so removing the fetch changed the common path not at all.
+- **`--factory-startup`.** Justified as stopping an add-on from making the GUI
+  disagree with the bake. But the bake does not run in this session unless the
+  Bake button is pressed, and that button shells into `art/build.py`, which
+  uses the *wheel*, not the running application. So the flag was protecting
+  against a path that does not exist, at the cost of throwing away the owner's
+  preferences, add-ons and keymap on every launch — for a tool whose entire
+  value is being comfortable to sit in.
+- **The host gate.** Every other heavy recipe is admitted against the machine
+  budget (D-20260818) because it is agent work competing with other agents.
+  This is the owner opening their own modelling application, which they can
+  equally launch from the desktop with no queue at all — so the gate protected
+  nothing and only put a wait in front of a double-click. Note
+  `test_host_budget.gd`'s rule does not fire on it either way: it flags bodies
+  that start docker or Godot, and this starts neither.
+
+The rule worth carrying: **isolation has to be paid for by somebody, and the
+someone here was the only human who uses the tool.** Clause 1 — the GUI owns
+no geometry — is the isolation that actually protects `generated/`, and it is
+enforced by a test rather than by a flag.
 
 **Revisit trigger:** the GUI acquiring any ability to change what ships —
 a round-trip importer, a `.blend` under `art/`, or a bake path that does not

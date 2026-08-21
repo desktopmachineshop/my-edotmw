@@ -475,11 +475,13 @@ blender-path.sh          THE definition of where the Blender APPLICATION is
                         thing nothing else may re-derive. The `bpy` wheel
                         `bootstrap-art` installs has the window manager
                         COMPILED OUT — no flag opens a window on it — so
-                        the GUI needs the separate application, and the
-                        two must be one version or a model shaped in one
-                        and baked by the other is only accidentally the
-                        same model. Warns rather than refusing on a
-                        mismatch; `just doctor` prints all three.
+                        the GUI needs the separate application. That
+                        application is an ORDINARY DESKTOP INSTALL this
+                        repo neither downloads nor pins: it FINDS one, and
+                        EDOTMW_BLENDER names one outright. Only the WHEEL
+                        is pinned, because only the wheel bakes; a version
+                        difference is REPORTED, never refused. `just
+                        doctor` prints all three.
 gate-check.sh            THE log comparisons a real multi-client run must
                         survive (D-20260818-the-fast-loop-carries-the-
                         gate): fog gating of squads and of resource
@@ -870,17 +872,17 @@ Dev loop and tests:
   ~1 GB, and ONLY asset work needs it: everything else, including running
   and testing the game, works from the committed `generated/`. This is
   the WHEEL, which bakes and has no window.
-- `just bootstrap-blender-gui` — fetch the pinned Blender APPLICATION,
-  which has a window and bakes nothing this project ships. Skipped if a
-  matching Blender is already installed; `EDOTMW_BLENDER` names one
-  outright. Neither bootstrap is needed to play, test or ship.
 - `just blender-gui [TARGET]` — open TARGET (an archetype/building/prop
-  id, or `all`/`units`/`buildings`/`props`) in the real Blender GUI
-  (D-20260821). Native only, for the same reason as `run-client`. Edit a
-  generator, press Rebuild in the N-panel, look. The TIMELINE is the VAT.
-  It takes the `medium` host gate, deliberately NOT the exclusive `gpu`
-  one: `gpu` is exclusive because two simultaneous MEASUREMENTS on one
-  integrated GPU are two useless measurements, and this measures nothing.
+  id, or `all`/`units`/`buildings`/`props`) in YOUR OWN locally installed
+  Blender (D-20260821). Native only, for the same reason as `run-client`.
+  Edit a generator, press Rebuild in the N-panel, look. The TIMELINE is
+  the VAT. **There is no bootstrap recipe for Blender and nothing
+  downloads one** — it is a standard desktop tool, installed normally;
+  `blender-path.sh explain` says where it looked. It is also the one
+  heavy recipe that is NOT host-gated and does NOT pass
+  `--factory-startup`: a gate cannot protect a binary the owner can
+  launch from the desktop anyway, and factory startup was guarding a bake
+  that does not run in that session. Not needed to play, test or ship.
 - `just build-assets [ARCHETYPE]` — rebuild models and textures from
   `art/`. Ends in an `--import`, because Godot serves assets from its
   cache and a rebuild it has not imported is invisible.

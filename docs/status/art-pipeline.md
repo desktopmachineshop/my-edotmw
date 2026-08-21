@@ -6,11 +6,18 @@ D-081's pipeline is described as "headless as a library" and why nobody had
 ever *looked* at these models from an angle they chose.
 
 `just blender-gui [TARGET]` opens the **real Blender application** on this
-project's own generators. `just bootstrap-blender-gui` fetches it;
-`blender-path.sh` is THE definition of where it is, in the same role
-`instance-id.sh` holds for instance identity, and `just doctor` prints the
-pin, the application and the wheel separately because the two are easy to
-confuse.
+project's own generators — **your own local install**, with your preferences
+and add-ons. This repo does not download, pin or manage it: install Blender the
+way you install anything else and `blender-path.sh` finds it
+(`EDOTMW_BLENDER` names one if you keep several). It is THE definition of where
+Blender is, in the same role `instance-id.sh` holds for instance identity, and
+`just doctor` prints the wheel pin, the installed application and the wheel
+separately because the two programs are easy to confuse.
+
+**Only the WHEEL is pinned**, because it bakes `generated/` and D-081 requires
+two runs to be byte-identical. The application's version is reported, not
+enforced — a difference is a reason to bake with `just build-assets`, not a
+reason to refuse to open a model.
 
 What it buys that headless `bpy` cannot: an angle you chose, a **scrubbable**
 animation, and a change-look-change loop measured in seconds (edit
@@ -37,6 +44,13 @@ Four things to know before touching it:
   `world_look.gd` rig, no tonemap. `just gen-model-preview` and
   `just test-client` still answer "is the picture right"; this answers "is the
   SHAPE right", which nothing else did well.
+- **It is not host-gated and does not start from factory settings**, unlike
+  every other heavy recipe. Both were in the first version and both came out
+  the same day: a gate cannot protect a binary the owner can launch from the
+  desktop, and `--factory-startup` was guarding the bake — which does not run
+  in this session, and uses the wheel when it does. See the decision entry's
+  amendment; the rule it leaves behind is that **isolation has to be paid for
+  by somebody, and here that was the only human who uses the tool.**
 
 **A hazard found building it, which is not about the GUI: a
 `frame_change_post` handler left registered makes the bpy WHEEL hang forever

@@ -21,6 +21,18 @@ const GUI := "res://art/gui.py"
 const PATH_SH := "res://blender-path.sh"
 
 
+## One recipe body, from its header line to the next recipe's attribute.
+func _recipe_body(header: String) -> String:
+	var justfile := _read("res://justfile")
+	var at := justfile.find(header)
+	assert_true(at > 0, "the recipe %s must exist" % header)
+	if at <= 0:
+		return ""
+	var rest := justfile.substr(at)
+	var end := rest.find("\n[doc(")
+	return rest.substr(0, end) if end > 0 else rest
+
+
 func _read(path: String) -> String:
 	var handle := FileAccess.open(path, FileAccess.READ)
 	assert_not_null(handle, "%s must exist and be readable" % path)
@@ -172,69 +184,83 @@ func test_nothing_else_hardcodes_a_blender_binary_or_download() -> void:
 		"only blender-path.sh may know where Blender comes from: %s" % [offenders])
 
 
-func test_the_version_pin_is_shared_by_the_wheel_and_the_application() -> void:
-	# They are two different programs and must be one version: the mesh API,
-	# the glTF exporter and the EXR writer all move between releases, so a
-	# model shaped in one and baked by the other is only accidentally the
-	# same model.
+func test_the_wheel_is_pinned_and_the_application_is_only_checked() -> void:
+	# The WHEEL is pinned because it bakes generated/ and D-081 requires two
+	# runs to be byte-identical. The APPLICATION is an ordinary desktop
+	# install the owner manages, so its version is compared and warned about,
+	# never enforced — the mesh API and glTF exporter do move between
+	# releases, but that is a reason to bake with the wheel, not a reason to
+	# refuse to open a model in the Blender someone happens to have.
 	assert_true(FileAccess.file_exists("res://.blender-version"),
-		".blender-version must exist — it is the one pin for both")
+		".blender-version must exist — it is the wheel pin")
 	var justfile := _read("res://justfile")
 	assert_true(justfile.contains("blender_version := `cat .blender-version`"),
 		"the justfile's Blender version must come from the pin file")
 	assert_true(justfile.contains("bpy=={{blender_version}}"),
 		"bootstrap-art must install the PINNED wheel")
-	assert_true(justfile.contains("blender-{{blender_version}}"),
-		"bootstrap-blender-gui must unpack the PINNED application")
+
+	var script := _read(PATH_SH)
+	assert_true(script.contains("NOTE:"),
+		"blender-path.sh must NOTE a version difference rather than refusing it")
 
 
 # --- the recipe -------------------------------------------------------
 
 
-func test_the_gui_recipe_starts_from_factory_settings() -> void:
+func test_the_gui_opens_the_owners_own_blender() -> void:
 	var justfile := _read("res://justfile")
-	assert_true(justfile.contains("--factory-startup"),
-		("just blender-gui must launch with --factory-startup: a personal add-on "
-		+ "that changes colour space or unit scale would make the GUI disagree "
-		+ "with the bake for reasons nothing in this repo can see"))
 	assert_true(justfile.contains("--python art/gui.py"),
 		"just blender-gui must run art/gui.py")
 
+	# An earlier version passed --factory-startup to keep the session pristine.
+	# That is isolation a standard desktop tool does not want: it throws away
+	# the owner's preferences, add-ons and keymap every launch, and the thing
+	# it protected — the bake — does not run here unless the button is pressed.
+	#
+	# Anchored to the LAUNCH LINE, not the whole file: the recipe's own comment
+	# explains why the flag was dropped, and a file-wide scan reads that
+	# explanation as the offence. Same trap as `UILayout.box()` above.
+	var launch := ""
+	for line in justfile.split("\n"):
+		if line.contains("--python art/gui.py") and not line.strip_edges().begins_with("#"):
+			launch = line
+	assert_ne(launch, "", "the blender-gui recipe must have a launch line")
+	assert_false(launch.contains("--factory-startup"),
+		("just blender-gui must open the owner's OWN Blender, preferences and "
+		+ "add-ons included; --factory-startup is isolation a desktop tool "
+		+ "does not want. Launch line: %s") % launch)
 
-func test_the_gui_is_gated_but_not_exclusive() -> void:
+
+func test_the_gui_is_not_host_gated() -> void:
+	# Every other heavy recipe is admitted against the machine budget
+	# (D-20260818) because it is AGENT work competing with other agents.
+	# This one is the owner opening their own modelling application, which
+	# they can equally launch from the desktop with no queue — so a gate
+	# here protects nothing and only puts a wait in front of a double-click.
+	#
+	# test_host_budget.gd agrees by construction: its rule fires on a body
+	# that starts docker or Godot, and this starts neither.
+	var body := _recipe_body("blender-gui TARGET=")
+	assert_false(body.contains("host-gate.sh acquire"),
+		"just blender-gui must not be host-gated; it is a desktop tool, not agent work")
+
+
+func test_the_repo_does_not_install_or_manage_blender() -> void:
+	# The owner's call, and the reason is theirs: models are rebuilt rarely,
+	# and a standard desktop tool does not want a repo-pinned private copy of
+	# itself. blender-path.sh FINDS an ordinary install; nothing fetches one.
 	var justfile := _read("res://justfile")
-	var at := justfile.find("blender-gui TARGET=")
-	assert_true(at > 0, "the blender-gui recipe must exist")
-	if at <= 0:
-		return
-	var body := justfile.substr(at, 2200)
+	assert_false(justfile.contains("bootstrap-blender-gui"),
+		"the Blender-download recipe was removed deliberately; do not reintroduce it")
 
-	# Gated: it is ~1.3 GB on a laptop that rarely has 2.4 GB free
-	# (D-20260818-dev-work-is-admitted-against-a-host-budget).
-	assert_true(body.contains("host-gate.sh acquire medium 'blender-gui'"),
-		"just blender-gui must be admitted against the host budget")
+	var body := _recipe_body("blender-gui TARGET=")
+	for fetcher in ["curl", "wget", "Invoke-WebRequest", "unzip", "tar -x"]:
+		assert_false(body.contains(fetcher),
+			"just blender-gui must not fetch or unpack anything (%s)" % fetcher)
 
-	# NOT exclusive. `gpu` is exclusive machine-wide because two simultaneous
-	# render MEASUREMENTS on one integrated GPU are two useless measurements.
-	# This measures nothing, and holding the slot would stop the owner
-	# comparing a model against the running game — or let another agent's
-	# bench-render lock them out of looking at art at all.
-	assert_false(body.contains("acquire gpu 'blender-gui'"),
-		"just blender-gui must not take the exclusive gpu slot; it measures nothing")
-
-
-func test_the_gate_release_does_not_replace_a_teardown_trap() -> void:
-	# A bash `trap ... EXIT` REPLACES, it does not append — the defect
-	# test_host_budget.gd was written for. blender-gui launches no
-	# containers, so its single EXIT trap must be the gate release and
-	# nothing else; more than one would mean one of them never runs.
-	var justfile := _read("res://justfile")
-	var at := justfile.find("blender-gui TARGET=")
-	if at <= 0:
-		return
-	var body := justfile.substr(at, 2200)
-	var end := body.find("bootstrap-blender-gui")
-	if end > 0:
-		body = body.substr(0, end)
-	assert_eq(body.count("trap "), 1,
-		"blender-gui must have exactly one EXIT trap (the gate release) — a second one replaces the first")
+	var script := _read(PATH_SH)
+	assert_false(script.contains("download.blender.org"),
+		("blender-path.sh must not carry a download URL — it finds an installed "
+		+ "Blender and, when there is none, says how to install one normally"))
+	assert_true(script.contains("install-hint"),
+		"blender-path.sh must tell the owner how to install Blender when none is found")

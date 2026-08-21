@@ -36,12 +36,21 @@ What the GUI buys, which headless `bpy` genuinely cannot:
 
 `just bootstrap-art` installs `bpy` from PyPI — Blender's Python module, with
 the window manager and the interface compiled out. There is no flag that opens
-a window on it. Seeing the GUI needs the real Blender APPLICATION, which is a
-separate download; `blender-path.sh` is the one definition of where it is and
-`just bootstrap-blender-gui` fetches one. The two must be the same version, for
-the ordinary reason that a mesh built by one and baked by the other is only
-accidentally the same mesh — `_version_note()` says so out loud rather than
-leaving it to be discovered.
+a window on it. Seeing the GUI needs the real Blender APPLICATION.
+
+**That application is an ordinary desktop install this repo does not manage.**
+Install Blender however you normally would; `blender-path.sh` finds it, and
+`EDOTMW_BLENDER` names one outright if you keep several. Nothing is downloaded
+into `tools/` and there is no bootstrap recipe for it — models are rebuilt
+rarely, and a standard desktop tool does not want a repo-pinned private copy of
+itself. You get YOUR Blender, with your preferences, add-ons and keymap.
+
+The wheel's version is still pinned, because it bakes `generated/` and D-081
+requires two runs to be byte-identical. The application's is only CHECKED:
+`_version_note()` reports a difference rather than refusing, since a mesh built
+in one Blender and baked by another is only accidentally the same mesh — but
+that is a reason to bake with `just build-assets`, not a reason to refuse to
+open a model in the Blender you happen to have.
 
 ## The model lies on its back in Blender, and the fix is a viewing transform
 
@@ -472,10 +481,12 @@ def _assert_the_timeline_moves() -> None:
 def _version_note() -> str:
     """Whether the app you are looking at matches the wheel that bakes.
 
-    A mismatch is not cosmetic. The exporter, the mesh API and the glTF writer
-    all move between Blender versions, so a model built in one and baked by the
-    other is only accidentally the same model — and the difference would show
-    up as a `generated/` diff nobody asked for.
+    Reported, never enforced. The exporter, the mesh API and the glTF writer do
+    move between Blender versions, so a model built in one and baked by another
+    is only accidentally the same model — but the application is the owner's
+    ordinary desktop install, so the right response to a difference is to bake
+    with `just build-assets` (which uses the pinned wheel), not to refuse to
+    open the model.
     """
     pinned = "unknown"
     path = os.path.join(_ROOT, ".blender-version")
@@ -484,8 +495,8 @@ def _version_note() -> str:
             pinned = handle.read().strip()
     running = ".".join(str(n) for n in bpy.app.version)
     ok = running.startswith(".".join(pinned.split(".")[:2]))
-    return (f"Blender {running} vs pinned {pinned}"
-            + ("" if ok else "  — MISMATCH: bake with the pinned version"))
+    return (f"Blender {running}; bpy wheel pinned at {pinned}"
+            + ("" if ok else "  — different series: bake with `just build-assets`"))
 
 
 # --- the N-panel --------------------------------------------------------
