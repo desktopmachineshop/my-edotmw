@@ -30,6 +30,29 @@ things secure it:
   would come apart at one frame in sixty-four. So it is checked rather than
   hoped for, and the error names the frame and the modifier stack to look at.
 
+## Blender is Z-up and the game is Y-up, and the FILE is Z-up
+
+`geom.py` authors in Y-up to match Godot, and `bake.py` exports with
+`export_yup=False` so the numbers reach the engine untouched. That was
+unambiguously right while a Python generator wrote every vertex and no human
+ever opened the result.
+
+It is wrong for a file somebody MODELS in. A Y-up mesh in a Z-up application
+lies on its back: the floor grid is a wall, front and side ortho views are
+swapped, a mirror modifier reflects the wrong axis, gravity points sideways and
+every rigging tool Blender has assumes Z-up. Measured on the first seeded
+militia: 1.68 units "deep" along Y and 0.37 "tall" along Z.
+
+So `art/source/*.blend` is **Z-up, Blender-native**, and the conversion happens
+HERE, at the boundary, on the way out. That is what every glTF exporter does
+and it is the reason `export_yup=False` can stay: by the time `write_glb` sees
+these arrays they are already in the engine's space.
+
+`_to_engine` is the whole conversion, and it is applied to positions and
+normals alike. Getting it wrong is loud rather than subtle — the model arrives
+in the game rotated a quarter turn — but `tests/test_authored_assets.gd` pins
+the direction anyway, because "loud" still means somebody has to be looking.
+
 ## Rest pose
 
 The `.glb` holds the mesh evaluated at `REST_FRAME`, and every VAT row stores
@@ -92,6 +115,18 @@ def has_source(name: str) -> bool:
     return os.path.exists(source_path(name))
 
 
+def _to_engine(v) -> tuple[float, float, float]:
+    """Blender Z-up -> engine Y-up. The inverse of `seed_source._to_blender`.
+
+    A -90 degrees rotation about X: (x, y, z) -> (x, z, -y). Written as an
+    explicit tuple rather than a matrix multiply because it runs once per
+    vertex per frame — 396 x 64 for one militia — and because the whole
+    conversion being three named components is what makes it checkable by eye
+    against its inverse.
+    """
+    return (v[0], v[2], -v[1])
+
+
 def _mesh_objects(bpy):
     """Every renderable mesh, in NAME order. See the module docstring."""
     return sorted((o for o in bpy.context.scene.objects
@@ -115,7 +150,7 @@ def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
         # The object's ORIGIN is what a Part calls its pivot, and what
         # `door_hinge_uv` reads to swing a gate leaf about its hinge.
         t = evaluated.matrix_world.translation
-        origins[obj.name] = (t.x, t.y, t.z)
+        origins[obj.name] = _to_engine((t.x, t.y, t.z))
         mesh = evaluated.to_mesh()
         try:
             mesh.calc_loop_triangles()
@@ -133,8 +168,8 @@ def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
                 n = (rotation @ tri.normal).normalized()
                 for corner, vertex_index in zip(tri.loops, tri.vertices):
                     co = matrix @ mesh.vertices[vertex_index].co
-                    positions.append((co.x, co.y, co.z))
-                    normals.append((n.x, n.y, n.z))
+                    positions.append(_to_engine((co.x, co.y, co.z)))
+                    normals.append(_to_engine((n.x, n.y, n.z)))
                     colours.append(_colour_at(layer, mesh, corner, vertex_index))
                     owners.append(obj.name)
         finally:

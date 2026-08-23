@@ -19,3 +19,11 @@ __pycache__/
 # OS cruft
 Thumbs.db
 .DS_Store
+
+# Blender's rolling save backups. It writes <name>.blend1 (and .blend2 with a
+# higher "Save Versions" preference) beside every file it saves, so these
+# appear the first time anybody presses Ctrl-S in art/source/ and would
+# otherwise be swept into the next commit — doubling the binary weight of the
+# roster with copies of the PREVIOUS state of each model.
+*.blend1
+*.blend2
