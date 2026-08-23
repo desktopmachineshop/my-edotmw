@@ -108,10 +108,24 @@ func rebuild(sim: SquadSim, buildings: BuildingSim = null) -> void:
 					buildings.cell_index_of(building), building_def.vision_range)
 
 
+## Players who see the whole map regardless of coverage — the sandbox
+## dev flag, empty in every real match. Set by the server from
+## `MatchState`; nothing else may write it.
+var reveal_all_players := {}
+
+
 ## O(1): a single dictionary lookup into the owning player's coverage.
 ## This — not a scan over the player's squads — is D-025 part 1's actual
 ## cost claim; `rebuild()` pays the scan once, this pays nothing per call.
 func is_visible(player: int, cell_index: int) -> bool:
+	# The sandbox's full-world visibility (D-20260821, second amendment).
+	# It lives HERE, not at each gate, because squads, buildings and
+	# resource nodes all already funnel through this one answer — a
+	# second data-hiding path is exactly what D-004 forbids. Per PLAYER
+	# rather than match-wide: an AI must keep its honest fog, or the
+	# sandbox quietly makes it a better opponent (ai-opponent.md's rule).
+	if reveal_all_players.has(player):
+		return true
 	var coverage = _coverage.get(_group_of(player), null)
 	if coverage == null:
 		return false

@@ -1163,7 +1163,7 @@ const LOBBY_SET_TEAM := 5
 ## what every caller that predates the scoreboard means.
 static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
 		sandbox := false, instant_build := false, ai_economy_only := false,
-		resources := true, ai_frozen := false) -> PackedByteArray:
+		resources := true, ai_frozen := false, reveal_all := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u8(phase)
@@ -1183,6 +1183,7 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 	buf.put_u8(1 if ai_economy_only else 0)
 	buf.put_u8(1 if resources else 0)
 	buf.put_u8(1 if ai_frozen else 0)
+	buf.put_u8(1 if reveal_all else 0)
 	return buf.data_array
 
 
@@ -1219,6 +1220,7 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		"ai_economy_only": buf.get_u8() == 1,
 		"resources": buf.get_u8() == 1,
 		"ai_frozen": buf.get_u8() == 1,
+		"reveal_all": buf.get_u8() == 1,
 	}
 
 

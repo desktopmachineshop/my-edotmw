@@ -9403,6 +9403,7 @@ func _build_debug_panel() -> void:
 		{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
 		{"key": "resources", "label": "Resource nodes (applies on regen)"},
 		{"key": "ai_frozen", "label": "Freeze AI (no thinking, no orders)"},
+		{"key": "reveal_all", "label": "Full world visibility (fog off, humans only)"},
 	]:
 		var key := String(option["key"])
 		var box := CheckBox.new()

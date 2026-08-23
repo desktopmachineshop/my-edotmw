@@ -31,3 +31,20 @@ exactly where the preview stood — D-096's shared-pose rule); a **Freeze
 AI** checkbox (fifth sandbox option) makes the server skip the brains
 entirely — not a no-op feed, so thawing fires no backlog; and the panel
 window sizes itself to its content, capped below the screen.
+
+**Full world visibility (sixth option), and the desync it found.** The
+reveal hook is `Vision.is_visible` — the one answer every gate already
+reads, so it IS the curve gating rather than a second mechanism — and it
+applies to HUMAN seats only, because an AI that quietly saw more would
+look like a good AI rather than a bug. The client's terrain fog is
+derived locally (D-106) and so has its own half, latched so a flag left
+on does not re-stamp 32,592 cells four times a second.
+
+Finding it cost nothing; what it exposed did. A playtest that used Regen
+reported **106 building desyncs in 55,239 checks**, squads clean:
+`_return_to_lobby` dropped the `visible` baseline and not
+`known_buildings` — D-030's ever-revealed set, which the server hashes,
+against a client whose world had been torn down and whose building ids
+restart at 0. Present since leave-to-lobby existed; the Regen button
+made it reproducible in one click. **Read a building-only desync as a
+question about the ever-revealed SET before reading it as arithmetic.**

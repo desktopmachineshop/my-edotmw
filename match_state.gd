@@ -777,6 +777,13 @@ var resources_enabled := true
 ## freeze for staging fights from the sandbox panel (D-20260821).
 var ai_frozen := false
 
+## While true, every HUMAN seat sees the whole map — fog of war off for
+## the people looking at it, and only for them: an AI that quietly saw
+## more would not look like a bug, it would look like a good AI
+## (ai-opponent.md). Applied through `Vision.reveal_all_players`, the one
+## answer every gate already reads (D-20260821).
+var reveal_all := false
+
 
 ## Admin-only toggle for one of the sandbox flags above. `key` is
 ## "sandbox", "instant_build", "ai_economy_only" or "resources" — a tiny
@@ -797,6 +804,8 @@ func set_sandbox_option(by_player: int, key: String, enabled: bool) -> bool:
 			resources_enabled = enabled
 		"ai_frozen":
 			ai_frozen = enabled
+		"reveal_all":
+			reveal_all = enabled
 		_:
 			return false
 	return true

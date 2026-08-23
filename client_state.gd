@@ -1101,6 +1101,14 @@ func is_admin() -> bool:
 	return player > 0 and int(lobby.get("admin", 0)) == player
 
 
+## The sandbox's full-world-visibility flag, as the SERVER reports it
+## (D-20260821). The client derives its terrain fog locally (D-106), so
+## this half has to know too — a server sending everything still leaves
+## the ground black otherwise.
+func reveal_all() -> bool:
+	return bool(lobby.get("reveal_all", false))
+
+
 ## The world's concrete terrain parameters, once the server has sent them
 ## (D-049). Empty until then — and until then there is no world to draw,
 ## which is exactly the point: the client used to generate terrain on

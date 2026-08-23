@@ -158,6 +158,29 @@ func _init(for_space: TorusSpace) -> void:
 ## version of this WAS in `client.gd`, and it shipped with allied buildings
 ## excluded — a bug no test could have been written against without this move.
 func rebuild(state: ClientState, now: float) -> void:
+	# The sandbox's full visibility (D-20260821). The server is already
+	# sending this player everything; without this the GROUND would stay
+	# black around it, which is the fog half of the same flag rather than
+	# a second mechanism.
+	#
+	# Checked BEFORE `forget_visible` and latched, so a flag somebody
+	# leaves on does not re-stamp the whole map four times a second
+	# (`FOG_INTERVAL`): once everything is VISIBLE, nothing is changing,
+	# and the honest way to say so is to stamp nothing. The latch clears
+	# the moment the flag does, and the ordinary path below then
+	# re-derives the real field from scratch.
+	stamps_last_rebuild = 0
+	if state != null and state.reveal_all():
+		if _revealed_everything:
+			return
+		forget_visible()
+		for cell in range(levels.size()):
+			reveal_cell(cell)
+		_revealed_everything = true
+		stamps_last_rebuild = levels.size()
+		return
+	_revealed_everything = false
+
 	forget_visible()
 	if state == null or state.space == null:
 		return
@@ -192,6 +215,7 @@ func rebuild(state: ClientState, now: float) -> void:
 			continue
 		reveal(state.space.from_index(int(info["cell"])),
 			radius_in_cells(space, building_def.vision_range))
+	stamps_last_rebuild = _stamped.size()
 
 
 ## Start a refresh: everything currently VISIBLE drops back to EXPLORED, and the
@@ -226,6 +250,38 @@ func reveal(centre: Vector2i, radius: int) -> void:
 		var i := space.index(centre + offset)
 		levels[i] = VISIBLE
 		_stamped.append(i)
+
+
+## Whether the whole map is currently stamped VISIBLE by the sandbox's
+## reveal-all flag — the latch that keeps that flag from re-stamping
+## every cell on every refresh. False in every real match.
+var _revealed_everything := false
+
+
+## Stamp one cell VISIBLE, with the same accounting `reveal` does per
+## disk — so the re-shade counting the D-106 cost test reads stays
+## truthful whichever door a cell came through.
+func reveal_cell(cell_index: int) -> void:
+	if cell_index < 0 or cell_index >= levels.size():
+		return
+	levels[cell_index] = VISIBLE
+	_stamped.append(cell_index)
+
+
+## How many cells the LAST `rebuild` call itself stamped — zero when a
+## refresh found nothing to do. Distinct from `stamped_count()` below,
+## which is the standing set: the first version of the reveal-all latch
+## test read that one and could not tell "stamped nothing this time" from
+## "everything is still stamped from last time".
+var stamps_last_rebuild := 0
+
+
+## How many cells the last refresh stamped. Exposed for the same reason
+## `cells_shaded_last_bake` is: "a refresh costs what is being looked at"
+## is a claim about WORK, and a test that measured the clock instead went
+## red on a loaded host with nothing wrong.
+func stamped_count() -> int:
+	return _stamped.size()
 
 
 func level_at(cell_index: int) -> int:

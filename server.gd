@@ -675,6 +675,10 @@ func _process(delta: float) -> void:
 		# AI seats think on the server's clock, after the world has moved
 		# but before it is replicated, so they act on the same tick a human
 		# would be reacting to (D-051).
+		# Full world visibility, refreshed each tick from the seat list
+		# because seats change and a stale set would leave a departed
+		# player's id revealed (D-20260821). HUMAN seats only.
+		_sim.vision.reveal_all_players = _revealed_players()
 		# The sandbox freeze (D-20260821): skipped entirely, not fed a
 		# no-op — a frozen brain must not advance its own timers either,
 		# or thawing it fires every decision it queued while "frozen".
@@ -947,7 +951,8 @@ func _admit_player(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only,
-		_match.resources_enabled, _match.ai_frozen), ENetPacketPeer.FLAG_RELIABLE)
+		_match.resources_enabled, _match.ai_frozen,
+		_match.reveal_all), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -2157,6 +2162,19 @@ func _handle_cheat_regen_map(peer, _data: PackedByteArray) -> void:
 		_broadcast_lobby()
 
 
+## The players the sandbox's full-visibility flag applies to: human
+## seats only (D-20260821). Empty — the shared instance every real match
+## uses — whenever the flag is off.
+func _revealed_players() -> Dictionary:
+	if not _match.reveal_all:
+		return {}
+	var out := {}
+	for seat in _match.seats:
+		if String(seat["kind"]) == "human":
+			out[int(seat["player"])] = true
+	return out
+
+
 ## Buildable ground: passable terrain (no lakes, no mountains) with
 ## nothing already standing on it — UNLESS `def`/`owner` name a compatible
 ## in-place upgrade (playtest fix, D.upgrade_from) for whatever is already
@@ -2704,7 +2722,7 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 				# to set_map_option's float() cast on something like "1"
 				# meant as true.
 				if ["sandbox", "instant_build", "ai_economy_only", "resources",
-						"ai_frozen"].has(parts[0]):
+						"ai_frozen", "reveal_all"].has(parts[0]):
 					ok = _match.set_sandbox_option(player, parts[0], parts[1] != "0")
 					if ok and parts[0] == "ai_economy_only":
 						for brain in _ai_players:
@@ -2791,6 +2809,13 @@ func _return_to_lobby() -> void:
 	# the player could already see — the same defect `_recipients` records.
 	for peer in _clients:
 		_clients[peer]["visible"] = {}
+		# And the BUILDING baseline beside it (D-030's ever-revealed set,
+		# which the server hashes). It was missed here for as long as
+		# leaving to the lobby has existed, and the sandbox Regen button
+		# made it easy to hit: building ids restart at 0 in the next
+		# match, so a stale set hashed old ids against a client that had
+		# torn its world down — 106 building desyncs in one playtest.
+		_clients[peer]["known_buildings"] = {}
 
 	# `return_to_lobby` rolls the next match's map unless the seed is
 	# pinned (D-100), so the seed is worth naming here: it is the one
@@ -3010,7 +3035,7 @@ func _broadcast_lobby() -> void:
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
 		_match.sandbox, _match.instant_build, _match.ai_economy_only,
-		_match.resources_enabled, _match.ai_frozen)
+		_match.resources_enabled, _match.ai_frozen, _match.reveal_all)
 	# `_recipients()`, not `_clients` — the third time this exact drift has
 	# been found, and see that function's own doc for the first two. An AI
 	# seat is a client (D-051), it is told the lobby once at admission, and
