@@ -21,6 +21,18 @@ that exists is a different job from authoring to an undocumented convention,
 and every convention this pipeline has is demonstrated by the seeded file
 rather than written in a document nobody opens.
 
+## The file is Z-UP, because a person opens it
+
+`geom.py` authors Y-up to match Godot. A Y-up mesh in a Z-up application lies
+on its back — wrong floor, swapped ortho views, mirror on the wrong axis, and
+every rigging tool Blender has assuming Z-up. So the seed converts on the way
+IN (`_to_blender`) and `blend_source._to_engine` converts back on the way out.
+The two are exact inverses and a test pins both.
+
+Everything is converted together or nothing is: vertices, the part's PIVOT, and
+the clip ROTATIONS. A pose is a rotation about an axis named in Y-up terms, so
+it is conjugated into the new basis rather than relabelled — see `_key_clips`.
+
 ## What a seeded file contains
 
 One object per `Part`, named for it, with:
@@ -64,6 +76,34 @@ from art.lib.soldier import build as build_soldier           # noqa: E402
 from art.units import ROSTER as UNIT_ROSTER                  # noqa: E402
 
 
+def _to_blender(v) -> tuple[float, float, float]:
+    """Engine Y-up -> Blender Z-up. The inverse of `blend_source._to_engine`.
+
+    A +90 degrees rotation about X: (x, y, z) -> (x, -z, y), since a rotation
+    by theta sends y to y*cos - z*sin and z to y*sin + z*cos. Read it against
+    its inverse `(x, y, z) -> (x, z, -y)`; the pair is small enough to check by
+    eye, which is the point of writing both as explicit tuples.
+    """
+    return (v[0], -v[2], v[1])
+
+
+def _basis(mathutils):
+    """The same rotation as `_to_blender`, as a quaternion.
+
+    Needed because a clip's rotations are expressed about axes named in Y-UP
+    terms. Relabelling them (y becomes z, and so on) gets the handedness wrong
+    on one axis and produces an animation that is subtly mirrored — so the pose
+    is CONJUGATED into the new basis instead, which cannot be got half right.
+    """
+    # +90, matching `_to_blender`. The sign matters and got this wrong once:
+    # a quaternion that is the INVERSE of the vector transform still produces a
+    # model that stands up correctly in the viewport, because the rest pose is
+    # carried by the vertices — only the ANIMATION comes out wrong, and only by
+    # a rotation. It was caught by the round-trip check (0.32 world units
+    # against an expected 1e-7), which is what that check is for.
+    return mathutils.Quaternion(mathutils.Vector((1.0, 0.0, 0.0)), 1.5707963267948966)
+
+
 def _reset(bpy) -> None:
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -83,8 +123,12 @@ def _object_for(bpy, part):
     """
     px, py, pz = part.pivot
     mesh = bpy.data.meshes.new(part.name)
-    mesh.from_pydata([(v[0] - px, v[1] - py, v[2] - pz) for v in part.verts],
-                     [], [tuple(f) for f in part.faces])
+    # Pivot-relative FIRST, in the authored space, then converted — the two
+    # operations do not commute and doing them the other way round puts every
+    # part's geometry at the wrong offset from its own origin.
+    mesh.from_pydata(
+        [_to_blender((v[0] - px, v[1] - py, v[2] - pz)) for v in part.verts],
+        [], [tuple(f) for f in part.faces])
     mesh.update()
 
     layer = mesh.color_attributes.new(name="COLOR_0", type="FLOAT_COLOR",
@@ -94,7 +138,7 @@ def _object_for(bpy, part):
 
     mesh.shade_flat()
     obj = bpy.data.objects.new(part.name, mesh)
-    obj.location = (px, py, pz)
+    obj.location = _to_blender((px, py, pz))
     obj.rotation_mode = "QUATERNION"
     bpy.context.collection.objects.link(obj)
     return obj
@@ -109,11 +153,15 @@ def _key_clips(bpy, model, objects) -> None:
     applied as a location key on every part, since there is no root object to
     put it on and inventing one would change what an artist sees at the origin.
     """
+    import mathutils
     from mathutils import Quaternion, Vector
 
+    # Axes as `clips.py` names them — i.e. in the AUTHORED Y-up space.
     axes = {"x": Vector((1.0, 0.0, 0.0)),
             "y": Vector((0.0, 1.0, 0.0)),
             "z": Vector((0.0, 0.0, 1.0))}
+    basis = _basis(mathutils)
+    basis_inv = basis.inverted()
 
     for clip_index, clip in enumerate(CLIP_ORDER):
         for f in range(FRAMES_PER_CLIP):
@@ -127,10 +175,11 @@ def _key_clips(bpy, model, objects) -> None:
                 for axis, angle in rotations:
                     if angle:
                         q = Quaternion(axes[axis], angle) @ q
-                obj.rotation_quaternion = q
-                obj.location = (part.pivot[0] + pose.offset[0],
-                                part.pivot[1] + pose.offset[1],
-                                part.pivot[2] + pose.offset[2])
+                # Conjugate into Blender's basis; see `_basis`.
+                obj.rotation_quaternion = basis @ q @ basis_inv
+                obj.location = _to_blender((part.pivot[0] + pose.offset[0],
+                                            part.pivot[1] + pose.offset[1],
+                                            part.pivot[2] + pose.offset[2]))
                 obj.keyframe_insert("rotation_quaternion", frame=frame)
                 obj.keyframe_insert("location", frame=frame)
 

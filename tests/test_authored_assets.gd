@@ -133,6 +133,55 @@ func test_the_roster_is_actually_migrated() -> void:
 		"art/source/ exists but holds no .blend; the roster is not migrated")
 
 
+# --- the file is Z-up, the game is Y-up --------------------------------
+
+
+func test_the_authored_files_are_blender_native_z_up() -> void:
+	# `geom.py` authors Y-up to match Godot, which was right while a generator
+	# wrote every vertex and nobody opened the result. It is wrong for a file
+	# somebody MODELS in: a Y-up mesh in a Z-up application lies on its back —
+	# wrong floor, swapped ortho views, mirror on the wrong axis, and every
+	# rigging tool assuming Z-up. Measured on the first seeded militia before
+	# this was fixed: 1.68 units "deep" along Y, 0.37 "tall" along Z.
+	#
+	# So the sources are Z-up and the conversion happens at the BAKE boundary,
+	# which is what every glTF exporter does.
+	var seed := _read("res://art/seed_source.py")
+	var bake := _read("res://art/lib/blend_source.py")
+	assert_true(seed.contains("_to_blender"),
+		"the seeder must convert into Blender's Z-up space")
+	assert_true(bake.contains("_to_engine"),
+		"the bake must convert back into the engine's Y-up space")
+
+	# The pair must be exact inverses, written as explicit tuples so that they
+	# can be checked against each other by eye. (x,y,z)->(x,-z,y) one way,
+	# (x,y,z)->(x,z,-y) back.
+	assert_true(seed.contains("(v[0], -v[2], v[1])"),
+		"art/seed_source.py's _to_blender must be (x, y, z) -> (x, -z, y)")
+	assert_true(bake.contains("(v[0], v[2], -v[1])"),
+		"art/lib/blend_source.py's _to_engine must be (x, y, z) -> (x, z, -y)")
+
+
+func test_the_pose_basis_matches_the_vertex_conversion() -> void:
+	# The sign here got it wrong once, and the failure is the interesting kind:
+	# a basis quaternion that is the INVERSE of the vertex transform still
+	# produces a model that stands up correctly in the viewport, because the
+	# rest pose is carried by the vertices. Only the ANIMATION comes out
+	# rotated — invisible in Blender, wrong in the game.
+	#
+	# Caught by the round-trip check (0.32 world units against an expected
+	# 1e-7), which is why that check exists; pinned here so it cannot come back.
+	var seed := _read("res://art/seed_source.py")
+	assert_true(seed.contains("Vector((1.0, 0.0, 0.0)), 1.5707963267948966"),
+		("art/seed_source.py's _basis must be a POSITIVE 90 degrees about X, "
+		+ "matching _to_blender: a rotation by theta sends y to y*cos - z*sin, "
+		+ "so (x, y, z) -> (x, -z, y) is +90, not -90"))
+	assert_true(seed.contains("basis @ q @ basis_inv"),
+		("a clip's rotations are named in Y-UP terms, so the pose must be "
+		+ "CONJUGATED into the new basis rather than relabelled — relabelling "
+		+ "gets the handedness wrong on one axis and mirrors the animation"))
+
+
 # --- the migration script cannot eat an artist's work -------------------
 
 

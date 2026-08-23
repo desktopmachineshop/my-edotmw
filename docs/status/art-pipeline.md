@@ -22,6 +22,19 @@ it.
 
 Six things to know before touching it:
 
+- **The files are Blender-native Z-UP; the engine's Y-up conversion happens at
+  the BAKE boundary.** `geom.py` authors Y-up to match Godot, and the first
+  seeded files inherited that — so every soldier lay on its back in Blender
+  (militia: 1.68 "deep" in Y against 0.37 "tall" in Z). Wrong floor, swapped
+  ortho views, mirror on the wrong axis, and every rigging tool assuming Z-up.
+  `seed_source._to_blender` and `blend_source._to_engine` are exact inverses
+  and a test pins both. **The sign of the pose basis is the subtle half**: a
+  basis that is the INVERSE of the vertex transform still stands the model up
+  in the viewport, because the rest pose lives in the vertices — only the
+  animation comes out rotated, invisible in Blender and wrong in the game. The
+  round-trip check caught it at 0.32 world units against an expected 1e-7.
+  `docs/playtest/p33-blender-gui-militia.png` is what a correct file looks
+  like when opened.
 - **Vertex order is the mesh/VAT column contract, and it is enforced.** Objects
   are visited in NAME order, so adding one cannot renumber the columns of the
   others; and the topology is asserted constant across all 64 frames. A

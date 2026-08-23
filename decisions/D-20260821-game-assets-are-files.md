@@ -119,6 +119,41 @@ animation, nothing inside out.
   `generated/`, the byte-identical requirement and the manifest all still
   apply, unchanged, to both sources.
 
+**Amended 2026-08-23 — the sources are Z-UP, and the first version was not.**
+Found by installing a real Blender and *looking*, which is the one check this
+whole entry could not do on the day it landed.
+
+`geom.py` authors Y-up to match Godot and `bake.py` exports `export_yup=False`,
+both unambiguously right while a Python generator wrote every vertex and nobody
+opened the result. The first seeded files inherited that convention, so **every
+soldier lay on its back in Blender** — measured on militia: 1.68 units "deep"
+along Y against 0.37 "tall" along Z. For a file somebody MODELS in that is not
+cosmetic: the floor grid is a wall, front and side ortho views are swapped, a
+mirror modifier reflects the wrong axis, gravity points sideways, and every
+rigging tool Blender has assumes Z-up.
+
+`art/source/*.blend` is Blender-native Z-up now, and the conversion happens at
+the bake boundary (`blend_source._to_engine`, the inverse of
+`seed_source._to_blender`) — which is what every glTF exporter does, and the
+reason `export_yup=False` can stay: by the time `write_glb` sees the arrays
+they are already in the engine's space. `docs/playtest/p33-blender-gui-militia.png`
+is the picture.
+
+**The interesting half is the bug inside the fix.** A clip's rotations are
+named in Y-up terms, so the pose has to be CONJUGATED into the new basis
+rather than relabelled — and the basis quaternion was written at -90 degrees
+when `_to_blender` is +90. That failure is the nasty kind: **a basis that is
+the inverse of the vertex transform still stands the model up correctly in the
+viewport**, because the rest pose is carried by the vertices. Only the
+ANIMATION comes out rotated — invisible in Blender, wrong in the game. The
+round-trip check caught it (0.32 world units against an expected 1e-7), which
+is exactly what that check is for, and `tests/test_authored_assets.gd` pins
+both the sign and the conjugation now.
+
+Re-verified after the change: equivalence back to **2.1 x 10^-7**, every
+triangle/vertex/VAT count in the manifest **unchanged**, and
+`just gen-model-preview` still `VERDICT: ok`.
+
 **Revisit trigger:** a single source exceeding ~10 MB or the roster reaching
 D-070's 90–130 models, either of which makes the LFS question live again. Also
 if the topology-stability assertion in clause 2 starts firing on legitimate
