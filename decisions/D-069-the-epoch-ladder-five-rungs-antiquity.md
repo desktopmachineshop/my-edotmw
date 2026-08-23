@@ -1,4 +1,4 @@
-### D-069 · 2026-08-04 · Provisional — the epoch ladder: five rungs, antiquity to high medieval
+### D-069 · 2026-08-04 · Superseded by D-20260823-fantasy-civs-on-a-four-epoch-ladder (was Provisional) — the epoch ladder: five rungs, antiquity to high medieval
 **Decision:** **Five epochs**, spanning antiquity to the high medieval
 period. The ladder is **shared by every civ** — same count, same gate
 shape — and civs differ in what each rung *contains*, never in its
