@@ -51,6 +51,13 @@ justfile text eol=lf
 *.exr binary
 *.png binary
 
+# Authored asset sources (D-20260821-game-assets-are-files). art/source/*.blend
+# is the SOURCE OF TRUTH for every unit and building, so a silent CRLF
+# substitution inside one does not corrupt a build product that can be
+# regenerated — it corrupts the original. Same rule as the line above, higher
+# stakes.
+*.blend binary
+
 # GUT's bundled fonts. Git's own auto-detection already calls these binary,
 # but the catch-all above names them for the first time, and a font is
 # exactly the class of file where a CRLF substitution corrupts silently

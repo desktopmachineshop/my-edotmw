@@ -183,6 +183,15 @@ doctor:
         exit 1
     fi
 
+    # --- art tooling (D-20260821) --------------------------------------
+    # Reported, never required. Neither the wheel nor the application is
+    # needed to run, test or play the game: generated/ is committed, so a
+    # clone with no Blender at all is a working game (D-081). Reported
+    # anyway because the two are easy to confuse and only one of them has
+    # a window — blender-path.sh's header says which.
+    echo
+    bash blender-path.sh explain | sed 's/^/blender: /'
+
     # --- host budget (D-20260818) -------------------------------------
     # Reported, never enforced here: doctor's job is to say what the
     # machine looks like, and a preflight that FAILED on a busy host
@@ -1298,6 +1307,80 @@ bootstrap-art:
     # ~1 GB of Blender's own bundled textures and imports them.
     : > "{{tools_dir}}/.gdignore"
     "{{blender_python}}" -c "import bpy; print('bpy', bpy.app.version_string)"
+
+# Open an authored asset in your LOCALLY INSTALLED Blender
+# (D-20260821-game-assets-are-files).
+#
+# TARGET is a unit or building id — `art/source/<TARGET>.blend`, which is
+# an ordinary Blender file and the SOURCE OF TRUTH for that model. Model
+# it, rig it, animate it, save it, then `just build-assets`.
+#
+# With no TARGET it lists what is there. There is deliberately no "open
+# everything": these are files now, and a file is opened one at a time.
+#
+# Blender is a NORMAL DESKTOP INSTALL, not something this repo manages.
+# There is no bootstrap recipe and nothing is downloaded into tools/:
+# install Blender the way you install any other application and this
+# finds it. blender-path.sh is the one definition of where it looks, and
+# EDOTMW_BLENDER names one outright if you keep several.
+#
+# It opens with YOUR Blender — your preferences, your add-ons, your
+# startup file. No --factory-startup, no wrapper script and no custom
+# panel: it is your Blender opening your file, which is the point.
+#
+# NATIVE ONLY, for the same reason as run-client (D-014): it opens a
+# window for a human to look at. It ignores EDOTMW_RUNTIME.
+#
+# NOT host-gated, deliberately. Every other heavy recipe is admitted
+# against the machine budget (D-20260818) because it is agent work
+# competing with other agents. This is the owner opening their modelling
+# application; they can launch the same binary from the desktop with no
+# queue at all, so a gate here protects nothing and only puts a wait in
+# front of a double-click.
+[doc("Open art/source/<TARGET>.blend in your locally installed Blender")]
+blender-gui TARGET="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{TARGET}}" ]; then
+        echo "Authored sources in art/source/ — pass one as TARGET:"
+        for f in art/source/*.blend; do
+            [ -e "$f" ] || { echo "  (none yet — {{just_executable()}} seed-art-source)"; break; }
+            echo "  $(basename "$f" .blend)"
+        done
+        echo
+        echo "  {{just_executable()}} blender-gui militia"
+        exit 0
+    fi
+    blend="art/source/{{TARGET}}.blend"
+    if [ ! -f "$blend" ]; then
+        echo "FAIL: no $blend" >&2
+        echo "      {{just_executable()}} blender-gui   # lists what exists" >&2
+        exit 1
+    fi
+    blender="$(bash blender-path.sh find)"
+    bash blender-path.sh check >/dev/null
+    echo "blender-gui: $blend in $blender"
+    echo "  edit, save (Ctrl-S), then: {{just_executable()}} build-assets {{TARGET}}"
+    "$blender" "$blend"
+
+# Seed art/source/*.blend from the LEGACY generators (D-20260821).
+#
+# A migration, run once per model, and never part of the build. It
+# refuses to overwrite an existing source file, because that file is the
+# source of truth now and a generator writing over it would be a script
+# discarding an artist's work.
+[doc("Create art/source/*.blend from the legacy generators (one-time)")]
+seed-art-source ONLY="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    args=""
+    [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
+    "{{blender_python}}" art/seed_source.py $args
 
 # Contact sheet of every authored model, animated, on real terrain (D-063).
 #

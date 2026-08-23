@@ -1,0 +1,22 @@
+Godot only checks that this file EXISTS; its contents are ignored, so this
+note is safe to keep here where it will actually be read.
+
+Why art/source/ is hidden from Godot's resource filesystem
+(D-20260821-game-assets-are-files):
+
+Godot 4 imports .blend files natively by INVOKING BLENDER. On a machine with
+Blender installed — which, after this change, is every machine that authors
+assets — the editor and every `--import` would launch Blender once per source
+file and turn each into a scene resource.
+
+That is pure cost here. Nothing at runtime reads a .blend: the shipping assets
+are generated/models/*.glb and generated/vat/*.exr, baked by `just build-assets`
+through the pinned bpy wheel, which is what enforces the triangle budgets, the
+VAT column contract and D-081's byte-identical requirement. A second, parallel
+import path producing scenes nothing loads would be slow, would differ from the
+bake, and would put .import files in a directory of binary sources.
+
+Note this does NOT hide the files from the staleness hash. tests/
+test_art_assets.gd reaches them through DirAccess against the project
+directory, which falls through to the real filesystem — verified, because a
+.blend edited and not rebuilt MUST still fail the suite.
