@@ -326,6 +326,14 @@ func test_hash_agreement_survives_conceal_casualties_and_reveal() -> void:
 	var defender_def := _def(6.0, 3.5, 3.0, 0.0)  # deals nothing back
 	defender_def.health = 5.0
 	defender_def.squad_size = 30
+	# Unbreakable on purpose: this test is about HASH AGREEMENT across
+	# conceal/casualties/reveal (D-025), not about morale. B parks with
+	# its back to its attacker, and once rear shock existed
+	# (D-20260819-morale-reads-the-fight) it routed at ×2.5 morale cost —
+	# and a routed squad refuses the order home, so it was never revealed
+	# and the test failed about fog while nothing about fog had changed.
+	defender_def.morale = 1000000.0
+	defender_def.rout_threshold = 0.0
 	var b := sim.add_squad(defender_def, 2, Vector2i(1, 0))  # adjacent to A: starts visible
 
 	# Tuned so B takes REPEATED PARTIAL casualties (roughly 2 every ~10

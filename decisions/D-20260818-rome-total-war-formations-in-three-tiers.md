@@ -1,7 +1,11 @@
 # D-20260818 · Rome: Total War formation behaviour, in three tiers
 
-**Status:** PROPOSED — not accepted, not implemented. Written for the
-owner to approve or reject.
+**Status:** ACCEPTED — by the owner, 2026-08-18, and in a wider form
+than this document proposed: **all three tiers**, including Tier 3 and
+the D-006 amendment Tier 3 requires. See the acceptance note at the end;
+the body below is preserved as written, so "Proposed: take Tier 1 and
+Tier 2. Do not take Tier 3" is the recommendation the owner overrode,
+not the decision in force.
 
 **Amends:** D-006 (derived soldier positions), whose corrected revisit
 trigger this pulls. **Relates to:** D-019 (formations and morale are the
@@ -137,3 +141,35 @@ style — written down before the code — and they must include a criterion
 that a human plays a battle and says the fight reads as a fight, per
 D-085's criterion 14 and the lesson that "landed" and "meets the criteria"
 are different claims.
+
+---
+
+**Accepted 2026-08-18 — all three tiers, by the owner.** The owner chose
+Tier 1, Tier 2 AND Tier 3, overriding this document's own "do not take
+Tier 3" recommendation, and with it accepted that D-006 clause 1 must be
+amended — Tier 3 is emergent per-soldier movement, which is exactly
+D-006's corrected revisit trigger, so the founding rule changes by
+explicit amendment rather than eroding silently. Three consequences of
+accepting the wider form:
+
+- **The D-006 amendment is now in scope and mandatory before Tier 3
+  code.** It must state what is newly allowed, what remains forbidden,
+  and what the new revisit trigger is. It is recorded in D-006's own
+  file, per `decisions/README.md` rule 1.
+- **The fairness argument above is not voided by the acceptance — it
+  becomes the constraint Tier 3 is built under.** "Combat outcome cannot
+  depend on where anybody's camera is pointing" survives as a hard rule;
+  what the owner overrode is the conclusion that the rule makes Tier 3
+  untakeable, not the rule itself.
+- **Implementation lands tier by tier, one PR each, in order** — Tier 1
+  (cosmetic, legal under D-006 today), then Tier 2 (derived pairing,
+  pure function of replicated state, nothing new on the wire), then
+  Tier 3 (after the D-006 amendment).
+
+**Extended same day:** a gap analysis against RTW-quality battles found
+most of the remaining distance outside these tiers (morale terms,
+control verbs, charges, visible deaths), and the owner ordered all of it
+closed, naming player count as the budget that gives way. The programme,
+its workstream order and its exit criteria live in
+**D-20260818-battle-quality-outranks-player-count**; these three tiers
+are its workstreams 1, 3 and 10.

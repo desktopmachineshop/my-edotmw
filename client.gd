@@ -114,6 +114,9 @@ var _connected := false
 var _unit_def: UnitDef
 var _squad_nodes := {}  # squad id -> PrimitiveUnit
 var _terrain_root: Node3D
+# The fallen (D-20260819-a-casualty-is-visible). Built with the terrain,
+# freed with the match; its lattice mirrors are its own children.
+var _corpse_layer: CorpseLayer = null
 var _camera: Camera3D
 var _camera_target := Vector3.ZERO
 var _camera_height := 40.0
@@ -746,6 +749,14 @@ func _begin_terrain() -> void:
 	_fog = TerrainFog.new(space)
 	_fog_texture = null
 	_fog_updated_at = -1.0
+
+	# The corpse layer tiles the way the terrain does — the whole layer at
+	# every lattice copy — and the drain that feeds it only records while
+	# this flag says a renderer is reading (D-20260819).
+	_state.record_corpses = true
+	_corpse_layer = CorpseLayer.new()
+	add_child(_corpse_layer)
+	_corpse_layer.set_offsets(space.lattice_offsets())
 	# Bound before the first frame is drawn rather than at the first
 	# throttled update: the shader's default is fully lit, so a material
 	# with no fog yet would flash the whole unexplored map for a frame.
@@ -1052,6 +1063,14 @@ func _refresh_squads() -> void:
 	var offsets := _state.space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
 
+	# The fallen, before the living: casualty events recorded this frame
+	# become corpses at the slots the restamp is about to vacate
+	# (D-20260819-a-casualty-is-visible), and the falls still playing get
+	# their one phase write.
+	_drain_casualty_sites()
+	if _corpse_layer != null:
+		_corpse_layer.update(_now)
+
 	for squad_id in _state.curves:
 		# Nothing to draw until the server has said what this squad is.
 		# Rendering a guessed strength would put every soldier in the
@@ -1101,7 +1120,8 @@ func _refresh_squads() -> void:
 		var comp_info: Dictionary = _state.composition.get(squad_id, {})
 		var world_radius: float = Formation.footprint(
 			String(comp_info.get("shape", "line")), _state.alive_of(squad_id),
-			float(comp_info.get("spacing", 1.0)))["radius"]
+			float(comp_info.get("spacing", 1.0)),
+			_state.files_of(squad_id))["radius"]
 
 		# Every lattice copy that is on screen, and the squad is drawn at
 		# ALL of them (D-20260818-entities-are-drawn-at-every-visible-copy).
@@ -1138,18 +1158,53 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var transforms := _state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset))
+		var detail := _detail_for(centre + offset)
+		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
 		#
-		# Eased FIRST, so soldiers walk to their slots when the squad turns
+		# A MELEE is a duel pass (Tier 1 of
+		# D-20260818-rome-total-war-formations-in-three-tiers): each man is
+		# paired with his nearest opponent, faced at him and stepped into
+		# contact BEFORE easing — so `_motion.ease` below glides men to a
+		# new opponent after a casualty restamp instead of snapping them.
+		# The pairing is recomputed from both squads' derived positions
+		# every frame, held stable by its inputs rather than by memory
+		# (the same trick as AnimationState.phase_offset), which is what
+		# keeps this inside D-006 clause 2. The opponent squad is derived
+		# at this squad's own detail tier — the two are adjacent, and
+		# pairing against men the enemy is not drawing would aim strikes
+		# at empty ground.
+		var doing := _activity_for(squad_id)
+		var dueling: bool = int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
+			and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0
+		var paired := PackedInt32Array()
+		var enemy_transforms: Array[Transform3D] = []
+		if dueling:
+			enemy_transforms = _state.soldier_transforms_lod(
+				int(doing["enemy_squad"]), _now, detail)
+			dueling = not enemy_transforms.is_empty()
+		if dueling and not transforms.is_empty():
+			# The torus tax (Engagement's own note): an enemy engaged
+			# across the seam derives a whole map away in canonical
+			# coordinates, and unaligned the duel would pair every man
+			# with a phantom on the far side of the world.
+			enemy_transforms = Engagement.shifted(enemy_transforms,
+				Engagement.aligning_offset(transforms[0].origin,
+					enemy_transforms[0].origin, offsets))
+			paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			transforms = CosmeticDuel.engage(
+				transforms, enemy_transforms, paired, _state.terrain_sampler)
+
+		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
 		var eased := _motion.ease(squad_id, transforms, _frame_delta)
-		var doing := _activity_for(squad_id)
-		var decorated := CosmeticOffset.decorate_activity(
-			eased, _now, 1.0, int(doing["activity"]), doing["toward"])
+		var speed := _state.squad_speed(squad_id, _now)
+		var decorated := CosmeticDuel.strike_decorate(
+				eased, enemy_transforms, paired, _now, speed) if dueling \
+			else CosmeticOffset.decorate_activity(
+				eased, _now, 1.0, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1158,7 +1213,6 @@ func _refresh_squads() -> void:
 		# every client agrees by construction, the same shape as D-052's
 		# colour. Writes into the MultiMesh only when the clip or the rate
 		# actually changes; the per-frame cost here is a comparison.
-		var speed := _state.squad_speed(squad_id, _now)
 		var clip := AnimationState.clip_for(
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
@@ -2787,6 +2841,43 @@ var _motion := SoldierMotion.new()
 var _frame_delta := 0.0
 
 
+## Lay down the men this frame's casualty events subtracted
+## (D-20260819-a-casualty-is-visible). The wire said which squads lost men
+## and that they FELL; the slots the restamp vacates are [after, before)
+## (D-024), and their transforms are derived here exactly as the living
+## are drawn — same curve, same formation function, same sampler — so a
+## body lies where the man was standing.
+func _drain_casualty_sites() -> void:
+	if _corpse_layer == null:
+		return
+	for site in _state.take_casualty_sites():
+		var id := int(site["id"])
+		if not _state.composition.has(id) or not _state.curves.has(id):
+			# Wiped and concealed in the same tick — nothing to derive
+			# from, and inventing a place for the bodies is worse than
+			# skipping them.
+			continue
+		var info: Dictionary = _state.composition[id]
+		var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
+		if def == null or def.model_id == &"":
+			# Primitive-tier squads have no VAT to pose a corpse from;
+			# missing art costs the bodies, never the game (D-081).
+			continue
+		var before := int(site["before"])
+		var after := int(site["after"])
+		var transforms := Formation.soldier_transforms(
+			_state.curves[id], _now, before, String(info.get("shape", "line")),
+			float(info.get("spacing", 1.0)), _state.space,
+			_state.terrain_sampler, _state.terrain_passable)
+		var owner := int(info.get("owner", -1))
+		var colour := _state.colour_of(owner)
+		for slot in range(after, mini(before, transforms.size())):
+			var xform: Transform3D = transforms[slot]
+			var cell := _state.space.world_to_cell(xform.origin)
+			_corpse_layer.spawn(def.model_id, owner, xform, _now,
+				TerrainChunk.fog_uv(_state.space, cell, -1), colour)
+
+
 ## Every live squad's position and owner, rebuilt ONCE per frame.
 ##
 ## The first version scanned `_state.composition` inside a per-squad
@@ -2813,6 +2904,7 @@ func _refresh_enemy_scan() -> void:
 		if _state.alive_of(id) <= 0 or not _state.curves.has(id):
 			continue
 		_enemy_scan.append({
+			"id": int(id),
 			"owner": int(_state.composition[id].get("owner", -2)),
 			"at": _state.squad_world_position(id, _now),
 		})
@@ -2828,7 +2920,7 @@ func _refresh_enemy_scan() -> void:
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
-		"is_ranged": false, "interval": 0.0,
+		"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 	}
 	var info: Dictionary = _state.composition.get(squad_id, {})
 	if info.is_empty() or _state.space == null:
@@ -2841,7 +2933,7 @@ func _activity_for(squad_id) -> Dictionary:
 		return {
 			"activity": CosmeticOffset.Activity.WORKING,
 			"toward": _state.squad_world_position(squad_id, _now),
-			"is_ranged": false, "interval": 0.0,
+			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 		}
 
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
@@ -2853,6 +2945,7 @@ func _activity_for(squad_id) -> Dictionary:
 	var mine := int(info.get("owner", -1))
 	var best_distance := def.attack_range
 	var toward := Vector3.ZERO
+	var enemy_squad := -1
 	for entry in _enemy_scan:
 		if int(entry["owner"]) == mine:
 			continue
@@ -2860,6 +2953,7 @@ func _activity_for(squad_id) -> Dictionary:
 		if d < best_distance:
 			best_distance = d
 			toward = entry["at"]
+			enemy_squad = int(entry["id"])
 	if toward == Vector3.ZERO:
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
@@ -2869,6 +2963,7 @@ func _activity_for(squad_id) -> Dictionary:
 	return {
 		"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward,
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
+		"enemy_squad": enemy_squad,
 	}
 
 
@@ -3086,6 +3181,18 @@ var _placing_drag_start_world := Vector3.INF
 ## already selected skips this entirely and sends the order directly
 ## (see `_order_selected`); this is only for the button-driven path.
 var _targeting_building := -1
+# The Charge button's arming half (D-20260819-a-charge-is-spent-on-its-
+# impact): the next right-click orders the charge, mirroring the Target
+# button's arm/click split.
+var _charge_arming := false
+# The drag-order gesture (D-20260819-a-drag-draws-the-battle-line):
+# right-press records, release decides click vs stroke. INF = no press
+# pending.
+var _order_press := Vector2.INF
+var _order_press_alt := false
+var _order_press_ctrl := false
+var _order_press_shift := false
+var _order_drag_line: MeshInstance3D = null
 
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
@@ -5078,7 +5185,16 @@ func _squad_control_actions(def_id: StringName) -> Array:
 	# Formation, for any unit (D-058). First, because it is the thing a
 	# player changes most often once they know it exists.
 	var current := String(_state.composition.get(_selected[0], {}).get("shape", ""))
-	for formation in FormationRoster.offered():
+	var choices: Array = FormationRoster.offered().duplicate()
+	# Plus whatever this unit's def GRANTS it (D-20260819-a-formation-is-
+	# a-fighting-style) — a spearman civ's shield wall appears here with
+	# no script naming the civ.
+	if def != null:
+		for granted in def.formations:
+			var extra := FormationRoster.by_id(StringName(granted))
+			if extra != null and not choices.has(extra):
+				choices.append(extra)
+	for formation in choices:
 		out.append({
 			# The current one is marked rather than hidden: a row where one
 			# is ticked says "these are your options and this is where you
@@ -5092,6 +5208,33 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
+		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
+			"kind": "charge_arm", "id": &""})
+		# Standing orders (D-20260819-stances). Pressed state is the wire's
+		# own stance byte, so the panel cannot drift from the server.
+		var stance := _state.stance_of(int(_selected[0]))
+		out.append({"label": "Guard", "hint": "Guard: hold position, no pursuit",
+			"current": (stance & SquadSim.STANCE_GUARD) != 0,
+			"kind": "stance", "id": &"guard"})
+		out.append({"label": "Hold fire", "hint": "Hold fire until ordered to attack",
+			"current": (stance & SquadSim.STANCE_HOLD_FIRE) != 0,
+			"kind": "stance", "id": &"hold_fire"})
+		out.append({"label": "Run", "hint": "Run: faster while fresh, spends fatigue",
+			"current": (stance & SquadSim.STANCE_RUN) != 0,
+			"kind": "stance", "id": &"run"})
+		if def.armour_class == "missile":
+			out.append({"label": "Skirmish", "hint": "Skirmish: step back from enemies that close in, keep shooting",
+				"current": (stance & SquadSim.STANCE_SKIRMISH) != 0,
+				"kind": "stance", "id": &"skirmish"})
+	# Width orders (D-20260819-facing-and-width-are-orders): frontage is
+	# what Tier 2's contact count rewards, so this is an attack control,
+	# not a cosmetic one. Facing rides Alt+right-click — see
+	# _face_selected — because a direction wants a point, not a button.
+	out.append({"label": "Widen", "hint": "One file wider — more men fight (Alt+right-click sets facing)",
+		"kind": "width", "id": &"wider"})
+	out.append({"label": "Narrow", "hint": "One file narrower — deeper, tougher to flank",
+		"kind": "width", "id": &"narrower"})
 	if def != null and def.carry_capacity > 0:
 		out.append({"label": "Gather", "hint": "Gather here, or right-click a node", "kind": "gather", "id": &""})
 	return out
@@ -5313,6 +5456,12 @@ func _on_action_pressed(index: int) -> void:
 			_stop_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
+		"width":
+			_nudge_width(1 if String(action["id"]) == "wider" else -1)
+		"charge_arm":
+			_charge_arming = true
+		"stance":
+			_toggle_stance(String(action["id"]))
 		"target_select":
 			# Arms the pick — the actual order goes out on the next
 			# right-click, handled in `_handle_mouse_button` /
@@ -5415,6 +5564,173 @@ func _set_formation(shape: StringName) -> void:
 		_peer.send(0, NetProtocol.encode_order_formation(int(squad), String(shape)),
 			ENetPacketPeer.FLAG_RELIABLE)
 	print("client: %d squad(s) to %s formation" % [_selected.size(), shape])
+
+
+## Face the selection at a clicked point (D-20260819). The angle is
+## QUANTISED to 1/4096 of a turn before it leaves the client — the sim,
+## the hash and every machine reconstruct from the same integer.
+func _face_selected(screen_position: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var world := _world_under(screen_position)
+	if world == Vector3.INF:
+		return
+	var offsets := _state.space.lattice_offsets()
+	var faced := 0
+	for squad in _selected:
+		var here := _state.squad_world_position(int(squad), _now)
+		# The clicked point may be on a different lattice copy than the
+		# squad's canonical position — the torus tax, paid the same way
+		# combat pays it.
+		var target := world + Engagement.aligning_offset(here, world, offsets)
+		var toward := target - here
+		if Vector2(toward.x, toward.z).length_squared() < 0.0001:
+			continue
+		var angle := atan2(toward.x, toward.z)
+		var quantised := wrapi(roundi(fposmod(angle, TAU) / TAU * 4096.0), 0, 4096)
+		_peer.send(0, NetProtocol.encode_order_facing(int(squad), quantised),
+			ENetPacketPeer.FLAG_RELIABLE)
+		faced += 1
+	if faced > 0:
+		print("client: %d squad(s) ordered to face a point" % faced)
+
+
+## Toggle one standing order for the whole selection (D-20260819-
+## stances). The full byte is sent per squad — the toggle is computed
+## against the FIRST selected squad's state, exactly the squad whose
+## state the button displayed, so what you pressed is what happens.
+func _toggle_stance(which: String) -> void:
+	if not _connected or _selected.is_empty():
+		return
+	var bit := SquadSim.STANCE_GUARD
+	match which:
+		"skirmish":
+			bit = SquadSim.STANCE_SKIRMISH
+		"hold_fire":
+			bit = SquadSim.STANCE_HOLD_FIRE
+		"run":
+			bit = SquadSim.STANCE_RUN
+	var turning_on := (_state.stance_of(int(_selected[0])) & bit) == 0
+	for squad in _selected:
+		var bits := _state.stance_of(int(squad))
+		bits = (bits | bit) if turning_on else (bits & ~bit)
+		_peer.send(0, NetProtocol.encode_order_stance(int(squad), bits),
+			ENetPacketPeer.FLAG_RELIABLE)
+	print("client: %d squad(s) %s %s" % [_selected.size(),
+		"assume" if turning_on else "drop", which])
+
+
+## Charge the selection at a clicked point (D-20260819-a-charge-is-
+## spent-on-its-impact). The sim holds the guards (point-blank orders
+## degrade to attack-move; the sprint expires), so this only says where.
+func _charge_selected(screen_position: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var cell := _cell_under(screen_position)
+	if cell.x < 0:
+		return
+	for squad in _selected:
+		_peer.send(0, NetProtocol.encode_order_charge(int(squad),
+			_state.space.index(cell)), ENetPacketPeer.FLAG_RELIABLE)
+	print("client: %d squad(s) charging cell %s" % [_selected.size(), cell])
+
+
+## Compile a dragged stroke into a battle line (D-20260819-a-drag-draws-
+## the-battle-line): BattleLine.plan owns every decision; this gathers
+## the inputs and sends what it returns through workstream 5's orders.
+func _finish_order_drag(press: Vector2, release: Vector2) -> void:
+	if not _connected or _selected.is_empty() or _state.space == null:
+		return
+	var from := _world_under(press)
+	var to := _world_under(release)
+	if from == Vector3.INF or to == Vector3.INF:
+		_order_selected(press, _order_press_ctrl, _order_press_shift)
+		return
+	var squads := []
+	for squad in _selected:
+		squads.append({
+			"id": int(squad),
+			"at": _state.squad_world_position(int(squad), _now),
+			"alive": _state.alive_of(int(squad)),
+			"spacing": float(_state.composition.get(int(squad), {}).get("spacing", 1.0)),
+		})
+	var plan := BattleLine.plan(from, to, squads)
+	if plan.is_empty():
+		_order_selected(press, _order_press_ctrl, _order_press_shift)
+		return
+	for entry in plan:
+		var squad := int(entry["id"])
+		var cell := _state.space.world_to_cell(entry["destination"] as Vector3)
+		var index := _state.space.index(cell)
+		if _order_press_ctrl:
+			_peer.send(0, NetProtocol.encode_order_attack_move(squad, index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		else:
+			_peer.send(0, NetProtocol.encode_order_move(squad, index),
+				ENetPacketPeer.FLAG_RELIABLE)
+		_peer.send(0, NetProtocol.encode_order_facing(squad,
+			int(entry["facing_quantised"])), ENetPacketPeer.FLAG_RELIABLE)
+		_peer.send(0, NetProtocol.encode_order_width(squad,
+			int(entry["files"])), ENetPacketPeer.FLAG_RELIABLE)
+	print("client: battle line — %d squad(s) formed along a %.1f-unit stroke"
+		% [plan.size(), Vector2(to.x - from.x, to.z - from.z).length()])
+
+
+## The stroke on the ground while the right button drags. A transient
+## input hint on the canonical copy only — not world state, so the
+## lattice-copy rule does not apply (the decision says so out loud).
+func _update_order_drag_line(cursor: Vector2) -> void:
+	if _order_press == Vector2.INF:
+		return
+	if _order_press.distance_to(cursor) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
+		if _order_drag_line != null:
+			_order_drag_line.visible = false
+		return
+	var from := _world_under(_order_press)
+	var to := _world_under(cursor)
+	if from == Vector3.INF or to == Vector3.INF:
+		return
+	if _order_drag_line == null:
+		_order_drag_line = MeshInstance3D.new()
+		_order_drag_line.mesh = ImmediateMesh.new()
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.albedo_color = Color(1.0, 0.95, 0.4, 0.9)
+		_order_drag_line.material_override = material
+		add_child(_order_drag_line)
+	var mesh := _order_drag_line.mesh as ImmediateMesh
+	mesh.clear_surfaces()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	for i in range(17):
+		var t := float(i) / 16.0
+		var at := from.lerp(to, t)
+		if _state.terrain_sampler.is_valid():
+			at.y = float(_state.terrain_sampler.call(at.x, at.z)) + 0.15
+		mesh.surface_add_vertex(at)
+	mesh.surface_end()
+	_order_drag_line.visible = true
+
+
+## Widen or narrow the selection by one file (D-20260819). The starting
+## point is the squad's CURRENT effective width — its ordered files, or
+## the formation's own default when it has never been ordered — through
+## Formation.default_files, the same arithmetic the geometry uses.
+func _nudge_width(delta: int) -> void:
+	if not _connected or _selected.is_empty():
+		return
+	for squad in _selected:
+		var info: Dictionary = _state.composition.get(int(squad), {})
+		var alive := _state.alive_of(int(squad))
+		if alive <= 0:
+			continue
+		var ordered := _state.files_of(int(squad))
+		var current := ordered if ordered > 0 			else Formation.default_files(String(info.get("shape", "line")), alive)
+		var wanted := clampi(current + delta, 1, alive)
+		if wanted == current and ordered > 0:
+			continue
+		_peer.send(0, NetProtocol.encode_order_width(int(squad), wanted),
+			ENetPacketPeer.FLAG_RELIABLE)
+	print("client: selection width %s" % ("+1 file" if delta > 0 else "-1 file"))
 
 
 ## Repaint the minimap a few times a second rather than every frame:
@@ -5602,6 +5918,11 @@ func _push_fog_to_world() -> void:
 		# binding that only walked what already existed would leave every
 		# forest scouted after the first frame fully lit.
 		PropFog.set_fog(_fog_texture)
+		# And the fallen (D-20260819): a corpse is knowledge, drawn
+		# forever and dimmed with the ground it lies on, or it is #81
+		# with bodies instead of canopies.
+		if _corpse_layer != null:
+			_corpse_layer.set_fog(_fog_texture)
 	else:
 		_fog_texture.update(image)
 
@@ -5644,6 +5965,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton:
 		_handle_mouse_button(event)
+	elif event is InputEventMouseMotion and _order_press != Vector2.INF:
+		_update_order_drag_line(event.position)
 	elif event is InputEventMouseMotion and _dragging:
 		_update_selection_rect(event.position)
 	elif event is InputEventKey and event.pressed and not event.echo:
@@ -5756,8 +6079,41 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			if event.pressed and _targeting_building >= 0:
 				_finish_target_pick(event.position)
 				return
-			if event.pressed and _minimap_cell_at(event.position).x < 0:
-				_order_selected(event.position, event.ctrl_pressed, event.shift_pressed)
+			# The Charge button's pick half (D-20260819): this click is
+			# spent on the charge, armed or cancelled, and never falls
+			# through to an ordinary order.
+			if event.pressed and _charge_arming:
+				_charge_arming = false
+				if _minimap_cell_at(event.position).x < 0:
+					_charge_selected(event.position)
+				return
+			# The drag-order gesture (D-20260819-a-drag-draws-the-battle-
+			# line): the press RECORDS, the release DECIDES. A release
+			# within BattleLine.DRAG_ORDER_THRESHOLD_PX is yesterday's
+			# click exactly — order at the press point, Alt still means
+			# face — and a real stroke forms the selection into a battle
+			# line along it: position, facing and width in one motion,
+			# compiled into the orders workstream 5 built.
+			if event.pressed:
+				if _minimap_cell_at(event.position).x < 0:
+					_order_press = event.position
+					_order_press_alt = event.alt_pressed
+					_order_press_ctrl = event.ctrl_pressed
+					_order_press_shift = event.shift_pressed
+				return
+			if _order_press == Vector2.INF:
+				return
+			var press := _order_press
+			_order_press = Vector2.INF
+			if _order_drag_line != null:
+				_order_drag_line.visible = false
+			if press.distance_to(event.position) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
+				if _order_press_alt:
+					_face_selected(press)
+				else:
+					_order_selected(press, _order_press_ctrl, _order_press_shift)
+			else:
+				_finish_order_drag(press, event.position)
 
 
 ## Which cell a screen position corresponds to on the minimap, or
@@ -5877,16 +6233,17 @@ func _squad_footprint(squad: int) -> Dictionary:
 	var alive := _state.alive_of(squad)
 	var shape := String(info.get("shape", "line"))
 	var spacing := float(info.get("spacing", 1.0))
-	var print := Formation.footprint(shape, alive, spacing)
+	var print := Formation.footprint(shape, alive, spacing,
+		_state.files_of(squad))
 
-	# Rotated by the squad's heading exactly as Formation.soldier_transform
-	# does it — local +y is forward, which is +z after rotating about UP —
-	# so the marker sits on the troops rather than near them.
+	# Rotated exactly as Formation.soldier_transform does it — through the
+	# ONE facing resolver, so a braced squad's marker turns with its men
+	# (D-20260819) — local +y is forward, which is +z after rotating about
+	# UP, so the marker sits on the troops rather than near them.
 	var local: Vector2 = print["centre"]
 	if _state.curves.has(squad) and _state.space != null:
-		var world_dir := _state.space.axial_offset_to_world(
-			Formation.heading(_state.curves[squad], _now))
-		var angle := atan2(world_dir.x, world_dir.z)
+		var angle := Formation.facing_angle(_state.curves[squad], _now,
+			_state.space, _state.facing_angle_of(squad))
 		centre += Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
 	else:
 		centre += Vector3(local.x, 0.0, local.y)
@@ -8016,6 +8373,16 @@ func _teardown_match() -> void:
 	if _terrain_root != null:
 		_terrain_root.queue_free()
 		_terrain_root = null
+	# The dead do not follow the players back to the lobby. Mirrors are the
+	# layer's own children, so one free takes the lot; the drain flag stays
+	# on — it is a property of being a renderer, not of one match.
+	if _corpse_layer != null:
+		_corpse_layer.queue_free()
+		_corpse_layer = null
+	if _order_drag_line != null:
+		_order_drag_line.queue_free()
+		_order_drag_line = null
+	_order_press = Vector2.INF
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build

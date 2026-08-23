@@ -1498,6 +1498,72 @@ gen-cover-preview SECONDS="0.6": _import
     fi
     echo "VERDICT: ok - $summary; LOOK AT artifacts/cover-godot.png"
 
+# A rendered picture of a MELEE with the Tier 1 duel pass applied
+# (D-20260818-rome-total-war-formations-in-three-tiers, exit criterion 1
+# of D-20260818-battle-quality-outranks-player-count).
+#
+# The same idea as the previews above and needed for the same reason: the
+# duel is a picture, every unit test about it is about indices and
+# distances, and no existing instrument can frame a fight — test-client
+# aims its camera at a spawn, which is the one place a melee is not.
+#
+# Software-rasterised, so no GPU: this answers "is the picture right", and
+# `bench-render` answers "how fast".
+gen-duel-preview SECONDS="0.6": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    gate="$(bash host-gate.sh acquire medium 'gen-duel-preview' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-duel-preview needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    log="{{artifacts_dir}}/duel-preview.log"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            duel_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/duel-godot.png" | tee "$log"
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 duel_preview.tscn -- --seconds="{{SECONDS}}" \
+            --out="res://artifacts/duel-godot.png" | tee "$log"
+    fi
+    if [ ! -s "{{artifacts_dir}}/duel-godot.png" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    summary="$(grep -o '[0-9]* men, [0-9]* moved, [0-9]* in contact, mean gap [0-9.]*' "$log" | head -n 1)"
+    if [ -z "$summary" ]; then
+        echo "VERDICT: FAIL - the preview never reported what it drew"
+        exit 1
+    fi
+    moved="$(echo "$summary" | sed 's/[0-9]* men, \([0-9]*\) moved.*/\1/')"
+    contact="$(echo "$summary" | sed 's/.* \([0-9]*\) in contact.*/\1/')"
+    if [ "$moved" -eq 0 ]; then
+        echo "VERDICT: FAIL - no man stepped into the fight; the duel pass did nothing"
+        exit 1
+    fi
+    if [ "$contact" -eq 0 ]; then
+        echo "VERDICT: FAIL - nobody reached contact; two squads are swinging at the air"
+        exit 1
+    fi
+    # The fallen (D-20260819-a-casualty-is-visible): the same picture is the
+    # instrument for exit criterion 2, so a frame with no bodies in it fails.
+    corpses="$(grep -o '[0-9]* corpses laid' "$log" | head -n 1 | sed 's/ corpses laid//')"
+    if [ -z "$corpses" ] || [ "$corpses" -eq 0 ]; then
+        echo "VERDICT: FAIL - no corpses were laid; the battlefield has no memory"
+        exit 1
+    fi
+    echo "VERDICT: ok - $summary, $corpses corpses; LOOK AT artifacts/duel-godot.png"
+
 # A rendered picture of a WOOD, framed on the densest one on the patch.
 #
 # The same idea as gen-cover-preview and bought the same way: forests read

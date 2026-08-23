@@ -60,6 +60,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/formation.md
 
+@docs/status/rtw-battles.md
+
 @docs/status/line-endings.md
 
 @docs/status/host-load.md

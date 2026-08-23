@@ -90,7 +90,13 @@ const PASSABLE_PULL_STEPS := 4
 ##
 ## Pure in (shape, slot, alive, spacing). Note `alive` is an input: that
 ## is the casualty restamp.
-static func slot_offset(shape: String, slot: int, alive: int, spacing: float) -> Vector2:
+## `files` overrides the def's own ranks arithmetic when positive — the
+## player's ordered WIDTH (D-20260819-facing-and-width-are-orders).
+## Grid and scatter kinds honour it; wedge and ring have no files to
+## override and ignore it. Clamped to the squad's strength: a 40-file
+## order on 12 men is 12 files, not a line with holes.
+static func slot_offset(shape: String, slot: int, alive: int, spacing: float,
+		files: int = 0) -> Vector2:
 	if alive <= 0:
 		return Vector2.ZERO
 	var index := clampi(slot, 0, alive - 1)
@@ -106,7 +112,7 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 		def = FormationRoster.by_id(&"line")
 		if def == null:
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), spacing)
-	return _offset_for(def, index, alive, spacing)
+	return _offset_for(def, index, alive, spacing, files)
 
 
 ## Dispatch to a geometry generator. Adding a `kind` to FormationDef's
@@ -114,13 +120,14 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float) ->
 ## names a kind nothing implements, rather than letting it fall through to
 ## a line and merely look wrong.
 static func _offset_for(def: FormationDef, index: int, alive: int,
-		spacing: float) -> Vector2:
+		spacing: float, files: int = 0) -> Vector2:
 	var scaled := spacing * maxf(def.spacing_scale, 0.01)
+	var chosen := clampi(files, 1, alive) if files > 0 else _grid_files(def, alive)
 	match def.kind:
 		"grid":
-			return _grid_offset(index, alive, _grid_files(def, alive), scaled)
+			return _grid_offset(index, alive, chosen, scaled)
 		"scatter":
-			return _scatter_offset(index, alive, scaled, _grid_files(def, alive), def.jitter)
+			return _scatter_offset(index, alive, scaled, chosen, def.jitter)
 		"wedge":
 			return _wedge_offset(index, scaled)
 		"ring":
@@ -128,6 +135,17 @@ static func _offset_for(def: FormationDef, index: int, alive: int,
 		_:
 			push_error("FormationDef '%s' has unimplemented kind '%s'" % [def.id, def.kind])
 			return _grid_offset(index, alive, _files_for_ranks(alive, LINE_RANKS), scaled)
+
+
+## The files a squad forms by DEFAULT in `shape` — what a width order of
+## "one wider" is one wider THAN. Public because the client's Widen and
+## Narrow buttons need the starting point, and deriving it their own way
+## would drift from the geometry above.
+static func default_files(shape: String, alive: int) -> int:
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null or alive <= 0:
+		return maxi(alive, 1)
+	return _grid_files(def, alive)
 
 
 ## How wide a grid formation is: from its declared ranks, its declared
@@ -168,8 +186,11 @@ static var _footprint_cache: Dictionary = {}
 ## A circle rather than a rectangle, deliberately: the formation rotates
 ## with the squad's heading, and a radius is rotation-invariant while a
 ## box would need re-deriving every frame the squad turned.
-static func footprint(shape: String, alive: int, spacing: float) -> Dictionary:
-	var key := "%s|%d|%.3f" % [shape, alive, spacing]
+static func footprint(shape: String, alive: int, spacing: float,
+		files: int = 0) -> Dictionary:
+	# `files` is in the key or a widened squad would cull, separate and
+	# click-test at its old size forever (D-20260819-facing-and-width).
+	var key := "%s|%d|%.3f|%d" % [shape, alive, spacing, files]
 	if _footprint_cache.has(key):
 		return _footprint_cache[key]
 
@@ -184,7 +205,7 @@ static func footprint(shape: String, alive: int, spacing: float) -> Dictionary:
 		# origin of formation-local space. See turn_lever().
 		var lever := 0.0
 		for slot in range(alive):
-			var p := slot_offset(shape, slot, alive, spacing)
+			var p := slot_offset(shape, slot, alive, spacing, files)
 			min_p = Vector2(minf(min_p.x, p.x), minf(min_p.y, p.y))
 			max_p = Vector2(maxf(max_p.x, p.x), maxf(max_p.y, p.y))
 			lever = maxf(lever, p.length())
@@ -395,6 +416,27 @@ static func heading(curve: StateCurve, time: float) -> Vector2:
 	return DEFAULT_HEADING
 
 
+## THE resolver for which way a squad's formation is stamped
+## (D-20260819-facing-and-width-are-orders): its path while it moves, its
+## ORDERED facing once it stands. One function on purpose — soldier
+## derivation on both machines AND combat's aspect term read this, so the
+## line a player braced is the line the rear-shock arithmetic sees.
+## Nothing else may interpret the ordered value.
+##
+## `ordered_facing` is a world-space angle in radians (the Basis(UP, a)
+## convention: forward is +z), NAN meaning "never ordered". A moving
+## squad ignores it: march-facing is what wheeling, pace and the whole
+## D-20260818 turning model are built on.
+static func facing_angle(curve: StateCurve, time: float, space: TorusSpace,
+		ordered_facing: float = NAN) -> float:
+	if not is_nan(ordered_facing) and curve != null and not curve.is_empty():
+		var forward := _chord(curve, time, HEADING_ARC, 1)
+		if forward.length_squared() <= 1e-8:
+			return ordered_facing
+	var world_dir := space.axial_offset_to_world(heading(curve, time))
+	return atan2(world_dir.x, world_dir.z)
+
+
 ## The slot offset a soldier actually stands at: `offset` as the formation
 ## drew it, or the furthest fraction of it that still lands on ground the
 ## squad itself could walk on.
@@ -508,17 +550,18 @@ static func soldier_transform(
 	spacing: float,
 	space: TorusSpace,
 	terrain_height: float = 0.0,
-	passable: PackedByteArray = PackedByteArray()
+	passable: PackedByteArray = PackedByteArray(),
+	files: int = 0,
+	ordered_facing: float = NAN
 ) -> Transform3D:
 	var centre := curve.sample_world(time, space)
-	var dir := heading(curve, time)
 
-	# Rotate the formation to face travel direction. The axial->world map
-	# is linear, so converting the axial heading gives the world heading.
-	var world_dir := space.axial_offset_to_world(dir)
-	var angle := atan2(world_dir.x, world_dir.z)
+	# The path's heading while moving, the player's ordered facing while
+	# standing — resolved in ONE place (facing_angle), the same one
+	# combat's aspect reads (D-20260819-facing-and-width-are-orders).
+	var angle := facing_angle(curve, time, space, ordered_facing)
 
-	var local := slot_offset(shape, slot, alive, spacing)
+	var local := slot_offset(shape, slot, alive, spacing, files)
 	# Formation-local +y is forward, which is +z after rotation.
 	var offset := grounded_offset(
 		centre, Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle),
@@ -544,10 +587,13 @@ static func soldier_transforms(
 	spacing: float,
 	space: TorusSpace,
 	terrain_sampler := Callable(),
-	passable: PackedByteArray = PackedByteArray()
+	passable: PackedByteArray = PackedByteArray(),
+	files: int = 0,
+	ordered_facing: float = NAN
 ) -> Array[Transform3D]:
 	return soldier_transforms_sampled(
-		curve, time, alive, shape, spacing, space, terrain_sampler, alive, passable)
+		curve, time, alive, shape, spacing, space, terrain_sampler, alive,
+		passable, files, ordered_facing)
 
 
 ## As above, but derives at most `max_count` of the squad's soldiers,
@@ -576,7 +622,9 @@ static func soldier_transforms_sampled(
 	space: TorusSpace,
 	terrain_sampler := Callable(),
 	max_count: int = -1,
-	passable: PackedByteArray = PackedByteArray()
+	passable: PackedByteArray = PackedByteArray(),
+	files: int = 0,
+	ordered_facing: float = NAN
 ) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	if curve == null or alive <= 0:
@@ -597,8 +645,7 @@ static func soldier_transforms_sampled(
 	# these two ever disagree, client and server disagree about where
 	# soldiers are, and that is the exact failure D-006 exists to prevent.
 	var centre := curve.sample_world(time, space)
-	var world_dir := space.axial_offset_to_world(heading(curve, time))
-	var angle := atan2(world_dir.x, world_dir.z)
+	var angle := facing_angle(curve, time, space, ordered_facing)
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
 	# Hoisted for the same reason everything else here is: without terrain
@@ -612,7 +659,7 @@ static func soldier_transforms_sampled(
 		# division), so the full-detail path is unchanged and stays
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
-		var local := slot_offset(shape, slot, alive, spacing)
+		var local := slot_offset(shape, slot, alive, spacing, files)
 		var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
 		# Clamped BEFORE the height is sampled, so a man pulled back off the
 		# rock takes the height of the ground he ends up on rather than of
