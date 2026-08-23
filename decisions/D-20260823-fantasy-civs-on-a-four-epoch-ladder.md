@@ -145,7 +145,12 @@ after.
   pair) are unchanged in shape.
 - Every art brief — image boards, authored `.blend` files — is written
   against the arc table above, so a model can be checked against what its
-  civ is supposed to look like in that epoch.
+  civ is supposed to look like in that epoch. **The first such boards are
+  in `docs/art-reference/civs/`** — one 4x6 grid per civ (epochs by roles),
+  generated 2026-08-23 with Gemini image generation from the prompts
+  recorded in that directory's README, plus a single-row board of the
+  shipped Northmen for comparison. Reference, not assets: nothing in the
+  game reads them.
 
 **Revisit trigger:** D-069's, unchanged — any rung that telemetry shows is
 entered and left without the player's behaviour changing is a stat bump,
