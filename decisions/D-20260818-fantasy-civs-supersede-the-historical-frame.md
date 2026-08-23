@@ -1,4 +1,4 @@
-### D-20260818-fantasy-civs-supersede-the-historical-frame · 2026-08-18 · **ACCEPTED — owner's call, 2026-08-23 (issue #191)**
+### D-20260818-fantasy-civs-supersede-the-historical-frame · 2026-08-18 · **PROPOSED — owner call, not in force**
 
 **Decision (proposed):** The game's civilisations are FANTASY folks, not
 historical cultures. The six-civ historical roster of D-071 (Legion,
