@@ -50,6 +50,7 @@ justfile text eol=lf
 *.glb binary
 *.exr binary
 *.png binary
+*.jpg binary
 
 # Authored asset sources (D-20260821-game-assets-are-files). art/source/*.blend
 # is the SOURCE OF TRUTH for every unit and building, so a silent CRLF
