@@ -22,13 +22,15 @@ a description of the repo. The shape:
   timings and D-072's costs are derived from. The whole current match
   fits inside its first row.
 
-**Two things M9 must fix before it starts, both found during planning:**
+**Of the two things M9 had to fix before it starts, one is done.** The
 three `CivDef` knobs (`squad_cap_bonus`, `production_speed`,
-`gather_speed`) are shipped with non-default values and **read by
-nothing** — the fourth declared-and-unread instance, and two of the six
-civ identities depend on them. And M6's unattributed **40.8 → ~77
-µs/squad** rise must be explained first, or M9's own tick-budget numbers
-cannot be interpreted.
+`gather_speed`) were shipped with non-default values and **read by
+nothing** — the fourth declared-and-unread instance, with two of the six
+civ identities depending on them. They are wired up as of 2026-08-23
+(`decisions/D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158);
+see `docs/status/civ-knobs.md`. Still outstanding: M6's unattributed
+**40.8 → ~77 µs/squad** rise must be explained first, or M9's own
+tick-budget numbers cannot be interpreted.
 
 **A power budget now exists for balancing units** (D-072):
 `V = sqrt(DPS × EHP)` against `RP = food + wood + 1.5×(gold + stone)`.

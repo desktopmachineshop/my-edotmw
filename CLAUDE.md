@@ -70,6 +70,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m8-plan.md
 
+@docs/status/civ-knobs.md
+
 @docs/status/m9-plan.md
 
 @docs/status/m10-plan.md

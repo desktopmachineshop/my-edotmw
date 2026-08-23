@@ -888,6 +888,10 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 		# there is no elapsed time to report and the HUD's clock stays at
 		# zero rather than counting how long people have been sitting in
 		# the seat-picking screen.
+		# The map's bare cap, not this player's: a seat may still say
+		# "Random" (D-048), so there is no civ yet to add a bonus from.
+		# `_admit_player` sends a second WELCOME the moment the match
+		# starts and the civ is real, which is what corrects it.
 		peer.send(0, NetProtocol.encode_welcome(player, _settings.width, _settings.height,
 			PackedInt32Array(), _spawn_cell_indices(), _match.squad_cap, 0),
 			ENetPacketPeer.FLAG_RELIABLE)
@@ -915,6 +919,13 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 ## `peer` is deliberately untyped: it is an ENetPacketPeer for a human
 ## and a LoopbackPeer for an AI seat (D-051), and both answer send().
 func _admit_player(peer, player: int) -> void:
+	# This player's civ into the simulation BEFORE the welcome below,
+	# because the welcome carries their squad cap and the cap is the civ's
+	# (#158). On the `--lobby=0` path a human is seated and admitted long
+	# after the match began, so the match-start handover cannot be the only
+	# one — see `_hand_civs_to_sim`.
+	_hand_civs_to_sim()
+
 	# The world's concrete numbers FIRST, because the client cannot build
 	# terrain without them (D-049) and will sit on an empty scene until
 	# they arrive.
@@ -955,7 +966,7 @@ func _admit_player(peer, player: int) -> void:
 	# progress starts its HUD at the right numbers rather than at zero and
 	# counting up from whenever IT arrived.
 	peer.send(0, NetProtocol.encode_welcome(player, _config.width, _config.height, squads,
-		_spawn_cell_indices(), _match.squad_cap, _sim.tick_count),
+		_spawn_cell_indices(), _match.squad_cap_for(_sim, player), _sim.tick_count),
 		ENetPacketPeer.FLAG_RELIABLE)
 
 	# Composition for everything each client can see, not just what it
@@ -1953,13 +1964,21 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 	# ONE cap covering military and gatherers alike (D-033): every
 	# villager crew is an army slot not spent.
 	if not _match.has_squad_capacity(_sim, player):
-		_notify(peer, "At the squad cap (%d) — gatherers count too" % _match.squad_cap)
+		# The player's OWN cap in the message, or a civ with a bonus is
+		# told it is at a ceiling it is four squads past.
+		_notify(peer, "At the squad cap (%d) — gatherers count too"
+			% _match.squad_cap_for(_sim, player))
 		return
 	if not _economy.try_spend(player, def.cost_food, def.cost_wood, def.cost_gold, def.cost_stone):
 		_notify(peer, "Cannot afford %s" % def.display_name)
 		return
 
-	_buildings.enqueue(building, def, _match.instant_build)
+	# The archetype was resolved against this player's civ above; the TIME
+	# it takes is resolved against the same civ here (`production_speed`,
+	# D-047), so a civ that fields cheap troops can actually field them
+	# faster.
+	_buildings.enqueue(building, def, _match.instant_build,
+		_sim.civ_effects(player).production_time(def.build_time))
 	_send_wallet(peer, player)
 
 
@@ -2754,6 +2773,7 @@ func _on_match_started() -> void:
 	for seat in _match.seats:
 		_civs[int(seat["player"])] = StringName(seat["civ"])
 	_hand_teams_to_sim()
+	_hand_civs_to_sim()
 	print("server: match started — %s" % _seat_summary())
 
 	# The world's concrete numbers, before anybody is admitted: a client
@@ -2848,6 +2868,7 @@ func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 ## its absence rather than reporting a match that never happened as a draw.
 func _note_match_started() -> void:
 	_hand_teams_to_sim()
+	_hand_civs_to_sim()
 	print("server: match started — %s" % _seat_summary())
 	_broadcast_lobby()
 
@@ -2879,6 +2900,38 @@ func _hand_teams_to_sim() -> void:
 		parts.append("%d=%d" % [int(who), int(_sim.teams[who])])
 	parts.sort()
 	print("server: SIM_TEAMS %s" % (", ".join(parts) if not parts.is_empty() else "none"))
+
+
+## Hand the players' civs to the simulation (D-047, #158).
+##
+## The same handover `_hand_teams_to_sim` performs, for the same reason
+## and with the same trap: a civ's MECHANICAL knobs — squad cap bonus,
+## production speed, gather speed — are consequences the simulation
+## resolves, and until #158 nothing read any of them at all. A knob the
+## sim was never told about is not a weaker rule, it is no rule.
+##
+## Called from every place a player's civ can become known: both ways a
+## match starts, seating an AI, and admitting a human (who in a `--lobby=0`
+## run connects long after the match began). `_civ_of` is total — it falls
+## back to the round-robin every seatless run uses — so re-handing is
+## idempotent and calling it once too often costs nothing.
+##
+## Deliberately reads `_civ_of` and not `_match.civ_of`: `_civ_of` is what
+## resolves the ROSTER a player builds from, and a player whose troops
+## came from one civ while their cap came from another would be a fault
+## nothing could see.
+func _hand_civs_to_sim() -> void:
+	for seat in _match.seats:
+		var player := int(seat["player"])
+		_sim.civs[player] = CivRoster.effects_of(_civ_of(player))
+	for peer in _clients:
+		var player := int(_clients[peer]["player"])
+		_sim.civs[player] = CivRoster.effects_of(_civ_of(player))
+	var parts := []
+	for who in _sim.civs:
+		parts.append("%d=%s" % [int(who), String((_sim.civs[who] as CivDef).id)])
+	parts.sort()
+	print("server: SIM_CIVS %s" % (", ".join(parts) if not parts.is_empty() else "none"))
 
 
 ## EVERY peer that receives simulation state — sockets and AI seats alike.

@@ -69,6 +69,47 @@ class_name CivDef
 @export var gather_speed: float = 1.0
 
 
+# --- the knobs, APPLIED ------------------------------------------------
+#
+# Nothing outside this file reads `squad_cap_bonus`, `production_speed` or
+# `gather_speed` directly; everything calls one of the three functions
+# below. Two reasons, and the second is why they exist at all:
+#
+# For a whole milestone these three fields were declared, shipped
+# non-default in the data, and read by NOTHING (#158) — the fourth
+# instance of this project's declared-and-unread defect class, after
+# `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()` (D-055).
+# A knob with exactly one reader is easy to leave with none; a knob whose
+# only expression is a named function has a caller you can grep for.
+#
+# And two of the three are read on BOTH sides of the wire — the server
+# spends the production time, the client draws the bar counting it down —
+# so `base / production_speed` written out twice is two copies of one rule
+# free to drift (the D-058/D-065 family). This is the one copy.
+
+
+## This civ's squad ceiling, given the map's (D-033).
+##
+## Additive, per the field's own reasoning: the map keeps the final say on
+## scale, which is the axis the architecture is sensitive to (D-018).
+func squad_cap(base: int) -> int:
+	return base + squad_cap_bonus
+
+
+## How long this civ takes to train a unit whose def says `base`.
+##
+## `validate()` refuses a non-positive multiplier, so this cannot divide
+## by zero on any civ the roster loaded — and a default-constructed
+## CivDef, which is what an unknown civ resolves to, carries 1.0.
+func production_time(base: float) -> float:
+	return base / production_speed
+
+
+## How fast this civ's gatherers work a node whose def says `base`.
+func gather_rate(base: float) -> float:
+	return base * gather_speed
+
+
 ## Returns "" if valid, else the reason. Called at load so a broken civ
 ## fails loudly rather than producing a subtly wrong match.
 func validate() -> String:

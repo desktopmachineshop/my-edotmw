@@ -70,6 +70,31 @@ static func by_id(id: StringName) -> CivDef:
 	return _by_id.get(id, null)
 
 
+## The civ whose knobs are in force for `id`, NEVER null.
+##
+## `by_id` answers null for an unknown or empty civ, and every mechanical
+## knob then needs its own "what if there is no civ" default at every call
+## site — three defaults per knob, free to disagree with the schema and
+## with each other. An unknown civ is a default-constructed CivDef here
+## instead, so the neutral answer IS the field declarations in
+## `civ_def.gd` and there is nowhere for a second copy of it to live.
+##
+## "No civ" is a real state and not an error: a player is seated before
+## the lobby resolves Random (D-048), `MatchState.civ_of` answers "" for
+## anyone unseated, and the load-test bots never learn a civ at all
+## because a lobby is what broadcasts one.
+static var _neutral: CivDef = null
+
+
+static func effects_of(id: StringName) -> CivDef:
+	var def := by_id(id)
+	if def != null:
+		return def
+	if _neutral == null:
+		_neutral = CivDef.new()
+	return _neutral
+
+
 static func ids() -> Array[StringName]:
 	var out: Array[StringName] = []
 	for def in load_all():

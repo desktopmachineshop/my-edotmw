@@ -612,7 +612,23 @@ const MAX_TEAMS := 4
 ## player have", and this project has been bitten before by two
 ## definitions of the same fact drifting apart.
 func has_squad_capacity(sim: SquadSim, player: int) -> bool:
-	return sim.living_squad_count(player) < squad_cap
+	return sim.living_squad_count(player) < squad_cap_for(sim, player)
+
+
+## This player's ceiling: the map's, plus whatever their civ adds
+## (`CivDef.squad_cap_bonus`, D-047).
+##
+## Takes the SIM for the same reason `has_squad_capacity` does — the sim
+## is where a player's civ was handed over (`SquadSim.civs`), so the cap
+## and the count come from one object and cannot be asked about two
+## different matches.
+##
+## Its own function because the number is needed in two places that must
+## agree: the refusal above, and the `squad_cap` the server puts in each
+## client's WELCOME for the HUD's n/cap readout. A HUD saying 40 while the
+## server refuses at 44 is a rule the player cannot see.
+func squad_cap_for(sim: SquadSim, player: int) -> int:
+	return sim.civ_effects(player).squad_cap(squad_cap)
 
 
 func is_running() -> bool:
