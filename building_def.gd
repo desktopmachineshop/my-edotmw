@@ -68,10 +68,20 @@ class_name BuildingDef
 ##
 ## Data rather than a hardcoded check, per D-010, so restricting a
 ## building to a particular unit never means editing the construction
-## code. The town centre lists `founders` and nothing else: settling a new
-## base is deliberately a specific act by a specific unit, not something
-## any squad can do wherever it happens to be standing.
+## code. Matched against the builder's ARCHETYPE, so one entry covers
+## every civ's version of a unit (D-047). The general is barred from
+## building simply by being listed nowhere
+## (D-20260823-the-opening-is-a-crew-and-a-general).
 @export var built_by: Array[StringName] = []
+
+## Founding this building SPENDS the squad that founds it, at the moment
+## the build commits (D-20260823-the-opening-is-a-crew-and-a-general,
+## superseding D-031's founders). Data rather than a unit/building pair
+## hardcoded in `_finish_build`, so the M7 playtest fix — "consumed ANY
+## builder unconditionally" — keeps its scope by construction: only the
+## town centre sets this, and a gatherer finishing a barracks or a wall
+## walks away free.
+@export var consumes_builder: bool = false
 
 ## Playtest fix: which EXISTING building ids (as BuildingDef.id) this
 ## archetype may be raised in place of, upgrading it rather than requiring

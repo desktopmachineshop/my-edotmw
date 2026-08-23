@@ -34,7 +34,7 @@ const CONNECT_TIMEOUT_SECONDS := 10.0
 ## How far from its start a bot will look for somewhere its town hall is
 ## allowed to stand. `server.gd`'s BUILD_REACH_CELLS is 3 and a builder has
 ## to be within that of the site, so this is the whole of the ground a
-## founding party standing on its start can reach without walking first.
+## opening crew standing on its start can reach without walking first.
 const BUILD_SITE_SEARCH_CELLS := 3
 
 ## How long a crew told to build is left alone before the bot considers
@@ -336,10 +336,12 @@ class VirtualClient:
 					owned += 1
 			if owned >= 2:
 				second_building_at = now
-		# Only once the founding party is IDENTIFIED. Before the opening
-		# order goes out `_founding_squad` is -1, so the founders — no carry
-		# capacity, like any soldier — counted as an army and latched this at
-		# t=0. The founder is the one squad that is never the answer here.
+		# Only once the founding crew is IDENTIFIED, so the settler can be
+		# excluded from the army count (`_is_military`). A bot fields a real
+		# military squad from tick one now — the opening general
+		# (D-20260823-the-opening-is-a-crew-and-a-general) — so this
+		# latching early is honest rather than the t=0 artefact it used to
+		# be when the founder was the thing being miscounted.
 		var fighting := military_squads() if _founding_squad >= 0 else 0
 		military_peak = maxi(military_peak, fighting)
 		if first_soldier_at < 0.0 and fighting > 0:
@@ -615,9 +617,10 @@ class VirtualClient:
 			peer.send(0, NetProtocol.encode_order_gather(squad, best),
 				ENetPacketPeer.FLAG_RELIABLE)
 
-	## Ask for a town hall, and keep asking until there IS one (D-031).
+	## Ask for a town hall, and keep asking until there IS one.
 	##
-	## A player starts with founders and nothing else, so this is the
+	## A player starts with one gatherer crew and one general and no base
+	## (D-20260823-the-opening-is-a-crew-and-a-general), so this is the
 	## opening move a real player makes — and it is what puts construction,
 	## building replication and the persistent-explored hash under the load
 	## test rather than leaving all three to unit tests.
@@ -651,7 +654,22 @@ class VirtualClient:
 	## radius is `server.gd`'s BUILD_REACH_CELLS, because a builder has to be
 	## within that of the site it is handed.
 	func _found_town_hall() -> void:
-		var builder: int = _founding_squad if _founding_squad in state.squads 			else int(state.squads[0])
+		# The builder is whichever squad `built_by` actually admits — the
+		# crew, not whichever id sorts first. `state.squads[0]` was fine
+		# while the opening was one squad; with a general in the list it is
+		# a coin toss between the settler and a squad the server will
+		# refuse ("general cannot build a Town Centre") forever.
+		var builder := _founding_squad if _founding_squad in state.squads else -1
+		if builder < 0:
+			var hall := BuildingSim.def_by_id(&"town_centre")
+			for squad in state.squads:
+				var def: UnitDef = UnitRoster.by_id(StringName(
+					String(state.composition.get(squad, {}).get("def_id", ""))))
+				if def != null and BuildingSim.can_build(hall, def.archetype):
+					builder = squad
+					break
+		if builder < 0:
+			return  # the crew is dead; nothing this bot owns may settle
 		var home := state.spawn_cell_of(state.player)
 		if home.x < 0:
 			return
@@ -1029,6 +1047,20 @@ func _scouts_peak() -> int:
 ## `if raid_pool.is_empty(): return` was written, correct, called, and
 ## unreachable, while the verdict reported clean. A load test that has
 ## never once sent an army anywhere must say so out loud.
+##
+## READ IT WITH `military_peak` NOW, and know what one of those is worth.
+## Every player opens with a GENERAL
+## (D-20260823-the-opening-is-a-crew-and-a-general), which is a fighting
+## squad the haul loop never claims — so one raid order and
+## `military_peak = 1` per bot are the OPENING, not production. This gate
+## still says what it was written to say (an army was sent somewhere) and
+## no longer says the thing it used to imply alongside it (a barracks
+## finished and trained something). The signal for that is
+## `military_peak` ABOVE one per bot, and `first_soldier_at`
+## beside it. Deliberately not turned into a gate here: the shipped map
+## already leaves two of four bots short of a barracks at 420 s, so
+## gating on it would fail honest runs, and picking the duration that
+## does not is a measurement this change did not take.
 func _raid_orders() -> int:
 	var n := 0
 	for vc in _clients:

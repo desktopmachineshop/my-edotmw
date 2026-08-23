@@ -135,8 +135,8 @@ var _scenario_taken := {}
 var _settings: MapSettings
 
 ## How near a squad must be to found a building, in cells. A player
-## should not be able to plant a town hall across the map from the
-## founders who are supposedly building it.
+## should not be able to plant a town hall across the map from the crew
+## who are supposedly building it.
 const BUILD_REACH_CELLS := 3
 
 ## Casualty/rout events produced OUTSIDE a tick — currently only a
@@ -878,7 +878,7 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# In lobby mode nothing is spawned yet, because nothing CAN be: a seat
 	# may still say "Random", so this player has no civ, no roster and no
 	# opening stockpile until the admin starts (D-048). Spawning first and
-	# correcting later would mean a founding party existing before the
+	# correcting later would mean an opening crew existing before the
 	# civilisation that raised it.
 	_clients[peer] = {"player": player, "visible": {}}
 	var started := _match.add_player(player)
@@ -1812,7 +1812,8 @@ func _enqueue_build(squad: int, intent: Dictionary, replace: bool) -> void:
 		_sim.order_move(squad, cell)
 
 
-## Commit a build: charge for it, raise the site, consume the founders.
+## Commit a build: charge for it, raise the site, and spend the builder
+## where the def says founding costs the founder (consumes_builder).
 ##
 ## Shared by the in-reach path above and the walked-there path in
 ## `_advance_pending_builds`, so "what founding a building does" has one
@@ -1882,23 +1883,37 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	_send_wallet(peer, owner)
 	_refresh_passability()
 
-	# The founding party becomes the settlement, here and now (D-031) — but
-	# ONLY founders, and only because they are founding a TOWN. Every other
-	# builder (a gatherer raising a barracks, a tower, a wall segment...)
-	# walks away free once construction finishes, the same as any other RTS
-	# villager.
+	# The crew becomes the settlement, here and now — but only for the
+	# PAIR: a builder this def admits, founding a def that says founding
+	# costs the founder (D-20260823-the-opening-is-a-crew-and-a-general,
+	# which on the shipped roster is a gatherer crew and a town centre).
+	# Every other builder — a gatherer raising a barracks, a tower, a wall
+	# segment — walks away free once construction finishes, the same as
+	# any other RTS villager.
 	#
-	# This used to consume ANY builder unconditionally: `_finish_build` is
-	# shared by every building type, and `consume_squad` was called here
-	# with no check on who was building what. A gatherer sent to raise a
-	# storehouse or a tower has therefore been silently vanishing the
-	# moment it finished for as long as this function has existed — nothing
-	# failed loudly, because `built_by` empty/gatherers-only buildings
-	# genuinely do get built, just at the cost of the builder every time.
-	# Walls and gates, buildable in numbers a session actually produces,
-	# finally made it something a player noticed rather than a one-off
-	# oddity easy to misread as "that gatherer must have died in a fight".
-	if _sim.def_of(squad).archetype == &"founders":
+	# Which buildings cost their founder is DATA
+	# (`BuildingDef.consumes_builder`) rather than a building named here,
+	# because this function's history is exactly that going wrong: it used
+	# to consume ANY builder unconditionally — `_finish_build` is shared by
+	# every building type, and `consume_squad` was called with no check on
+	# who was building what, so every gatherer that finished a storehouse
+	# or a tower silently vanished for as long as this function existed.
+	# Nothing failed loudly; walls and gates, buildable in numbers a
+	# session actually produces, finally made it something a player
+	# noticed.
+	#
+	# `can_build` is re-asked here rather than trusted from the order gate,
+	# and that is not belt-and-braces. It is the same rule every other
+	# check in this function follows — ground, enemy claims, footprints and
+	# cost are all re-checked on ARRIVAL, because a builder walks and the
+	# world moves while it does. Without it, a caller that reached this
+	# function with a squad the def would refuse (a future cheat path, a
+	# scenario, a refactor) would spend that squad: measured, with a
+	# general handed a town centre, and it died. "Nothing shipped can
+	# reach it" is precisely the argument that let the consume-any-builder
+	# bug live for four milestones. One definition, two call sites.
+	if def.consumes_builder \
+			and BuildingSim.can_build(def, _sim.def_of(squad).archetype):
 		_pending_events.append_array(_sim.consume_squad(squad))
 
 	# Ground truth into the replay (D-016, D-027 criterion 18): the full
@@ -2293,7 +2308,7 @@ func _spawn_squads_for(player: int) -> Array:
 
 	# A scenario replaces the opening entirely (D-098): this player gets
 	# the loadout the scenario describes, at its seat's home, instead of
-	# one founding party. Applied through `Scenario.apply_player`, which is
+	# the standard opening. Applied through `Scenario.apply_player`, which is
 	# the SAME call the headless test fixture uses — one placement
 	# implementation, so a scenario cannot mean one thing in a unit test
 	# and another on a live server.
@@ -2342,30 +2357,45 @@ func _spawn_squads_for(player: int) -> Array:
 	# but a reconnect path might) working rather than crashing.
 	var origin: Vector2i = points[_match.spawn_index(player, points.size())]
 
-	# A player starts with ONE founding party and nothing else (D-031).
+	# A player starts with ONE gatherer crew and ONE general, and no base
+	# (D-20260823-the-opening-is-a-crew-and-a-general, superseding D-031's
+	# founding party).
 	#
-	# No prebuilt base: where to settle is the first decision of the
-	# match, not something the server makes on the player's behalf. The
-	# founders can fight — better man for man than line infantry — so the
-	# opening is a genuine choice between pressing an early advantage and
-	# planting a town hall somewhere defensible.
+	# No prebuilt base: where to settle is still the first decision of the
+	# match. The crew is the settler — only gatherers may found a town
+	# hall (`built_by`) and founding one consumes them
+	# (`BuildingDef.consumes_builder`) — while the general is the escort:
+	# a fighting squad that can build nothing and is never spent, so the
+	# opening is defended without settling being free.
 	#
 	# `squads_per_player` no longer describes the opening; it survives as
 	# the sizing note D-015 and D-018 reason about, while `squad_cap` is
 	# what actually binds once production exists.
-	var founders := UnitRoster.for_civ_archetype(_civ_of(player), &"founders")
-	if founders == null:
-		push_error("server: no 'founders' unit in the roster — a player has nothing to start with")
+	var civ := _civ_of(player)
+	var crew := UnitRoster.for_civ_archetype(civ, &"gatherers")
+	if crew == null:
+		push_error("server: civ '%s' fields no 'gatherers' archetype — a player has nothing to start with" % civ)
 		return ids
+	ids.append(_sim.add_squad(crew, player, origin))
 
-	ids.append(_sim.add_squad(founders, player, origin))
+	var general := UnitRoster.for_civ_archetype(civ, &"general")
+	if general == null:
+		push_error("server: civ '%s' fields no 'general' archetype — the opening ships without its escort" % civ)
+		return ids
+	# Beside the crew, not on top of it — the same free-cell walk a
+	# scenario uses to seat an army (nearest-first, D-067's sorted table).
+	var beside := Scenario.free_cell_near(_sim.space, origin, _passable,
+		{_sim.space.index(origin): true}, 2)
+	ids.append(_sim.add_squad(general, player,
+		beside if beside != Scenario.INVALID else origin))
 	return ids
 
 
 # `_starting_cell` and `_pick_unit_def` lived here to lay out a
 # twelve-squad opening army from the roster's first unit. Both went when
-# the opening became a single founding party — a spawn needs no layout,
-# and the starting unit is named rather than whichever .tres sorts first.
+# the opening shrank to a couple of squads — a spawn needs no layout, and
+# the starting units are named by ARCHETYPE rather than being whichever
+# .tres sorts first.
 
 
 ## Per-client message order within a tick is load-bearing (D-025, D-026

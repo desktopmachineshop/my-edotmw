@@ -15,10 +15,43 @@ func _space() -> TorusSpace:
 	return TorusSpace.new(W, H, 1.0)
 
 
-func _def(vision_range: float, damage: float = 0.0) -> UnitDef:
-	var real := UnitRoster.first()
+## A squad def with chosen sight and damage, wearing a REAL roster def's
+## ID — because that ID is what the AI resolves, not this object.
+##
+## `AiPlayer` looks every squad up with `UnitRoster.by_id(def_id)` and
+## reads the ROSTER's `damage`, `carry_capacity` and `archetype`. So the
+## fields set below govern the SIMULATION (what this squad can see and
+## hit) while the borrowed id governs the AI's OPINION of it, and the two
+## are only aligned because the ids are chosen to align them.
+##
+## Which id was borrowed used to be `UnitRoster.first()` — whatever sorted
+## first, which happened to be the founding party: a fighting unit that
+## could also found a town, so an economy-only AI still sent SOMETHING and
+## the "never sends an attack-move" test below had packets to inspect.
+## With founders gone (D-20260823-the-opening-is-a-crew-and-a-general)
+## first is an ARCHER, which founds nothing, and that test sent zero
+## packets — GUT correctly called it RISKY, which is the vacuous pass
+## D-022's audit is about, arriving through a fixture rather than a grep.
+##
+## So the two roles are named separately now, and the economy-only test
+## holds one of each.
+func _military_id() -> StringName:
+	for def in UnitRoster.load_all():
+		if def.damage > 1.0 and def.carry_capacity <= 0 and not def.is_general:
+			return def.id
+	return UnitRoster.first().id
+
+
+func _crew_id() -> StringName:
+	return UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers").id
+
+
+func _def(vision_range: float, damage: float = 0.0,
+		id: StringName = &"") -> UnitDef:
+	var real := UnitRoster.by_id(id if id != &"" else _military_id())
 	var d := UnitDef.new()
 	d.id = real.id
+	d.archetype = real.archetype
 	d.formation_shape = real.formation_shape
 	d.formation_spacing = real.formation_spacing
 	d.squad_size = 8
@@ -125,6 +158,11 @@ func test_an_economy_only_ai_never_sends_an_attack_move() -> void:
 	# exactly the setup that makes an ordinary AI attack immediately.
 	sim.add_squad(_def(10.0, 10.0), 2, Vector2i(10, 10))
 	sim.add_squad(_def(4.0), 1, Vector2i(11, 10))
+	# AND a settler, so this AI has an ECONOMIC move to make. Without one
+	# it sends nothing at all and "never sends an attack-move" is true of a
+	# seat that never spoke — the loop below would run zero times and GUT
+	# would report the test as risky rather than passing.
+	sim.add_squad(_def(10.0, 0.0, _crew_id()), 2, Vector2i(9, 10))
 	sim.tick()
 	_feed(sim, ai)
 
@@ -133,6 +171,8 @@ func test_an_economy_only_ai_never_sends_an_attack_move() -> void:
 	ai.set_time(sim.time)
 	ai.update(sim.time)
 
+	assert_gt(sent.size(), 0,
+		"this AI said nothing at all, so the check below inspects no packets")
 	for packet in sent:
 		assert_ne(NetProtocol.opcode_of(packet), NetProtocol.C2S_ORDER_ATTACK_MOVE,
 			"an economy-only AI must never issue an attack-move order")

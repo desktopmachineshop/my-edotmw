@@ -419,7 +419,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 		# Without this a trained unit belongs to nobody as far as the
 		# client is concerned — not selectable, not orderable, and refused
 		# if an order somehow reached the server. Bots stopped issuing any
-		# orders at all once their founding party was spent, because the
+		# orders at all once their founding crew was spent, because the
 		# only squad they knew they owned no longer existed.
 		if int(entry.get("owner", 0)) == player and not squads.has(id):
 			squads.append(id)
@@ -484,8 +484,9 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 			# renderer has said it will drain the list — the load-test
 			# bots run this class too, and an unread list would grow for
 			# the length of a run. `fell` is the wire's word that these
-			# men died by violence rather than being spent on a founding
-			# (D-031) or wiped by a disconnect (D-033); slots
+			# men died by violence rather than being spent founding a
+			# town (D-20260823-the-opening-is-a-crew-and-a-general) or
+			# wiped by a disconnect (D-033); slots
 			# [after, before) are the men the restamp removes (D-024).
 			if record_corpses and bool(event.get("fell", false)):
 				_casualty_sites.append({

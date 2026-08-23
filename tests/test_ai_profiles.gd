@@ -217,11 +217,11 @@ func test_an_unknown_profile_is_refused_rather_than_defaulted() -> void:
 
 ## A military unit this civ actually fields — a real roster def, because
 ## `_fight` resolves `UnitRoster.by_id` and a synthetic one would not be
-## found. Founders are excluded so the fixture does not also try to found
-## a town while we are watching what it attacks with.
+## found. The general is excluded so the fixture is not also measuring the
+## morale aura while we watch what an AI attacks with.
 func _military_def(civ: StringName) -> UnitDef:
 	for def in UnitRoster.for_civ(civ):
-		if def.damage > 1.0 and def.carry_capacity <= 0 and def.id != &"founders":
+		if def.damage > 1.0 and def.carry_capacity <= 0 and not def.is_general:
 			return def
 	return null
 

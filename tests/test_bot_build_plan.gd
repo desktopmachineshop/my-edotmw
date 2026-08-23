@@ -14,8 +14,9 @@ extends GutTest
 ## for — which is where every way of getting this wrong lives:
 ##
 ##  - asking a building for something it does not make (`ai_player.gd`
-##    asked a barracks for `founders` for three milestones and trained
-##    nothing but gatherers with a finished barracks standing there);
+##    asked a barracks for the opening party's archetype for three
+##    milestones and trained nothing but gatherers with a finished
+##    barracks standing there);
 ##  - asking for something the CIV does not field, which is a refusal on
 ##    the wire rather than a unit;
 ##  - never stopping asking for gatherers, so one `squad_cap` covering
@@ -96,9 +97,10 @@ func test_nothing_here_names_a_building() -> void:
 
 func test_a_building_is_only_asked_for_what_it_makes() -> void:
 	# `ai_player.gd` records the cost of getting this wrong: it asked a
-	# barracks for `founders` — a fighting unit with no carry capacity, so
-	# it passed every test for "military" — and trained nothing but
-	# gatherers for a whole match with a finished barracks standing there.
+	# barracks for the opening party's archetype — a fighting unit with no
+	# carry capacity, so it passed every test for "military" — and trained
+	# nothing but gatherers for a whole match with a finished barracks
+	# standing there.
 	for civ in CivRoster.ids():
 		for building_def in BuildingSim.all_defs():
 			var archetype := BotBuildPlan.archetype_for(building_def, civ, 0)

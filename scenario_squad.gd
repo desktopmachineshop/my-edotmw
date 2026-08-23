@@ -10,7 +10,7 @@ extends Resource
 ## and it is why no scenario needs to name a civ (which a test forbids in
 ## .gd files anyway).
 
-## The archetype: `founders`, `militia`, `gatherers`, ... See
+## The archetype: `gatherers`, `militia`, `general`, ... See
 ## `UnitRoster.archetypes_for(civ)` for what a given civ fields.
 @export var archetype: StringName = &""
 

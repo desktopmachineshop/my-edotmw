@@ -184,30 +184,35 @@ func test_a_match_played_to_completion_produces_exactly_one_winner() -> void:
 	assert_eq(state.active_players(), [1])
 
 
-func test_founding_consumes_the_whole_party_immediately() -> void:
-	# One founding party means one town. Consuming them when the building
-	# COMPLETED left them standing for the length of the build, and a
-	# playtest promptly founded three halls with one squad — so the party
-	# is spent when the order is accepted, not forty seconds later.
+func test_founding_consumes_the_whole_crew_immediately() -> void:
+	# One crew means one town. Consuming them when the building COMPLETED
+	# left them standing for the length of the build, and a playtest
+	# promptly founded three halls with one squad — so the crew is spent
+	# when the order is accepted, not forty seconds later
+	# (D-20260823-the-opening-is-a-crew-and-a-general keeps that timing).
 	var sim := _sim()
-	var founders := sim.add_squad(_def(), 1, Vector2i(4, 4))
-	assert_gt(sim.alive_of(founders), 0)
+	var crew := sim.add_squad(_def(), 1, Vector2i(4, 4))
+	assert_gt(sim.alive_of(crew), 0)
 
-	var events := sim.consume_squad(founders)
-	assert_eq(sim.alive_of(founders), 0, "The party is spent on the spot")
+	var events := sim.consume_squad(crew)
+	assert_eq(sim.alive_of(crew), 0, "The crew is spent on the spot")
 	assert_eq(events.size(), 1, "And it reports as an ordinary casualty event")
-	assert_eq(int(events[0]["id"]), founders)
+	assert_eq(int(events[0]["id"]), crew)
 
-	assert_eq(sim.consume_squad(founders), [],
-		"A spent party cannot found a second town")
+	assert_eq(sim.consume_squad(crew), [],
+		"A spent crew cannot found a second town")
 
 
 func test_a_player_with_a_building_but_no_squads_is_not_defeated() -> void:
-	# The bug this guards ended live matches within a minute. Founders are
-	# consumed by the town hall they found (D-031), so a player who made
-	# the correct opening move momentarily had zero squads — and was
+	# The bug this guards ended live matches within a minute. The crew that
+	# founds a town hall is consumed by it
+	# (D-20260823-the-opening-is-a-crew-and-a-general), so a player who made
+	# the correct opening move could be left with zero squads — and was
 	# declared beaten while their hall stood there ready to produce. Every
 	# order they sent was then refused, because the match was over.
+	#
+	# It is also what says a dead GENERAL is not an elimination: defeat has
+	# one definition, and it is squads AND buildings.
 	var sim := _sim()
 	var buildings := BuildingSim.new(sim.space)
 	var state := _match_with(sim, 2)
@@ -217,7 +222,7 @@ func test_a_player_with_a_building_but_no_squads_is_not_defeated() -> void:
 	hall_def.max_health = 500.0
 	buildings.add_building(hall_def, 2, Vector2i(9, 9), true)
 
-	sim.eliminate_player(2)  # their founders are gone
+	sim.eliminate_player(2)  # their whole army is gone
 	assert_eq(state.update(sim, buildings), [],
 		"A base is a way back into the game — having no squads is not defeat")
 	assert_false(state.is_finished())

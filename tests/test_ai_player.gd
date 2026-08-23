@@ -17,10 +17,22 @@ func _space() -> TorusSpace:
 	return TorusSpace.new(W, H, 1.0)
 
 
+## A squad def with a chosen sight radius, wearing a REAL roster def's
+## identity so the AI resolves it off the wire the way it would in a match.
+##
+## It wears the opening CREW's, specifically, and copies the archetype.
+## This used to take `UnitRoster.first()` — whatever sorted first — which
+## happened to be the founding party, so the AI could found a town and
+## `test_an_ai_issues_real_protocol_packets` had something to observe.
+## With founders gone (D-20260823-the-opening-is-a-crew-and-a-general)
+## first is an ARCHER, which may build nothing, and that test went red on
+## a FIXTURE rather than on the AI. Naming the settler is the honest
+## version of what it was always relying on.
 func _def(vision_range: float) -> UnitDef:
-	var real := UnitRoster.first()
+	var real := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	var d := UnitDef.new()
 	d.id = real.id
+	d.archetype = real.archetype
 	d.formation_shape = real.formation_shape
 	d.formation_spacing = real.formation_spacing
 	d.squad_size = 8
@@ -134,21 +146,29 @@ func test_an_ai_issues_real_protocol_packets() -> void:
 # mechanic — and this one was reachable exactly once, into a closed door.
 
 
-## The def the server really spawns a player's opening party from, so
+## The def the server really spawns a player's opening crew from, so
 ## `BuildingSim.can_build` sees the archetype it will see in a match. A
 ## synthetic def would pass every assertion here and prove nothing about
 ## who may found a town.
-func _founders_def() -> UnitDef:
-	return UnitRoster.by_id(&"founders")
+func _crew_def() -> UnitDef:
+	return UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 
 
-## An AI holding one founding party, told the world exactly as the server
-## tells it: seats and phase first (S2C_LOBBY), then the welcome, then
-## composition and curves.
+## The opening ESCORT — a squad that may build nothing, so an AI holding
+## only this one has no legal founding move
+## (D-20260823-the-opening-is-a-crew-and-a-general).
+func _general_def() -> UnitDef:
+	return UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"general")
+
+
+## An AI holding the shipped opening — one crew and one general — told the
+## world exactly as the server tells it: seats and phase first (S2C_LOBBY),
+## then the welcome, then composition and curves.
 func _founding_ai(phase: int) -> Dictionary:
 	var sim := SquadSim.new(_space(), CurveReplicator.new())
 	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
-	sim.add_squad(_founders_def(), 1000, Vector2i(8, 8))
+	sim.add_squad(_crew_def(), 1000, Vector2i(8, 8))
+	sim.add_squad(_general_def(), 1000, Vector2i(9, 8))
 	sim.tick()
 
 	var seats := [{"kind": "ai", "player": 1000, "civ": String(ai.civ),
@@ -260,25 +280,40 @@ func test_an_ai_stops_asking_once_its_town_centre_exists() -> void:
 		"An AI with a town centre standing must not keep ordering another one")
 
 
-func test_an_ai_holding_no_founders_never_asks_for_a_town_centre() -> void:
+func test_an_ai_holding_no_settler_never_asks_for_a_town_centre() -> void:
 	# The other bound, and the reason the retry cannot become a spin. The
-	# founding party is consumed by the town it raises (D-031) and only
-	# founders may raise one (BuildingDef.built_by) — so an AI past that
-	# point has no legal move here at all. Ordering anyway is what fills a
-	# log with "gatherers cannot build a Town Centre", which is exactly what
-	# removing the latch outright was measured doing.
+	# crew is consumed by the town it raises and the general may build
+	# nothing (D-20260823-the-opening-is-a-crew-and-a-general), so an AI
+	# left with only its escort has no legal move here at all. Ordering
+	# anyway is what fills a log with "cannot build a Town Centre", which is
+	# exactly what removing the latch outright was measured doing.
+	#
+	# Non-vacuity is proved by running the SAME fixture with a crew in it
+	# rather than by a "setup" assertion about some other order: the whole
+	# question is what the presence of a settler changes, and an AI holding
+	# only a general legitimately does nothing else either (`_idle_builder`
+	# wants gatherers too).
+	assert_eq(_halls_asked_for([_general_def(), _general_def()]), 0,
+		"An AI with no settler left must not ask for a town centre")
+	assert_gt(_halls_asked_for([_crew_def(), _general_def()]), 0,
+		"and the same fixture with a crew in it must ask — or the check above "
+		+ "passes on an AI that was never going to act at all")
+
+
+## How many town centres an AI holding exactly these squads asks for over
+## six founding retries, with a full wallet and no buildings anywhere.
+func _halls_asked_for(defs: Array) -> int:
 	var sim := SquadSim.new(_space(), CurveReplicator.new())
 	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
-	sim.add_squad(UnitRoster.by_id(&"gatherers"), 1000, Vector2i(8, 8))
-	sim.add_squad(UnitRoster.by_id(&"gatherers"), 1000, Vector2i(9, 8))
+	for i in range(defs.size()):
+		sim.add_squad(defs[i], 1000, Vector2i(8 + i, 8))
 	sim.tick()
 
 	var seats := [{"kind": "ai", "player": 1000, "civ": String(ai.civ),
 		"team": 0, "name": "AI 1000"}]
 	ai.state.handle_packet(NetProtocol.encode_lobby(0, seats, {}, 1))
 	_feed(sim, ai)
-	# A full wallet, so the ordinary building path IS live and this cannot
-	# pass by the AI simply doing nothing at all.
+	# A full wallet, so nothing here is refused for being unaffordable.
 	ai.state.handle_packet(NetProtocol.encode_wallet(
 		PackedInt32Array([9999, 9999, 9999, 9999])))
 
@@ -290,15 +325,11 @@ func test_an_ai_holding_no_founders_never_asks_for_a_town_centre() -> void:
 		ai.set_time(t)
 		ai.update(t)
 
-	var orders := _build_orders(sent)
-	assert_gt(orders.size(), 0,
-		"Setup: this AI should still be building things, or the check below is vacuous")
 	var halls := 0
-	for order in orders:
+	for order in _build_orders(sent):
 		if String(order["def_id"]) == "town_centre":
 			halls += 1
-	assert_eq(halls, 0,
-		"An AI with no founders left must not ask for a town centre")
+	return halls
 
 
 func test_an_ai_asks_for_its_own_spawn_and_not_a_rivals() -> void:
@@ -325,7 +356,7 @@ func test_an_ai_asks_for_its_own_spawn_and_not_a_rivals() -> void:
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
 	# Spawned where the SERVER would put it — at its seat's point.
-	sim.add_squad(_founders_def(), 1000,
+	sim.add_squad(_crew_def(), 1000,
 		spawns[m.spawn_index(1000, spawns.size())])
 	sim.tick()
 
