@@ -24,8 +24,7 @@ a description of the repo. The shape:
 
 **Of the two things M9 had to fix before it starts, one is done.** The
 three `CivDef` knobs (`squad_cap_bonus`, `production_speed`,
-`gather_speed`) were shipped with non-default values and **read by
-nothing** — the fourth declared-and-unread instance, with two of the six
+`gather_speed`) were **read by nothing** — the fourth declared-and-unread instance, with two of the six
 civ identities depending on them. They are wired up as of 2026-08-23
 (`decisions/D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158);
 see `docs/status/civ-knobs.md`. Still outstanding: M6's unattributed
