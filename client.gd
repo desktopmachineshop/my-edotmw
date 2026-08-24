@@ -1260,7 +1260,11 @@ func _refresh_squads() -> void:
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
 			speed > MOVING_SPEED_EPSILON)
-		unit.set_clip_data(int(squad_id), clip, speed)
+		# Per-man cadence from the motion layer's own measurements
+		# (D-20260824): each drawn man strides at the pace HE moves, not
+		# the squad's — the squad speed is the fallback inside.
+		unit.set_clip_data(int(squad_id), clip, speed,
+			_motion.speeds(squad_id))
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
 				and bool(doing["is_ranged"]):

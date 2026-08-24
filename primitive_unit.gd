@@ -151,7 +151,16 @@ func _apply_material(def: UnitDef) -> void:
 ## `clip` comes from `AnimationState.clip_for`, `speed` from the squad's curve.
 ## Writes only when the state actually changed: at a steady walk this costs one
 ## comparison per squad per frame and nothing else.
-func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
+## `man_speeds`, when given, sets each soldier's WALK CADENCE from his own
+## drawn ground speed rather than the squad's (D-20260824): a man creeping
+## the last inch into his slot strides slowly, a man jogging to catch a
+## re-fronted formation strides fast, and the squad speed is only the
+## fallback for anyone the render layer has no measurement for. Writes
+## stay change-driven per man (>7%), and a rate change re-anchors the
+## man's PHASE so his feet do not pop to a different point in the cycle —
+## phase is fract(offset + TIME*rate), so the offset absorbs the switch.
+func set_clip_data(squad_id: int, clip: int, speed: float,
+		man_speeds: PackedFloat32Array = PackedFloat32Array()) -> void:
 	if not _authored or _multimesh_instance == null:
 		if _clip_guard_reported == 0:
 			# Once, not per frame: this return is why a squad can march with
@@ -170,12 +179,17 @@ func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
 		return
 
 	var rate := AnimationState.rate_for(clip, speed)
+	var per_man := man_speeds.size() > 0 		and (clip == AnimationState.CLIP_WALK or clip == AnimationState.CLIP_ROUT)
+	if per_man:
+		_write_per_man_rates(squad_id, clip, man_speeds)
+		return
 	# A rate that drifts by a fraction of a percent is not worth rewriting the
 	# buffer for; a squad accelerating out of a stand is.
 	if clip == _last_clip and absf(rate - _last_rate) < maxf(_last_rate, 0.01) * 0.05:
 		return
 	_last_clip = clip
 	_last_rate = rate
+	_man_rates = PackedFloat32Array()
 	custom_data_writes += 1
 	# Diagnosis print (issue: walk reads as frozen during a steady march).
 	# Writes happen on CHANGE only, so this is a handful of lines per squad
@@ -189,6 +203,50 @@ func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
 	for i in range(mm.instance_count):
 		mm.set_instance_custom_data(
 			i, AnimationState.custom_data(squad_id, i, clip, speed))
+
+
+## Per-man cadence, change-driven per man. `_man_offsets` carries each
+## man's running phase offset: rewriting a rate without re-anchoring the
+## offset jumps `fract(offset + TIME*rate)` to an unrelated point in the
+## stride, which reads as a foot POP on every speed change — with per-man
+## rates changing often, a permanent shuffle. Ticks time approximates the
+## shader's TIME closely enough here because both clocks start with the
+## engine, and the residual scales with the rate DELTA, which the 7%
+## threshold keeps small.
+var _man_rates := PackedFloat32Array()
+var _man_offsets := PackedFloat32Array()
+
+
+func _write_per_man_rates(squad_id: int, clip: int,
+		man_speeds: PackedFloat32Array) -> void:
+	var mm := _multimesh_instance.multimesh
+	var count := mini(mm.instance_count, man_speeds.size())
+	var now := Time.get_ticks_msec() / 1000.0
+	var resized := _man_rates.size() != mm.instance_count
+	if resized:
+		_man_rates = PackedFloat32Array()
+		_man_rates.resize(mm.instance_count)
+		_man_offsets = PackedFloat32Array()
+		_man_offsets.resize(mm.instance_count)
+		for i in range(mm.instance_count):
+			_man_rates[i] = -1.0
+			_man_offsets[i] = AnimationState.phase_offset(squad_id, i)
+	var clip_changed := clip != _last_clip
+	_last_clip = clip
+	_last_rate = -1.0
+	for i in range(count):
+		var rate := AnimationState.rate_for(clip, man_speeds[i])
+		var old_rate := _man_rates[i]
+		if not clip_changed and old_rate > 0.0 				and absf(rate - old_rate) < maxf(old_rate, 0.01) * 0.07:
+			continue
+		if old_rate > 0.0:
+			# Keep fract(offset + now*rate) continuous across the switch.
+			_man_offsets[i] = fposmod(
+				_man_offsets[i] + now * (old_rate - rate), 1.0)
+		_man_rates[i] = rate
+		custom_data_writes += 1
+		mm.set_instance_custom_data(i,
+			Color(float(clip), _man_offsets[i], rate, 0.0))
 
 
 ## Sets per-soldier slot transforms. Caller (formation/curve code, not

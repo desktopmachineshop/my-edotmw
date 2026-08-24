@@ -211,8 +211,16 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float,
 		max_step if max_step > 0.0 else 1e9)
 	var steps := PackedVector3Array()
 	steps.resize(count)
+	var smoothed: PackedFloat32Array = _speeds.get(squad_id, PackedFloat32Array())
+	if smoothed.size() != count:
+		smoothed = PackedFloat32Array()
+		smoothed.resize(count)
+	var speed_blend := 1.0 - exp(-SPEED_SMOOTHING * maxf(delta, 0.0))
 	for i in range(count):
 		steps[i] = stored[i] - frame_start[i]
+		var raw := steps[i].length() / delta if delta > 0.0 else 0.0
+		smoothed[i] = lerpf(smoothed[i], raw, speed_blend)
+	_speeds[squad_id] = smoothed
 	_eased[squad_id] = stored
 
 	var out: Array[Transform3D] = []
@@ -340,10 +348,25 @@ static func jostle(positions: PackedVector3Array,
 	return out
 
 
+## Each drawn man's smoothed ground speed, u/s, from the same frame steps
+## the facing follows — the input per-man animation cadence needs
+## (D-20260824: the walk rate was per SQUAD, so a man creeping into his
+## slot skated at full stride while a catcher's feet under-strode his
+## jog). Smoothed exponentially because a raw per-frame step is jittery
+## and a cadence that flutters reads worse than one that lags a step.
+func speeds(squad_id) -> PackedFloat32Array:
+	return _speeds.get(squad_id, PackedFloat32Array())
+
+
+var _speeds := {}
+const SPEED_SMOOTHING := 8.0
+
+
 ## Forget a squad's eased state — on conceal, death, or leaving view, so
 ## the dictionary does not grow for the length of a match.
 func forget(squad_id) -> void:
 	_eased.erase(squad_id)
+	_speeds.erase(squad_id)
 
 
 ## How many squads are being eased. For tests and for anyone checking this
