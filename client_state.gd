@@ -405,10 +405,17 @@ var newest_curve_at := 0.0
 ## is never resent — that is D-003's whole bandwidth claim), and sampling
 ## past its end clamps to the spot it stands on, speed zero, idle clip:
 ## correct by construction.
+## How far behind the freshest curve start the world is rendered. History
+## is MERGED now, so standing behind the head costs nothing — and it is
+## what absorbs packet jitter and the short spans emitted mid-wheel,
+## which at the live head were a freeze at every bend.
+const RENDER_BUFFER := 0.12
+
+
 func render_time() -> float:
 	if newest_curve_at <= 0.0:
 		return match_elapsed()
-	return newest_curve_time + maxf(
+	return newest_curve_time - RENDER_BUFFER + maxf(
 		Time.get_ticks_msec() / 1000.0 - newest_curve_at, 0.0)
 
 
@@ -437,10 +444,62 @@ func spawn_cell_of(player: int) -> Vector2i:
 	return space.from_index(spawn_cells[index])
 
 
+## A curve update MERGES with what this client already holds when the two
+## overlap in time, and REPLACES it when there is a gap.
+##
+## Both halves are load-bearing. A packet carries [send-time .. horizon]
+## and a mover's curve is re-emitted continuously, so pure replacement
+## leaves the client with no PAST — and a render clock has nowhere safe
+## to stand: behind the newest start it clamps (measured as squads
+## teleporting to each packet's first keyframe), at the live head it runs
+## off the span's end between packets (measured as marching squads
+## freezing mid-turn, where the emitted span is shortest). Keeping a few
+## seconds of history lets the clock render just behind the newest start
+## with neither artifact, at any emission cadence.
+##
+## The GAP case is D-025's truthful pop-in: a squad revealed after
+## concealment arrives as a fresh curve well past its ghost's last
+## keyframe, and BRIDGING that gap would interpolate the squad sprinting
+## from where it was last seen — synthetic catch-up, exactly what D-025
+## forbids. A gap means the client was not entitled to the missing
+## stretch; the fresh curve stands alone.
+const CURVE_MERGE_GAP := 0.35
+const CURVE_KEEP_SECONDS := 4.0
+
+
+static func merge_curve(existing: StateCurve, incoming: StateCurve) -> StateCurve:
+	if existing == null or existing.is_empty() or incoming == null or incoming.is_empty():
+		return incoming
+	var t0 := incoming.start_time()
+	if t0 > existing.end_time() + CURVE_MERGE_GAP:
+		return incoming
+	# The two packets must agree where the squad IS at the join. Curves
+	# store CONTINUOUS UNWRAPPED axial points (state_curve.gd's header),
+	# and a fresh packet can be normalised into a different lattice copy
+	# than the chain this client has been extending — at a seam crossing
+	# the same cell is a whole map period apart. A join that would move
+	# the squad further than any unit can walk is that case, and the
+	# honest answer is to replace rather than draw the sprint.
+	if (existing.sample_axial(t0) - incoming.point_at(0)).length() > 4.0:
+		return incoming
+	var out := StateCurve.new()
+	for i in range(existing.key_count()):
+		var t := existing.time_at(i)
+		if t >= t0:
+			break
+		if t < t0 - CURVE_KEEP_SECONDS:
+			continue
+		out.append_axial(t, existing.point_at(i))
+	for i in range(incoming.key_count()):
+		out.append_axial(incoming.time_at(i), incoming.point_at(i))
+	return out
+
+
 func _handle_curve(data: PackedByteArray) -> void:
 	var decoded := NetProtocol.decode_curve(data)
 	var curve := decoded["curve"] as StateCurve
-	curves[int(decoded["id"])] = curve
+	var id := int(decoded["id"])
+	curves[id] = merge_curve(curves.get(id), curve)
 	curve_packets_received += 1
 	# The render clock's anchor (see `render_time`): the freshest START a
 	# curve has arrived with is the closest thing this client has to "the
