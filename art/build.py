@@ -58,6 +58,25 @@ from art.units import ROSTER                                    # noqa: E402
 
 TRIANGLE_BUDGET = 300
 MOUNTED_TRIANGLE_BUDGET = 460   # a horse is a second body; stated, not implied
+
+# Archetypes allowed past the budget while a PLACEHOLDER stands in for the
+# real model, and the ceiling they are allowed up to.
+#
+# This is the "change the budget deliberately" the failure below invites,
+# scoped as narrowly as it can be: a named set, not a raised global. An
+# imported asset (art/import_glb_source.py) arrives at whatever density its
+# generator chose — the dwarf standing in for the gatherer is 4,824 against
+# a roster whose every other model is 72-256 — and the choice is to see it
+# in the game now or to decimate 94% of it away and see something else.
+#
+# THE COST IS REAL AND IS NOT PAID BY THIS FILE. D-041 measured the client
+# CPU-bound on soldier derivation, but triangles are the GPU's half and
+# nothing here has re-measured it: gatherers are the most numerous unit a
+# player fields, so a 16x model on 20 players' crews is the one place this
+# could hurt most. `just bench-render` is the instrument, and it has not
+# been run against this. Treat every entry here as owing that measurement.
+PLACEHOLDER_TRIANGLE_BUDGET = 6000
+PLACEHOLDER_ARCHETYPES = frozenset({"gatherers"})
 # Buildings are few and never instanced in the thousands, so their budget is
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400
@@ -70,7 +89,12 @@ GENERATED = os.path.join(_ROOT, "generated")
 # model edited in Blender and not rebuilt leaves `generated/` stale in exactly
 # the way an edited generator does, and the whole job of this hash is to make
 # that fail loudly instead of shipping yesterday's mesh.
-SOURCE_SUFFIXES = (".py", ".blend")
+SOURCE_SUFFIXES = (".py", ".blend", ".glb")
+# `.glb` is here for SUPPLIED models (art/import_glb_source.py). The
+# `.blend` it converts to is the thing the bake reads, so the `.glb`
+# alone changes no output — which is exactly why it has to be hashed:
+# without it, replacing the supplied asset and forgetting to re-convert
+# leaves the game drawing the previous model with every check green.
 
 # Files under art/ that CANNOT change a single byte of `generated/`, and are
 # therefore excluded. Keyed by path relative to art/, and duplicated in
@@ -119,7 +143,11 @@ def build_units(only: str | None) -> dict:
         params = ROSTER[archetype]
         flat, frames, source = _unit_geometry(archetype, params)
 
-        budget = MOUNTED_TRIANGLE_BUDGET if params.mount else TRIANGLE_BUDGET
+        placeholder = archetype in PLACEHOLDER_ARCHETYPES
+        if placeholder:
+            budget = PLACEHOLDER_TRIANGLE_BUDGET
+        else:
+            budget = MOUNTED_TRIANGLE_BUDGET if params.mount else TRIANGLE_BUDGET
         tris = len(flat["triangles"])
         if tris > budget:
             raise SystemExit(
@@ -143,11 +171,16 @@ def build_units(only: str | None) -> dict:
             "triangles": tris,
             "vertices": len(flat["positions"]),
             "mounted": params.mount,
+            # Recorded rather than inferred, so the Godot-side budget test
+            # reads the same answer this file reached instead of keeping a
+            # second copy of the set that can drift from it.
+            "placeholder": placeholder,
             "source": source,
             **layout,
         }
         print(f"  {archetype:16s} {tris:4d} tris  {len(flat['positions']):5d} verts  "
-              f"vat {layout['width']}x{layout['height']}  [{source}]")
+              f"vat {layout['width']}x{layout['height']}  [{source}"
+              f"{', PLACEHOLDER' if placeholder else ''}]")
     return entries
 
 
