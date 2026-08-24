@@ -204,13 +204,19 @@ def write_glb(name: str, flat: dict, path: str,
     for i, loop in enumerate(mesh.loops):
         layer.data[i].color = flat["colours"][loop.vertex_index]
 
-    # UV0 is unused at this tier (units are vertex-coloured, not textured) but
-    # glTF wants a first UV set before a second, so it is written flat.
+    # UV0 carries the model's OWN texture coordinates when it has any, and
+    # (0, 0) when it does not — which is every generated model, and was
+    # every model until D-20260824-a-textured-model-keeps-its-texture. A
+    # textured model needs them: without UV0 its texture cannot be sampled,
+    # and its colour has to be crushed onto vertices instead, where it
+    # cannot be mipmapped and aliases into noise at soldier scale.
     uv0 = mesh.uv_layers.new(name="UVMap")
+    source_uvs = flat.get("uvs")
     uv1 = mesh.uv_layers.new(name="VATIndex")
     width = len(flat["positions"])
     for i, loop in enumerate(mesh.loops):
-        uv0.data[i].uv = (0.0, 0.0)
+        uv0.data[i].uv = (source_uvs[loop.vertex_index]
+                          if source_uvs else (0.0, 0.0))
         if uv1_override is not None:
             uv1.data[i].uv = uv1_override[loop.vertex_index]
         else:

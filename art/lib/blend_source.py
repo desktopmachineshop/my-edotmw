@@ -134,7 +134,7 @@ def _mesh_objects(bpy):
                   key=lambda o: o.name)
 
 
-def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
+def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, list, dict]:
     """Flatten the whole scene at `frame` into split, flat-shaded arrays."""
     bpy.context.scene.frame_set(frame)
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -142,6 +142,7 @@ def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
     positions: list[tuple[float, float, float]] = []
     normals: list[tuple[float, float, float]] = []
     colours: list[tuple[float, float, float, float]] = []
+    uvs: list[tuple[float, float]] = []
     owners: list[str] = []
     origins: dict[str, tuple[float, float, float]] = {}
 
@@ -162,6 +163,12 @@ def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
             rotation = matrix.to_3x3().inverted_safe().transposed()
 
             layer = mesh.color_attributes.get("COLOR_0")
+            # The model's OWN texture coordinates, when it has any. A
+            # generated part has none and gets (0, 0), which is what UV0
+            # has always been for this roster; a model that arrived with a
+            # texture keeps the coordinates that make that texture mean
+            # something (D-20260824-a-textured-model-keeps-its-texture).
+            uv_layer = mesh.uv_layers.active
             for tri in mesh.loop_triangles:
                 # The face normal, transformed — flat shading means every
                 # corner of a triangle shares it.
@@ -171,11 +178,16 @@ def _evaluate(bpy, frame: int) -> tuple[list, list, list, list, dict]:
                     positions.append(_to_engine((co.x, co.y, co.z)))
                     normals.append(_to_engine((n.x, n.y, n.z)))
                     colours.append(_colour_at(layer, mesh, corner, vertex_index))
+                    if uv_layer is None:
+                        uvs.append((0.0, 0.0))
+                    else:
+                        uv = uv_layer.data[corner].uv
+                        uvs.append((uv[0], uv[1]))
                     owners.append(obj.name)
         finally:
             evaluated.to_mesh_clear()
 
-    return positions, normals, colours, owners, origins
+    return positions, normals, colours, uvs, owners, origins
 
 
 def _colour_at(layer, mesh, corner: int, vertex_index: int):
@@ -193,7 +205,76 @@ def _colour_at(layer, mesh, corner: int, vertex_index: int):
     return (c[0], c[1], c[2], c[3])
 
 
-def bake(name: str) -> tuple[dict, tuple[list, list]]:
+def _save_basecolor(bpy, name: str, texture_dir: str | None) -> str:
+    """Write this model's basecolor image out, and return its repo path.
+
+    Empty string when the model has no texture, which is every GENERATED
+    model in the roster — they carry their colour on vertices and always
+    have. A model that arrived with one keeps it
+    (D-20260824-a-textured-model-keeps-its-texture): vertex colour cannot
+    be mipmapped, so a dense textured model reduced to per-vertex colour
+    aliases into noise at soldier scale, which is exactly what it did.
+    """
+    if texture_dir is None:
+        return ""
+    image = None
+    for obj in _mesh_objects(bpy):
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is None or not material.use_nodes:
+                continue
+            for node in material.node_tree.nodes:
+                if node.type == "TEX_IMAGE" and node.image is not None:
+                    image = node.image
+                    break
+    if image is None:
+        return ""
+
+    os.makedirs(texture_dir, exist_ok=True)
+
+    # THE PACKED BYTES ARE WRITTEN VERBATIM, and the extension follows what
+    # they actually ARE.
+    #
+    # `image.file_format = "PNG"; image.save()` does not re-encode a packed
+    # image — it writes the source bytes and ignores the format. That put a
+    # JPEG on disk called `.png`, Godot's importer marked it `valid=false`,
+    # and the only symptom anywhere was a "Failed loading resource" line in
+    # a render log while the model kept drawing with its fallback colours.
+    # Naming a file after a format it is not is the whole bug.
+    #
+    # Writing the bytes through is also better than re-encoding: no second
+    # lossy pass, no colour-space round trip (the D-100 family), and two
+    # builds are byte-identical for free, which D-081 requires.
+    data = bytes(image.packed_file.data) if image.packed_file else b""
+    # Magic numbers as byte VALUES rather than escape sequences: this file
+    # is edited by tooling as well as by people, and an escape that does
+    # not survive a round trip is a syntax error at best.
+    png_magic = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+    if data[:8] == png_magic:
+        suffix = ".png"
+    elif data[:2] == bytes([255, 216]):
+        suffix = ".jpg"
+    else:
+        # Not packed, or a format not recognised here. Re-encode through a
+        # COPY: a fresh image is not packed, so `save()` honours its format.
+        copy = bpy.data.images.new(f"{name}_albedo", width=image.size[0],
+                                   height=image.size[1], alpha=True)
+        copy.colorspace_settings.name = image.colorspace_settings.name
+        copy.pixels = list(image.pixels)
+        copy.file_format = "PNG"
+        out = os.path.join(texture_dir, f"{name}.png")
+        copy.filepath_raw = out
+        copy.save()
+        bpy.data.images.remove(copy)
+        return os.path.relpath(out, _ROOT).replace(os.sep, "/")
+
+    out = os.path.join(texture_dir, f"{name}{suffix}")
+    with open(out, "wb") as handle:
+        handle.write(data)
+    return os.path.relpath(out, _ROOT).replace(os.sep, "/")
+
+
+def bake(name: str, texture_dir: str | None = None) -> tuple[dict, tuple[list, list]]:
     """Open `art/source/<name>.blend` and bake it.
 
     Returns `(flat, (positions_per_frame, normals_per_frame))` — exactly the
@@ -210,8 +291,7 @@ def bake(name: str) -> tuple[dict, tuple[list, list]]:
     # a headless build; the geometry is what is wanted, not the workspace.
     bpy.ops.wm.open_mainfile(filepath=path, load_ui=False)
 
-    rest_positions, rest_normals, rest_colours, owners, origins = _evaluate(
-        bpy, REST_FRAME)
+    rest_positions, rest_normals, rest_colours, rest_uvs, owners, origins =         _evaluate(bpy, REST_FRAME)
     if not rest_positions:
         raise SystemExit(
             f"{name}: {os.path.relpath(path, _ROOT)} has no visible mesh at frame "
@@ -224,7 +304,7 @@ def bake(name: str) -> tuple[dict, tuple[list, list]]:
             positions_per_frame.append(rest_positions)
             normals_per_frame.append(rest_normals)
             continue
-        positions, normals, _colours, frame_owners, _origins = _evaluate(bpy, frame)
+        positions, normals, _colours, _uvs, frame_owners, _origins =             _evaluate(bpy, frame)
         _assert_stable(name, frame, owners, frame_owners, len(rest_positions),
                        len(positions))
         positions_per_frame.append(positions)
@@ -234,6 +314,8 @@ def bake(name: str) -> tuple[dict, tuple[list, list]]:
         "positions": rest_positions,
         "normals": rest_normals,
         "colours": rest_colours,
+        "uvs": rest_uvs,
+        "texture": _save_basecolor(bpy, name, texture_dir),
         "triangles": [(i, i + 1, i + 2)
                       for i in range(0, len(rest_positions), 3)],
         "owners": owners,

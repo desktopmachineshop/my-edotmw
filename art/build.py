@@ -46,7 +46,7 @@ from art.lib.bake import (                                        # noqa: E402
     bake_frames, door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
 )
 from art.lib.godot_import import (                               # noqa: E402
-    ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
+    ALBEDO_PARAMS, ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
 )
 from art.lib.soldier import build as build_soldier              # noqa: E402
 from art.scatter.props import ROSTER as PROP_ROSTER             # noqa: E402
@@ -141,7 +141,8 @@ def build_units(only: str | None) -> dict:
         if only and archetype != only:
             continue
         params = ROSTER[archetype]
-        flat, frames, source = _unit_geometry(archetype, params)
+        flat, frames, source = _unit_geometry(
+            archetype, params, os.path.join(GENERATED, "textures"))
 
         placeholder = archetype in PLACEHOLDER_ARCHETYPES
         if placeholder:
@@ -154,6 +155,12 @@ def build_units(only: str | None) -> dict:
                 f"{archetype}: {tris} triangles exceeds the {budget} budget "
                 f"(D-064). Simplify the model or change the budget deliberately."
             )
+
+        texture = str(flat.get("texture", ""))
+        if texture:
+            ensure_import_params(
+                os.path.join(_ROOT, texture.replace("/", os.sep)),
+                ALBEDO_PARAMS)
 
         glb_path = os.path.join(models_dir, f"{archetype}.glb")
         vat_path = os.path.join(vat_dir, f"{archetype}.exr")
@@ -171,6 +178,10 @@ def build_units(only: str | None) -> dict:
             "triangles": tris,
             "vertices": len(flat["positions"]),
             "mounted": params.mount,
+            # Where this model's own albedo lives, or "" for the vertex-
+            # coloured models that are the rest of the roster
+            # (D-20260824-a-textured-model-keeps-its-texture).
+            "texture": texture,
             # Recorded rather than inferred, so the Godot-side budget test
             # reads the same answer this file reached instead of keeping a
             # second copy of the set that can drift from it.
@@ -184,7 +195,7 @@ def build_units(only: str | None) -> dict:
     return entries
 
 
-def _unit_geometry(archetype: str, params):
+def _unit_geometry(archetype: str, params, texture_dir: str | None = None):
     """The flattened mesh and its animation frames, from whichever source owns
     this archetype (D-20260821-game-assets-are-files).
 
@@ -197,7 +208,7 @@ def _unit_geometry(archetype: str, params):
     surprising `.glb` can be traced to a file rather than guessed at.
     """
     if blend_source.has_source(archetype):
-        flat, frames = blend_source.bake(archetype)
+        flat, frames = blend_source.bake(archetype, texture_dir)
         return flat, frames, "authored"
     model = build_soldier(archetype, params)
     flat = flatten(model)

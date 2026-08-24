@@ -154,19 +154,55 @@ def _sample_texture_into_colours(bpy, obj, image, owner_mask: float) -> int:
         raise SystemExit(f"{image.name}: image has no pixels")
     pixels = list(image.pixels)  # one flat read; per-texel access is glacial
 
+    # THE UVs ARE COPIED OUT BEFORE THE COLOUR ATTRIBUTE IS CREATED, and that
+    # ordering is load-bearing rather than tidy.
+    #
+    # A UV map IS an attribute in modern Blender, so `mesh.color_attributes
+    # .new()` can reallocate the mesh's attribute storage — and a `uv_layer`
+    # fetched beforehand is left pointing at freed memory. Reading it after
+    # returns plausible garbage: not an error, not zeroes, just coordinates
+    # that are no longer this model's. Sampling those gave every corner a
+    # colour from somewhere arbitrary, which averaged to one flat brown and
+    # rendered as soup. `mesh.color_attributes.get("COLOR_0")` immediately
+    # afterwards read back values that did not match what the sampler
+    # returned for the same corner — that mismatch is what identified it,
+    # and it is the only symptom there was.
+    uvs = [tuple(uv_layer.data[i].uv) for i in range(len(mesh.loops))]
+
     existing = mesh.color_attributes.get("COLOR_0")
     if existing is not None:
         mesh.color_attributes.remove(existing)
     layer = mesh.color_attributes.new(
         name="COLOR_0", type="FLOAT_COLOR", domain="CORNER")
 
+    # V IS NOT FLIPPED HERE, and getting that wrong is what made the first
+    # version of this file produce mud.
+    #
+    # glTF's UV origin is top-left, so "flip V when reading a glTF UV" is the
+    # reflex — and it is WRONG on this side of the importer, twice over.
+    # Blender's glTF importer has already flipped V on the way in, and
+    # `image.pixels` starts at the BOTTOM-left row. Flipping again
+    # double-flips: every UV island samples some OTHER island's content.
+    #
+    # It does not look like a flipped texture, which is why it was not
+    # obvious. This atlas is dozens of small islands, so a double flip does
+    # not mirror the dwarf — it deals every body part a different part's
+    # colours, and they average to uniform brown. Measured on this model,
+    # mean rgb of the top 12% of the body against the bottom 10%:
+    #
+    #   double-flipped   head 0.316,0.248,0.181   feet 0.284,0.227,0.178
+    #   correct          head 0.635,0.589,0.480   feet 0.237,0.158,0.097
+    #
+    # The correct one puts a cream helmet on the head and dark boots on the
+    # feet. The wrong one has no contrast between head and feet AT ALL, and
+    # that collapse is the signature `_warn_if_flat` below looks for.
     for loop in mesh.loops:
-        u, v = uv_layer.data[loop.index].uv
+        u, v = uvs[loop.index]
         # Wrap rather than clamp: a UV marginally outside [0,1] is ordinary
         # in an exported asset, and clamping would smear the border texel
         # along a whole edge.
         x = int((u % 1.0) * width) % width
-        y = int((1.0 - (v % 1.0)) * height) % height
+        y = int((v % 1.0) * height) % height
         i = (y * width + x) * 4
         layer.data[loop.index].color = (
             _srgb_to_linear(pixels[i]),
@@ -174,7 +210,51 @@ def _sample_texture_into_colours(bpy, obj, image, owner_mask: float) -> int:
             _srgb_to_linear(pixels[i + 2]),
             owner_mask,
         )
+    _warn_if_flat(mesh, layer)
     return len(mesh.loops)
+
+
+def _warn_if_flat(mesh, layer) -> None:
+    """Say so when the sampled colours have collapsed to one shade.
+
+    A character that samples its atlas correctly is not one colour: a head
+    and a pair of boots differ. When they DO NOT, the usual cause is that
+    the UVs and the image disagree about which way is up, and the symptom is
+    not a mirrored model — it is mud, because a fragmented atlas deals every
+    part somebody else's colours.
+
+    A WARNING and not a failure: a model really can be monochrome, and a
+    converter that refused one would be asserting taste. What it must not do
+    is stay quiet, which is what let a whole bake ship as brown soup.
+    """
+    zs = [v.co.z for v in mesh.vertices]
+    if not zs:
+        return
+    lo, hi = min(zs), max(zs)
+    if hi - lo <= 0.0:
+        return
+    bands = {"top": [], "bottom": []}
+    for loop in mesh.loops:
+        z = mesh.vertices[loop.vertex_index].co.z
+        f = (z - lo) / (hi - lo)
+        if f >= 0.88:
+            bands["top"].append(layer.data[loop.index].color)
+        elif f <= 0.10:
+            bands["bottom"].append(layer.data[loop.index].color)
+    if not bands["top"] or not bands["bottom"]:
+        return
+
+    def mean(rows):
+        return [sum(r[i] for r in rows) / len(rows) for i in range(3)]
+
+    top, bottom = mean(bands["top"]), mean(bands["bottom"])
+    spread = max(abs(top[i] - bottom[i]) for i in range(3))
+    print("  colour check: top %s vs bottom %s (spread %.3f)"
+          % ([round(c, 3) for c in top], [round(c, 3) for c in bottom], spread))
+    if spread < 0.08:
+        print("  WARNING: the top and bottom of this model sample almost the "
+              "SAME colour. That is the signature of UVs and image disagreeing "
+              "about which way is up — check the sampling before baking.")
 
 
 def convert(glb: str, name: str, height: float, owner_mask: float,

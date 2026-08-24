@@ -72,11 +72,32 @@ From the owner supplying a `.glb` — a Tripo-generated dwarf miner — with
   70%. **The fix is now easy in a way it has never been: the source is a
   real `.blend`, so this is vertex paint on one part, not a code change.**
 
+## AMENDED 2026-08-24: its texture is kept, and the reasoning below that
+## said otherwise was wrong
+
+This entry originally accepted losing the model's texture, on the grounds
+that the unit shader has one sampler and there is "no texture path for
+units". True as a description of the code, wrong as a conclusion: the
+bake was CHOOSING to discard UV0, and adding the path took six files and
+broke nothing. See `D-20260824-a-textured-model-keeps-its-texture`.
+
+The claim that mattered and was never checked is that per-corner colour
+is an acceptable substitute for a texture. It is not, at this density —
+vertex colour cannot be mipmapped, a 4,824-triangle model covers ~30
+pixels at soldier scale, and the result is noise rather than a coarse
+dwarf. Everything below about `COLOR_0`, the owner mask and the sampling
+still stands; it is now the FALLBACK for models with no texture, which is
+every generated one.
+
 ## What it looks like — LOOK AT THE PICTURE
 
 `docs/playtest/p34-gatherer-dwarf-placeholder.png`, cropped from
 `just gen-model-preview` (the real path: a `UnitDef`, a `PrimitiveUnit`,
 the shipping shaders, on real terrain).
+
+**Superseded by the amendment above: the first pictures here were taken
+before the texture path existed and show the vertex-colour result.
+`docs/playtest/p35-gatherer-textured.png` is what ships.**
 
 **It renders, and it stands in a T-POSE.** Arms straight out, among
 soldiers that are walking and swinging. That is the missing-animation

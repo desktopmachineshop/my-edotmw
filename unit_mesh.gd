@@ -34,6 +34,7 @@ static var _manifest := {}
 static var _manifest_loaded := false
 static var _meshes := {}
 static var _vats := {}
+static var _textures := {}
 static var _shaders := {}
 
 ## How many times a model was actually pulled off disk. A test asserts this
@@ -48,6 +49,7 @@ static func reload() -> void:
 	_manifest_loaded = false
 	_meshes = {}
 	_vats = {}
+	_textures = {}
 	_shaders = {}
 	load_count = 0
 
@@ -131,6 +133,29 @@ static func vat_for(model_id: StringName) -> Texture2D:
 	return tex
 
 
+## The model's OWN albedo texture, or null when it has none — which is every
+## generated model in the roster (D-20260824-a-textured-model-keeps-its-
+## texture). Cached like everything else here, for the M4 reason in the
+## header: a texture pulled off disk per squad is the `by_id` defect again.
+static func texture_for(model_id: StringName) -> Texture2D:
+	if _textures.has(model_id):
+		return _textures[model_id]
+	var texture: Texture2D = null
+	var relative := String(layout_for(model_id).get("texture", ""))
+	if relative != "":
+		var path := "res://" + relative
+		if ResourceLoader.exists(path):
+			texture = load(path) as Texture2D
+		else:
+			# The manifest CLAIMS one and it is not there — that is
+			# `generated/` damaged rather than absent, the same distinction
+			# `mesh_for` draws.
+			push_warning("UnitMesh: '%s' names texture '%s', which is missing"
+				% [model_id, relative])
+	_textures[model_id] = texture
+	return texture
+
+
 ## A material for one squad. Per squad rather than shared, because the owner's
 ## colour is a uniform on it (D-052) and two players' squads of the same type
 ## must not share one.
@@ -156,7 +181,18 @@ static func material_for(model_id: StringName, team_colour: Color) -> ShaderMate
 	material.set_shader_parameter("frames_per_clip",
 		float(layout.get("frames_per_clip", 16)))
 	material.set_shader_parameter("team_colour", team_colour)
+	_bind_albedo(material, model_id)
 	return material
+
+
+## Bind a model's own texture, when it has one. Kept in one function because
+## the corpse layer draws the SAME model and must not disagree about what it
+## looks like.
+static func _bind_albedo(material: ShaderMaterial, model_id: StringName) -> void:
+	var texture := texture_for(model_id)
+	material.set_shader_parameter("use_albedo_tex", texture != null)
+	if texture != null:
+		material.set_shader_parameter("albedo_tex", texture)
 
 
 ## A material for one (model, owner) bucket of the corpse layer
@@ -188,6 +224,7 @@ static func corpse_material_for(model_id: StringName, team_colour: Color,
 		float(layout.get("frames_per_clip", 16)))
 	material.set_shader_parameter("team_colour", team_colour)
 	material.set_shader_parameter("corpse_clip", float(death_clip_for(model_id)))
+	_bind_albedo(material, model_id)
 	if fog != null:
 		material.set_shader_parameter("fog", fog)
 	return material
