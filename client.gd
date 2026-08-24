@@ -1228,7 +1228,12 @@ func _refresh_squads() -> void:
 		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta)
+		# Capped at a jog above this unit's own walking pace, so a man
+		# chases a slot that swept away from him (a direction change
+		# rotates the whole lattice) instead of being dragged along the
+		# arc — see SoldierMotion.ease.
+		var eased := _motion.ease(squad_id, transforms, _frame_delta,
+			_pursuit_speed_of(squad_id))
 		var speed := _state.squad_speed(squad_id, _now)
 		# The REAL speed, not a literal 1.0 — which is what sat here and is
 		# why every standing squad in every match bobbed on the spot.
@@ -2972,6 +2977,18 @@ func _refresh_enemy_scan() -> void:
 ## node (D-058), and enemy squads in vision tell us who is fighting.
 ## Returned together because finding the enemy is the expensive half and
 ## asking twice was doing it twice.
+## How fast this squad's drawn men may chase their slots: their own
+## walking pace plus a jog margin. Resolved from the def like everything
+## else about a squad; 0.0 (uncapped) when the roster cannot say.
+const PURSUIT_SPEED_SCALE := 1.35
+
+
+func _pursuit_speed_of(squad_id) -> float:
+	var def := UnitRoster.by_id(StringName(
+		String(_state.composition.get(squad_id, {}).get("def_id", ""))))
+	return def.move_speed * PURSUIT_SPEED_SCALE if def != null else 0.0
+
+
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,

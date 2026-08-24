@@ -64,7 +64,15 @@ const SNAP_DISTANCE := 6.0
 ## The amendment's bound (D-006, 2026-08-19): a drawn man never strays
 ## farther than this from his authoritative slot, so selection, culling
 ## and every screen-space read built on authoritative data stays valid.
-const MAX_RENDER_DRIFT := 1.5
+## Raised 1.5 -> 3.5 with the pursuit speed cap in ease(): a man now
+## WALKS to a slot that swept away from him (a direction change rotates
+## the whole lattice about the squad centre), and a 1.5 bound yanked him
+## along the arc before his own feet could cover it — which is exactly
+## the "movement feels driven by squad centre, not individual flow" the
+## owner reported. Still bounded, one-way and outcome-blind;
+## Engagement.MAX_STEP (1.1) still fits inside it, which the tier-three
+## test continues to assert.
+const MAX_RENDER_DRIFT := 3.5
 
 ## Mean target displacement, in ONE frame, past which the whole squad is
 ## re-dealt to its new slots rather than each man chasing his old label.
@@ -87,7 +95,16 @@ var _eased := {}
 ## `alive` may shrink between calls (casualties) or grow (a reveal), so
 ## the stored array is resized rather than assumed — a formation restamp
 ## after losses re-slots everyone, and the eased positions simply follow.
-func ease(squad_id, transforms: Array[Transform3D], delta: float) -> Array[Transform3D]:
+## `max_step_speed` caps how fast a drawn man may chase his slot, in
+## world units per second — a man is not dragged by the lattice, he
+## WALKS after it. 0.0 means uncapped (the legacy behaviour). The cap
+## only ever binds on transients: at a steady march the slot moves at
+## squad speed and the pursuit keeps up with slack to spare; on a
+## direction change the lattice rotates faster than anyone can walk,
+## and the cap is what turns "swept sideways in an arc" into "each man
+## cuts the corner at his own pace".
+func ease(squad_id, transforms: Array[Transform3D], delta: float,
+		max_step_speed: float = 0.0) -> Array[Transform3D]:
 	if transforms.is_empty():
 		_eased.erase(squad_id)
 		return transforms
@@ -143,16 +160,34 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float) -> Array[Trans
 	# visibly slower on a slow machine.
 	var blend := 1.0 - exp(-EASE_RATE * maxf(delta, 0.0))
 
+	var max_step := max_step_speed * maxf(delta, 0.0)
 	for i in range(count):
 		var target: Vector3 = transforms[i].origin
 		var current: Vector3 = stored[i]
-		stored[i] = target if current.distance_to(target) > SNAP_DISTANCE \
-			else current.lerp(target, blend)
+		# The hard snap serves only the UNCAPPED path. Under a speed cap,
+		# walking the whole way is the point: geometry guarantees a
+		# formation-wide rotation hands somebody a 6-8 unit leg (no
+		# assignment can beat it — the man at one end of a turning line
+		# must reach the other axis), and a snap on exactly those men is
+		# the "driven by the squad centre" jump the cap exists to remove.
+		# Reveals never reach here at all: conceal calls forget(), so a
+		# revealed squad starts drawn ON its slots — the truthful pop-in
+		# (D-025) does not depend on this branch.
+		if max_step <= 0.0 and current.distance_to(target) > SNAP_DISTANCE:
+			stored[i] = target
+			continue
+		var eased_point := current.lerp(target, blend)
+		if max_step > 0.0:
+			var step := eased_point - current
+			if step.length() > max_step:
+				eased_point = current + step.normalized() * max_step
+		stored[i] = eased_point
 
 	# Tier 3 (D-006 as amended): the scrum breathes. Fed BACK into the
 	# stored positions — genuine per-soldier integration, which is
 	# exactly what the amendment legalises here and nowhere else.
-	stored = jostle(stored, transforms)
+	stored = jostle(stored, transforms,
+		max_step if max_step > 0.0 else 1e9)
 	_eased[squad_id] = stored
 
 	var out: Array[Transform3D] = []
@@ -191,14 +226,51 @@ static func assign(old: PackedVector3Array,
 			best = i % maxi(old.size(), 1)
 		used[best] = true
 		out[i] = best
+
+	# 2-opt improvement over the greedy deal. Greedy in slot order leaves
+	# its LAST slots whatever men remain, and on a formation-wide rotation
+	# those leftovers can be far enough away to clear SNAP_DISTANCE — at
+	# which point the man teleports and no downstream speed cap can save
+	# him (measured: a 90-degree turn of a 24-man line, visible jump
+	# 2.9 units in one frame, identical with the pursuit capped and not,
+	# which is what said the fault was HERE). Swapping any pair whose
+	# exchange shortens their combined legs until no swap helps removes
+	# exactly those pathological legs; a few passes over n<=40 men on a
+	# deal event costs nothing a frame notices.
+	for _pass in range(4):
+		var improved := false
+		for i in range(targets.size()):
+			for j in range(i + 1, targets.size()):
+				var a: Vector3 = targets[i].origin
+				var b: Vector3 = targets[j].origin
+				var keep := a.distance_to(old[out[i]]) + b.distance_to(old[out[j]])
+				var swap := a.distance_to(old[out[j]]) + b.distance_to(old[out[i]])
+				if swap < keep - 0.001:
+					var held := out[i]
+					out[i] = out[j]
+					out[j] = held
+					improved = true
+		if not improved:
+			break
 	return out
 
 
 ## One relaxation pass: overlapping drawn men of a squad push apart,
 ## each clamped to MAX_RENDER_DRIFT of his own authoritative anchor —
 ## the amendment's bound, enforced where the drift is made. PURE.
+## `max_correction` bounds how far the DRIFT CLAMP itself may move a man
+## in one call. Uncapped (the default, and every direct caller), the
+## clamp is instantaneous — which is right for the jitter it was built
+## for and was measured teleporting men 2.9 units in one frame when a
+## direction change rotated the whole slot lattice past the bound: the
+## capped pursuit walked them, and the clamp then yanked them the rest.
+## With a cap, an over-drifted man WALKS back inside the bound at the
+## same pace he chases his slot; the bound becomes "converged to within
+## a few frames" rather than "held per frame", and SNAP_DISTANCE still
+## hard-bounds the total.
 static func jostle(positions: PackedVector3Array,
-		anchors: Array[Transform3D]) -> PackedVector3Array:
+		anchors: Array[Transform3D],
+		max_correction: float = 1e9) -> PackedVector3Array:
 	var out := positions.duplicate()
 	var n := out.size()
 	for i in range(n):
@@ -217,7 +289,12 @@ static func jostle(positions: PackedVector3Array,
 		var flat := Vector2(drift.x, drift.z)
 		if flat.length() > MAX_RENDER_DRIFT:
 			var clamped := flat.normalized() * MAX_RENDER_DRIFT
-			out[i] = Vector3(anchor.x + clamped.x, out[i].y, anchor.z + clamped.y)
+			var clamp_target := Vector3(
+				anchor.x + clamped.x, out[i].y, anchor.z + clamped.y)
+			var correction := clamp_target - out[i]
+			if correction.length() > max_correction:
+				correction = correction.normalized() * max_correction
+			out[i] += correction
 	return out
 
 
