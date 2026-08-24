@@ -60,15 +60,39 @@ Four things to carry forward, none of which are really about civs:
   round-robin fallback the seatless runs use. A player whose troops came
   from one civ while their cap came from another is a fault nothing could
   see.
-- **The test that would have caught this is not a behaviour test.**
-  `tests/test_civ_knobs.gd` drives each knob by hand and every one of
-  those tests passes with the server applying none of it. The one that
-  could not is
-  `test_every_mechanical_knob_is_read_by_something_that_ships`, a source
-  scan for a shipping caller of each applied function — the same shape as
-  `test_terrain_fog.gd`'s caller-exists test for D-106, and carrying
-  D-106's own caveat: **it only covers the callers it names.** A fourth
-  knob added later is not covered by it.
+- **A knob that is wired but unproven is the same defect one layer
+  down, and the first version of this work had it.** Unwiring all three
+  turned five tests red — but **both production BEHAVIOUR tests stayed
+  green**, because they call `BuildingSim.enqueue` themselves. They prove
+  the arithmetic and say nothing about whether the server performs it,
+  and the source scan that did go red cannot see a caller passing the
+  WRONG argument. Each knob now has a test that drives
+  **`server._handle_order_produce` itself** and goes red without it.
+- **"server.gd needs a socket and a scene tree" is true of `_ready()`,
+  not of the file.** That is the same distinction D-075's 2026-08-16
+  amendment had to make for `client.gd`, where reading the claim too
+  widely cost a milestone of matches with no terrain. A Node that is
+  never added to the tree does not run `_ready()`, and `LoopbackPeer` is
+  already the server's own stand-in for a socket (D-051). The produce
+  path is therefore testable end to end, shipped defs and all — **try
+  before assuming otherwise.**
+- **The caller-exists scan is still there and still carries D-106's own
+  caveat: it only covers the callers it names.** A fourth knob added
+  later is not covered by it.
+
+**What the cap bonus costs the tick budget, stated rather than assumed.**
+`squad_cap` is an ENGINEERING ceiling for D-018/D-020, not a design
+lever, and `squad_cap_bonus` adds to it. Shipped cap is 40 on all three
+maps and the largest shipped bonus is 4, so **D-018's 20-player target
+worst-cases at 880 squads against the 1,000 `just profile` measures** —
+inside what has been measured, +10%. The **lobby's 24-seat ceiling
+worst-cases at 1,056**, which is past the sweep's top rung; note that
+24 seats is 960 with no bonus at all, and that the tick budget is
+*already* over at 1,000 squads on this tree (204.5 ms against D-020's
+100 ms, open as #105). This change does not create that overrun and does
+not fix it. `test_the_cap_bonus_worst_case_is_the_one_the_decision_records`
+pins both numbers so a future civ's bonus is a deliberate re-measurement
+rather than a silent one.
 
 **Balance is untouched and deliberately so.** The shipped `.tres` numbers
 are exactly what they were; this made them mean something. Northmen now
@@ -76,4 +100,12 @@ field 44 squads to the Legion's 40 and train 1.3x faster, so **every
 `just ai-ladder` number taken before 2026-08-23 was measured against a
 build where they did not** — quote a ladder result with its cap and with
 which side of this change it came from. If the ladder says the numbers
-are wrong, the fix is new numbers in the data.
+are wrong, the fix is new numbers in the data. The same rule applies to
+`test-load`: `production_speed` and `gather_speed` are multipliers on
+rates feeding the economy and the AI opening, so timings move and a
+per-squad cost is quoted with its squad count as ever.
+
+**This is load-bearing for M9, not tidying.** Issue #191 (six fantasy
+civs) builds two of its six identities on these fields — Gravesworn on
+`squad_cap_bonus` and `production_speed`, Gildedreach on `gather_speed`
+— and is gated on this landing first.

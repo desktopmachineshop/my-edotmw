@@ -64,6 +64,14 @@ after `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()`
 (D-055, which meant no match could be won for two milestones). Nothing
 failed. The game quietly lacked a rule.
 
+**This is load-bearing for the next milestone, not tidying.** Issue #191
+(six fantasy civs, accepted 2026-08-23) builds **two of its six civ
+identities** directly on these fields — Gravesworn is the quantity civ
+via `squad_cap_bonus` and `production_speed`, Gildedreach the economy civ
+via `gather_speed` — and #191 is explicitly gated on this landing first.
+The fantasy ladder entry keeps D-047's seven-column frame and its six
+mechanical axes verbatim, so every axis needs a knob that does something.
+
 **Wiring beats deleting here for one reason that is not sentiment:**
 CLAUDE.md lists this as one of two things M9 must fix *before it starts*,
 because two of the six planned civ identities depend on these knobs, and
@@ -85,6 +93,50 @@ for the building's OWNER, not by the raw `UnitDef.build_time`. Without
 that, a civ at 1.3 draws a bar that starts 23% full — the arithmetic was
 right on the server and the picture wrong, which is this project's
 best-attested failure mode.
+
+### What the cap bonus costs the tick budget
+
+`squad_cap` is an **engineering ceiling** for D-018/D-020, not a design
+lever — CLAUDE.md says so outright, and D-068 plans to say it louder once
+upkeep is what a player feels. `squad_cap_bonus` adds to it, so the worst
+case has to be stated rather than assumed.
+
+Shipped `squad_cap` is **40** on all three maps; the largest shipped
+`squad_cap_bonus` is **4**. So:
+
+| table | no bonus | worst case, every seat bonused |
+|---|---|---|
+| D-018's 20-player target | 800 | **880** |
+| `MatchState.MAX_PLAYER_SLOTS` (24) | 960 | **1,056** |
+
+**At D-018's target the bonus stays inside what has actually been
+measured.** `profile_sweep.gd`'s top rung is 1,000 squads, so 880 is a
+count the sweep covers; the bonus buys +10% squads and creates no new
+class of problem.
+
+**At the lobby's 24-seat ceiling it does not, and that is worth saying
+plainly rather than burying.** 1,056 is past the sweep's top rung. It is
+also worth knowing that **the tick budget is already exceeded at 1,000
+squads on this tree** — `docs/status/m10-plan.md` records 204.5 ms against
+D-020's 100 ms, open as **#105**, and that is true with no civ bonus at
+all (24 seats alone is 960). So this change does not create the overrun
+and does not fix it; it moves the ceiling 10% further past a line already
+crossed, on a seat count above the target every figure in this repo is
+quoted against.
+
+`test_the_cap_bonus_worst_case_is_the_one_the_decision_records` **pins
+both numbers**. It is a tripwire, not a bound: a future civ's bonus goes
+red there, which makes re-measuring a deliberate act instead of a silent
+one. If it fires, take a fresh `just profile` at the new worst case and
+record it here before changing the number.
+
+**Two standing quoting rules apply to anything measured after this.** A
+ladder result carries its **cap** — a stronger or faster civ lengthens
+matches and a truncated match reads as a draw — and a per-squad cost
+carries its **squad count**, since per-tick fixed overhead lands in the
+per-squad figure. Both `production_speed` and `gather_speed` are
+multipliers on rates feeding the economy and the AI opening, so
+`ai-ladder` outcomes and `test-load` timings both move.
 
 ## Rejected alternatives
 

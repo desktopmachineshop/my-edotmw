@@ -317,3 +317,217 @@ func test_the_simulation_is_told_who_plays_what() -> void:
 		"server.gd must hand the players' civs to the simulation")
 	assert_true(_shipping_callers_of("civ_effects(").has("res://economy.gd"),
 		"the economy must read the gatherer owner's civ")
+
+
+# --- through the SERVER's own produce path ----------------------------
+#
+# Everything above this line drives the mechanism by hand, and the review
+# of the first version of this work found the gap that leaves: with all
+# three knobs unwired, both production BEHAVIOUR tests above stayed GREEN
+# — they call `BuildingSim.enqueue` themselves, so they prove the
+# arithmetic and say nothing about whether the server performs it. Only
+# the source scan went red for `production_speed`, and a source scan
+# cannot see a caller that passes the WRONG argument.
+#
+# "server.gd needs a socket and a scene tree" is this project's standing
+# reason for testing it by source scan, and it is true of `_ready()`
+# rather than of the whole file — the same distinction D-075's 2026-08-16
+# amendment had to make for `client.gd`, where reading the claim too
+# widely cost a milestone of matches with no terrain. `_handle_order_produce`
+# needs neither: a Node that is never added to the tree does not run
+# `_ready()`, and `LoopbackPeer` is already the server's own stand-in for
+# a socket (D-051).
+#
+# So these drive the REAL function, with the REAL shipped defs, and each
+# one fails if the server stops resolving a knob or resolves it wrongly.
+
+
+## The shipped civ that trains fastest.
+func _fastest_civ() -> CivDef:
+	var best: CivDef = null
+	for def in CivRoster.load_all():
+		if best == null or def.production_speed > best.production_speed:
+			best = def
+	return best
+
+
+## The shipped civ with the largest squad cap bonus.
+func _most_numerous_civ() -> CivDef:
+	var best: CivDef = null
+	for def in CivRoster.load_all():
+		if best == null or def.squad_cap_bonus > best.squad_cap_bonus:
+			best = def
+	return best
+
+
+## A server far enough along to answer a produce order, and no further.
+##
+## Deliberately assembled the way the server assembles itself — `_civs`
+## written as `_on_match_started` writes it, then `_hand_civs_to_sim()` —
+## so the HANDOVER is inside what these tests exercise rather than being
+## stepped around. Setting `_sim.civs` directly here would prove the knobs
+## work in a server that never learned anybody's civ.
+func _server_for(civ: StringName, cap: int) -> Dictionary:
+	var server = load("res://server.gd").new()
+	var space := TorusSpace.new(W, H, 1.0)
+
+	server._sim = SquadSim.new(space, CurveReplicator.new())
+	server._buildings = BuildingSim.new(space)
+	server._economy = Economy.new(space)
+	server._sim.buildings = server._buildings
+	server._sim.economy = server._economy
+
+	server._match = MatchState.new()
+	server._match.squad_cap = cap
+	server._match.add_player(1)
+	server._match.phase = MatchState.Phase.RUNNING
+	server._civs[1] = civ
+	server._hand_civs_to_sim()
+
+	var barracks_def := BuildingSim.def_by_id(&"barracks")
+	assert_not_null(barracks_def, "the shipped barracks is where BuildingSim looks for it")
+	var barracks: int = server._buildings.add_building(barracks_def, 1, Vector2i(4, 4), true)
+
+	# A wallet nothing here is about — the affordability gate is not under
+	# test, and a refusal there would look exactly like a cap refusal.
+	for kind in range(Economy.RESOURCE_COUNT):
+		server._economy.credit(1, kind, 100000)
+
+	var peer := LoopbackPeer.new()
+	server._ai_clients[peer] = {"player": 1, "visible": {}}
+
+	return {"server": server, "peer": peer, "barracks": barracks, "def": barracks_def}
+
+
+## Something this civ fields from a barracks. Never the general: one per
+## player is its own production gate, and a refusal there would read as a
+## civ knob failing.
+func _producible(civ: StringName, barracks_def: BuildingDef) -> UnitDef:
+	for archetype in barracks_def.produces:
+		var unit := UnitRoster.for_civ_archetype(civ, archetype)
+		if unit != null and not unit.is_general:
+			return unit
+	return null
+
+
+func _order_produce(w: Dictionary, unit: UnitDef) -> void:
+	var server = w["server"]
+	server._handle_order_produce(w["peer"], NetProtocol.encode_order_produce(
+		BuildingSim.wire_id(w["barracks"]), String(unit.archetype)))
+
+
+func test_the_server_trains_a_fast_civs_unit_in_that_civs_time() -> void:
+	var civ := _fastest_civ()
+	assert_not_null(civ, "no civs are shipped at all")
+	assert_gt(civ.production_speed, 1.0,
+		"no shipped civ trains faster than the default, so this test cannot tell "
+		+ "a wired production_speed from an unwired one")
+
+	var w := _server_for(civ.id, 40)
+	var server = w["server"]
+	var unit := _producible(civ.id, w["def"])
+	assert_not_null(unit, "this civ fields nothing a barracks makes")
+	_order_produce(w, unit)
+
+	assert_eq(server._buildings.queue_length(w["barracks"]), 1,
+		"the order should have been accepted")
+	var entry: Dictionary = server._buildings.info_entries([w["barracks"]])[0]
+	assert_almost_eq(float(entry["head_remaining"]),
+		unit.build_time / civ.production_speed, 0.001,
+		"the server must queue the OWNER'S CIV's training time, not the def's own")
+	# And the two genuinely differ, or the assertion above would pass on a
+	# server that ignores the civ entirely.
+	assert_true(absf(float(entry["head_remaining"]) - unit.build_time) > 0.001,
+		"this civ's time must differ from the raw build_time, or nothing is proven")
+	server.free()
+
+
+func test_the_server_lets_a_numerous_civ_past_the_maps_own_cap() -> void:
+	var civ := _most_numerous_civ()
+	assert_not_null(civ, "no civs are shipped at all")
+	assert_gt(civ.squad_cap_bonus, 0,
+		"no shipped civ raises the squad cap, so this test cannot tell a wired "
+		+ "squad_cap_bonus from an unwired one")
+
+	# Standing exactly at the map's own cap: one more squad is legal only
+	# for a civ whose bonus is actually being read.
+	var cap := 3
+	var w := _server_for(civ.id, cap)
+	var server = w["server"]
+	var unit := _producible(civ.id, w["def"])
+	assert_not_null(unit, "this civ fields nothing a barracks makes")
+	for i in range(cap):
+		server._sim.add_squad(unit, 1, Vector2i(8 + i, 8))
+	assert_eq(server._sim.living_squad_count(1), cap,
+		"setup: the player should be exactly at the map's cap")
+	_order_produce(w, unit)
+
+	assert_eq(server._buildings.queue_length(w["barracks"]), 1,
+		"a civ carrying +%d must be allowed its squad past the map's %d"
+			% [civ.squad_cap_bonus, cap])
+	server.free()
+
+
+func test_the_server_still_refuses_a_plain_civ_at_the_cap() -> void:
+	# The counter-test, and the one that stops the pair above from passing
+	# on a server that has simply stopped enforcing the cap at all.
+	var plain: CivDef = null
+	for def in CivRoster.load_all():
+		if def.squad_cap_bonus == 0:
+			plain = def
+	assert_not_null(plain, "every shipped civ raises the cap — nothing holds the line")
+
+	var cap := 3
+	var w := _server_for(plain.id, cap)
+	var server = w["server"]
+	var unit := _producible(plain.id, w["def"])
+	assert_not_null(unit, "this civ fields nothing a barracks makes")
+	for i in range(cap):
+		server._sim.add_squad(unit, 1, Vector2i(8 + i, 8))
+	_order_produce(w, unit)
+
+	assert_eq(server._buildings.queue_length(w["barracks"]), 0,
+		"a civ with no bonus must still be refused at the map's own cap")
+	server.free()
+
+
+# --- what the bonus costs the tick budget ------------------------------
+
+## `squad_cap` is an ENGINEERING ceiling for D-018/D-020, not a design
+## lever (CLAUDE.md says so outright), and `squad_cap_bonus` adds to it —
+## so the worst case a civ can produce is a number the tick budget has to
+## have been measured against.
+##
+## PINNED rather than bounded. This is not a rule about what a civ may
+## ask for; it is a tripwire that makes a future civ's bonus a DELIBERATE
+## re-measurement instead of a silent one. If it goes red, take a fresh
+## `just profile` at the new worst case and record it in
+## `decisions/D-20260823-a-civs-knobs-are-read-by-the-simulation.md`
+## before changing the number here.
+const SWEEP_TOP_RUNG := 1000
+
+
+func test_the_cap_bonus_worst_case_is_the_one_the_decision_records() -> void:
+	var cap := 0
+	for path in ["res://maps/default.tres", "res://maps/huge.tres", "res://maps/ladder.tres"]:
+		var config := load(path) as MapConfig
+		assert_not_null(config, "%s is not a MapConfig" % path)
+		cap = maxi(cap, config.squad_cap)
+	var bonus := 0
+	for def in CivRoster.load_all():
+		bonus = maxi(bonus, def.squad_cap_bonus)
+
+	# D-018's stated target, which is what every sweep and every tick
+	# figure in this repo is quoted against.
+	assert_eq(20 * (cap + bonus), 880,
+		"the 20-player worst case moved — re-measure and update the decision")
+	assert_true(20 * (cap + bonus) <= SWEEP_TOP_RUNG,
+		("a civ bonus has pushed D-018's 20 players past the %d squads "
+		+ "`just profile` actually measures") % SWEEP_TOP_RUNG)
+
+	# And the LOBBY's own ceiling, which sits above D-018's target on
+	# purpose (MatchState.MAX_PLAYER_SLOTS: "D-018's 20-player target with
+	# room above it"). Recorded rather than asserted safe: it is already
+	# past the sweep's top rung with no civ bonus at all.
+	assert_eq(MatchState.MAX_PLAYER_SLOTS * (cap + bonus), 1056,
+		"the 24-seat worst case moved — re-measure and update the decision")
