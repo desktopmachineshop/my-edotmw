@@ -80,6 +80,21 @@ const MAX_RENDER_DRIFT := 3.5
 ## (a sprinting squad moves ~0.1/frame) and far below a facing flip.
 const REDEAL_DISTANCE := 1.0
 
+## A moving man FACES HIS OWN TRAVEL — turn, then walk forwards. The
+## pursuit cap made feet move at walking pace; the body still wore the
+## squad's facing, so men GLIDED SIDEWAYS while animating a forward walk
+## (reported from play as strafing). The first version keyed on the
+## remaining gap and missed the worst case entirely, measured at 168
+## degrees body-vs-motion: a man GLUED to his slot strafes hardest when
+## the slot itself sweeps sideways under him — small gap, big sideways
+## step. So the key is his STEP: moving at a walk, he faces where he is
+## going; the blend fades in between these two speeds so a man barely
+## drifting does not flick his heading at every jostle. On a steady
+## march travel IS the squad facing, so nothing changes there by
+## construction.
+const FACE_TRAVEL_MIN_SPEED := 0.6
+const FACE_TRAVEL_FULL_SPEED := 1.8
+
 ## Two drawn men of one squad closer than this push apart — the melee
 ## scrum breathes instead of interpenetrating.
 const JOSTLE_RADIUS := 0.45
@@ -161,6 +176,12 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float,
 	var blend := 1.0 - exp(-EASE_RATE * maxf(delta, 0.0))
 
 	var max_step := max_step_speed * maxf(delta, 0.0)
+	# Where each (post-deal) man STARTED this frame, so his facing can
+	# follow his WHOLE step — ease plus jostle plus clamp correction. The
+	# facing first followed only the eased step, and the strafing it was
+	# built to remove survived at 158 degrees: the drift-clamp correction
+	# moves exactly the men the ease barely touched, sideways.
+	var frame_start := stored.duplicate()
 	for i in range(count):
 		var target: Vector3 = transforms[i].origin
 		var current: Vector3 = stored[i]
@@ -188,16 +209,37 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float,
 	# exactly what the amendment legalises here and nowhere else.
 	stored = jostle(stored, transforms,
 		max_step if max_step > 0.0 else 1e9)
+	var steps := PackedVector3Array()
+	steps.resize(count)
+	for i in range(count):
+		steps[i] = stored[i] - frame_start[i]
 	_eased[squad_id] = stored
 
 	var out: Array[Transform3D] = []
 	out.resize(count)
 	for i in range(count):
-		# Basis is taken from the authoritative transform unchanged: the
-		# squad's facing is already smooth because it comes from the
-		# curve's own direction, and easing it as well would make troops
-		# lag their own feet.
-		out[i] = Transform3D(transforms[i].basis, stored[i])
+		# The squad's facing by default — it is already smooth, coming
+		# from the curve's own direction. A CAPPED man still catching up
+		# blends toward his own step direction instead (FACE_TRAVEL
+		# above): the walk cycle then strides along his actual motion
+		# rather than skating sideways under a body pointed elsewhere.
+		var basis := transforms[i].basis
+		if max_step > 0.0 and delta > 0.0:
+			var step := steps[i]
+			step.y = 0.0
+			var step_speed := step.length() / delta
+			if step_speed > FACE_TRAVEL_MIN_SPEED:
+				var weight := clampf(
+					(step_speed - FACE_TRAVEL_MIN_SPEED)
+						/ (FACE_TRAVEL_FULL_SPEED - FACE_TRAVEL_MIN_SPEED),
+					0.0, 1.0)
+				# atan2(x, z) + Basis(UP, angle): the same convention
+				# Formation.facing_angle feeds soldier bases with.
+				var squad_yaw := transforms[i].basis.get_euler().y
+				var travel_yaw := atan2(step.x, step.z)
+				basis = Basis(Vector3.UP,
+					lerp_angle(squad_yaw, travel_yaw, weight))
+		out[i] = Transform3D(basis, stored[i])
 	return out
 
 
