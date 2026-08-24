@@ -226,6 +226,11 @@ func _detail_for(world: Vector3) -> int:
 ## and the only symptom would be a slow client.
 var _visible_squads := 0
 var _now := 0.0
+## Wall clock since this node's _ready — what `_now` used to be. Kept for
+## the few things that genuinely pace against THIS PROCESS (the capture
+## run's duration), while `_now` is the server's clock now.
+var _wall_now := 0.0
+var _clock_synced := false
 ## Whether the ground can be stood on: the fields are built and the sampler is
 ## bound. NOT the same as "the ground is fully drawn" since D-106's successor
 ## (D-20260818-terrain-builds-a-slice-at-a-time) — the chunk meshes keep
@@ -389,7 +394,28 @@ func _report_desyncs() -> void:
 
 
 func _process(delta: float) -> void:
-	_now += delta
+	_wall_now += delta
+	# THE WORLD IS RENDERED ON THE SERVER'S CLOCK, estimated between
+	# messages — because that is the axis curve keyframes live on. `_now`
+	# was a wall clock started at this node's _ready, behind the server by
+	# the whole terrain build, so every curve sample CLAMPED: positions
+	# still moved (fresh curves' first keyframes advanced and the ease
+	# smoothed the hops), but measured speed was exactly 0.00 for every
+	# squad in every march — telemetry, 2026-08-24 — so the walk clip
+	# never played in a live client. One jump forward at first sync,
+	# monotonic after (a clock that runs backwards re-derives soldiers
+	# backwards), and re-anchored by every message that states a tick.
+	if _state.welcomed and _state.server_tick > 0:
+		# `render_time()` is anchored to the curves themselves, not the
+		# tick anchor: a curve packet replaces the whole curve and starts
+		# at send time, so any clock behind the freshest start clamps
+		# before it — a fixed delay here was measured teleporting squads
+		# on every packet. The HUD clock stays on `match_elapsed()`.
+		var estimate := _state.render_time()
+		_now = estimate if not _clock_synced else maxf(_now, estimate)
+		_clock_synced = true
+	else:
+		_now += delta
 	_frame_delta = delta
 	_service_network()
 	# Immediately after the packets that could have produced one, so a
@@ -454,7 +480,10 @@ func _process(delta: float) -> void:
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
-		if _now >= _run_seconds:
+		# Wall time, deliberately: `_now` is the SERVER's clock now, and a
+		# capture that joined a server already n seconds old would end n
+		# seconds early on it.
+		if _wall_now >= _run_seconds:
 			_finish_capture()
 
 
@@ -8372,6 +8401,11 @@ func _on_quit_pressed() -> void:
 ## through hills that are not there.
 func _teardown_match() -> void:
 	print("client: match over — back to the lobby")
+	# The next match anchors a fresh server clock (ClientState clears
+	# server_tick), so the sync must be allowed to JUMP again — held
+	# monotonic across it, a second match would render at the first
+	# match's final time forever.
+	_clock_synced = false
 	_free_nodes(_squad_nodes)
 	_free_nodes(_building_nodes)
 	_free_nodes(_wall_joint_nodes)

@@ -44,6 +44,7 @@ var _owner_colour := Color(0, 0, 0, 0)
 ## per-soldier derivation, and this is that same loop. Phase advances in the
 ## shader from TIME, so a squad walking at a steady speed writes nothing.
 var _last_clip := -1
+var _clip_guard_reported := 0
 var _last_rate := -1.0
 
 ## How many times the per-soldier animation buffer has actually been rewritten.
@@ -152,9 +153,20 @@ func _apply_material(def: UnitDef) -> void:
 ## comparison per squad per frame and nothing else.
 func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
 	if not _authored or _multimesh_instance == null:
+		if _clip_guard_reported == 0:
+			# Once, not per frame: this return is why a squad can march with
+			# its model in the rest pose — no custom data means the shader
+			# derives phase from zeros. Silent for a whole diagnosis session.
+			_clip_guard_reported = 1
+			print("client: CLIP-GUARD squad=%d model=%s authored=%s no-mmi=%s" % [
+				squad_id, _model_id, _authored, _multimesh_instance == null])
 		return
 	var mm := _multimesh_instance.multimesh
 	if mm == null or not mm.use_custom_data:
+		if _clip_guard_reported == 0:
+			_clip_guard_reported = 1
+			print("client: CLIP-GUARD squad=%d no-mm=%s custom=%s" % [
+				squad_id, mm == null, mm != null and mm.use_custom_data])
 		return
 
 	var rate := AnimationState.rate_for(clip, speed)
@@ -165,6 +177,14 @@ func set_clip_data(squad_id: int, clip: int, speed: float) -> void:
 	_last_clip = clip
 	_last_rate = rate
 	custom_data_writes += 1
+	# Diagnosis print (issue: walk reads as frozen during a steady march).
+	# Writes happen on CHANGE only, so this is a handful of lines per squad
+	# per order, not spam. What it separates: "the renderer was never told
+	# to walk" (no walk line during a march) from "it was told and the
+	# picture still froze" (walk line present) — the same
+	# instrument-the-live-run move D-038's ownership bug needed.
+	print("client: CLIP squad=%d %s rate=%.2f speed=%.2f" % [
+		squad_id, AnimationState.CLIP_NAMES[clip], rate, speed])
 
 	for i in range(mm.instance_count):
 		mm.set_instance_custom_data(

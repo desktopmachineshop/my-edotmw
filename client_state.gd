@@ -362,6 +362,56 @@ func match_elapsed() -> float:
 	return stated + maxf(Time.get_ticks_msec() / 1000.0 - server_tick_at, 0.0)
 
 
+## The SIMULATION clock, estimated between messages — the time axis every
+## curve keyframe lives on.
+##
+## The same anchor `match_elapsed()` reads (the server's tick is the whole
+## clock, D-020), exposed under the name that says what it is FOR: sampling
+## curves. The GUI client used to sample them at a wall clock started at
+## its own node's _ready — behind the server by however long its terrain
+## build took, so every sample CLAMPED. Positions still appeared to move
+## (each fresh curve's first keyframe advanced, and SoldierMotion eased
+## the hops), which is exactly why nothing failed: the one number the
+## clamp forced to zero was measured SPEED, and the only consumer that
+## cared was animation. The walk clip never played in a live client, for
+## any unit, from the day animation shipped until a supplied model's
+## rest pose made "no walking" visible enough to chase.
+func estimated_sim_time() -> float:
+	return match_elapsed()
+
+
+## The freshest curve START this client has received, and when it heard it.
+## The render clock's anchor — see `render_time()`.
+var newest_curve_time := 0.0
+var newest_curve_at := 0.0
+
+
+## The time to SAMPLE CURVES at, free-running between packets.
+##
+## Anchored to the curves themselves, not to the tick anchor, because a
+## curve packet REPLACES the squad's whole curve (`_handle_curve`) and its
+## first keyframe is the squad's position at SEND time. For a squad whose
+## path is being re-emitted continuously that packet cadence was measured
+## at ~0.25 s — so any render clock even slightly behind the freshest
+## start spends most of each interval CLAMPED before it: the squad jumps
+## to the new first keyframe, freezes, slides, and jumps again. Measured
+## as a sawtooth (speed ramp 0.25 -> 2.07, snap to 0.00, repeat) and
+## reported from play as teleporting. Anchoring on the newest start
+## self-tunes to whatever the emission cadence is: the sample sits AT the
+## freshest packet's start and interpolates forward into the future
+## keyframes every movement curve carries.
+##
+## A squad whose curve is old is simply UNCHANGED (an idle squad's curve
+## is never resent — that is D-003's whole bandwidth claim), and sampling
+## past its end clamps to the spot it stands on, speed zero, idle clip:
+## correct by construction.
+func render_time() -> float:
+	if newest_curve_at <= 0.0:
+		return match_elapsed()
+	return newest_curve_time + maxf(
+		Time.get_ticks_msec() / 1000.0 - newest_curve_at, 0.0)
+
+
 ## Where `player` (1-based) starts, or (-1, -1) if the server sent no
 ## spawn table.
 ##
@@ -389,8 +439,15 @@ func spawn_cell_of(player: int) -> Vector2i:
 
 func _handle_curve(data: PackedByteArray) -> void:
 	var decoded := NetProtocol.decode_curve(data)
-	curves[int(decoded["id"])] = decoded["curve"]
+	var curve := decoded["curve"] as StateCurve
+	curves[int(decoded["id"])] = curve
 	curve_packets_received += 1
+	# The render clock's anchor (see `render_time`): the freshest START a
+	# curve has arrived with is the closest thing this client has to "the
+	# server's now, on the axis curves are actually sampled on".
+	if not curve.is_empty() and curve.start_time() > newest_curve_time:
+		newest_curve_time = curve.start_time()
+		newest_curve_at = Time.get_ticks_msec() / 1000.0
 
 
 func _handle_squad_info(data: PackedByteArray) -> void:
@@ -1073,6 +1130,8 @@ func leave_match() -> void:
 
 	server_tick = 0
 	server_tick_at = 0.0
+	newest_curve_time = 0.0
+	newest_curve_at = 0.0
 
 
 ## A player's civ as the lobby last described it, or "" if unknown.
