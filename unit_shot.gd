@@ -15,6 +15,7 @@ var model_id := &"gatherers"
 var out_path := "res://artifacts/unit-shot.png"
 var seconds := 0.35
 var clip_name := "walk"
+var front_view := false
 
 
 func _ready() -> void:
@@ -28,6 +29,8 @@ func _ready() -> void:
 			clip_name = text.trim_prefix("--clip=")
 		elif text.begins_with("--seconds="):
 			seconds = float(text.trim_prefix("--seconds="))
+		elif text == "--front":
+			front_view = true
 
 	var def: UnitDef = null
 	for candidate in UnitRoster.load_all():
@@ -43,12 +46,36 @@ func _ready() -> void:
 		% [def.id, def.model_id,
 			"yes" if UnitMesh.texture_for(def.model_id) != null else "no"])
 
+	# THE GAME'S CAMERA ANGLE, not a turntable's.
+	#
+	# `client.gd` places the camera at `target + (0, h, h * PITCH_RUN)`, which
+	# is 59 degrees below horizontal — very nearly overhead. This shot used to
+	# sit at -6 degrees, roughly eye level, and that is a good way to judge a
+	# MODEL and a bad way to judge a WALK: at eye level a leg swing is the
+	# most obvious thing on screen; from above it is foreshortened to almost
+	# nothing while the helmet and backpack fill the silhouette.
+	#
+	# An animation tuned on the wrong angle was reported from play as "no
+	# walking" while every measurement said the clip was fine. Same family as
+	# `test-client` pointing at a spawn and `gen-model-preview` framing the
+	# whole roster: when a rendered check has to see something specific, frame
+	# it the way the player will. `--front` keeps the old view, which is what
+	# it was always good for.
 	var camera := Camera3D.new()
-	camera.position = Vector3(0.0, 1.05, 3.1)
-	camera.rotation_degrees = Vector3(-6.0, 0.0, 0.0)
+	if front_view:
+		camera.position = Vector3(0.0, 1.05, 3.1)
+		camera.rotation_degrees = Vector3(-6.0, 0.0, 0.0)
+	else:
+		var h := 3.0
+		camera.position = Vector3(0.0, h, h * RenderCull.PITCH_RUN)
+		camera.look_at_from_position(
+			camera.position, Vector3(0.0, 0.75, 0.0), Vector3.UP)
 	camera.fov = 42.0
 	add_child(camera)
 	camera.make_current()
+	print("unit_shot: camera %s" % ("front (model view)" if front_view
+		else "GAME angle, %.0f deg down"
+			% rad_to_deg(atan2(1.0, RenderCull.PITCH_RUN))))
 
 	add_child(WorldLook.make_sun(true))
 	var world := WorldEnvironment.new()

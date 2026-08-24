@@ -104,6 +104,23 @@ COUNTER = 11.0         # chest counter-rotation against the hips
 LEAN = 5.0             # torso pitch, so the trunk is never dead still
 HEAD_BOB = 4.0         # the head answers the body rather than floating
 
+# WHAT THE PLAYER CAN ACTUALLY SEE, which is not what a turntable shows.
+#
+# The game camera looks down 59 degrees (`RenderCull.PITCH_RUN`). From
+# there a walking soldier is mostly HELMET AND BACKPACK: the legs are
+# foreshortened to almost nothing, this model's apron covers the thighs,
+# and a selected unit's ground disc projects up over whatever is left of
+# the shins. All three hide precisely where a walk cycle puts its motion.
+#
+# So the trunk twists and sways as well as bobbing, and it does so harder
+# than a ground-level view would ever justify. YAW is the single most
+# visible thing from overhead — a shoulder rotation moves the backpack,
+# which is a big share of the silhouette — while the vertical bob is the
+# least, because the camera is looking almost straight down it.
+TRUNK_YAW = 22.0       # shoulders/backpack twist, the overhead read
+PELVIS_YAW = 10.0      # hips counter-twist, so the trunk works against itself
+SWAY = 0.016           # lateral body shift, as a FRACTION of model height
+
 ## Arms hang rather than stick out. The asset is modelled in a T-pose, and
 ## a T-pose is a modelling convenience, never a game pose.
 ARM_DOWN = 74.0
@@ -258,31 +275,35 @@ def _pose_walk(pose, axes, phase: float, stride: float, tempo: float) -> None:
             bend = ELBOW_BEND + 8.0 * tempo * max(0.0, -math.cos(angle))
             _swing(elbow, axes["x"], -bend * forward)
 
-    # The body rises twice per stride, once over each supporting leg.
+    # The body rises twice per stride, once over each supporting leg, and
+    # SWAYS onto whichever leg is carrying it — the sway is worth more than
+    # the lift from overhead, where the lift is edge-on.
     pelvis = pose.get("pelvis")
     if pelvis is not None:
         lift = axes["height"] * BOB * tempo * (0.5 - 0.5 * math.cos(2.0 * turn))
-        _shift(pelvis, axes["z"] * lift)
+        side = axes["height"] * SWAY * tempo * math.sin(turn)
+        _shift(pelvis, axes["z"] * lift + axes["x"] * side)
         _compose(pelvis, axes["y"], ROLL * tempo * math.sin(turn))
+        _compose(pelvis, axes["z"], PELVIS_YAW * tempo * math.sin(turn))
 
     # THE WHOLE TRUNK MOVES, and on this model that matters more than the
     # legs do: the apron and backpack are most of what a player sees, and a
     # rigid trunk over swinging legs reads as a statue on a conveyor.
     waist = pose.get("waist")
     if waist is not None:
-        _swing(waist, axes["z"], -0.5 * COUNTER * tempo * math.sin(turn))
+        _swing(waist, axes["z"], -0.5 * TRUNK_YAW * tempo * math.sin(turn))
         _compose(waist, axes["x"], LEAN * tempo * axes["forward"]
                  * (0.5 + 0.5 * math.cos(2.0 * turn)))
     chest = pose.get("chest")
     if chest is not None:
-        _swing(chest, axes["z"], -COUNTER * tempo * math.sin(turn))
+        _swing(chest, axes["z"], -TRUNK_YAW * tempo * math.sin(turn))
         _compose(chest, axes["x"], 0.4 * LEAN * tempo * axes["forward"]
                  * math.cos(2.0 * turn))
     head = pose.get("head")
     if head is not None:
         # Counter to the chest, so the head stays looking where it is going
         # rather than being carried round with the shoulders.
-        _swing(head, axes["z"], 0.6 * COUNTER * tempo * math.sin(turn))
+        _swing(head, axes["z"], 0.6 * TRUNK_YAW * tempo * math.sin(turn))
         _compose(head, axes["x"], -HEAD_BOB * tempo * axes["forward"]
                  * math.cos(2.0 * turn))
 
