@@ -93,11 +93,21 @@ ROLES = {
 # is driven too. What matters at this size is the FRACTION OF THE SILHOUETTE
 # in motion, not the realism of any one joint — `art/author_clips.py`'s own
 # measurement at the bottom of this file is how that is checked.
-STRIDE = 33.0          # thigh swing, peak to centre
-KNEE_BEND = 54.0       # how far the trailing knee folds
+# ROUND THREE, from play again: "nothing during the main move but when the
+# unit jostled around at the end they did the animation". The jostle is
+# per-soldier TRANSFORM motion, which reads instantly; the march is a
+# locked formation gliding, where the only cue is limb cycling — and this
+# model's cycling happened INSIDE its own top-down silhouette (under the
+# pack, behind the apron). Motion the outline never shows might as well
+# not exist at this size. So the arms swing far enough fore-aft that the
+# hands clear the body seen from above, and the knee folds far enough
+# that a heel kicks up past the pack behind. The outline itself has to
+# change shape, every half-cycle, or the march reads as sliding.
+STRIDE = 38.0          # thigh swing, peak to centre
+KNEE_BEND = 74.0       # trailing knee fold — kicks the heel up past the pack
 ANKLE_ROLL = 16.0      # foot counter-rotation, keeps the sole near flat
-ARM_SWING = 34.0       # shoulder counter-swing
-ELBOW_BEND = 24.0      # a carried-arm bend, not a straight stick
+ARM_SWING = 55.0       # hands clear the torso fore-and-aft, seen from above
+ELBOW_BEND = 26.0      # a carried-arm bend, not a straight stick
 BOB = 0.030            # vertical body travel, as a FRACTION of model height
 ROLL = 7.0             # pelvis roll about the walk direction
 COUNTER = 11.0         # chest counter-rotation against the hips
@@ -117,9 +127,9 @@ HEAD_BOB = 4.0         # the head answers the body rather than floating
 # visible thing from overhead — a shoulder rotation moves the backpack,
 # which is a big share of the silhouette — while the vertical bob is the
 # least, because the camera is looking almost straight down it.
-TRUNK_YAW = 22.0       # shoulders/backpack twist, the overhead read
-PELVIS_YAW = 10.0      # hips counter-twist, so the trunk works against itself
-SWAY = 0.016           # lateral body shift, as a FRACTION of model height
+TRUNK_YAW = 26.0       # shoulders/backpack twist, the overhead read
+PELVIS_YAW = 12.0      # hips counter-twist, so the trunk works against itself
+SWAY = 0.028           # lateral body shift, as a FRACTION of model height
 
 ## Arms hang rather than stick out. The asset is modelled in a T-pose, and
 ## a T-pose is a modelling convenience, never a game pose.

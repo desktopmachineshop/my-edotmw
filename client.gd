@@ -1201,10 +1201,19 @@ func _refresh_squads() -> void:
 		# with sway, footfall and whatever the squad is visibly doing.
 		var eased := _motion.ease(squad_id, transforms, _frame_delta)
 		var speed := _state.squad_speed(squad_id, _now)
+		# The REAL speed, not a literal 1.0 — which is what sat here and is
+		# why every standing squad in every match bobbed on the spot.
+		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
+		# squad stops bobbing", `test_formation.gd` asserts exactly that of
+		# the function, and this caller then handed it a constant. The D-061
+		# family: the mechanism correct and tested, the one live call site
+		# feeding it the wrong input. Noticed only when an authored model
+		# with a real VAT idle clip made the extra whole-body bounce read as
+		# a defect instead of as capsule-era "life".
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
 			else CosmeticOffset.decorate_activity(
-				eased, _now, 1.0, int(doing["activity"]), doing["toward"])
+				eased, _now, speed, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the

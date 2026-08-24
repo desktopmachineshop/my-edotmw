@@ -16,6 +16,7 @@ var out_path := "res://artifacts/unit-shot.png"
 var seconds := 0.35
 var clip_name := "walk"
 var front_view := false
+var burst := 0
 
 
 func _ready() -> void:
@@ -31,6 +32,8 @@ func _ready() -> void:
 			seconds = float(text.trim_prefix("--seconds="))
 		elif text == "--front":
 			front_view = true
+		elif text.begins_with("--burst="):
+			burst = int(text.trim_prefix("--burst="))
 
 	var def: UnitDef = null
 	for candidate in UnitRoster.load_all():
@@ -109,6 +112,24 @@ func _shoot() -> void:
 	while Time.get_ticks_msec() - start < int(seconds * 1000.0):
 		await get_tree().process_frame
 	await RenderingServer.frame_post_draw
+
+	if burst > 0:
+		# A BURST of consecutive frames, for judging MOTION. A tracking eye
+		# follows a marching squad, so a stabilised view of the cycle — which
+		# with no ground in frame is simply the model in place — is exactly
+		# what a player perceives of the animation itself. A single still
+		# cannot answer "does this read as walking"; a strip of them can.
+		var base := out_path.trim_suffix(".png")
+		for i in range(burst):
+			await get_tree().process_frame
+			await RenderingServer.frame_post_draw
+			var img: Image = get_viewport().get_texture().get_image()
+			var path := ProjectSettings.globalize_path("%s-%03d.png" % [base, i])
+			DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+			img.save_png(path)
+		print("unit_shot: wrote %d burst frames to %s-NNN.png" % [burst, base])
+		get_tree().quit(0)
+		return
 
 	var image: Image = get_viewport().get_texture().get_image()
 	var absolute := ProjectSettings.globalize_path(out_path)
