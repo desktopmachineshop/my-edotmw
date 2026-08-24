@@ -81,14 +81,28 @@ ROLES = {
 # dwarf takes shorter, heavier strides than the lanky default a human rig
 # suggests. These are the numbers to change when a walk reads wrong — the
 # structure below should not need to.
-STRIDE = 24.0          # thigh swing, peak to centre
-KNEE_BEND = 42.0       # how far the trailing knee folds
-ANKLE_ROLL = 14.0      # foot counter-rotation, keeps the sole near flat
-ARM_SWING = 17.0       # shoulder counter-swing
-ELBOW_BEND = 22.0      # a carried-arm bend, not a straight stick
-BOB = 0.022            # vertical body travel, as a FRACTION of model height
-ROLL = 3.5             # pelvis roll about the walk direction
-COUNTER = 5.0          # chest counter-rotation against the hips
+# TUNED FOR A THIRTY-PIXEL SOLDIER, not for a turntable.
+#
+# The first pass used film-plausible angles and read as a statue sliding.
+# Measured against `militia`, which does read: 52% of a militia's vertices
+# move more than 0.05 during its walk, against 25% of the dwarf's — because
+# a militia is legs and arms with a token torso, while this model is mostly
+# apron, backpack, beard and helmet, none of which a leg swing touches.
+#
+# So the numbers below are deliberately larger than life AND the upper body
+# is driven too. What matters at this size is the FRACTION OF THE SILHOUETTE
+# in motion, not the realism of any one joint — `art/author_clips.py`'s own
+# measurement at the bottom of this file is how that is checked.
+STRIDE = 33.0          # thigh swing, peak to centre
+KNEE_BEND = 54.0       # how far the trailing knee folds
+ANKLE_ROLL = 16.0      # foot counter-rotation, keeps the sole near flat
+ARM_SWING = 34.0       # shoulder counter-swing
+ELBOW_BEND = 24.0      # a carried-arm bend, not a straight stick
+BOB = 0.030            # vertical body travel, as a FRACTION of model height
+ROLL = 7.0             # pelvis roll about the walk direction
+COUNTER = 11.0         # chest counter-rotation against the hips
+LEAN = 5.0             # torso pitch, so the trunk is never dead still
+HEAD_BOB = 4.0         # the head answers the body rather than floating
 
 ## Arms hang rather than stick out. The asset is modelled in a T-pose, and
 ## a T-pose is a modelling convenience, never a game pose.
@@ -251,10 +265,26 @@ def _pose_walk(pose, axes, phase: float, stride: float, tempo: float) -> None:
         _shift(pelvis, axes["z"] * lift)
         _compose(pelvis, axes["y"], ROLL * tempo * math.sin(turn))
 
-    # Shoulders counter-rotate against the hips.
+    # THE WHOLE TRUNK MOVES, and on this model that matters more than the
+    # legs do: the apron and backpack are most of what a player sees, and a
+    # rigid trunk over swinging legs reads as a statue on a conveyor.
+    waist = pose.get("waist")
+    if waist is not None:
+        _swing(waist, axes["z"], -0.5 * COUNTER * tempo * math.sin(turn))
+        _compose(waist, axes["x"], LEAN * tempo * axes["forward"]
+                 * (0.5 + 0.5 * math.cos(2.0 * turn)))
     chest = pose.get("chest")
     if chest is not None:
         _swing(chest, axes["z"], -COUNTER * tempo * math.sin(turn))
+        _compose(chest, axes["x"], 0.4 * LEAN * tempo * axes["forward"]
+                 * math.cos(2.0 * turn))
+    head = pose.get("head")
+    if head is not None:
+        # Counter to the chest, so the head stays looking where it is going
+        # rather than being carried round with the shoulders.
+        _swing(head, axes["z"], 0.6 * COUNTER * tempo * math.sin(turn))
+        _compose(head, axes["x"], -HEAD_BOB * tempo * axes["forward"]
+                 * math.cos(2.0 * turn))
 
 
 def _compose(pose_bone, axis_world, degrees: float) -> None:
