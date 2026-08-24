@@ -1383,6 +1383,32 @@ seed-art-source ONLY="":
     [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
     "{{blender_python}}" art/seed_source.py $args
 
+# Write the four clips onto a RIGGED art/source/<name>.blend.
+#
+# A migration like seed-art-source, never part of the build: it edits the
+# .blend, and `build-assets` bakes whatever the .blend says.
+#
+# A model that arrives rigged arrives with a SKELETON and no ACTIONS, which
+# is a T-posed soldier sliding across the ground. `art/clips.py` animates
+# the generated `Part` hierarchy and cannot drive an arbitrary armature, so
+# a supplied rig needs its clips written against ITS bones — matched by
+# name, with which way the model FACES measured from its toes rather than
+# assumed (D-20260824-a-supplied-rig-is-animated-against-its-own-bones).
+#
+# Re-runnable: it clears the previous animation first, so tuning a stride
+# is edit-and-rerun rather than edit-and-hope.
+[doc("Author idle/walk/attack/rout onto a rigged art/source/<name>.blend")]
+author-clips NAME:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    "{{blender_python}}" art/author_clips.py --name="{{NAME}}"
+    echo "Now rebuild: {{just_executable()}} build-assets"
+
 # Contact sheet of every authored model, animated, on real terrain (D-063).
 #
 # Software-rasterised, so unlike `bench-render` this needs no GPU and runs

@@ -291,69 +291,73 @@ def convert(glb: str, name: str, height: float, owner_mask: float,
         print(f"  ignoring '{ignored.name}' ({len(ignored.data.vertices)} "
               "vertices) — not the largest mesh in the file")
 
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
     obj.name = name
     obj.data.name = name
 
-    # The armature is dropped, and its deformation with it. A rig with no
-    # actions poses nothing, so the rest pose IS the mesh; keeping a
-    # skeleton nobody authored is what `seed_source.py` refuses to generate
-    # for exactly this reason. Rig it in Blender when it is time to animate.
-    for modifier in list(obj.modifiers):
-        if modifier.type == "ARMATURE":
-            obj.modifiers.remove(modifier)
+    # THE RIG IS KEPT, and that is what makes the model animatable.
+    #
+    # `blend_source.bake` steps the timeline and flattens through the
+    # DEPENDENCY GRAPH, so bones deform the mesh and the result lands in the
+    # VAT with nothing else told about it (D-20260821). Dropping the skeleton
+    # on the way in would throw away the only part of the asset that makes
+    # animation cheap — see `art/author_clips.py`.
+    armature = None
+    if obj.parent is not None and obj.parent.type == "ARMATURE":
+        armature = obj.parent
+    else:
+        for modifier in obj.modifiers:
+            if modifier.type == "ARMATURE" and modifier.object is not None:
+                armature = modifier.object
+                break
+    keep = set([obj]) | (set([armature]) if armature is not None else set())
     for other in list(bpy.data.objects):
-        if other is not obj:
+        if other not in keep:
             bpy.data.objects.remove(other, do_unlink=True)
 
-    # Bake the import's own transform in before measuring: the glTF importer
-    # expresses its Y-up -> Z-up conversion as a rotation ON THE OBJECT, so
-    # the mesh's own coordinates are still Y-up until this is applied.
-    # Measuring first would size the model against the wrong axis.
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    root = armature if armature is not None else obj
 
-    zs = [v.co.z for v in obj.data.vertices]
-    xs = [v.co.x for v in obj.data.vertices]
-    ys = [v.co.y for v in obj.data.vertices]
+    # Measured in WORLD space and corrected on the ROOT object, UNAPPLIED.
+    #
+    # `blend_source` bakes `matrix_world`, so an object-level transform is
+    # already part of what it reads. Mutating vertex coordinates instead —
+    # which is what this did while the rig was being discarded — would slide
+    # a skinned mesh out from under the bones that drive it, and the model
+    # would come apart the moment anything posed it.
+    corners = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    xs = [c.x for c in corners]
+    ys = [c.y for c in corners]
+    zs = [c.z for c in corners]
     raw_height = max(zs) - min(zs)
     if raw_height <= 0.0:
         raise SystemExit(
-            f"{name}: the model has no height along Z after import — the "
-            "up-axis conversion did not happen, so it is lying on its back "
-            "(see the module docstring).")
-    if raw_height < (max(xs) - min(xs)) * 0.5:
-        # Not fatal — a model CAN be wider than it is tall — but it is the
-        # signature of an up-axis that went wrong, and this pipeline has
-        # already paid for that once (every seeded soldier lay on its back).
-        print(f"  NOTE: {name} is much wider than tall "
-              f"({max(xs) - min(xs):.3f} x {raw_height:.3f}); check the pose.")
+            f"{name}: the model has no height along Z — the up-axis "
+            "conversion did not happen, so it is lying on its back.")
 
     scale = height / raw_height
-    for v in obj.data.vertices:
-        v.co.x = (v.co.x - (max(xs) + min(xs)) * 0.5) * scale
-        v.co.y = (v.co.y - (max(ys) + min(ys)) * 0.5) * scale
-        v.co.z = (v.co.z - min(zs)) * scale
-    obj.location = (0.0, 0.0, 0.0)
+    root.scale = (scale, scale, scale)
+    root.location = (
+        -(max(xs) + min(xs)) * 0.5 * scale,
+        -(max(ys) + min(ys)) * 0.5 * scale,
+        -min(zs) * scale,
+    )
 
     image = _basecolor_image(bpy, obj)
     if image is None:
         print(f"  NOTE: {name} has no basecolor image; COLOR_0 is left alone "
               "and the bake will use flat white. Paint it in vertex paint.")
-        corners = 0
+        corner_count = 0
     else:
-        corners = _sample_texture_into_colours(bpy, obj, image, owner_mask)
+        corner_count = _sample_texture_into_colours(bpy, obj, image, owner_mask)
 
     os.makedirs(SOURCE_DIR, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=target)
 
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     print(f"  {name}: {len(obj.data.vertices)} vertices, {tris} triangles, "
-          f"{corners} corner colours, {raw_height:.3f} -> {height:.3f} tall")
+          f"{corner_count} corner colours, {raw_height:.3f} -> {height:.3f} tall")
+    print("  rig: %s" % ("NONE — this model cannot be animated"
+                         if armature is None
+                         else f"{len(armature.data.bones)} bones kept"))
     print(f"  wrote {os.path.relpath(target, _ROOT)}")
 
 

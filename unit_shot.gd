@@ -14,6 +14,7 @@ const SIZE := Vector2i(1000, 1000)
 var model_id := &"gatherers"
 var out_path := "res://artifacts/unit-shot.png"
 var seconds := 0.35
+var clip_name := "walk"
 
 
 func _ready() -> void:
@@ -23,6 +24,10 @@ func _ready() -> void:
 			model_id = StringName(text.trim_prefix("--model="))
 		elif text.begins_with("--out="):
 			out_path = text.trim_prefix("--out=")
+		elif text.begins_with("--clip="):
+			clip_name = text.trim_prefix("--clip=")
+		elif text.begins_with("--seconds="):
+			seconds = float(text.trim_prefix("--seconds="))
 
 	var def: UnitDef = null
 	for candidate in UnitRoster.load_all():
@@ -55,6 +60,17 @@ func _ready() -> void:
 	add_child(unit)
 	unit.rebuild(def, PlayerColours.of_index(0))
 	unit.set_slot_transforms([Transform3D(Basis(), Vector3.ZERO)] as Array[Transform3D])
+
+	# Which CLIP to show. Without this the shot is always the rest pose, and a
+	# walk cycle that never ran would look exactly like a walk cycle that did.
+	var clip := AnimationState.CLIP_NAMES.find(clip_name)
+	if clip < 0:
+		push_error("unit_shot: no clip '%s' — have %s"
+			% [clip_name, str(AnimationState.CLIP_NAMES)])
+		get_tree().quit(1)
+		return
+	unit.set_clip_data(0, clip, 3.2)
+	print("unit_shot: clip '%s'" % clip_name)
 
 	_shoot()
 
