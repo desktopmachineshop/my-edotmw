@@ -1398,9 +1398,20 @@ seed-art-source ONLY="":
 # Re-runnable: it clears the previous animation first, so tuning a stride
 # is edit-and-rerun rather than edit-and-hope.
 [doc("Author idle/walk/attack/rout onto a rigged art/source/<name>.blend")]
-author-clips NAME:
+author-clips NAME="":
     #!/usr/bin/env bash
     set -euo pipefail
+    # A default of "" rather than a bare required parameter, for a test's
+    # reason as much as a usability one: `tests/test_recipe_args.gd` treats
+    # every no-default recipe parameter as a NUMBER owed a recipe-arg.sh
+    # check, because until this recipe every such parameter was one. NAME is
+    # an archetype, so it takes the `seed-art-source ONLY=""` shape instead
+    # and refuses loudly here.
+    if [ -z "{{NAME}}" ]; then
+        echo "FAIL: author-clips needs an archetype, e.g.:"
+        echo "  {{just_executable()}} author-clips gatherers"
+        exit 1
+    fi
     if [ ! -x "{{blender_python}}" ]; then
         echo "FAIL: no bpy environment at {{blender_venv}}"
         echo "Run: {{just_executable()}} bootstrap-art"
