@@ -5363,9 +5363,18 @@ const BUILD_CATEGORIES := [
 ## levels, so a category with nothing this squad can build never appears,
 ## and drilling into one never offers a def this squad cannot build.
 func _squad_build_actions(def_id: StringName) -> Array:
+	# The ARCHETYPE, because that is what `built_by` holds and what the
+	# server's own order gate resolves (D-047). This passed the raw def id
+	# for six milestones and nothing noticed, because the one unit that
+	# could build had id == archetype ("gatherers") — the per-civ split
+	# (D-20260823) broke the coincidence, and every civ's crew was offered
+	# an empty build menu while the server would happily have accepted the
+	# orders. Reported from play as "the thralls cant build".
+	var unit := UnitRoster.by_id(def_id)
+	var archetype := unit.archetype if unit != null else def_id
 	var by_category := {}
 	for building in BuildingSim.all_defs():
-		if not BuildingSim.can_build(building, def_id):
+		if not BuildingSim.can_build(building, archetype):
 			continue
 		var category := building.category
 		if not by_category.has(category):
