@@ -66,6 +66,12 @@ const SNAP_DISTANCE := 6.0
 ## and every screen-space read built on authoritative data stays valid.
 const MAX_RENDER_DRIFT := 1.5
 
+## Mean target displacement, in ONE frame, past which the whole squad is
+## re-dealt to its new slots rather than each man chasing his old label.
+## Comfortably above anything continuous motion produces per frame
+## (a sprinting squad moves ~0.1/frame) and far below a facing flip.
+const REDEAL_DISTANCE := 1.0
+
 ## Two drawn men of one squad closer than this push apart — the melee
 ## scrum breathes instead of interpenetrating.
 const JOSTLE_RADIUS := 0.45
@@ -107,6 +113,29 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float) -> Array[Trans
 		stored.resize(count)
 		for i in range(count):
 			stored[i] = transforms[i].origin
+	elif count > 0:
+		# A formation-wide coherent jump at the SAME size is a restamp in
+		# all but name, and gets the same deal. The measured case: a squad
+		# ordered to REVERSE flips its derived facing 180 degrees in one
+		# frame, rotating every slot about the centre — the flank man's
+		# target moves twice his distance from it (5.1 units on a 12-man
+		# line, past MAX_RENDER_DRIFT's clamp; a 36-man line clears
+		# SNAP_DISTANCE outright and teleports, which is what was reported
+		# from play). Slots are anonymous (D-024), so nothing requires the
+		# man who held slot i to chase it across the formation: deal the
+		# drawn men to the NEAREST new slots and a mirrored formation is
+		# taken over mostly in place — the rear rank simply becomes the
+		# front rank, which is what turning a block around means.
+		var total := 0.0
+		for i in range(count):
+			total += (transforms[i].origin - stored[i]).length()
+		if total / float(count) > REDEAL_DISTANCE:
+			var deal := assign(stored, transforms)
+			var dealt := PackedVector3Array()
+			dealt.resize(count)
+			for i in range(count):
+				dealt[i] = stored[deal[i]]
+			stored = dealt
 
 	# Exponential smoothing, so the rate is independent of framerate: at
 	# any dt the soldier covers the same FRACTION of the remaining gap per
