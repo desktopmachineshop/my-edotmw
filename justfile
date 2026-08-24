@@ -1445,6 +1445,42 @@ gen-model-preview SECONDS="1.2": _import
 # The verdict gates on the two failures a screenshot of bare ground would
 # otherwise hide: nothing drawn at all, and a model the palettes can name
 # that never made it onto the map.
+# One unit model, filling the frame, through the real render path.
+#
+# `gen-model-preview` frames the WHOLE roster, which puts every soldier at
+# about thirty pixels — enough to answer "did they all draw", useless for
+# "what does this one look like". That gap cost a session: an imported model
+# rendered as brown noise and the roster shot could not show whether the
+# fault was the colours, the geometry or the scale
+# (D-20260824-a-textured-model-keeps-its-texture). A close-up settles it in
+# one look.
+#
+# MODEL is a `UnitDef.model_id`, not a unit id — several units share one.
+[doc("Render one unit model close up to artifacts/unit-shot.png")]
+gen-unit-shot MODEL="gatherers": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gate="$(bash host-gate.sh acquire medium 'gen-unit-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-unit-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    log="{{artifacts_dir}}/unit-shot.log"
+    "$godot" --path . --rendering-method gl_compatibility         --resolution 1000x1000 unit_shot.tscn -- --model="{{MODEL}}"         --out="res://artifacts/unit-shot.png" | tee "$log"
+    if [ ! -s "{{artifacts_dir}}/unit-shot.png" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    # Say whether the model took its TEXTURE or its vertex colours. The two
+    # look nothing alike at this density and identical in every counter.
+    grep -o 'textured=[a-z]*' "$log" | head -n 1
+    echo "VERDICT: ok - LOOK AT artifacts/unit-shot.png"
+
 [doc("Render ground cover to artifacts/cover-godot.png")]
 gen-cover-preview SECONDS="0.6": _import
     #!/usr/bin/env bash
