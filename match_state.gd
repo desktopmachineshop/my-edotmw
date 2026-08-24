@@ -506,11 +506,16 @@ func update(sim: SquadSim, buildings: BuildingSim = null) -> Array:
 		# Defeated means having nothing left to fight OR build with.
 		#
 		# Squads alone are not the test, and getting that wrong ended
-		# matches instantly: founders are consumed by the town hall they
-		# found (D-031), so a player who made the correct opening move had
-		# zero squads for a moment and was declared beaten while their
-		# hall stood there ready to produce. A base is a way back into the
-		# game; an empty map is not.
+		# matches instantly: the crew that founds a town hall is consumed
+		# by it (D-20260823-the-opening-is-a-crew-and-a-general), so a
+		# player who made the correct opening move could be left with no
+		# squads for a moment and declared beaten while their hall stood
+		# there ready to produce. A base is a way back into the game; an
+		# empty map is not.
+		#
+		# It also settles what a general's death is: a MORALE event
+		# (combat.gd's chain shock), never an elimination. Defeat has one
+		# definition and this is it.
 		if sim.living_squad_count(player) > 0:
 			continue
 		if buildings != null and buildings.living_building_count(player) > 0:

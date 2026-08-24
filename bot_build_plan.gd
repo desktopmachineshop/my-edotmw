@@ -154,10 +154,14 @@ static func claimed_radius_of(owned_def_ids: Array) -> int:
 ## to route around: `server.gd` broadcasts the lobby only while there IS a
 ## lobby, and `test-load` starts a match without one, so
 ## `ClientState.civ_of` answers "" for every bot in every run. Resolving
-## strictly per civ therefore found gatherers — `civ = &"neutral"`, so they
-## match anybody — and nothing else, which is exactly the shape the bug
-## took: barracks standing, `military_peak=0`, and a town centre quietly
-## training crews forever.
+## strictly per civ therefore found only what was in the NEUTRAL pool —
+## gatherers, at the time — and nothing else, which is exactly the shape
+## the bug took: barracks standing, `military_peak=0`, and a town centre
+## quietly training crews forever. As of
+## D-20260823-the-opening-is-a-crew-and-a-general the neutral pool is
+## empty, so a strict per-civ resolution would now find NOTHING for a bot
+## and the fallback below carries every archetype rather than most of
+## them.
 ##
 ## Falling back to any def with the archetype is correct rather than a
 ## fudge, because of what the wire carries. The client sends an ARCHETYPE

@@ -48,6 +48,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/spawns.md
 
+@docs/status/the-opening.md
+
 @docs/status/ground-fog.md
 
 @docs/status/pathing.md

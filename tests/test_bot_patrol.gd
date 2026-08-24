@@ -298,7 +298,7 @@ func test_a_run_of_the_documented_length_produces_a_reveal() -> void:
 	var points := _spawn_points()
 	assert_true(points.size() >= 4, "Setup: the shipped map seats four bots")
 
-	var gatherers: UnitDef = load("res://units/gatherers.tres")
+	var gatherers := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	var cells_per_second := gatherers.move_speed / (space.hex_size * TorusSpace.SQRT_3)
 	var town_centre: BuildingDef = load("res://buildings/town_centre.tres")
 	var sight := _cells(space, town_centre.vision_range)
@@ -356,7 +356,7 @@ func test_a_full_cycle_fits_in_the_run_for_every_pair() -> void:
 	# again: seen, hidden, seen.
 	var space := _space()
 	var points := _spawn_points()
-	var gatherers: UnitDef = load("res://units/gatherers.tres")
+	var gatherers := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	var cells_per_second := gatherers.move_speed / (space.hex_size * TorusSpace.SQRT_3)
 	var budget := RUN_SECONDS - PATROL_CAN_START_AT
 

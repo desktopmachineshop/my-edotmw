@@ -134,10 +134,27 @@ resources by `tests/test_bot_patrol.gd`.
 - **A reveal needs a conceal AND a return.** `reveal_events` counts a
   squad re-entering vision after leaving it, so it is the LAST of the fog
   criteria to be satisfied and the first to fail.
-- **A town hall takes 40 seconds and the founding party is spent on it
-  (D-031), so a player owns no soldiers until production finishes.** Any
-  run shorter than ~90 s reports `soldiers=0` and fails, and that is the
-  check working, not a bug.
+- **The fog gates are reached MUCH earlier since the opening changed**
+  (D-20260823-the-opening-is-a-crew-and-a-general). Every player now
+  starts with a general as well as a crew, so a bot has a squad to scout
+  and raid with from tick one instead of waiting on a town hall, then
+  production, then a second hauling crew. One `4 120` run on 2026-08-23
+  came back `VERDICT ok` with `conceal_events=105 reveal_events=77`,
+  where this page records `4 300` *failing* at `0/0` and `4 480` as the
+  first clean run on the same map. **That is one run, which this page's
+  own rule says is not a measurement** — read the direction, not the
+  number, and do not rewrite the recommended DURATION off it until
+  somebody has repeated it.
+- **A town hall takes 40 seconds and the crew that founds it is spent on
+  it**, so a player's ECONOMY does not start until production does. The
+  ~90 s `soldiers=0` floor this note used to carry is STALE as of
+  D-20260823-the-opening-is-a-crew-and-a-general: every player now opens
+  with a general as well as a crew, so a bot fields a military squad from
+  tick one and `military_peak`/`first_soldier_at` latch immediately. Read
+  a `soldiers=0` now as a genuine fault rather than as the opening.
+  Everything downstream — the barracks at 100-205 s, the first *trained*
+  soldier at 135-226 s — is unchanged, because the economy's timings did
+  not move.
 - Spawns are scattered at a minimum spacing (D-039) and the load test's
   server generates the map file's 20 starts, not one per bot — it has no
   lobby, so D-20260817-starting-positions-follow-the-seats does not apply

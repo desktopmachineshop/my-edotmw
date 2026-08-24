@@ -187,9 +187,10 @@ func building_count() -> int:
 
 ## Local id (the array index). Use wire_id() for anything that leaves this
 ## class and might meet a squad id.
-## `builder` is the squad that founded this, or -1. Recorded because
-## founders are CONSUMED by the town they found (D-031): the founding
-## party becomes the settlement rather than wandering off from it.
+## `builder` is the squad that founded this, or -1. Recorded because a
+## def may CONSUME its builder (`BuildingDef.consumes_builder`,
+## D-20260823-the-opening-is-a-crew-and-a-general): the crew that founds
+## a town becomes the settlement rather than wandering off from it.
 ## `facing` means one of two things depending on `def`, decided here rather
 ## than trusted from the caller.
 ##
@@ -679,13 +680,14 @@ func take_dirty() -> Array:
 	return out
 
 
-## May a squad of `unit_def_id` construct `def`? (D-031.)
+## May a squad of this ARCHETYPE construct `def`? (D-031's rule; the
+## roster it gates changed in
+## D-20260823-the-opening-is-a-crew-and-a-general.)
 ##
 ## The rule reads one way only, from `BuildingDef.built_by`, so there is a
-## single source of truth. That is also what expresses "founders may build
-## ONLY the town hall": founders are listed on the town centre and on
-## nothing else, so every other building refuses them without needing a
-## second, builder-side list to be kept in step with this one.
+## single source of truth. That is also what expresses "the general builds
+## nothing": no def lists it, so every building refuses it without needing
+## a second, builder-side list to be kept in step with this one.
 static func can_build(def: BuildingDef, unit_def_id: StringName) -> bool:
 	if def == null:
 		return false

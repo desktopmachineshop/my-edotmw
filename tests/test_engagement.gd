@@ -27,10 +27,18 @@ func _line(points: Array) -> Array[Transform3D]:
 
 ## A real melee def from the roster (the D-066 rule: shipped numbers, not
 ## caricatures, for anything a player is supposed to FEEL).
+##
+## Generals are skipped BY FIELD. This scan used to land on the old
+## founding party purely because `founders` sorted first; with that def
+## removed (D-20260823-the-opening-is-a-crew-and-a-general) it landed on a
+## GENERAL instead, whose morale aura and death shock apply to both sides
+## of a frontage experiment and are not what this file measures. A fixture
+## that takes "whatever sorts first" is picking a roster ORDERING, not a
+## unit.
 func _melee_def() -> UnitDef:
 	for candidate in UnitRoster.load_all():
 		if candidate.damage > 0.0 and candidate.armour_class != "missile" \
-				and candidate.carry_capacity == 0:
+				and candidate.carry_capacity == 0 and not candidate.is_general:
 			return candidate
 	return null
 

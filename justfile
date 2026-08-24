@@ -930,7 +930,8 @@ test-load N DURATION:
 # mid-match from a scenario instead of playing the opening (D-098).
 #
 # `test-load` needs ~120 s and that is not waste — a town hall takes 40 s
-# and consumes the founding party (D-031), production runs after it, and
+# and consumes the crew that founds it
+# (D-20260823-the-opening-is-a-crew-and-a-general), production runs after it, and
 # spawns are scattered far apart (D-039). None of that is under test when
 # you are working on combat, fog, buildings or the wire, and paying two
 # minutes for it every iteration is what makes people stop running it.

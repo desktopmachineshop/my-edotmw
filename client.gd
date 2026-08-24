@@ -469,8 +469,8 @@ var _camera_homed := false
 ## `_build_terrain` leaves it at the middle of the map, which was a
 ## reasonable default for as long as the whole map was drawn lit. Now that
 ## the ground is fogged (D-106) the middle of a 128x64 map is unexplored
-## black, so a match would open on an empty screen with the founding party
-## somewhere off in the dark. Capture mode has centred on the player's own
+## black, so a match would open on an empty screen with the opening
+## crew somewhere off in the dark. Capture mode has centred on the player's own
 ## ground since M3 for exactly this reason (`_found_home_town`); a human
 ## deserves it more than a screenshot does.
 func _home_camera_once() -> void:
@@ -673,7 +673,7 @@ const TERRAIN_CHUNK_SIZE := 16
 ## Waiting for the WHOLE build, rather than letting a match start on the fields
 ## alone, is what keeps the old contract intact: nothing is ever drawn standing
 ## on ground that does not exist. A soldier's y comes from those heights, so a
-## caller that drew the world early would derive the founding party at sea
+## caller that drew the world early would derive the opening squads at sea
 ## level and bury it in hills that are about to exist — the picture D-045 spent
 ## a milestone getting rid of.
 func _advance_terrain() -> bool:
@@ -1295,9 +1295,10 @@ func _drive_m2_scenario() -> void:
 	# squads" guard below — the identical fix bot_client.gd needed in M4,
 	# for the identical reason, in the other file that scripts a player.
 	#
-	# Founding a town hall CONSUMES the founding party the instant the
-	# order is given (D-031), so a client that makes the correct opening
-	# move owns nothing at all a moment later. This function used to
+	# Founding a town hall CONSUMES the crew that founds it, the instant
+	# the order is given (D-20260823-the-opening-is-a-crew-and-a-general),
+	# so a client that makes the correct opening move can be left with
+	# almost nothing a moment later. This function used to
 	# return early on `squads.is_empty()`, which meant the scenario went
 	# quiet forever the moment it did the one thing it was written to do,
 	# and `test-client` reported `soldiers=0` on a frame with a perfectly
@@ -1481,7 +1482,22 @@ func _found_home_town() -> void:
 	if home.x < 0:
 		home = _state.squad_cell(_state.squads[0], _now)
 
-	var order := _state.encode_build(_state.squads[0], "town_centre", home)
+	# The builder is whichever squad `built_by` admits — the gatherer
+	# crew, not whichever squad id sorts first: the opening also holds a
+	# general (D-20260823-the-opening-is-a-crew-and-a-general), and a
+	# general's build order is refused server-side.
+	var builder := -1
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	for squad in _state.squads:
+		var def := UnitRoster.by_id(StringName(
+			String(_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and BuildingSim.can_build(hall, def.archetype):
+			builder = squad
+			break
+	if builder < 0:
+		builder = int(_state.squads[0])
+
+	var order := _state.encode_build(builder, "town_centre", home)
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: founding a town hall at %s" % home)
@@ -1492,9 +1508,10 @@ func _found_home_town() -> void:
 
 ## Train a squad at the town hall once it is finished (capture mode only).
 ##
-## Without this the capture run has nothing to draw: the founding party is
-## spent on the hall (D-031), and a frame whose whole point is "look at
-## the soldiers" would contain none. It also means `test-client` exercises
+## Without this the capture run has almost nothing to draw: the crew is
+## spent on the hall (D-20260823-the-opening-is-a-crew-and-a-general), and
+## a frame whose whole point is "look at the soldiers" would hold only the
+## opening general. It also means `test-client` exercises
 ## the production path in a rendered client rather than leaving it to the
 ## bots — the frame now shows a town hall AND the troops it made.
 func _train_from_home_town() -> void:
@@ -1725,7 +1742,7 @@ var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
 ## Whether this player has ever had a living squad or building since the
 ## match left the lobby — guards against the one-frame race at match
-## start, before the founding party's squad has arrived over the wire.
+## start, before the opening squads have arrived over the wire.
 var _ever_had_army := false
 var _defeated := false
 var _defeat_time_held := 0.0
@@ -5271,11 +5288,12 @@ const BUILD_CATEGORIES := [
 ]
 
 
-## Building SQUADS offer, from `BuildingDef.built_by` — founders may raise
-## a town hall and nothing else (D-031), gatherers and line infantry
-## build nothing at all, so this comes back empty for them and the build
-## segment simply does not show (see `_update_selection_panel`). The
-## actions column's BOTTOM segment.
+## Building SQUADS offer, from `BuildingDef.built_by` — gatherers are the
+## builders (town hall included,
+## D-20260823-the-opening-is-a-crew-and-a-general); line infantry and the
+## general build nothing at all, so this comes back empty for them and
+## the build segment simply does not show (see `_update_selection_panel`).
+## The actions column's BOTTOM segment.
 ##
 ## Playtest fix, tiered: a flat list of every buildable def stopped fitting
 ## the button pool once D-076 added five wall-family defs to the three
@@ -6808,10 +6826,9 @@ func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
 
 ## Ask the first selected squad to found a building at the cursor.
 ##
-## Only founders may build a town hall, and only a town hall — that rule
-## is data on the BuildingDef (D-031) and enforced server-side, so a
-## refused order simply does nothing here rather than being second-guessed
-## client-side.
+## Who may build what is data on the BuildingDef (`built_by`) and
+## enforced server-side, so a refused order simply does nothing here
+## rather than being second-guessed client-side.
 ## ARM placement rather than building immediately.
 ##
 ## Pressing build used to found the building at wherever the mouse
@@ -8517,7 +8534,7 @@ func _load_settings() -> void:
 # who is defeated would eventually show this screen to a player who was
 # not, or never show it to one who was. `_ever_had_army` exists so the
 # check cannot fire in the one frame after a match starts and before the
-# founding party's squad has arrived over the wire — a real race, since
+# opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
 func _build_defeat_screen() -> void:

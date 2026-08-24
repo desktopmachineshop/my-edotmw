@@ -2608,15 +2608,20 @@ func living_squad_count(player: int) -> int:
 	return n
 
 
-## Spend a squad founding something (D-031). Returns the casualty events
+## Spend a squad founding something. Returns the casualty events
 ## describing it, or an empty array if there was nothing to consume.
+##
+## Which buildings cost their builder is data
+## (`BuildingDef.consumes_builder`, D-20260823-the-opening-is-a-crew-and-
+## a-general); on the shipped roster it is the town centre and nothing
+## else.
 ##
 ## Consumed when the order is ACCEPTED, not when the building finishes.
 ## That timing is the whole mechanism: consuming on completion left the
-## founders standing for the length of the build, and one founding party
-## could queue as many town halls as it could click on — which is exactly
-## what the first playtest did, three times in a row. Committing the party
-## to the site immediately makes one founding party mean one town.
+## crew standing for the length of the build, and one crew could queue as
+## many town halls as it could click on — which is exactly what the first
+## playtest did, three times in a row. Committing the crew to the site
+## immediately makes one crew mean one town.
 func consume_squad(squad: int) -> Array:
 	if squad < 0 or squad >= _cell.size() or _alive[squad] <= 0:
 		return []

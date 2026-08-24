@@ -437,9 +437,9 @@ func test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one() -> vo
 		% [dealt[1], dealt[0]])
 
 
-## Every unit a player can put in the field early. Founders and gatherers
-## are deliberately absent from the PAIR rule below and present in the
-## SOLO one — see each test.
+## Every unit a player can put in the field early. Gatherers and the
+## general are deliberately absent from the PAIR rule below and present in
+## the SOLO one — see each test.
 const STARTING_TROOPS := [
 	&"legion_militia", &"legion_spearmen", &"legion_archers", &"legion_heavy",
 	&"northmen_militia", &"northmen_spearmen", &"northmen_skirmishers",
@@ -457,7 +457,8 @@ func test_no_single_starting_squad_can_raze_a_defended_building() -> void:
 	# second against buildings, so "the strongest solo attacker" is not
 	# obvious by inspection and changes whenever a `.tres` does.
 	for building in [&"town_centre", &"tower"]:
-		for unit_id in STARTING_TROOPS + [&"founders", &"gatherers"]:
+		for unit_id in STARTING_TROOPS + [&"legion_gatherers",
+				&"northmen_gatherers", &"legion_general", &"northmen_general"]:
 			var result := _rush_cost(building, unit_id, 1)
 			assert_false(bool(result["razed"]),
 				"one squad of %s razed a defended %s in %.0fs — that is the early rush this rule exists to stop"
@@ -469,9 +470,9 @@ func test_two_squads_of_any_line_troop_can_take_a_town_centre() -> void:
 	# D-055's every-match-a-draw happened. Two squads of any line troop
 	# must finish a town centre.
 	#
-	# Founders are excluded because a player has exactly one founding party
-	# and spends it raising the town hall (D-031), so "two founder parties"
-	# is not a situation the game can produce. Gatherers are workers.
+	# Gatherers are workers, and the general is excluded because a player
+	# may only ever have one alive (D-20260819-a-general-holds-the-line), so
+	# "two generals" is not a situation the game can produce.
 	for unit_id in STARTING_TROOPS:
 		var result := _rush_cost(&"town_centre", unit_id, 2)
 		assert_true(bool(result["razed"]),
@@ -760,24 +761,35 @@ func test_building_info_round_trips_every_field() -> void:
 
 # --- who may build what (D-031) ---------------------------------------
 
-func test_only_founders_can_build_a_town_hall() -> void:
+func test_only_gatherers_can_build_a_town_hall() -> void:
+	# D-20260823-the-opening-is-a-crew-and-a-general: the settler is the
+	# economy unit now, and founders are gone from the roster entirely.
 	var town_centre: BuildingDef = load("res://buildings/town_centre.tres")
-	assert_true(BuildingSim.can_build(town_centre, &"founders"),
-		"Founders settle — that is the whole point of them")
-	for other in [&"militia", &"archers", &"cavalry", &"spearmen", &"gatherers"]:
+	assert_true(BuildingSim.can_build(town_centre, &"gatherers"),
+		"The opening crew settles — that is what makes the opening a decision")
+	for other in [&"militia", &"archers", &"cavalry", &"spearmen", &"general"]:
 		assert_false(BuildingSim.can_build(town_centre, other),
 			"%s must not be able to plant a town hall" % other)
 
 
-func test_founders_can_build_ONLY_the_town_hall() -> void:
-	# The other half of the claim, and the reason built_by is expressed on
-	# the building rather than as a list on the unit: every other building
-	# refuses founders simply by not listing them, with no second list to
-	# keep in step.
-	for name in ["barracks", "storehouse", "tower"]:
-		var def: BuildingDef = load("res://buildings/%s.tres" % name)
-		assert_false(BuildingSim.can_build(def, &"founders"),
-			"Founders found towns; they do not run a construction firm (%s)" % name)
+func test_the_general_can_build_nothing_at_all() -> void:
+	# The escort is an escort. It is barred from every building by being
+	# listed in no `built_by` — no second, builder-side list to keep in
+	# step, which is the whole reason the rule reads one way only.
+	for def in BuildingSim.all_defs():
+		assert_false(BuildingSim.can_build(def, &"general"),
+			"a general raised a %s — the opening's escort is not a builder" % def.id)
+
+
+func test_no_founders_unit_remains_in_the_roster() -> void:
+	# The removal itself (issue #190). A leftover `founders` def would be
+	# fielded by nothing and refused by nothing — the declared-and-unread
+	# family with the reader gone instead of the writer.
+	for def in UnitRoster.load_all():
+		assert_ne(String(def.archetype), "founders",
+			"%s still uses the removed 'founders' archetype" % def.id)
+		assert_false(String(def.id).contains("founders"),
+			"%s is a leftover founders unit" % def.id)
 
 
 func test_an_unrestricted_building_accepts_any_builder() -> void:
@@ -789,21 +801,26 @@ func test_an_unrestricted_building_accepts_any_builder() -> void:
 	assert_true(BuildingSim.can_build(def, &"anything_at_all"))
 
 
-func test_the_founding_party_outfights_basic_infantry() -> void:
-	# "Can fight" is a real claim, not flavour: a founding party that lost
-	# to the cheapest melee unit would make settling a formality rather
-	# than a choice.
-	var founders: UnitDef = UnitRoster.by_id(&"founders")
-	var militia: UnitDef = UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"militia")
-	assert_not_null(founders, "The roster must ship a 'founders' unit")
-	assert_not_null(militia)
+func test_the_opening_general_outfights_basic_infantry() -> void:
+	# What the founding party's "can fight" claim became. The opening is a
+	# crew and an ESCORT (D-20260823-the-opening-is-a-crew-and-a-general),
+	# and an escort that lost to the cheapest melee unit would make settling
+	# a formality rather than a choice — a rush would simply walk in while
+	# the crew was mid-build.
+	for civ in CivRoster.ids():
+		var general: UnitDef = UnitRoster.for_civ_archetype(civ, &"general")
+		var militia: UnitDef = UnitRoster.for_civ_archetype(civ, &"militia")
+		assert_not_null(general, "civ %s fields no general to open with" % civ)
+		assert_not_null(militia, "civ %s fields no militia to compare against" % civ)
+		if general == null or militia == null:
+			continue
 
-	assert_gt(founders.damage, militia.damage, "Founders hit harder, man for man")
-	assert_gt(founders.health, militia.health, "And are harder to kill")
-	assert_lt(founders.rout_threshold, militia.rout_threshold,
-		"And hold their nerve longer — they have nowhere to run to")
-	assert_lt(founders.squad_size, militia.squad_size,
-		"But there are few of them: this is a founding party, not an army")
+		assert_gt(general.damage, militia.damage, "A general hits harder, man for man")
+		assert_gt(general.health, militia.health, "And is harder to kill")
+		assert_lt(general.rout_threshold, militia.rout_threshold,
+			"And holds his nerve longer — that is what the aura is about")
+		assert_lt(general.squad_size, militia.squad_size,
+			"But there are few of them: this is a command party, not an army")
 
 
 # --- the shipped roster (D-010) ---------------------------------------
