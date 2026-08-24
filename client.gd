@@ -5087,7 +5087,16 @@ func _show_production(info: Dictionary) -> void:
 
 	var head := StringName(String(queue[0]))
 	var unit := UnitRoster.by_id(head)
-	var build_time := unit.build_time if unit != null else 0.0
+	# The OWNER'S civ trains it, so the owner's civ is what sets how long
+	# the bar has to fill (D-047). `head_remaining` on the wire is real
+	# seconds and already carries the multiplier; dividing by the raw
+	# `UnitDef.build_time` here would draw a fast civ's bar starting a
+	# quarter full and never reaching either end honestly. One definition
+	# of the arithmetic, in `CivDef.production_time`, read by both sides.
+	var civ := _state.civ_of(int(info.get("owner", 0)))
+	var build_time := 0.0
+	if unit != null:
+		build_time = CivRoster.effects_of(civ).production_time(unit.build_time)
 	var remaining := float(info.get("head_remaining", 0.0))
 	# Anchored the same way construction is, so it ticks down smoothly.
 	var anchor: Dictionary = _queue_anchor.get(_selected_building, {})

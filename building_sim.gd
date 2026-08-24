@@ -543,11 +543,22 @@ func can_produce(building: int, archetype: StringName) -> bool:
 ## near-zero remaining time instead of `def.build_time`, so
 ## `advance_production` finishes it on the very next call rather than
 ## needing a separate same-tick completion path of its own.
-func enqueue(building: int, def: UnitDef, instant: bool = false) -> void:
+##
+## `build_time` is the time the OWNER'S CIV takes, resolved by the caller
+## (`CivDef.production_time`, D-047) exactly as the caller already
+## resolves the archetype against that civ. Passed in rather than looked
+## up here, and stored as REAL SECONDS rather than as a rate: the queue's
+## head counts down at one second per second on the wire, and the client
+## draws the countdown from it (D-003). A civ multiplier applied per tick
+## instead would make every client's "— 12s" wrong for the fast civ.
+func enqueue(building: int, def: UnitDef, instant: bool = false,
+		build_time: float = -1.0) -> void:
+	if build_time < 0.0:
+		build_time = def.build_time
 	if not _queues.has(building):
 		_queues[building] = []
 	(_queues[building] as Array).append({
-		"def_id": def.id, "remaining": 0.001 if instant else maxf(def.build_time, 0.001),
+		"def_id": def.id, "remaining": 0.001 if instant else maxf(build_time, 0.001),
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.

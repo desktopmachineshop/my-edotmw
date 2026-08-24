@@ -96,6 +96,12 @@ simulation to what a player of that civ gets, while these are *how a brain
 decides*. Wiring them remains M9's item and is deliberately not done here
 — it changes the balance of every match, human matches included, and
 would land inside the one measurement this decision needs to stay clean.
+*(Amendment, 2026-08-23: they are wired now —
+`D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158. The
+disjointness argument above is unaffected and still holds: a profile
+changes how a BRAIN decides, a civ knob changes what a player of that
+civ GETS. Any ladder figure in this entry was taken before the wiring
+and is quoted against a build where northmen trained at 1.0.)*
 
 ## How strength will be MEASURED
 

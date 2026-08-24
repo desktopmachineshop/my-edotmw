@@ -114,6 +114,11 @@ static func build(scenario, players: int = 2, width: int = 32,
 		# same civ would exercise half the roster (D-046 criterion 10 is
 		# the load test's version of the same rule).
 		var civ: StringName = civs[i % civs.size()].id if not civs.is_empty() else &""
+		# The simulation is told too, exactly as the server tells it
+		# (`_hand_civs_to_sim`, #158). A fixture whose troops came from a
+		# civ while its gather rate and squad cap came from nobody would
+		# be measuring a match no server plays.
+		w.sim.civs[player] = CivRoster.effects_of(civ)
 		w.placements[player] = Scenario.apply_player(d, player, civ,
 			homes[i], w.sim, w.buildings, w.economy, w.passable, taken)
 
