@@ -17,6 +17,6 @@ void vertex() {
 }
 
 void fragment() {
-	ALBEDO = vat_albedo();
+	ALBEDO = vat_albedo(UV);
 	ROUGHNESS = 0.85;
 }

@@ -43,6 +43,20 @@ uniform float colour_row = 128.0;
 uniform float frames_per_clip = 16.0;
 uniform vec4 team_colour : source_color = vec4(0.6, 0.6, 0.6, 1.0);
 
+// A model's OWN albedo texture, for the models that arrived with one
+// (D-20260824-a-textured-model-keeps-its-texture). Off by default, so every
+// vertex-coloured model in the roster takes the path it always has.
+//
+// `filter_linear_mipmap` is the entire point. Colour on VERTICES cannot be
+// mipmapped: at soldier scale a dense model covers ~30 pixels with thousands
+// of sub-pixel facets, so each pixel takes one arbitrary facet's colour and
+// the model renders as noise. That is not a scaling artefact to tune away,
+// it is what per-vertex colour DOES at that density. A mip chain averages
+// it correctly for free, in hardware.
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap,
+	repeat_enable, hint_default_white;
+uniform bool use_albedo_tex = false;
+
 varying vec4 vat_colour;
 
 // Returns the vertex's colour (rgb) and owner-colour mask (a). Returned
@@ -82,6 +96,7 @@ vec4 vat_pose(vec2 uv2, vec4 custom, inout vec3 vertex, inout vec3 normal) {
 // Owner colour over the model's own colour, by the mask baked into the colour
 // row's alpha (D-052). Whose units these are is the first thing a player reads
 // off the screen; which kind they are is second, and shape carries that.
-vec3 vat_albedo() {
-	return mix(vat_colour.rgb, team_colour.rgb, vat_colour.a);
+vec3 vat_albedo(vec2 uv) {
+	vec3 own = use_albedo_tex ? texture(albedo_tex, uv).rgb : vat_colour.rgb;
+	return mix(own, team_colour.rgb, vat_colour.a);
 }

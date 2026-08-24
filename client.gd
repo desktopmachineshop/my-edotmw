@@ -226,6 +226,11 @@ func _detail_for(world: Vector3) -> int:
 ## and the only symptom would be a slow client.
 var _visible_squads := 0
 var _now := 0.0
+## Wall clock since this node's _ready — what `_now` used to be. Kept for
+## the few things that genuinely pace against THIS PROCESS (the capture
+## run's duration), while `_now` is the server's clock now.
+var _wall_now := 0.0
+var _clock_synced := false
 ## Whether the ground can be stood on: the fields are built and the sampler is
 ## bound. NOT the same as "the ground is fully drawn" since D-106's successor
 ## (D-20260818-terrain-builds-a-slice-at-a-time) — the chunk meshes keep
@@ -389,7 +394,28 @@ func _report_desyncs() -> void:
 
 
 func _process(delta: float) -> void:
-	_now += delta
+	_wall_now += delta
+	# THE WORLD IS RENDERED ON THE SERVER'S CLOCK, estimated between
+	# messages — because that is the axis curve keyframes live on. `_now`
+	# was a wall clock started at this node's _ready, behind the server by
+	# the whole terrain build, so every curve sample CLAMPED: positions
+	# still moved (fresh curves' first keyframes advanced and the ease
+	# smoothed the hops), but measured speed was exactly 0.00 for every
+	# squad in every march — telemetry, 2026-08-24 — so the walk clip
+	# never played in a live client. One jump forward at first sync,
+	# monotonic after (a clock that runs backwards re-derives soldiers
+	# backwards), and re-anchored by every message that states a tick.
+	if _state.welcomed and _state.server_tick > 0:
+		# `render_time()` is anchored to the curves themselves, not the
+		# tick anchor: a curve packet replaces the whole curve and starts
+		# at send time, so any clock behind the freshest start clamps
+		# before it — a fixed delay here was measured teleporting squads
+		# on every packet. The HUD clock stays on `match_elapsed()`.
+		var estimate := _state.render_time()
+		_now = estimate if not _clock_synced else maxf(_now, estimate)
+		_clock_synced = true
+	else:
+		_now += delta
 	_frame_delta = delta
 	_service_network()
 	# Immediately after the packets that could have produced one, so a
@@ -454,7 +480,10 @@ func _process(delta: float) -> void:
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
-		if _now >= _run_seconds:
+		# Wall time, deliberately: `_now` is the SERVER's clock now, and a
+		# capture that joined a server already n seconds old would end n
+		# seconds early on it.
+		if _wall_now >= _run_seconds:
 			_finish_capture()
 
 
@@ -1199,12 +1228,26 @@ func _refresh_squads() -> void:
 		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta)
+		# Capped at a jog above this unit's own walking pace, so a man
+		# chases a slot that swept away from him (a direction change
+		# rotates the whole lattice) instead of being dragged along the
+		# arc — see SoldierMotion.ease.
+		var eased := _motion.ease(squad_id, transforms, _frame_delta,
+			_pursuit_speed_of(squad_id))
 		var speed := _state.squad_speed(squad_id, _now)
+		# The REAL speed, not a literal 1.0 — which is what sat here and is
+		# why every standing squad in every match bobbed on the spot.
+		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
+		# squad stops bobbing", `test_formation.gd` asserts exactly that of
+		# the function, and this caller then handed it a constant. The D-061
+		# family: the mechanism correct and tested, the one live call site
+		# feeding it the wrong input. Noticed only when an authored model
+		# with a real VAT idle clip made the extra whole-body bounce read as
+		# a defect instead of as capsule-era "life".
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
 			else CosmeticOffset.decorate_activity(
-				eased, _now, 1.0, int(doing["activity"]), doing["toward"])
+				eased, _now, speed, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1217,7 +1260,11 @@ func _refresh_squads() -> void:
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
 			speed > MOVING_SPEED_EPSILON)
-		unit.set_clip_data(int(squad_id), clip, speed)
+		# Per-man cadence from the motion layer's own measurements
+		# (D-20260824): each drawn man strides at the pace HE moves, not
+		# the squad's — the squad speed is the fallback inside.
+		unit.set_clip_data(int(squad_id), clip, speed,
+			_motion.speeds(squad_id))
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
 				and bool(doing["is_ranged"]):
@@ -2934,6 +2981,18 @@ func _refresh_enemy_scan() -> void:
 ## node (D-058), and enemy squads in vision tell us who is fighting.
 ## Returned together because finding the enemy is the expensive half and
 ## asking twice was doing it twice.
+## How fast this squad's drawn men may chase their slots: their own
+## walking pace plus a jog margin. Resolved from the def like everything
+## else about a squad; 0.0 (uncapped) when the roster cannot say.
+const PURSUIT_SPEED_SCALE := 1.35
+
+
+func _pursuit_speed_of(squad_id) -> float:
+	var def := UnitRoster.by_id(StringName(
+		String(_state.composition.get(squad_id, {}).get("def_id", ""))))
+	return def.move_speed * PURSUIT_SPEED_SCALE if def != null else 0.0
+
+
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
@@ -5304,9 +5363,18 @@ const BUILD_CATEGORIES := [
 ## levels, so a category with nothing this squad can build never appears,
 ## and drilling into one never offers a def this squad cannot build.
 func _squad_build_actions(def_id: StringName) -> Array:
+	# The ARCHETYPE, because that is what `built_by` holds and what the
+	# server's own order gate resolves (D-047). This passed the raw def id
+	# for six milestones and nothing noticed, because the one unit that
+	# could build had id == archetype ("gatherers") — the per-civ split
+	# (D-20260823) broke the coincidence, and every civ's crew was offered
+	# an empty build menu while the server would happily have accepted the
+	# orders. Reported from play as "the thralls cant build".
+	var unit := UnitRoster.by_id(def_id)
+	var archetype := unit.archetype if unit != null else def_id
 	var by_category := {}
 	for building in BuildingSim.all_defs():
-		if not BuildingSim.can_build(building, def_id):
+		if not BuildingSim.can_build(building, archetype):
 			continue
 		var category := building.category
 		if not by_category.has(category):
@@ -8363,6 +8431,11 @@ func _on_quit_pressed() -> void:
 ## through hills that are not there.
 func _teardown_match() -> void:
 	print("client: match over — back to the lobby")
+	# The next match anchors a fresh server clock (ClientState clears
+	# server_tick), so the sync must be allowed to JUMP again — held
+	# monotonic across it, a second match would render at the first
+	# match's final time forever.
+	_clock_synced = false
 	_free_nodes(_squad_nodes)
 	_free_nodes(_building_nodes)
 	_free_nodes(_wall_joint_nodes)

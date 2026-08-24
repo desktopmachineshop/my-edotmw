@@ -51,6 +51,6 @@ void vertex() {
 void fragment() {
 	float known = mix(1.0, texture(fog, corpse_fog.xy).r,
 		clamp(corpse_fog.z, 0.0, 1.0));
-	ALBEDO = vat_albedo() * known;
+	ALBEDO = vat_albedo(UV) * known;
 	ROUGHNESS = 0.85;
 }

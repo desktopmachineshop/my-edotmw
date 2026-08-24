@@ -314,3 +314,56 @@ func test_scheduling_is_deterministic_for_replay() -> void:
 
 	assert_eq(first_order, second_order,
 		"Replication order must be deterministic or replays cannot reproduce a match")
+
+
+# --- curve updates merge, gaps replace (D-20260824-the-client-renders-
+# on-the-servers-clock, D-025) ------------------------------------------
+
+func _curve_between(t_a: float, p_a: Vector2, t_b: float, p_b: Vector2) -> StateCurve:
+	var c := StateCurve.new()
+	c.append_axial(t_a, p_a)
+	c.append_axial(t_b, p_b)
+	return c
+
+
+func test_an_overlapping_curve_update_keeps_the_past() -> void:
+	# A packet REPLACING the whole curve is why the render clock had
+	# nowhere safe to stand: behind the newest start it clamped (squads
+	# teleporting), at the live head it ran off the end (freezes at every
+	# bend). History is the fix, so history surviving an update is the
+	# thing to pin.
+	var old_curve := _curve_between(0.0, Vector2(0, 0), 1.0, Vector2(10, 0))
+	var update := _curve_between(0.9, Vector2(9, 0), 2.0, Vector2(20, 0))
+	var merged := ClientState.merge_curve(old_curve, update)
+	assert_almost_eq(merged.sample_axial(0.5).x, 5.0, 0.01,
+		"an overlapping update must keep the history it overlaps")
+	assert_almost_eq(merged.sample_axial(2.0).x, 20.0, 0.01,
+		"and carry the update's own keyframes forward")
+
+
+func test_a_gapped_curve_update_replaces_outright() -> void:
+	# D-025's truthful pop-in. A squad revealed after concealment arrives
+	# as a fresh curve well past its ghost's last keyframe; bridging that
+	# gap would interpolate the squad SPRINTING from where it was last
+	# seen — synthetic catch-up, which reveal semantics forbid.
+	var ghost := _curve_between(0.0, Vector2(0, 0), 1.0, Vector2(10, 0))
+	var reveal := _curve_between(5.0, Vector2(40, 0), 6.0, Vector2(50, 0))
+	var merged := ClientState.merge_curve(ghost, reveal)
+	assert_almost_eq(merged.sample_axial(3.0).x, 40.0, 0.01,
+		"a gapped update stands alone — sampling before it holds at ITS start, "
+		+ "never at a bridge from the ghost")
+	assert_eq(merged.key_count(), 2,
+		"no keyframe from before the gap may survive")
+
+
+func test_a_join_that_would_teleport_replaces_instead() -> void:
+	# Curves store continuous UNWRAPPED axial points; a fresh packet can be
+	# normalised into a different lattice copy than the chain this client
+	# extended, and at a seam the same cell is a map period away. Merging
+	# across that draws the squad sprinting a whole map in one segment.
+	var old_curve := _curve_between(0.0, Vector2(0, 0), 1.0, Vector2(2, 0))
+	var wrapped := _curve_between(1.1, Vector2(170, 0), 2.0, Vector2(172, 0))
+	var merged := ClientState.merge_curve(old_curve, wrapped)
+	assert_eq(merged.key_count(), 2,
+		"a join further than any unit can walk is a lattice-frame mismatch, "
+		+ "and the fresh curve stands alone")

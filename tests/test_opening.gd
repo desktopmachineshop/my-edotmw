@@ -279,3 +279,27 @@ func test_a_dead_general_is_not_a_defeat() -> void:
 	assert_eq(state.update(sim, buildings), [],
 		"losing a general eliminated its owner — defeat is squads AND buildings")
 	assert_false(state.is_finished())
+
+
+func test_every_civs_crew_gets_a_build_menu() -> void:
+	# Reported from play: "the thralls cant build the town halls and other
+	# buildings". The build MENU intersected actions over the selection's
+	# DEF IDS while `built_by` holds ARCHETYPES — indistinguishable while
+	# the neutral gatherer's id equalled its archetype, and split apart by
+	# the per-civ gatherers (D-20260823). The server's own gate resolves
+	# the archetype, so the refusal lived only in the UI: the crew COULD
+	# build and was never offered the buttons.
+	#
+	# client.gd is instantiated but never added to the tree, so _ready()
+	# does not run — the test_return_to_lobby pattern: menu derivation is
+	# LOGIC, not pixels.
+	var client = load("res://client.gd").new()
+	for civ in CivRoster.ids():
+		var crew := UnitRoster.for_civ_archetype(civ, &"gatherers")
+		assert_not_null(crew, "setup: civ '%s' fields no crew" % civ)
+		var actions: Array = client._squad_build_actions(crew.id)
+		assert_gt(actions.size(), 0,
+			"civ '%s' crew (%s) is offered NO build menu — its id is not "
+			% [civ, crew.id]
+			+ "its archetype, and built_by holds archetypes")
+	client.free()

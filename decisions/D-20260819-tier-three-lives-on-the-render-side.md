@@ -75,3 +75,35 @@ The amendment's own, above. Additionally: if `MAX_RENDER_DRIFT` ever
 needs raising past selection's click tolerance, selection must start
 reading drawn positions first (it already reads drawn lattice copies —
 the same discipline extends), and that ordering is the trigger's test.
+
+## Amendment, 2026-08-24: the bound is CONVERGED to, not held per frame
+
+From the owner, after the render-clock fixes made real interpolation
+visible for the first time: *"direction change jumpyness — movement feels
+driven by squad center not natural individual unit flow."* Exactly right:
+a direction change rotates the whole slot lattice about the squad centre,
+and three mechanisms each dragged or teleported drawn men along with it —
+the exponential ease (closes ~30% of any gap per frame: an 18 u/s sprint
+for a 3-unit sweep), the drift clamp (an instantaneous yank to within the
+bound), and the hard SNAP_DISTANCE (fires NECESSARILY on a 90-degree
+turn, because no assignment can spare the man at the end of a turning
+line his 6-8 unit leg — measured, after a 2-opt pass over the deal failed
+to change it, which is what proved it was geometry and not the greedy).
+
+So `ease()` takes a per-squad `max_step_speed` (the unit's own walking
+pace plus a jog margin, resolved from the def by the client), and on that
+capped path: the drift clamp's correction is capped to the same speed,
+and the hard snap does not exist — reveals never reach it (conceal calls
+`forget()`, so the truthful pop-in never depended on it). MAX_RENDER_DRIFT
+rises 1.5 -> 3.5 to give the pursuit room.
+
+The bound's meaning therefore changes ON THE CAPPED PATH ONLY: drift may
+transiently exceed MAX_RENDER_DRIFT after a formation-wide rotation,
+bounded by formation geometry, and converges at pursuit speed — measured
+on a 24-man line through a 90-degree turn: visible worst motion 9.2 u/s
+(exactly pursuit + correction) against 69 uncapped, settled within 1.0 s.
+Every uncapped caller keeps the old per-frame contract, which is what the
+tier-three test still asserts of `jostle()`'s defaults.
+
+Still one-way, still outcome-blind: engagement, selection and the
+composition hash read the DERIVED transforms as they always did.
