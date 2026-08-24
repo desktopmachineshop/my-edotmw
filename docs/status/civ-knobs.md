@@ -80,6 +80,16 @@ Four things to carry forward, none of which are really about civs:
   caveat: it only covers the callers it names.** A fourth knob added
   later is not covered by it.
 
+**The gate passes and costs nothing visible.** `just test-load 4 300` on
+the default map, 2026-08-24: clean, 0 desyncs over 1192 state-hash
+checks, 0 dropped ticks, all three `gate-check.sh` comparisons green, and
+**159.88 µs/squad at 49 squads** against the 167.7 µs at 48 squads
+`m10-plan.md` records — the same number within two runs' noise, with
+production at 2.7% of a squad-update. Quote it with its squad count, as
+ever. A `test-scenario` run the same day reported 631 µs/squad on a host
+down to 329 MB free with 6.6 GB of swap in use; that figure is junk and
+the decision entry says so rather than leaving it to be found later.
+
 **What the cap bonus costs the tick budget, stated rather than assumed.**
 `squad_cap` is an ENGINEERING ceiling for D-018/D-020, not a design
 lever, and `squad_cap_bonus` adds to it. Shipped cap is 40 on all three

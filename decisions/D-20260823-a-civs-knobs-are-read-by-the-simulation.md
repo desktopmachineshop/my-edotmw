@@ -195,6 +195,51 @@ multipliers on rates feeding the economy and the AI opening, so
   correct, shipped numbers do nothing" (D-066) is what wiring a knob
   nobody turns would produce.
 
+## What was measured, and under what conditions
+
+**`just test-load 4 300` on the default map, 2026-08-24 — clean.** The
+gate, not the loop: a real server and four real bots playing the real
+opening, which is where `production_speed` bites hardest.
+
+```
+gate-check(fog-squads): known_squads_max=32, fog gated 17 of 49 squads
+gate-check(fog-nodes):  nodes_known_max=608 of 5565
+gate-check(civs):       2 of 2 civilisations fielded squads
+VERDICT ok — 4/4 bots, 1192 state-hash checks, 0 desyncs,
+casualties_applied=229 conceal_events=177 reveal_events=141
+raid_orders=132 military_peak=9 nodes_felled=89
+server: ticks=2996 dropped_ticks=0 worst_tick=179.8ms
+server: MEMORY 64.3 MB static, 64.8 MB peak — 4 players, 49 squads,
+        168x194 = 32592 cells
+```
+
+**159.88 µs/squad at 49 squads** — quoted with its squad count, as ever
+— against the **167.7 µs at 48 squads** `docs/status/m10-plan.md`
+records for the default map. That is the same number within the noise of
+two runs on a shared host, so **there is no evidence this change costs
+the tick budget anything**, and the phase breakdown says where the time
+went: `fields=46.22 curves=24.09 vision=29.14 combat=16.59
+buildings=20.03 economy=17.08 separation=4.81 production=4.31
+other=1.91`. Production is 2.7% of a squad-update.
+
+This is *not* an interleaved A/B, so it is evidence of "no regression
+visible at this scale", not a measurement of the change's cost. The
+cheapest honest way to get the latter, if it is ever wanted, is the
+sweep — and the knobs are inert for it, since `profile_sweep.gd` seats
+no civs.
+
+**An earlier `test-scenario siege 4 30` run the same day was also clean**
+(fog-squads 22 of 24, fog-nodes 266 of 5565, civs 2 of 2, 0 desyncs over
+108 checks) but reported **631.58 µs/squad at 24 squads** with a 191.9 ms
+worst tick. **That figure is junk and is recorded here so nobody quotes
+it.** Free memory sat between 329 MB and 1.1 GB with 6.6 GB of swap in
+use throughout, and the run had just waited out an admission gate — M6
+discarded worst-tick figures for exactly this, and `terrain.md` records
+one unchanged build measuring 52.1 ms and 181.1 ms three hours apart.
+The `test-load` run above was taken with 3.5 GB free and agrees with the
+recorded baseline. **Same tree, same day, 4x apart: the host is the
+variable.**
+
 ## Revisit trigger
 
 - **A knob that genuinely resists being a parameter.** D-046's own rule:
