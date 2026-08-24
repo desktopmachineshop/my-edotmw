@@ -370,7 +370,7 @@ func match_elapsed() -> float:
 ## curves. The GUI client used to sample them at a wall clock started at
 ## its own node's _ready — behind the server by however long its terrain
 ## build took, so every sample CLAMPED. Positions still appeared to move
-## (each fresh curve's first keyframe advanced, and SoldierMotion eased
+## (each fresh curve's first keyframe advanced, and the render-side easing smoothed
 ## the hops), which is exactly why nothing failed: the one number the
 ## clamp forced to zero was measured SPEED, and the only consumer that
 ## cared was animation. The walk clip never played in a live client, for
