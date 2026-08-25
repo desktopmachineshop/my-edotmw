@@ -183,6 +183,15 @@ doctor:
         exit 1
     fi
 
+    # --- art tooling (D-20260821) --------------------------------------
+    # Reported, never required. Neither the wheel nor the application is
+    # needed to run, test or play the game: generated/ is committed, so a
+    # clone with no Blender at all is a working game (D-081). Reported
+    # anyway because the two are easy to confuse and only one of them has
+    # a window — blender-path.sh's header says which.
+    echo
+    bash blender-path.sh explain | sed 's/^/blender: /'
+
     # --- host budget (D-20260818) -------------------------------------
     # Reported, never enforced here: doctor's job is to say what the
     # machine looks like, and a preflight that FAILED on a busy host
@@ -921,7 +930,8 @@ test-load N DURATION:
 # mid-match from a scenario instead of playing the opening (D-098).
 #
 # `test-load` needs ~120 s and that is not waste — a town hall takes 40 s
-# and consumes the founding party (D-031), production runs after it, and
+# and consumes the crew that founds it
+# (D-20260823-the-opening-is-a-crew-and-a-general), production runs after it, and
 # spawns are scattered far apart (D-039). None of that is under test when
 # you are working on combat, fog, buildings or the wire, and paying two
 # minutes for it every iteration is what makes people stop running it.
@@ -1299,6 +1309,117 @@ bootstrap-art:
     : > "{{tools_dir}}/.gdignore"
     "{{blender_python}}" -c "import bpy; print('bpy', bpy.app.version_string)"
 
+# Open an authored asset in your LOCALLY INSTALLED Blender
+# (D-20260821-game-assets-are-files).
+#
+# TARGET is a unit or building id — `art/source/<TARGET>.blend`, which is
+# an ordinary Blender file and the SOURCE OF TRUTH for that model. Model
+# it, rig it, animate it, save it, then `just build-assets`.
+#
+# With no TARGET it lists what is there. There is deliberately no "open
+# everything": these are files now, and a file is opened one at a time.
+#
+# Blender is a NORMAL DESKTOP INSTALL, not something this repo manages.
+# There is no bootstrap recipe and nothing is downloaded into tools/:
+# install Blender the way you install any other application and this
+# finds it. blender-path.sh is the one definition of where it looks, and
+# EDOTMW_BLENDER names one outright if you keep several.
+#
+# It opens with YOUR Blender — your preferences, your add-ons, your
+# startup file. No --factory-startup, no wrapper script and no custom
+# panel: it is your Blender opening your file, which is the point.
+#
+# NATIVE ONLY, for the same reason as run-client (D-014): it opens a
+# window for a human to look at. It ignores EDOTMW_RUNTIME.
+#
+# NOT host-gated, deliberately. Every other heavy recipe is admitted
+# against the machine budget (D-20260818) because it is agent work
+# competing with other agents. This is the owner opening their modelling
+# application; they can launch the same binary from the desktop with no
+# queue at all, so a gate here protects nothing and only puts a wait in
+# front of a double-click.
+[doc("Open art/source/<TARGET>.blend in your locally installed Blender")]
+blender-gui TARGET="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{TARGET}}" ]; then
+        echo "Authored sources in art/source/ — pass one as TARGET:"
+        for f in art/source/*.blend; do
+            [ -e "$f" ] || { echo "  (none yet — {{just_executable()}} seed-art-source)"; break; }
+            echo "  $(basename "$f" .blend)"
+        done
+        echo
+        echo "  {{just_executable()}} blender-gui militia"
+        exit 0
+    fi
+    blend="art/source/{{TARGET}}.blend"
+    if [ ! -f "$blend" ]; then
+        echo "FAIL: no $blend" >&2
+        echo "      {{just_executable()}} blender-gui   # lists what exists" >&2
+        exit 1
+    fi
+    blender="$(bash blender-path.sh find)"
+    bash blender-path.sh check >/dev/null
+    echo "blender-gui: $blend in $blender"
+    echo "  edit, save (Ctrl-S), then: {{just_executable()}} build-assets {{TARGET}}"
+    "$blender" "$blend"
+
+# Seed art/source/*.blend from the LEGACY generators (D-20260821).
+#
+# A migration, run once per model, and never part of the build. It
+# refuses to overwrite an existing source file, because that file is the
+# source of truth now and a generator writing over it would be a script
+# discarding an artist's work.
+[doc("Create art/source/*.blend from the legacy generators (one-time)")]
+seed-art-source ONLY="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    args=""
+    [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
+    "{{blender_python}}" art/seed_source.py $args
+
+# Write the four clips onto a RIGGED art/source/<name>.blend.
+#
+# A migration like seed-art-source, never part of the build: it edits the
+# .blend, and `build-assets` bakes whatever the .blend says.
+#
+# A model that arrives rigged arrives with a SKELETON and no ACTIONS, which
+# is a T-posed soldier sliding across the ground. `art/clips.py` animates
+# the generated `Part` hierarchy and cannot drive an arbitrary armature, so
+# a supplied rig needs its clips written against ITS bones — matched by
+# name, with which way the model FACES measured from its toes rather than
+# assumed (D-20260824-a-supplied-rig-is-animated-against-its-own-bones).
+#
+# Re-runnable: it clears the previous animation first, so tuning a stride
+# is edit-and-rerun rather than edit-and-hope.
+[doc("Author idle/walk/attack/rout onto a rigged art/source/<name>.blend")]
+author-clips NAME="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # A default of "" rather than a bare required parameter, for a test's
+    # reason as much as a usability one: `tests/test_recipe_args.gd` treats
+    # every no-default recipe parameter as a NUMBER owed a recipe-arg.sh
+    # check, because until this recipe every such parameter was one. NAME is
+    # an archetype, so it takes the `seed-art-source ONLY=""` shape instead
+    # and refuses loudly here.
+    if [ -z "{{NAME}}" ]; then
+        echo "FAIL: author-clips needs an archetype, e.g.:"
+        echo "  {{just_executable()}} author-clips gatherers"
+        exit 1
+    fi
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    "{{blender_python}}" art/author_clips.py --name="{{NAME}}"
+    echo "Now rebuild: {{just_executable()}} build-assets"
+
 # Contact sheet of every authored model, animated, on real terrain (D-063).
 #
 # Software-rasterised, so unlike `bench-render` this needs no GPU and runs
@@ -1361,6 +1482,42 @@ gen-model-preview SECONDS="1.2": _import
 # The verdict gates on the two failures a screenshot of bare ground would
 # otherwise hide: nothing drawn at all, and a model the palettes can name
 # that never made it onto the map.
+# One unit model, filling the frame, through the real render path.
+#
+# `gen-model-preview` frames the WHOLE roster, which puts every soldier at
+# about thirty pixels — enough to answer "did they all draw", useless for
+# "what does this one look like". That gap cost a session: an imported model
+# rendered as brown noise and the roster shot could not show whether the
+# fault was the colours, the geometry or the scale
+# (D-20260824-a-textured-model-keeps-its-texture). A close-up settles it in
+# one look.
+#
+# MODEL is a `UnitDef.model_id`, not a unit id — several units share one.
+[doc("Render one unit model close up to artifacts/unit-shot.png")]
+gen-unit-shot MODEL="gatherers": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gate="$(bash host-gate.sh acquire medium 'gen-unit-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-unit-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    log="{{artifacts_dir}}/unit-shot.log"
+    "$godot" --path . --rendering-method gl_compatibility         --resolution 1000x1000 unit_shot.tscn -- --model="{{MODEL}}"         --out="res://artifacts/unit-shot.png" | tee "$log"
+    if [ ! -s "{{artifacts_dir}}/unit-shot.png" ]; then
+        echo "VERDICT: FAIL - no PNG was written"
+        exit 1
+    fi
+    # Say whether the model took its TEXTURE or its vertex colours. The two
+    # look nothing alike at this density and identical in every counter.
+    grep -o 'textured=[a-z]*' "$log" | head -n 1
+    echo "VERDICT: ok - LOOK AT artifacts/unit-shot.png"
+
 [doc("Render ground cover to artifacts/cover-godot.png")]
 gen-cover-preview SECONDS="0.6": _import
     #!/usr/bin/env bash

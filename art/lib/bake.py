@@ -79,8 +79,11 @@ def flatten(model: Model) -> dict:
     colours: list[tuple[float, float, float, float]] = []
     part_index: list[int] = []
     local_index: list[int] = []
+    owners: list[str] = []
+    origins: dict[str, Vec3] = {}
 
     for pi, part in enumerate(model.parts):
+        origins[part.name] = tuple(part.pivot)
         for tri in part.faces:
             a, b, c = (part.verts[tri[0]], part.verts[tri[1]], part.verts[tri[2]])
             n = _face_normal(a, b, c)
@@ -90,6 +93,7 @@ def flatten(model: Model) -> dict:
                 colours.append((part.rgb[0], part.rgb[1], part.rgb[2], part.mask))
                 part_index.append(pi)
                 local_index.append(corner)
+                owners.append(part.name)
 
     triangles = [(i, i + 1, i + 2) for i in range(0, len(positions), 3)]
     return {
@@ -99,6 +103,13 @@ def flatten(model: Model) -> dict:
         "triangles": triangles,
         "part_index": part_index,
         "local_index": local_index,
+        # Per-vertex owner NAME and each owner's origin. `part_index` is an
+        # index into `model.parts`, which an authored `.blend` does not have —
+        # these two say the same thing in terms both sources can supply, so
+        # `door_hinge_uv` needs one implementation rather than two
+        # (D-20260821-game-assets-are-files).
+        "owners": owners,
+        "origins": origins,
     }
 
 
@@ -145,7 +156,7 @@ def bake_frames(model: Model, flat: dict) -> tuple[list[list[Vec3]], list[list[V
 # --- Blender-side output ------------------------------------------------
 
 
-def door_hinge_uv(model: Model, flat: dict) -> list[tuple[float, float]]:
+def door_hinge_uv(flat: dict) -> list[tuple[float, float]]:
     """Per-vertex (is_door_leaf, hinge_x) for a building with a hinged gate
     leaf (D-076 playtest amendment).
 
@@ -157,19 +168,18 @@ def door_hinge_uv(model: Model, flat: dict) -> list[tuple[float, float]]:
     "gate_leaf" (see `art/buildings/_add_gate_leaf`) gets (0.0, 0.0), which
     the shader treats as "not a door" and leaves untouched.
     """
-    out: list[tuple[float, float]] = []
-    for pi in flat["part_index"]:
-        part = model.parts[pi]
-        if part.name == "gate_leaf":
-            out.append((1.0, part.pivot[0]))
-        else:
-            out.append((0.0, 0.0))
-    return out
+    hinge_x = flat["origins"].get("gate_leaf", (0.0, 0.0, 0.0))[0]
+    return [(1.0, hinge_x) if owner == "gate_leaf" else (0.0, 0.0)
+            for owner in flat["owners"]]
 
 
-def write_glb(model: Model, flat: dict, path: str,
+def write_glb(name: str, flat: dict, path: str,
               uv1_override: list[tuple[float, float]] | None = None) -> None:
     """Build a Blender mesh from the flattened arrays and export glTF binary.
+
+    Takes a NAME rather than a Model because the geometry arrives already
+    flattened, and a source that is not a `Model` — an authored `.blend`
+    (D-20260821-game-assets-are-files) — has no Model to hand it.
 
     `uv1_override`, when given, replaces the VATIndex UV1 layer below with
     a caller-supplied per-vertex value instead — see `door_hinge_uv`, the
@@ -180,11 +190,11 @@ def write_glb(model: Model, flat: dict, path: str,
 
     _reset_scene(bpy)
 
-    mesh = bpy.data.meshes.new(model.name)
+    mesh = bpy.data.meshes.new(name)
     mesh.from_pydata([tuple(v) for v in flat["positions"]], [], flat["triangles"])
     mesh.update()
 
-    obj = bpy.data.objects.new(model.name, mesh)
+    obj = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(obj)
 
     # Vertex colour: rgb is the part's own colour, ALPHA is the owner-colour
@@ -194,13 +204,19 @@ def write_glb(model: Model, flat: dict, path: str,
     for i, loop in enumerate(mesh.loops):
         layer.data[i].color = flat["colours"][loop.vertex_index]
 
-    # UV0 is unused at this tier (units are vertex-coloured, not textured) but
-    # glTF wants a first UV set before a second, so it is written flat.
+    # UV0 carries the model's OWN texture coordinates when it has any, and
+    # (0, 0) when it does not — which is every generated model, and was
+    # every model until D-20260824-a-textured-model-keeps-its-texture. A
+    # textured model needs them: without UV0 its texture cannot be sampled,
+    # and its colour has to be crushed onto vertices instead, where it
+    # cannot be mipmapped and aliases into noise at soldier scale.
     uv0 = mesh.uv_layers.new(name="UVMap")
+    source_uvs = flat.get("uvs")
     uv1 = mesh.uv_layers.new(name="VATIndex")
     width = len(flat["positions"])
     for i, loop in enumerate(mesh.loops):
-        uv0.data[i].uv = (0.0, 0.0)
+        uv0.data[i].uv = (source_uvs[loop.vertex_index]
+                          if source_uvs else (0.0, 0.0))
         if uv1_override is not None:
             uv1.data[i].uv = uv1_override[loop.vertex_index]
         else:
@@ -341,11 +357,22 @@ def write_prop_glb(model: Model, path: str) -> dict:
     }
 
 
-def write_vat(model: Model, flat: dict, path: str) -> dict:
-    """Bake every clip into a half-float EXR. Returns the layout metadata."""
+def write_vat(name: str, flat: dict, path: str, frames=None) -> dict:
+    """Bake every clip into a half-float EXR. Returns the layout metadata.
+
+    `frames` is `(positions_per_frame, normals_per_frame)`. It is a parameter
+    rather than something computed here because a `Model` posed by `clips.py`
+    is no longer the only thing that can produce those arrays — an authored
+    `.blend` evaluated frame by frame produces them too
+    (D-20260821-game-assets-are-files). The TEXTURE LAYOUT is the contract
+    every reader depends on, so it stays in this one function and both
+    sources feed it.
+    """
     import bpy
 
-    positions_per_frame, normals_per_frame = bake_frames(model, flat)
+    if frames is None:
+        raise ValueError("write_vat needs frames; see bake_frames or blend_source")
+    positions_per_frame, normals_per_frame = frames
     rest = flat["positions"]
     width = len(rest)
     total_frames = len(positions_per_frame)
@@ -374,7 +401,7 @@ def write_vat(model: Model, flat: dict, path: str) -> dict:
         colour = flat["colours"][c]
         put(colour_row, c, colour, alpha=colour[3])
 
-    image = bpy.data.images.new(f"{model.name}_vat", width=width, height=height,
+    image = bpy.data.images.new(f"{name}_vat", width=width, height=height,
                                 alpha=True, float_buffer=True, is_data=True)
     image.pixels = pixels
     image.file_format = "OPEN_EXR"

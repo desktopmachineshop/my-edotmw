@@ -372,7 +372,7 @@ func test_production_finishes_and_puts_a_squad_on_the_map() -> void:
 	def.produces = [&"gatherers"] as Array[StringName]
 	var hall := buildings.add_building(def, 1, Vector2i(6, 6), true)
 
-	var unit: UnitDef = UnitRoster.by_id(&"gatherers")
+	var unit: UnitDef = UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	assert_not_null(unit)
 	var before := sim.squad_count()
 	buildings.enqueue(hall, unit)
@@ -414,8 +414,9 @@ func test_produce_orders_round_trip() -> void:
 
 
 func test_the_starting_stockpile_covers_a_town_hall_plus_a_few_workers() -> void:
-	# The opening has to be *possible*. A player starts with founders and
-	# nothing else, so the stockpile must pay for the hall they found AND
+	# The opening has to be *possible*. A player starts with one gatherer
+	# crew and one general (D-20260823-the-opening-is-a-crew-and-a-general),
+	# so the stockpile must pay for the hall that crew founds AND
 	# leave enough to staff it — otherwise founding is a move that strands
 	# you with an empty base and no way to begin.
 	#
@@ -428,7 +429,7 @@ func test_the_starting_stockpile_covers_a_town_hall_plus_a_few_workers() -> void
 
 	var config: MapConfig = load("res://maps/default.tres")
 	var hall: BuildingDef = load("res://buildings/town_centre.tres")
-	var worker: UnitDef = UnitRoster.by_id(&"gatherers")
+	var worker: UnitDef = UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	assert_not_null(config)
 	assert_not_null(hall)
 	assert_not_null(worker)
@@ -476,15 +477,26 @@ func test_every_producible_unit_costs_something() -> void:
 	assert_gt(checked, 0, "No units were checked, so this proves nothing")
 
 
-func test_the_shipped_gatherer_can_actually_gather() -> void:
-	var def: UnitDef = UnitRoster.by_id(&"gatherers")
-	assert_not_null(def, "The roster must ship a 'gatherers' unit")
-	assert_gt(def.carry_capacity, 0, "It has to be able to carry something")
-	assert_gt(def.gather_rate, 0.0, "And to gather at some rate")
+func test_every_civ_ships_a_gatherer_that_can_actually_gather() -> void:
+	# Per civ now (D-20260823-the-opening-is-a-crew-and-a-general): a civ
+	# without one has no opening at all, since the crew IS the settler.
+	for civ in CivRoster.ids():
+		var def: UnitDef = UnitRoster.for_civ_archetype(civ, &"gatherers")
+		assert_not_null(def, "civ %s fields no 'gatherers' archetype" % civ)
+		if def == null:
+			continue
+		assert_gt(def.carry_capacity, 0, "%s: it has to be able to carry something" % civ)
+		assert_gt(def.gather_rate, 0.0, "%s: and to gather at some rate" % civ)
+		assert_eq(String(def.civ), String(civ),
+			"a NEUTRAL gatherer shadows every per-civ one in for_civ_archetype "
+			+ "(first match in id order), so the per-civ stats would be unreachable")
 
-	var founders: UnitDef = UnitRoster.by_id(&"founders")
-	assert_eq(founders.carry_capacity, 0,
-		"Founders found towns; hauling is the gatherers' job")
+	for civ in CivRoster.ids():
+		var general: UnitDef = UnitRoster.for_civ_archetype(civ, &"general")
+		assert_not_null(general, "civ %s fields no general to open with" % civ)
+		if general != null:
+			assert_eq(general.carry_capacity, 0,
+				"%s: the escort escorts; hauling is the crew's job" % civ)
 
 
 # --- node density (playtest feedback) ----------------------------------
@@ -687,11 +699,19 @@ func test_a_tree_lasts_about_a_minute_under_one_crew() -> void:
 	# in roughly a minute. Pinned against the SHIPPED def, not a caricature
 	# (D-066's lesson): if squad_size or gather_rate moves, TREE_STOCK has
 	# to move with it or every forest quietly changes meaning.
-	var def: UnitDef = UnitRoster.by_id(&"gatherers")
-	var per_second := float(def.squad_size) * def.gather_rate
-	var seconds := float(Economy.TREE_STOCK) / per_second
-	assert_between(seconds, 45.0, 75.0,
-		"a full crew empties a tree in %.0f s — the design says about a minute" % seconds)
+	# Every civ's crew, since they went per-civ
+	# (D-20260823-the-opening-is-a-crew-and-a-general) — a civ whose crew
+	# falls outside the band changes what every forest on the map means.
+	for civ in CivRoster.ids():
+		var def: UnitDef = UnitRoster.for_civ_archetype(civ, &"gatherers")
+		assert_not_null(def, "civ %s fields no gatherer" % civ)
+		if def == null:
+			continue
+		var per_second := float(def.squad_size) * def.gather_rate
+		var seconds := float(Economy.TREE_STOCK) / per_second
+		assert_between(seconds, 45.0, 75.0,
+			"%s's crew empties a tree in %.0f s — the design says about a minute"
+				% [civ, seconds])
 
 
 func test_small_maps_are_not_far_denser_than_large_ones() -> void:
@@ -779,7 +799,7 @@ func test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk() -> void:
 	var buildings := BuildingSim.new(space)
 	sim.buildings = buildings
 
-	var def := UnitRoster.by_id(&"gatherers")
+	var def := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	assert_not_null(def, "the roster should ship gatherers")
 	var node_cell := Vector2i(9, 8)
 	economy.nodes[space.index(node_cell)] = {
@@ -812,7 +832,7 @@ func test_a_player_ordered_formation_is_not_overwritten_by_the_economy() -> void
 	var buildings := BuildingSim.new(space)
 	sim.buildings = buildings
 
-	var def := UnitRoster.by_id(&"gatherers")
+	var def := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	assert_not_null(def, "the roster should ship gatherers")
 	var node_cell := Vector2i(9, 8)
 	economy.nodes[space.index(node_cell)] = {
@@ -847,7 +867,11 @@ func test_an_untouched_crew_keeps_its_own_formation_too() -> void:
 	economy.nodes[space.index(node_cell)] = {
 		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
 	}
-	var squad := sim.add_squad(UnitRoster.by_id(&"gatherers"), 1, Vector2i(2, 8))
+	# Main's civ-aware roster lookup, this branch's shape snapshot: the
+	# assertion below needs the shape the squad SPAWNED with.
+	var squad := sim.add_squad(
+		UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers"), 1,
+		Vector2i(2, 8))
 	var spawn_shape := sim.shape_of(squad)
 	economy.order_gather(sim, squad, space.index(node_cell))
 
@@ -892,7 +916,7 @@ func test_separating_squads_does_not_evict_crews_from_the_node_they_work() -> vo
 	sim.economy = economy
 	sim.buildings = BuildingSim.new(space)
 
-	var def := UnitRoster.by_id(&"gatherers")
+	var def := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 	var node_cell := Vector2i(10, 8)
 	economy.nodes[space.index(node_cell)] = {
 		"kind": Economy.ResourceKind.FOOD, "remaining": 9000,

@@ -73,3 +73,13 @@ the wrong game. That is a design failure telemetry cannot detect, and the
 only instrument for it is playing it.
 
 ---
+
+**Amendment, 2026-08-23 — criterion 6 is three-quarters discharged in
+advance.** `squad_cap_bonus`, `production_speed` and `gather_speed` each
+have an observable effect and each is proved by a test watched to fail
+first (`D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158).
+`build_speed` does not exist yet, so the criterion is not closed — and
+the lesson from doing the other three is worth having before writing its
+test: a behaviour test that drives the mechanism by hand stays GREEN
+while the server ignores the knob entirely. The test has to drive the
+server's own order path.

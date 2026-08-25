@@ -2615,15 +2615,20 @@ func living_squad_count(player: int) -> int:
 	return n
 
 
-## Spend a squad founding something (D-031). Returns the casualty events
+## Spend a squad founding something. Returns the casualty events
 ## describing it, or an empty array if there was nothing to consume.
+##
+## Which buildings cost their builder is data
+## (`BuildingDef.consumes_builder`, D-20260823-the-opening-is-a-crew-and-
+## a-general); on the shipped roster it is the town centre and nothing
+## else.
 ##
 ## Consumed when the order is ACCEPTED, not when the building finishes.
 ## That timing is the whole mechanism: consuming on completion left the
-## founders standing for the length of the build, and one founding party
-## could queue as many town halls as it could click on — which is exactly
-## what the first playtest did, three times in a row. Committing the party
-## to the site immediately makes one founding party mean one town.
+## crew standing for the length of the build, and one crew could queue as
+## many town halls as it could click on — which is exactly what the first
+## playtest did, three times in a row. Committing the crew to the site
+## immediately makes one crew mean one town.
 func consume_squad(squad: int) -> Array:
 	if squad < 0 or squad >= _cell.size() or _alive[squad] <= 0:
 		return []
@@ -2698,3 +2703,33 @@ func are_allied(a: int, b: int) -> bool:
 	var team_a := int(teams.get(a, 0))
 	var team_b := int(teams.get(b, 0))
 	return team_a != 0 and team_a == team_b
+
+
+# --- civs (D-047) -----------------------------------------------------
+
+## player id -> the CivDef whose mechanical knobs are in force for them
+## (D-047). Empty means "nobody's civ is known", which is a real state
+## rather than a broken one — see `CivRoster.effects_of`.
+##
+## Held here for exactly the reason `teams` is, one line above: the
+## MECHANICAL consequences of a civ are read from inside this class's own
+## tick (the economy's gather rate) and by callers that already hold the
+## simulation (the squad cap). MatchState owns CHOOSING a civ; this owns
+## the consequence, and there is ONE handover rather than one per
+## mechanism — which matters, because #119's lesson is that the handover
+## nothing performs is the dangerous half.
+##
+## The resolved def rather than the id: the server's `_civ_of` stays the
+## one place a player BECOMES a civ, and resolving once at handover keeps
+## a roster lookup out of the gather path. A test can also hand a
+## synthetic CivDef straight in, the same way every fixture here builds a
+## synthetic UnitDef — which is what lets a knob no shipped civ turns yet
+## still be exercised.
+var civs := {}
+
+
+## The knobs in force for `player`. Never null, so a caller reads a
+## multiplier rather than branching on whether a civ is known.
+func civ_effects(player: int) -> CivDef:
+	var def = civs.get(player, null)
+	return def if def is CivDef else CivRoster.effects_of(&"")

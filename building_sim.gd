@@ -187,9 +187,10 @@ func building_count() -> int:
 
 ## Local id (the array index). Use wire_id() for anything that leaves this
 ## class and might meet a squad id.
-## `builder` is the squad that founded this, or -1. Recorded because
-## founders are CONSUMED by the town they found (D-031): the founding
-## party becomes the settlement rather than wandering off from it.
+## `builder` is the squad that founded this, or -1. Recorded because a
+## def may CONSUME its builder (`BuildingDef.consumes_builder`,
+## D-20260823-the-opening-is-a-crew-and-a-general): the crew that founds
+## a town becomes the settlement rather than wandering off from it.
 ## `facing` means one of two things depending on `def`, decided here rather
 ## than trusted from the caller.
 ##
@@ -543,11 +544,22 @@ func can_produce(building: int, archetype: StringName) -> bool:
 ## near-zero remaining time instead of `def.build_time`, so
 ## `advance_production` finishes it on the very next call rather than
 ## needing a separate same-tick completion path of its own.
-func enqueue(building: int, def: UnitDef, instant: bool = false) -> void:
+##
+## `build_time` is the time the OWNER'S CIV takes, resolved by the caller
+## (`CivDef.production_time`, D-047) exactly as the caller already
+## resolves the archetype against that civ. Passed in rather than looked
+## up here, and stored as REAL SECONDS rather than as a rate: the queue's
+## head counts down at one second per second on the wire, and the client
+## draws the countdown from it (D-003). A civ multiplier applied per tick
+## instead would make every client's "— 12s" wrong for the fast civ.
+func enqueue(building: int, def: UnitDef, instant: bool = false,
+		build_time: float = -1.0) -> void:
+	if build_time < 0.0:
+		build_time = def.build_time
 	if not _queues.has(building):
 		_queues[building] = []
 	(_queues[building] as Array).append({
-		"def_id": def.id, "remaining": 0.001 if instant else maxf(def.build_time, 0.001),
+		"def_id": def.id, "remaining": 0.001 if instant else maxf(build_time, 0.001),
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.
@@ -668,13 +680,14 @@ func take_dirty() -> Array:
 	return out
 
 
-## May a squad of `unit_def_id` construct `def`? (D-031.)
+## May a squad of this ARCHETYPE construct `def`? (D-031's rule; the
+## roster it gates changed in
+## D-20260823-the-opening-is-a-crew-and-a-general.)
 ##
 ## The rule reads one way only, from `BuildingDef.built_by`, so there is a
-## single source of truth. That is also what expresses "founders may build
-## ONLY the town hall": founders are listed on the town centre and on
-## nothing else, so every other building refuses them without needing a
-## second, builder-side list to be kept in step with this one.
+## single source of truth. That is also what expresses "the general builds
+## nothing": no def lists it, so every building refuses it without needing
+## a second, builder-side list to be kept in step with this one.
 static func can_build(def: BuildingDef, unit_def_id: StringName) -> bool:
 	if def == null:
 		return false

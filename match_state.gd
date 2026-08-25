@@ -506,11 +506,16 @@ func update(sim: SquadSim, buildings: BuildingSim = null) -> Array:
 		# Defeated means having nothing left to fight OR build with.
 		#
 		# Squads alone are not the test, and getting that wrong ended
-		# matches instantly: founders are consumed by the town hall they
-		# found (D-031), so a player who made the correct opening move had
-		# zero squads for a moment and was declared beaten while their
-		# hall stood there ready to produce. A base is a way back into the
-		# game; an empty map is not.
+		# matches instantly: the crew that founds a town hall is consumed
+		# by it (D-20260823-the-opening-is-a-crew-and-a-general), so a
+		# player who made the correct opening move could be left with no
+		# squads for a moment and declared beaten while their hall stood
+		# there ready to produce. A base is a way back into the game; an
+		# empty map is not.
+		#
+		# It also settles what a general's death is: a MORALE event
+		# (combat.gd's chain shock), never an elimination. Defeat has one
+		# definition and this is it.
 		if sim.living_squad_count(player) > 0:
 			continue
 		if buildings != null and buildings.living_building_count(player) > 0:
@@ -612,7 +617,23 @@ const MAX_TEAMS := 4
 ## player have", and this project has been bitten before by two
 ## definitions of the same fact drifting apart.
 func has_squad_capacity(sim: SquadSim, player: int) -> bool:
-	return sim.living_squad_count(player) < squad_cap
+	return sim.living_squad_count(player) < squad_cap_for(sim, player)
+
+
+## This player's ceiling: the map's, plus whatever their civ adds
+## (`CivDef.squad_cap_bonus`, D-047).
+##
+## Takes the SIM for the same reason `has_squad_capacity` does — the sim
+## is where a player's civ was handed over (`SquadSim.civs`), so the cap
+## and the count come from one object and cannot be asked about two
+## different matches.
+##
+## Its own function because the number is needed in two places that must
+## agree: the refusal above, and the `squad_cap` the server puts in each
+## client's WELCOME for the HUD's n/cap readout. A HUD saying 40 while the
+## server refuses at 44 is a rule the player cannot see.
+func squad_cap_for(sim: SquadSim, player: int) -> int:
+	return sim.civ_effects(player).squad_cap(squad_cap)
 
 
 func is_running() -> bool:

@@ -1,4 +1,4 @@
-### D-071 · 2026-08-04 · Provisional — the civ design frame, and six civilizations
+### D-071 · 2026-08-04 · Superseded by D-20260823-fantasy-civs-on-a-four-epoch-ladder (was Provisional) — the civ design frame, and six civilizations
 **Decision:** Six civs at launch, each filling the **same seven-column
 frame** so that distinctness is structural rather than a matter of taste.
 Governing rule: **no two civs may match on more than one column.**

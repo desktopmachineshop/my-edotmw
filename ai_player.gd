@@ -256,9 +256,10 @@ var _builder_busy_until := 0.0
 const FOUND_RETRY := 5.0
 
 
-## The opening every player makes: plant the town hall (D-031). The
-## founding party is spent doing it, so this happens once and the AI owns
-## nothing until production starts.
+## The opening every player makes: plant the town hall
+## (D-20260823-the-opening-is-a-crew-and-a-general). The gatherer crew is
+## spent doing it (`BuildingDef.consumes_builder`), so the AI holds only
+## its general until the hall starts producing.
 ##
 ## ## Latched on the TOWN, not on the send
 ##
@@ -270,7 +271,10 @@ const FOUND_RETRY := 5.0
 ##
 ## Removing the latch outright is the other wrong answer, and was measured
 ## as such: with no latch the AI re-sends forever and the log fills with
-## "gatherers cannot build a Town Centre" once the founders are gone. Two
+## "cannot build a Town Centre" once it holds nothing that may. (The
+## measurement was taken when that meant "the founding party is spent";
+## since D-20260823-the-opening-is-a-crew-and-a-general it means the crew
+## is spent and only the general is left. Same shape, same spam.) Two
 ## conditions bound it instead, and both are things the AI can SEE — it
 ## stops when the town centre exists, and it cannot start when it holds no
 ## squad allowed to found one. Between them there is nothing to spam.
@@ -289,6 +293,14 @@ func _found_town() -> void:
 	if order.is_empty():
 		return
 	_found_at = state_time() + FOUND_RETRY
+	# Hold the crew off hauling until the order lands, exactly as
+	# `_raise_buildings` does for every other build. Founders had no carry
+	# capacity, so nothing else ever wanted them; the crew is a gatherer,
+	# and `_put_gatherers_to_work` runs later in this same think — without
+	# this it re-claims the crew and the gather order cancels the founding
+	# it was just sent to do (the #123 defect, one seat over).
+	_builder_squad = squad
+	_builder_busy_until = state_time() + profile.think_interval * 3.0
 	send.call(order)
 
 
@@ -296,8 +308,9 @@ func _found_town() -> void:
 ##
 ## Asked of the shipped BuildingDef's `built_by` rather than named here, so
 ## this file still names no unit and no civ (D-047) — and so it answers
-## "the founders are spent" correctly the moment they are, which is what
-## stops the retry above from ever becoming a spin.
+## "nothing I hold may settle" correctly the moment it is true (the crew
+## spent, the general being no builder), which is what stops the retry
+## above from ever becoming a spin.
 func _founder() -> int:
 	var def := BuildingSim.def_by_id(&"town_centre")
 	if def == null:
@@ -387,15 +400,26 @@ func _train() -> void:
 func _military_archetype() -> StringName:
 	# Only something a building it OWNS can actually make.
 	#
-	# Without this it picked `founders` — a fighting unit with no carry
-	# capacity, so it passed every test for "military" — and asked the
-	# barracks for them. Barracks do not make founders (only the opening
-	# party is), so the order was never sent and it trained nothing but
+	# Without this it picked the old founding party's archetype — a
+	# fighting unit with no carry capacity, so it passed every test for
+	# "military" — and asked the barracks for it. Barracks did not make
+	# them, so the order was never sent and it trained nothing but
 	# gatherers for the entire match, with a finished barracks standing
 	# there. The ladder showed 15 squads, 15 workers, 0 attacks.
+	#
+	# A GENERAL is skipped for a related reason with a different shape. A
+	# town centre produces one, it has damage and no carry capacity, and
+	# the server allows only one alive per player
+	# (D-20260819-a-general-holds-the-line) — and as of
+	# D-20260823-the-opening-is-a-crew-and-a-general every player STARTS
+	# with theirs. So an AI that picked it here would spend every training
+	# cooldown, for the whole match, on an order refused before it reached
+	# a unit. By FIELD, not by name, the same discipline
+	# `bot_build_plan.gd` already uses.
 	for archetype in _producible_archetypes():
 		var def := UnitRoster.for_civ_archetype(civ, archetype)
-		if def != null and def.damage > 1.0 and def.carry_capacity <= 0:
+		if def != null and def.damage > 1.0 and def.carry_capacity <= 0 \
+				and not def.is_general:
 			return archetype
 	return &""
 

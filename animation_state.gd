@@ -52,7 +52,15 @@ const CLIP_NAMES := ["idle", "walk", "attack", "rout"]
 ## Metres of ground covered by one full walk cycle (two steps). Sets the
 ## relationship between move speed and playback rate, which is the difference
 ## between soldiers walking and soldiers skating.
-const STRIDE_LENGTH := 1.45
+##
+## 1.45 was the shipped guess — and a guess is all it could ever be, because
+## the render clock defect (D-20260824-the-client-renders-on-the-servers-
+## clock) meant the walk clip never actually played in a live client, so
+## nobody had ever SEEN this number. The first session in which it played,
+## the owner read the cadence as far too fast for the ground covered;
+## raised until footfall matches travel. Judged by eye against the shipped
+## roster in play — the only instrument there is for "do the feet grip".
+const STRIDE_LENGTH := 2.6
 
 ## Cadences for the clips that do not derive their rate from movement.
 const IDLE_RATE := 0.28

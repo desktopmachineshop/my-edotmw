@@ -41,6 +41,19 @@ VAT_PARAMS = {
     "process/hdr_as_srgb": "false",
 }
 
+# A unit's own albedo texture. MIPMAPS ARE THE POINT — that is the whole
+# reason a textured model beats the same colours crushed onto vertices: at
+# soldier scale a 4,824-triangle model covers ~30 pixels, and a mip chain
+# is what turns its texture into the right average colour instead of one
+# arbitrary texel per sub-pixel facet. `detect_3d/compress_to` is pinned
+# rather than left to Godot's re-import for the reason this file exists:
+# an import setting nobody set is one that will be wrong.
+ALBEDO_PARAMS = {
+    "compress/mode": "0",
+    "mipmaps/generate": "true",
+    "detect_3d/compress_to": "0",
+}
+
 ATLAS_PARAMS = {
     "compress/mode": "0",
     "mipmaps/generate": "true",

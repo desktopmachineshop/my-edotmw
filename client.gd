@@ -226,6 +226,11 @@ func _detail_for(world: Vector3) -> int:
 ## and the only symptom would be a slow client.
 var _visible_squads := 0
 var _now := 0.0
+## Wall clock since this node's _ready — what `_now` used to be. Kept for
+## the few things that genuinely pace against THIS PROCESS (the capture
+## run's duration), while `_now` is the server's clock now.
+var _wall_now := 0.0
+var _clock_synced := false
 ## Whether the ground can be stood on: the fields are built and the sampler is
 ## bound. NOT the same as "the ground is fully drawn" since D-106's successor
 ## (D-20260818-terrain-builds-a-slice-at-a-time) — the chunk meshes keep
@@ -389,7 +394,28 @@ func _report_desyncs() -> void:
 
 
 func _process(delta: float) -> void:
-	_now += delta
+	_wall_now += delta
+	# THE WORLD IS RENDERED ON THE SERVER'S CLOCK, estimated between
+	# messages — because that is the axis curve keyframes live on. `_now`
+	# was a wall clock started at this node's _ready, behind the server by
+	# the whole terrain build, so every curve sample CLAMPED: positions
+	# still moved (fresh curves' first keyframes advanced and the ease
+	# smoothed the hops), but measured speed was exactly 0.00 for every
+	# squad in every march — telemetry, 2026-08-24 — so the walk clip
+	# never played in a live client. One jump forward at first sync,
+	# monotonic after (a clock that runs backwards re-derives soldiers
+	# backwards), and re-anchored by every message that states a tick.
+	if _state.welcomed and _state.server_tick > 0:
+		# `render_time()` is anchored to the curves themselves, not the
+		# tick anchor: a curve packet replaces the whole curve and starts
+		# at send time, so any clock behind the freshest start clamps
+		# before it — a fixed delay here was measured teleporting squads
+		# on every packet. The HUD clock stays on `match_elapsed()`.
+		var estimate := _state.render_time()
+		_now = estimate if not _clock_synced else maxf(_now, estimate)
+		_clock_synced = true
+	else:
+		_now += delta
 	_frame_delta = delta
 	_service_network()
 	# Immediately after the packets that could have produced one, so a
@@ -454,7 +480,10 @@ func _process(delta: float) -> void:
 
 	if _run_seconds > 0.0:
 		_drive_m2_scenario()
-		if _now >= _run_seconds:
+		# Wall time, deliberately: `_now` is the SERVER's clock now, and a
+		# capture that joined a server already n seconds old would end n
+		# seconds early on it.
+		if _wall_now >= _run_seconds:
 			_finish_capture()
 
 
@@ -469,8 +498,8 @@ var _camera_homed := false
 ## `_build_terrain` leaves it at the middle of the map, which was a
 ## reasonable default for as long as the whole map was drawn lit. Now that
 ## the ground is fogged (D-106) the middle of a 128x64 map is unexplored
-## black, so a match would open on an empty screen with the founding party
-## somewhere off in the dark. Capture mode has centred on the player's own
+## black, so a match would open on an empty screen with the opening
+## crew somewhere off in the dark. Capture mode has centred on the player's own
 ## ground since M3 for exactly this reason (`_found_home_town`); a human
 ## deserves it more than a screenshot does.
 func _home_camera_once() -> void:
@@ -673,7 +702,7 @@ const TERRAIN_CHUNK_SIZE := 16
 ## Waiting for the WHOLE build, rather than letting a match start on the fields
 ## alone, is what keeps the old contract intact: nothing is ever drawn standing
 ## on ground that does not exist. A soldier's y comes from those heights, so a
-## caller that drew the world early would derive the founding party at sea
+## caller that drew the world early would derive the opening squads at sea
 ## level and bury it in hills that are about to exist — the picture D-045 spent
 ## a milestone getting rid of.
 func _advance_terrain() -> bool:
@@ -1292,24 +1321,32 @@ func _refresh_squads() -> void:
 				for k in range(men.size()):
 					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
 						neighbours.append(men[k])
-		# No drawn man outruns his own squad's sprint (D-20260821,
-		# amended) — the cap travels with the def, resolved through the
-		# cached roster.
-		var speed_def := UnitRoster.by_id(
-			StringName(String(comp_info.get("def_id", ""))))
-		var speed_cap := 12.0 if speed_def == null 			else speed_def.move_speed * SquadSim.CHARGE_SPEED_MULT
+		# The speed cap is MAIN's `_pursuit_speed_of` (1.35x this unit's
+		# walk) rather than the local sprint computation this branch
+		# carried: same knob, one shared definition with two callers, and
+		# it sits BELOW the squad's sprint, so "a man may rise to the
+		# squad's sprint to catch up, but no faster" still holds.
 		var eased := _motion.ease(squad_id, transforms, _frame_delta,
-			neighbours, speed_cap)
+			_pursuit_speed_of(squad_id), neighbours)
 		var drawn_men := PackedVector3Array()
 		drawn_men.resize(eased.size())
 		for i in range(eased.size()):
 			drawn_men[i] = eased[i].origin
 		_drawn_cache[squad_id] = {"men": drawn_men,
 			"centre": centre + offset, "radius": world_radius}
+		# The REAL speed, not a literal 1.0 — which is what sat here and is
+		# why every standing squad in every match bobbed on the spot.
+		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
+		# squad stops bobbing", `test_formation.gd` asserts exactly that of
+		# the function, and this caller then handed it a constant. The D-061
+		# family: the mechanism correct and tested, the one live call site
+		# feeding it the wrong input. Noticed only when an authored model
+		# with a real VAT idle clip made the extra whole-body bounce read as
+		# a defect instead of as capsule-era "life".
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
 			else CosmeticOffset.decorate_activity(
-				eased, _now, 1.0, int(doing["activity"]), doing["toward"])
+				eased, _now, speed, int(doing["activity"]), doing["toward"])
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1322,7 +1359,11 @@ func _refresh_squads() -> void:
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
 			speed > MOVING_SPEED_EPSILON)
-		unit.set_clip_data(int(squad_id), clip, speed)
+		# Per-man cadence from the motion layer's own measurements
+		# (D-20260824): each drawn man strides at the pace HE moves, not
+		# the squad's — the squad speed is the fallback inside.
+		unit.set_clip_data(int(squad_id), clip, speed,
+			_motion.speeds(squad_id))
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
 				and bool(doing["is_ranged"]):
@@ -1400,9 +1441,10 @@ func _drive_m2_scenario() -> void:
 	# squads" guard below — the identical fix bot_client.gd needed in M4,
 	# for the identical reason, in the other file that scripts a player.
 	#
-	# Founding a town hall CONSUMES the founding party the instant the
-	# order is given (D-031), so a client that makes the correct opening
-	# move owns nothing at all a moment later. This function used to
+	# Founding a town hall CONSUMES the crew that founds it, the instant
+	# the order is given (D-20260823-the-opening-is-a-crew-and-a-general),
+	# so a client that makes the correct opening move can be left with
+	# almost nothing a moment later. This function used to
 	# return early on `squads.is_empty()`, which meant the scenario went
 	# quiet forever the moment it did the one thing it was written to do,
 	# and `test-client` reported `soldiers=0` on a frame with a perfectly
@@ -1586,7 +1628,22 @@ func _found_home_town() -> void:
 	if home.x < 0:
 		home = _state.squad_cell(_state.squads[0], _now)
 
-	var order := _state.encode_build(_state.squads[0], "town_centre", home)
+	# The builder is whichever squad `built_by` admits — the gatherer
+	# crew, not whichever squad id sorts first: the opening also holds a
+	# general (D-20260823-the-opening-is-a-crew-and-a-general), and a
+	# general's build order is refused server-side.
+	var builder := -1
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	for squad in _state.squads:
+		var def := UnitRoster.by_id(StringName(
+			String(_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and BuildingSim.can_build(hall, def.archetype):
+			builder = squad
+			break
+	if builder < 0:
+		builder = int(_state.squads[0])
+
+	var order := _state.encode_build(builder, "town_centre", home)
 	if not order.is_empty():
 		_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
 		print("client: founding a town hall at %s" % home)
@@ -1597,9 +1654,10 @@ func _found_home_town() -> void:
 
 ## Train a squad at the town hall once it is finished (capture mode only).
 ##
-## Without this the capture run has nothing to draw: the founding party is
-## spent on the hall (D-031), and a frame whose whole point is "look at
-## the soldiers" would contain none. It also means `test-client` exercises
+## Without this the capture run has almost nothing to draw: the crew is
+## spent on the hall (D-20260823-the-opening-is-a-crew-and-a-general), and
+## a frame whose whole point is "look at the soldiers" would hold only the
+## opening general. It also means `test-client` exercises
 ## the production path in a rendered client rather than leaving it to the
 ## bots — the frame now shows a town hall AND the troops it made.
 func _train_from_home_town() -> void:
@@ -1830,7 +1888,7 @@ var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
 ## Whether this player has ever had a living squad or building since the
 ## match left the lobby — guards against the one-frame race at match
-## start, before the founding party's squad has arrived over the wire.
+## start, before the opening squads have arrived over the wire.
 var _ever_had_army := false
 var _defeated := false
 var _defeat_time_held := 0.0
@@ -3022,6 +3080,18 @@ func _refresh_enemy_scan() -> void:
 ## node (D-058), and enemy squads in vision tell us who is fighting.
 ## Returned together because finding the enemy is the expensive half and
 ## asking twice was doing it twice.
+## How fast this squad's drawn men may chase their slots: their own
+## walking pace plus a jog margin. Resolved from the def like everything
+## else about a squad; 0.0 (uncapped) when the roster cannot say.
+const PURSUIT_SPEED_SCALE := 1.35
+
+
+func _pursuit_speed_of(squad_id) -> float:
+	var def := UnitRoster.by_id(StringName(
+		String(_state.composition.get(squad_id, {}).get("def_id", ""))))
+	return def.move_speed * PURSUIT_SPEED_SCALE if def != null else 0.0
+
+
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
@@ -5374,7 +5444,16 @@ func _show_production(info: Dictionary) -> void:
 
 	var head := StringName(String(queue[0]))
 	var unit := UnitRoster.by_id(head)
-	var build_time := unit.build_time if unit != null else 0.0
+	# The OWNER'S civ trains it, so the owner's civ is what sets how long
+	# the bar has to fill (D-047). `head_remaining` on the wire is real
+	# seconds and already carries the multiplier; dividing by the raw
+	# `UnitDef.build_time` here would draw a fast civ's bar starting a
+	# quarter full and never reaching either end honestly. One definition
+	# of the arithmetic, in `CivDef.production_time`, read by both sides.
+	var civ := _state.civ_of(int(info.get("owner", 0)))
+	var build_time := 0.0
+	if unit != null:
+		build_time = CivRoster.effects_of(civ).production_time(unit.build_time)
 	var remaining := float(info.get("head_remaining", 0.0))
 	# Anchored the same way construction is, so it ticks down smoothly.
 	var anchor: Dictionary = _queue_anchor.get(_selected_building, {})
@@ -5549,11 +5628,12 @@ const BUILD_CATEGORIES := [
 ]
 
 
-## Building SQUADS offer, from `BuildingDef.built_by` — founders may raise
-## a town hall and nothing else (D-031), gatherers and line infantry
-## build nothing at all, so this comes back empty for them and the build
-## segment simply does not show (see `_update_selection_panel`). The
-## actions column's BOTTOM segment.
+## Building SQUADS offer, from `BuildingDef.built_by` — gatherers are the
+## builders (town hall included,
+## D-20260823-the-opening-is-a-crew-and-a-general); line infantry and the
+## general build nothing at all, so this comes back empty for them and
+## the build segment simply does not show (see `_update_selection_panel`).
+## The actions column's BOTTOM segment.
 ##
 ## Playtest fix, tiered: a flat list of every buildable def stopped fitting
 ## the button pool once D-076 added five wall-family defs to the three
@@ -5564,9 +5644,18 @@ const BUILD_CATEGORIES := [
 ## levels, so a category with nothing this squad can build never appears,
 ## and drilling into one never offers a def this squad cannot build.
 func _squad_build_actions(def_id: StringName) -> Array:
+	# The ARCHETYPE, because that is what `built_by` holds and what the
+	# server's own order gate resolves (D-047). This passed the raw def id
+	# for six milestones and nothing noticed, because the one unit that
+	# could build had id == archetype ("gatherers") — the per-civ split
+	# (D-20260823) broke the coincidence, and every civ's crew was offered
+	# an empty build menu while the server would happily have accepted the
+	# orders. Reported from play as "the thralls cant build".
+	var unit := UnitRoster.by_id(def_id)
+	var archetype := unit.archetype if unit != null else def_id
 	var by_category := {}
 	for building in BuildingSim.all_defs():
-		if not BuildingSim.can_build(building, def_id):
+		if not BuildingSim.can_build(building, archetype):
 			continue
 		var category := building.category
 		if not by_category.has(category):
@@ -7165,10 +7254,9 @@ func _enemy_cell_at(screen_position: Vector2) -> Vector2i:
 
 ## Ask the first selected squad to found a building at the cursor.
 ##
-## Only founders may build a town hall, and only a town hall — that rule
-## is data on the BuildingDef (D-031) and enforced server-side, so a
-## refused order simply does nothing here rather than being second-guessed
-## client-side.
+## Who may build what is data on the BuildingDef (`built_by`) and
+## enforced server-side, so a refused order simply does nothing here
+## rather than being second-guessed client-side.
 ## ARM placement rather than building immediately.
 ##
 ## Pressing build used to found the building at wherever the mouse
@@ -8733,6 +8821,11 @@ func _on_quit_pressed() -> void:
 ## through hills that are not there.
 func _teardown_match() -> void:
 	print("client: match over — back to the lobby")
+	# The next match anchors a fresh server clock (ClientState clears
+	# server_tick), so the sync must be allowed to JUMP again — held
+	# monotonic across it, a second match would render at the first
+	# match's final time forever.
+	_clock_synced = false
 	_free_nodes(_squad_nodes)
 	_free_nodes(_building_nodes)
 	_free_nodes(_wall_joint_nodes)
@@ -8909,7 +9002,7 @@ func _load_settings() -> void:
 # who is defeated would eventually show this screen to a player who was
 # not, or never show it to one who was. `_ever_had_army` exists so the
 # check cannot fire in the one frame after a match starts and before the
-# founding party's squad has arrived over the wire — a real race, since
+# opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
 func _build_defeat_screen() -> void:

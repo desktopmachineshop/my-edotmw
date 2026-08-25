@@ -4,9 +4,10 @@ extends Resource
 ## A mid-game world, as DATA (D-098).
 ##
 ## The problem this solves: the real opening is slow on purpose. A player
-## starts with one founding party and no base, a town hall takes 40
-## seconds and consumes the founders (D-031), production runs after that,
-## and spawns are scattered far apart on a 128x64 map (D-039). So the
+## starts with one gatherer crew, one general and no base, a town hall
+## takes 40 seconds and consumes the crew that founds it
+## (D-20260823-the-opening-is-a-crew-and-a-general), production runs after
+## that, and spawns are scattered far apart (D-039). So the
 ## cheapest honest test of anything downstream of the opening costs about
 ## two minutes of waiting before the thing under test even exists.
 ##

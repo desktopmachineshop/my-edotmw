@@ -92,9 +92,15 @@ static func by_id(id: StringName) -> UnitDef:
 
 ## Whether a def belongs to `civ` — its own, or shared by everyone.
 ##
-## `neutral` is the shared pool: founders and gatherers are the opening
-## and the economy rather than an army type, so every civ fields the same
-## ones and only the ARMY archetypes are civ-specific (D-047).
+## `neutral` is the shared pool, and as of
+## D-20260823-the-opening-is-a-crew-and-a-general nothing shipped is in
+## it: gatherers went per-civ with everything else, because "the same
+## type is not the same troops in two armies" (D-047) was true of every
+## unit except the one every player fields most of. The pool stays for a
+## def that genuinely belongs to nobody — and note that a neutral def
+## SHADOWS the per-civ ones in `for_civ_archetype`, which returns the
+## first match in id order, so adding one back is a decision rather than
+## a convenience.
 static func _available_to(def: UnitDef, civ: StringName) -> bool:
 	return def.civ == civ or def.civ == &"neutral"
 

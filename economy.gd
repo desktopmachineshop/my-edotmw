@@ -592,7 +592,14 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 	# damage. Rounding each tick's take up instead made a half-strength
 	# crew gather the same as a full one — both produced "less than one
 	# unit this tick", and ceil turned both into one.
-	var rate := def.gather_rate * float(sim.alive_of(squad)) * dt
+	#
+	# The owner's civ scales the crew's rate (`CivDef.gather_speed`,
+	# D-047) — applied here, per tick, rather than latched into the haul
+	# when the order was given: a latched multiplier is a cached copy of a
+	# fact the simulation already holds, which is the shape of the D-038
+	# ownership cache that silently refused every produced squad an order.
+	var crew_rate := sim.civ_effects(sim.owner_of(squad)).gather_rate(def.gather_rate)
+	var rate := crew_rate * float(sim.alive_of(squad)) * dt
 	haul["fraction"] = float(haul.get("fraction", 0.0)) + rate
 	var whole := int(floor(float(haul["fraction"])))
 	if whole <= 0:

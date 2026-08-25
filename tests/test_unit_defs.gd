@@ -192,15 +192,20 @@ func test_a_gatherer_costs_about_the_same_per_head_as_a_soldier_does() -> void:
 	# A band rather than a number: this is balance, and balance should
 	# move. What must not happen is a squad_size edit silently changing
 	# what a unit of labour costs.
-	var gatherers := UnitRoster.by_id(&"gatherers")
-	assert_not_null(gatherers, "the roster should ship gatherers")
-	if gatherers == null:
-		return
+	# Every civ's, since gatherers went per-civ
+	# (D-20260823-the-opening-is-a-crew-and-a-general). A per-civ def is
+	# exactly where an unpriced crew could hide — one civ's economy quietly
+	# cheaper than the other's, with the ladder reporting it as strategy.
+	for civ in CivRoster.ids():
+		var gatherers := UnitRoster.for_civ_archetype(civ, &"gatherers")
+		assert_not_null(gatherers, "civ %s fields no gatherer" % civ)
+		if gatherers == null:
+			continue
 
-	var per_head := float(gatherers.cost_food) / float(maxi(gatherers.squad_size, 1))
-	assert_lt(per_head, 6.0,
-		"a gatherer costs %.1f food per head — shrink the crew and the cost has to follow"
-		% per_head)
-	assert_gt(per_head, 1.0,
-		"a gatherer costs %.1f food per head, which is close enough to free that "
-		% per_head + "there is no economic choice in making one")
+		var per_head := float(gatherers.cost_food) / float(maxi(gatherers.squad_size, 1))
+		assert_lt(per_head, 6.0,
+			"%s's gatherer costs %.1f food per head — shrink the crew and the cost has to follow"
+			% [civ, per_head])
+		assert_gt(per_head, 1.0,
+			"%s's gatherer costs %.1f food per head, which is close enough to free that "
+			% [civ, per_head] + "there is no economic choice in making one")

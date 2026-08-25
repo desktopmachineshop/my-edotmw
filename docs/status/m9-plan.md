@@ -22,13 +22,14 @@ a description of the repo. The shape:
   timings and D-072's costs are derived from. The whole current match
   fits inside its first row.
 
-**Two things M9 must fix before it starts, both found during planning:**
+**Of the two things M9 had to fix before it starts, one is done.** The
 three `CivDef` knobs (`squad_cap_bonus`, `production_speed`,
-`gather_speed`) are shipped with non-default values and **read by
-nothing** — the fourth declared-and-unread instance, and two of the six
-civ identities depend on them. And M6's unattributed **40.8 → ~77
-µs/squad** rise must be explained first, or M9's own tick-budget numbers
-cannot be interpreted.
+`gather_speed`) were **read by nothing** — the fourth declared-and-unread instance, with two of the six
+civ identities depending on them. They are wired up as of 2026-08-23
+(`decisions/D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158);
+see `docs/status/civ-knobs.md`. Still outstanding: M6's unattributed
+**40.8 → ~77 µs/squad** rise must be explained first, or M9's own
+tick-budget numbers cannot be interpreted.
 
 **A power budget now exists for balancing units** (D-072):
 `V = sqrt(DPS × EHP)` against `RP = food + wood + 1.5×(gold + stone)`.
@@ -37,3 +38,15 @@ power and cost-efficiency for both civs**, and that `legion_heavy` has
 lower DPS than `legion_militia` at 2.5× the cost. Two rules came out of
 it: price must buy power, and no unit may lead on both axes within its
 role.
+
+**The setting is FANTASY and the ladder is FOUR rungs as of 2026-08-23**
+(`decisions/D-20260823-fantasy-civs-on-a-four-epoch-ladder.md`, owner's
+call) — medieval → imperial → modern → futuristic, superseding D-069's
+five historical rungs and D-071's six historical civs. The seven-column
+frame and its six mechanical AXES are kept verbatim (Dominion, Warhost,
+Centaurs, Deepholds, Gilded, Sylvans replace Legion … Chinese by axis),
+so every D-047 knob still has a civ asking for it; D-070, D-072, D-073
+and D-074 stand. The entry carries a per-civ, per-epoch flavour table
+that every art brief is written against. **Still nothing in code or
+`.tres`** — the shipped `legion`/`northmen` ids stay until M9's first
+slice renames them.

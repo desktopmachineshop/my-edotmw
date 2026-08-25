@@ -684,7 +684,7 @@ static func decode_order_gate_mode(data: PackedByteArray) -> Dictionary:
 ##
 ## The server refuses orders for good reasons — out of reach, wrong
 ## ground, cannot afford it — and used to do so in total silence. A
-## playtest pressed B nine cells from its founders, saw nothing at all
+## playtest pressed B nine cells from its builder, saw nothing at all
 ## happen, and had no way to tell a refused order from a broken key.
 ##
 ## The REASON has to come from the server: it owns the rules, and a
@@ -950,7 +950,8 @@ static func encode_squad_combat(tick: int, events: Array) -> PackedByteArray:
 		buf.put_u32(int(event["alive"]))
 		buf.put_u8(1 if bool(event["routed"]) else 0)
 		# Whether the men this event subtracts FELL — died by violence —
-		# as opposed to being spent founding a building (D-031) or wiped
+		# as opposed to being spent founding a building (a def with
+		# `consumes_builder`) or wiped
 		# by a disconnect (D-033), which deliberately share this message.
 		# The default makes those sites honest without being edited: only
 		# combat resolution sets the key at all

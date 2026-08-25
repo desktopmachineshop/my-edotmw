@@ -85,4 +85,26 @@ revert.
 knob and no general knob worth adding. That is the D-047 boundary, and
 the honest response is to amend D-047, not to quietly add a branch.
 
+**Amendment, 2026-08-23 — defect 1 is closed.** All three knobs are read
+by the simulation now
+(`D-20260823-a-civs-knobs-are-read-by-the-simulation.md`, #158), so the
+two rows above that read **declared, INERT** — Northmen Great Heathen
+Army and Carthage highest gather — now read *wired*. `squad_cap_bonus`
+is applied by `MatchState.squad_cap_for`, `production_speed` at enqueue
+in `_handle_order_produce`, `gather_speed` per tick in
+`Economy._gather`; `SquadSim.civs` is the handover, filled by
+`server.gd`'s `_hand_civs_to_sim()`.
+
+The proof this entry's Consequences section demanded was performed as
+specified: each knob was turned off, its test watched go red, and
+reverted. Worth recording that the FIRST attempt at that proof was not
+sufficient — with the knobs unwired both production *behaviour* tests
+stayed green, because they drove `BuildingSim.enqueue` themselves. Only
+a test that drives `server._handle_order_produce` can tell a wired
+production knob from an unwired one; `tests/test_civ_knobs.gd` does.
+
+Defects 2, 3 and 4 are untouched and still block. Note especially that
+**defect 3 is still a prerequisite** — two civ identities remain
+unexpressible until `BuildingDef.civ` is filtered on.
+
 ---

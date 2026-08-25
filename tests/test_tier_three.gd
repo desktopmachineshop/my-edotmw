@@ -154,12 +154,12 @@ func test_no_drawn_man_outruns_the_cap() -> void:
 	# catch up, but no faster — and NEVER teleport, however far the mark.
 	var motion := SoldierMotion.new()
 	var start := _t([Vector3.ZERO])
-	motion.ease(1, start, 0.1, PackedVector3Array(), 4.0)
+	motion.ease(1, start, 0.1, 4.0)
 	# A mark INSIDE the wrap threshold: a whole-set jump past it is a
 	# coordinate change and shifts instead (its own test below) — the
 	# clamp governs everything nearer, which is every real walk.
 	var far := _t([Vector3(0, 0, 5)])
-	var drawn := motion.ease(1, far, 0.1, PackedVector3Array(), 4.0)
+	var drawn := motion.ease(1, far, 0.1, 4.0)
 	assert_almost_eq(drawn[0].origin.distance_to(Vector3.ZERO), 0.4, 0.01,
 		"one tenth of a second at sprint 4 is 0.4 ground — exactly")
 

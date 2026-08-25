@@ -606,7 +606,7 @@ func test_a_working_gatherer_crew_is_not_moved_by_footprint_separation() -> void
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var economy := Economy.new(space)
 	sim.economy = economy
-	var def := UnitRoster.by_id(&"gatherers")
+	var def := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
 
 	var node := Vector2i(20, 10)
 	var node_index := space.index(node)

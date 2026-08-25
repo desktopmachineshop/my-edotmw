@@ -41,11 +41,12 @@ if _ROOT not in sys.path:
 
 from art.buildings import ROSTER as BUILDING_ROSTER                # noqa: E402
 from art.buildings import build as build_building                  # noqa: E402
+from art.lib import blend_source                                  # noqa: E402
 from art.lib.bake import (                                        # noqa: E402
-    door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
+    bake_frames, door_hinge_uv, flatten, write_glb, write_prop_glb, write_vat,
 )
 from art.lib.godot_import import (                               # noqa: E402
-    ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
+    ALBEDO_PARAMS, ATLAS_PARAMS, MODEL_PARAMS, VAT_PARAMS, ensure_import_params,
 )
 from art.lib.soldier import build as build_soldier              # noqa: E402
 from art.scatter.props import ROSTER as PROP_ROSTER             # noqa: E402
@@ -57,6 +58,25 @@ from art.units import ROSTER                                    # noqa: E402
 
 TRIANGLE_BUDGET = 300
 MOUNTED_TRIANGLE_BUDGET = 460   # a horse is a second body; stated, not implied
+
+# Archetypes allowed past the budget while a PLACEHOLDER stands in for the
+# real model, and the ceiling they are allowed up to.
+#
+# This is the "change the budget deliberately" the failure below invites,
+# scoped as narrowly as it can be: a named set, not a raised global. An
+# imported asset (art/import_glb_source.py) arrives at whatever density its
+# generator chose — the dwarf standing in for the gatherer is 4,824 against
+# a roster whose every other model is 72-256 — and the choice is to see it
+# in the game now or to decimate 94% of it away and see something else.
+#
+# THE COST IS REAL AND IS NOT PAID BY THIS FILE. D-041 measured the client
+# CPU-bound on soldier derivation, but triangles are the GPU's half and
+# nothing here has re-measured it: gatherers are the most numerous unit a
+# player fields, so a 16x model on 20 players' crews is the one place this
+# could hurt most. `just bench-render` is the instrument, and it has not
+# been run against this. Treat every entry here as owing that measurement.
+PLACEHOLDER_TRIANGLE_BUDGET = 6000
+PLACEHOLDER_ARCHETYPES = frozenset({"gatherers"})
 # Buildings are few and never instanced in the thousands, so their budget is
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400
@@ -64,13 +84,44 @@ BUILDING_TRIANGLE_BUDGET = 400
 GENERATED = os.path.join(_ROOT, "generated")
 
 
+# What the staleness hash covers. `.blend` is in the list because authored
+# sources ARE the source of truth now (D-20260821-game-assets-are-files): a
+# model edited in Blender and not rebuilt leaves `generated/` stale in exactly
+# the way an edited generator does, and the whole job of this hash is to make
+# that fail loudly instead of shipping yesterday's mesh.
+SOURCE_SUFFIXES = (".py", ".blend", ".glb")
+# `.glb` is here for SUPPLIED models (art/import_glb_source.py). The
+# `.blend` it converts to is the thing the bake reads, so the `.glb`
+# alone changes no output — which is exactly why it has to be hashed:
+# without it, replacing the supplied asset and forgetting to re-convert
+# leaves the game drawing the previous model with every check green.
+
+# Files under art/ that CANNOT change a single byte of `generated/`, and are
+# therefore excluded. Keyed by path relative to art/, and duplicated in
+# tests/test_art_assets.gd — the two must agree or the test reports a stale
+# build on a clean tree.
+#
+# `seed_source.py` writes the initial `art/source/*.blend` from the legacy
+# generators. `main()` below never calls it, and it refuses to overwrite an
+# existing source, so editing it cannot change any output — while hashing it
+# would mark every model stale over a change to a migration script that will
+# not be run again. A staleness signal that cries wolf stops being read, which
+# is the whole value of this hash.
+#
+# Do NOT add a real generator here to avoid a rebuild.
+NOT_A_GENERATOR = frozenset({"seed_source.py"})
+
+
 def source_hash() -> str:
-    """A stable hash over every generator source file."""
+    """A stable hash over every asset source: generators AND authored files."""
     digest = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(_HERE):
         dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
         for name in sorted(filenames):
-            if not name.endswith(".py"):
+            if not name.endswith(SOURCE_SUFFIXES):
+                continue
+            relative = os.path.relpath(os.path.join(dirpath, name), _HERE)
+            if relative.replace("\\", "/") in NOT_A_GENERATOR:
                 continue
             path = os.path.join(dirpath, name)
             digest.update(os.path.relpath(path, _ROOT).replace("\\", "/").encode())
@@ -90,23 +141,33 @@ def build_units(only: str | None) -> dict:
         if only and archetype != only:
             continue
         params = ROSTER[archetype]
-        model = build_soldier(archetype, params)
+        flat, frames, source = _unit_geometry(
+            archetype, params, os.path.join(GENERATED, "textures"))
 
-        budget = MOUNTED_TRIANGLE_BUDGET if params.mount else TRIANGLE_BUDGET
-        tris = model.triangle_count()
+        placeholder = archetype in PLACEHOLDER_ARCHETYPES
+        if placeholder:
+            budget = PLACEHOLDER_TRIANGLE_BUDGET
+        else:
+            budget = MOUNTED_TRIANGLE_BUDGET if params.mount else TRIANGLE_BUDGET
+        tris = len(flat["triangles"])
         if tris > budget:
             raise SystemExit(
                 f"{archetype}: {tris} triangles exceeds the {budget} budget "
                 f"(D-064). Simplify the model or change the budget deliberately."
             )
 
-        flat = flatten(model)
+        texture = str(flat.get("texture", ""))
+        if texture:
+            ensure_import_params(
+                os.path.join(_ROOT, texture.replace("/", os.sep)),
+                ALBEDO_PARAMS)
+
         glb_path = os.path.join(models_dir, f"{archetype}.glb")
         vat_path = os.path.join(vat_dir, f"{archetype}.exr")
-        write_glb(model, flat, glb_path)
+        write_glb(archetype, flat, glb_path)
         # LODs and vertex compression off — see MODEL_PARAMS.
         ensure_import_params(glb_path, MODEL_PARAMS)
-        layout = write_vat(model, flat, vat_path)
+        layout = write_vat(archetype, flat, vat_path, frames)
         # A VAT that Godot re-imports as a compressed 3D texture is silently
         # ruined; see godot_import.py.
         ensure_import_params(vat_path, VAT_PARAMS)
@@ -117,11 +178,41 @@ def build_units(only: str | None) -> dict:
             "triangles": tris,
             "vertices": len(flat["positions"]),
             "mounted": params.mount,
+            # Where this model's own albedo lives, or "" for the vertex-
+            # coloured models that are the rest of the roster
+            # (D-20260824-a-textured-model-keeps-its-texture).
+            "texture": texture,
+            # Recorded rather than inferred, so the Godot-side budget test
+            # reads the same answer this file reached instead of keeping a
+            # second copy of the set that can drift from it.
+            "placeholder": placeholder,
+            "source": source,
             **layout,
         }
         print(f"  {archetype:16s} {tris:4d} tris  {len(flat['positions']):5d} verts  "
-              f"vat {layout['width']}x{layout['height']}")
+              f"vat {layout['width']}x{layout['height']}  [{source}"
+              f"{', PLACEHOLDER' if placeholder else ''}]")
     return entries
+
+
+def _unit_geometry(archetype: str, params, texture_dir: str | None = None):
+    """The flattened mesh and its animation frames, from whichever source owns
+    this archetype (D-20260821-game-assets-are-files).
+
+    An authored `art/source/<name>.blend` WINS. The generated path is the
+    fallback, kept because props and the terrain atlas still use it, because a
+    model can be migrated one at a time rather than on a flag day, and because
+    a clone that has never authored anything still builds.
+
+    Which one ran is recorded in the manifest rather than inferred, so a
+    surprising `.glb` can be traced to a file rather than guessed at.
+    """
+    if blend_source.has_source(archetype):
+        flat, frames = blend_source.bake(archetype, texture_dir)
+        return flat, frames, "authored"
+    model = build_soldier(archetype, params)
+    flat = flatten(model)
+    return flat, bake_frames(model, flat), "generated"
 
 
 def build_buildings() -> dict:
@@ -131,16 +222,23 @@ def build_buildings() -> dict:
 
     entries: dict[str, dict] = {}
     for building in sorted(BUILDING_ROSTER):
-        model = build_building(building, BUILDING_ROSTER[building])
-        tris = model.triangle_count()
+        if blend_source.has_source(building):
+            # A building has no VAT, so only the rest frame is wanted; the
+            # frames are evaluated and discarded rather than given a second
+            # code path that could disagree about the rest pose.
+            flat, _frames = blend_source.bake(building)
+            source = "authored"
+        else:
+            flat = flatten(build_building(building, BUILDING_ROSTER[building]))
+            source = "generated"
+        tris = len(flat["triangles"])
         if tris > BUILDING_TRIANGLE_BUDGET:
             raise SystemExit(
                 f"{building}: {tris} triangles exceeds the "
                 f"{BUILDING_TRIANGLE_BUDGET} budget (D-064).")
 
-        flat = flatten(model)
         glb_path = os.path.join(models_dir, f"{building}.glb")
-        write_glb(model, flat, glb_path, uv1_override=door_hinge_uv(model, flat))
+        write_glb(building, flat, glb_path, uv1_override=door_hinge_uv(flat))
         # Critical HERE specifically: this is the call that smuggles the
         # door hinge through UV2, which LOD welding and UV quantisation
         # both destroy. See MODEL_PARAMS.
@@ -150,8 +248,10 @@ def build_buildings() -> dict:
             "model": f"generated/models/{building}.glb",
             "triangles": tris,
             "vertices": len(flat["positions"]),
+            "source": source,
         }
-        print(f"  {building:16s} {tris:4d} tris  {len(flat['positions']):5d} verts")
+        print(f"  {building:16s} {tris:4d} tris  {len(flat['positions']):5d} verts"
+              f"  [{source}]")
     return entries
 
 

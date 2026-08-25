@@ -21,6 +21,25 @@ const MANIFEST := "res://generated/manifest.json"
 const TRIANGLE_BUDGET := 300
 const MOUNTED_TRIANGLE_BUDGET := 460
 
+## Mirrors `art/build.py`'s placeholder escape hatch
+## (D-20260824-a-supplied-model-becomes-an-authored-source). Both halves
+## are stated here on purpose: the CEILING, so a supplied asset cannot
+## grow without anybody noticing, and the SET, so a second placeholder is
+## a deliberate edit to a test rather than a quiet line in a Python dict.
+const PLACEHOLDER_TRIANGLE_BUDGET := 6000
+const PLACEHOLDER_MODELS := ["gatherers"]
+
+## What the staleness hash covers. `.blend` is here because authored sources
+## ARE the source of truth (D-20260821-game-assets-are-files): a model edited
+## in Blender and not rebuilt leaves generated/ stale exactly as an edited
+## generator does. Mirrors art/build.py's SOURCE_SUFFIXES.
+const SOURCE_SUFFIXES := [".py", ".blend", ".glb"]
+
+## Files under art/ that cannot change a byte of generated/, so hashing them
+## would mark the build stale over an edit that produces identical output.
+## Duplicated from art/build.py's NOT_A_GENERATOR, in full res:// form.
+const NOT_A_GENERATOR := ["res://art/seed_source.py"]
+
 
 func _manifest() -> Dictionary:
 	if not FileAccess.file_exists(MANIFEST):
@@ -54,8 +73,18 @@ func _feed_directory(context: HashingContext, path: String) -> bool:
 	var files := []
 	for name in dir.get_files():
 		var normalised := String(name).trim_suffix(".remap")
-		if normalised.ends_with(".py"):
-			files.append(normalised)
+		var wanted := false
+		for suffix in SOURCE_SUFFIXES:
+			if normalised.ends_with(suffix):
+				wanted = true
+		if not wanted:
+			continue
+		# Mirrors art/build.py's NOT_A_GENERATOR — read its comment for why
+		# the list is safe and why nothing else belongs on it. The two must
+		# agree exactly, or this test reports a stale build on a clean tree.
+		if "%s/%s" % [path, normalised] in NOT_A_GENERATOR:
+			continue
+		files.append(normalised)
 	files.sort()
 
 	for name in files:
@@ -120,14 +149,30 @@ func test_models_stay_inside_the_triangle_budget() -> void:
 		pass_test("generated/ not built")
 		return
 	var units: Dictionary = manifest.get("units", {})
+	var placeholders := []
 	for model_id in units:
 		var entry: Dictionary = units[model_id]
-		var budget := MOUNTED_TRIANGLE_BUDGET if bool(entry.get("mounted", false)) \
-			else TRIANGLE_BUDGET
+		var budget := TRIANGLE_BUDGET
+		if bool(entry.get("placeholder", false)):
+			placeholders.append(String(model_id))
+			budget = PLACEHOLDER_TRIANGLE_BUDGET
+		elif bool(entry.get("mounted", false)):
+			budget = MOUNTED_TRIANGLE_BUDGET
 		assert_lte(int(entry.get("triangles", 0)), budget,
 			"%s is over the D-064 triangle budget at %d — 26,644 soldiers are "
 			% [model_id, int(entry.get("triangles", 0))]
 			+ "drawn at full scale, so this is not a rounding error")
+
+	# WHICH models are exempt is asserted, not merely that the exempt ones
+	# fit. A budget with an open-ended escape hatch is not a budget — the
+	# same shape as pinning the SET of buildings that spend their builder
+	# rather than trusting the flag that says so.
+	placeholders.sort()
+	assert_eq(placeholders, PLACEHOLDER_MODELS,
+		"the set of over-budget PLACEHOLDER models changed: %s. Each one owes "
+		% str(placeholders)
+		+ "a `just bench-render` measurement and a decision entry saying when "
+		+ "it stops being a placeholder.")
 
 
 # --- the VAT layout the shader assumes is the one that was baked --------

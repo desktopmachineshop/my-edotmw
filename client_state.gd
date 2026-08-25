@@ -362,6 +362,63 @@ func match_elapsed() -> float:
 	return stated + maxf(Time.get_ticks_msec() / 1000.0 - server_tick_at, 0.0)
 
 
+## The SIMULATION clock, estimated between messages — the time axis every
+## curve keyframe lives on.
+##
+## The same anchor `match_elapsed()` reads (the server's tick is the whole
+## clock, D-020), exposed under the name that says what it is FOR: sampling
+## curves. The GUI client used to sample them at a wall clock started at
+## its own node's _ready — behind the server by however long its terrain
+## build took, so every sample CLAMPED. Positions still appeared to move
+## (each fresh curve's first keyframe advanced, and the render-side easing smoothed
+## the hops), which is exactly why nothing failed: the one number the
+## clamp forced to zero was measured SPEED, and the only consumer that
+## cared was animation. The walk clip never played in a live client, for
+## any unit, from the day animation shipped until a supplied model's
+## rest pose made "no walking" visible enough to chase.
+func estimated_sim_time() -> float:
+	return match_elapsed()
+
+
+## The freshest curve START this client has received, and when it heard it.
+## The render clock's anchor — see `render_time()`.
+var newest_curve_time := 0.0
+var newest_curve_at := 0.0
+
+
+## The time to SAMPLE CURVES at, free-running between packets.
+##
+## Anchored to the curves themselves, not to the tick anchor, because a
+## curve packet REPLACES the squad's whole curve (`_handle_curve`) and its
+## first keyframe is the squad's position at SEND time. For a squad whose
+## path is being re-emitted continuously that packet cadence was measured
+## at ~0.25 s — so any render clock even slightly behind the freshest
+## start spends most of each interval CLAMPED before it: the squad jumps
+## to the new first keyframe, freezes, slides, and jumps again. Measured
+## as a sawtooth (speed ramp 0.25 -> 2.07, snap to 0.00, repeat) and
+## reported from play as teleporting. Anchoring on the newest start
+## self-tunes to whatever the emission cadence is: the sample sits AT the
+## freshest packet's start and interpolates forward into the future
+## keyframes every movement curve carries.
+##
+## A squad whose curve is old is simply UNCHANGED (an idle squad's curve
+## is never resent — that is D-003's whole bandwidth claim), and sampling
+## past its end clamps to the spot it stands on, speed zero, idle clip:
+## correct by construction.
+## How far behind the freshest curve start the world is rendered. History
+## is MERGED now, so standing behind the head costs nothing — and it is
+## what absorbs packet jitter and the short spans emitted mid-wheel,
+## which at the live head were a freeze at every bend.
+const RENDER_BUFFER := 0.12
+
+
+func render_time() -> float:
+	if newest_curve_at <= 0.0:
+		return match_elapsed()
+	return newest_curve_time - RENDER_BUFFER + maxf(
+		Time.get_ticks_msec() / 1000.0 - newest_curve_at, 0.0)
+
+
 ## Where `player` (1-based) starts, or (-1, -1) if the server sent no
 ## spawn table.
 ##
@@ -387,10 +444,69 @@ func spawn_cell_of(player: int) -> Vector2i:
 	return space.from_index(spawn_cells[index])
 
 
+## A curve update MERGES with what this client already holds when the two
+## overlap in time, and REPLACES it when there is a gap.
+##
+## Both halves are load-bearing. A packet carries [send-time .. horizon]
+## and a mover's curve is re-emitted continuously, so pure replacement
+## leaves the client with no PAST — and a render clock has nowhere safe
+## to stand: behind the newest start it clamps (measured as squads
+## teleporting to each packet's first keyframe), at the live head it runs
+## off the span's end between packets (measured as marching squads
+## freezing mid-turn, where the emitted span is shortest). Keeping a few
+## seconds of history lets the clock render just behind the newest start
+## with neither artifact, at any emission cadence.
+##
+## The GAP case is D-025's truthful pop-in: a squad revealed after
+## concealment arrives as a fresh curve well past its ghost's last
+## keyframe, and BRIDGING that gap would interpolate the squad sprinting
+## from where it was last seen — synthetic catch-up, exactly what D-025
+## forbids. A gap means the client was not entitled to the missing
+## stretch; the fresh curve stands alone.
+const CURVE_MERGE_GAP := 0.35
+const CURVE_KEEP_SECONDS := 4.0
+
+
+static func merge_curve(existing: StateCurve, incoming: StateCurve) -> StateCurve:
+	if existing == null or existing.is_empty() or incoming == null or incoming.is_empty():
+		return incoming
+	var t0 := incoming.start_time()
+	if t0 > existing.end_time() + CURVE_MERGE_GAP:
+		return incoming
+	# The two packets must agree where the squad IS at the join. Curves
+	# store CONTINUOUS UNWRAPPED axial points (state_curve.gd's header),
+	# and a fresh packet can be normalised into a different lattice copy
+	# than the chain this client has been extending — at a seam crossing
+	# the same cell is a whole map period apart. A join that would move
+	# the squad further than any unit can walk is that case, and the
+	# honest answer is to replace rather than draw the sprint.
+	if (existing.sample_axial(t0) - incoming.point_at(0)).length() > 4.0:
+		return incoming
+	var out := StateCurve.new()
+	for i in range(existing.key_count()):
+		var t := existing.time_at(i)
+		if t >= t0:
+			break
+		if t < t0 - CURVE_KEEP_SECONDS:
+			continue
+		out.append_axial(t, existing.point_at(i))
+	for i in range(incoming.key_count()):
+		out.append_axial(incoming.time_at(i), incoming.point_at(i))
+	return out
+
+
 func _handle_curve(data: PackedByteArray) -> void:
 	var decoded := NetProtocol.decode_curve(data)
-	curves[int(decoded["id"])] = decoded["curve"]
+	var curve := decoded["curve"] as StateCurve
+	var id := int(decoded["id"])
+	curves[id] = merge_curve(curves.get(id), curve)
 	curve_packets_received += 1
+	# The render clock's anchor (see `render_time`): the freshest START a
+	# curve has arrived with is the closest thing this client has to "the
+	# server's now, on the axis curves are actually sampled on".
+	if not curve.is_empty() and curve.start_time() > newest_curve_time:
+		newest_curve_time = curve.start_time()
+		newest_curve_at = Time.get_ticks_msec() / 1000.0
 
 
 func _handle_squad_info(data: PackedByteArray) -> void:
@@ -419,7 +535,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 		# Without this a trained unit belongs to nobody as far as the
 		# client is concerned — not selectable, not orderable, and refused
 		# if an order somehow reached the server. Bots stopped issuing any
-		# orders at all once their founding party was spent, because the
+		# orders at all once their founding crew was spent, because the
 		# only squad they knew they owned no longer existed.
 		if int(entry.get("owner", 0)) == player and not squads.has(id):
 			squads.append(id)
@@ -484,8 +600,9 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 			# renderer has said it will drain the list — the load-test
 			# bots run this class too, and an unread list would grow for
 			# the length of a run. `fell` is the wire's word that these
-			# men died by violence rather than being spent on a founding
-			# (D-031) or wiped by a disconnect (D-033); slots
+			# men died by violence rather than being spent founding a
+			# town (D-20260823-the-opening-is-a-crew-and-a-general) or
+			# wiped by a disconnect (D-033); slots
 			# [after, before) are the men the restamp removes (D-024).
 			if record_corpses and bool(event.get("fell", false)):
 				_casualty_sites.append({
@@ -1072,6 +1189,8 @@ func leave_match() -> void:
 
 	server_tick = 0
 	server_tick_at = 0.0
+	newest_curve_time = 0.0
+	newest_curve_at = 0.0
 
 
 ## A player's civ as the lobby last described it, or "" if unknown.
