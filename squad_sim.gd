@@ -193,10 +193,6 @@ var _speed := PackedFloat32Array()  # cells per second
 var _shape: Array[String] = []
 ## Squads whose shape changed and whose clients have not been told yet.
 var _shape_dirty := {}
-## Squads whose player has chosen a formation, and which therefore ignore
-## the simulation's automatic switching (see set_shape/suggest_shape). A
-## set rather than an array: it is read once per gathering crew per tick.
-var _shape_chosen := {}
 var _spacing := PackedFloat32Array()
 # The player's ordered facing, quantised to 1/4096 of a turn, -1 = never
 # ordered — and ordered files (width), 0 = the formation's own default
@@ -642,24 +638,17 @@ func set_files(squad: int, files: int) -> void:
 func set_shape(squad: int, shape: String) -> void:
 	if squad < 0 or squad >= _shape.size():
 		return
-	# Latched even when the shape is unchanged: choosing the shape a squad
-	# is already in is still a choice, and it must stop the economy
-	# switching away from it on the next phase change.
-	_shape_chosen[squad] = true
 	_apply_shape(squad, shape)
 
 
-## The SIMULATION's entry point for shape: a default, not an override.
-##
-## Identical to `set_shape` except that a squad whose player has chosen a
-## formation ignores it. Automatic switching (D-058's ring-while-working)
-## is a convenience for crews nobody has given an opinion about; a player
-## who has expressed one outranks it, and keeps it for the rest of the
-## match.
-func suggest_shape(squad: int, shape: String) -> void:
-	if squad < 0 or squad >= _shape.size() or _shape_chosen.has(squad):
-		return
-	_apply_shape(squad, shape)
+## `suggest_shape` — the per-tick assertion channel D-065 built for
+## D-058's ring-while-working — is GONE with its only caller
+## (D-20260820-men-gather-round-what-they-strike, amended): nothing in
+## the simulation asserts shapes any more, so the latch that protected a
+## player's choice from it has nothing to protect against. D-065's rule
+## still stands: if any future system wants to assert a squad's shape
+## per tick, it re-reads that entry and rebuilds the suggest/latch pair
+## rather than calling set_shape in a loop.
 
 
 func _apply_shape(squad: int, shape: String) -> void:
@@ -991,20 +980,16 @@ func _crowded(held: Dictionary, cell: Vector2i, asking: int, widest: int) -> boo
 ## because every other radius rule here is a hex-disk scan and
 ## `TorusSpace.disk_offsets` is how this project does those.
 ##
-## Allies keep out of each other's formations: the sum of the ground the
-## two of them cover, which for a pair of lines is very nearly shoulder
-## to shoulder.
-##
-## ENEMIES keep D-060's original ONE cell, and that distinction is not a
-## nicety. A melee squad's `attack_range` is under two world units — a
-## little over one cell — so separating a squad from its opponent by its
-## own footprint would shove every engagement out of its own reach and no
-## melee could ever land. Interpenetrating enemies is what a fight looks
-## like; combat (D-024) is what resolves it, not spacing.
-func _clearance(asking: int, other: int) -> int:
-	if not are_allied(_owner[asking], _owner[other]):
-		return 1
-	return footprint_cells(asking) + footprint_cells(other)
+## EVERYONE keeps D-060's original ONE cell since
+## D-20260821-a-fight-loosens-a-formation (the owner's call, reverting
+## #104's ally half): displacing a whole ALLIED squad by two footprints
+## was exactly the "whole squad snaps or moves" a player sees, and
+## overlap is resolved at the individual drawn man now — the
+## cross-squad jostle — not by teleporting forty men sideways. Enemies
+## were always here: interpenetrating enemies is what a fight looks
+## like; combat (D-024) resolves it, not spacing.
+func _clearance(_asking: int, _other: int) -> int:
+	return 1
 
 
 ## The ground a squad's soldiers actually cover, as a radius in CELLS.
@@ -1128,19 +1113,41 @@ func is_passable(cell: Vector2i, tier: int = 0) -> bool:
 ##
 ## Walks the hex ring at increasing radius, so it prefers to stand a new
 ## squad right at the door and only spreads out when the door is blocked.
-## Deterministic: `disk_offsets` enumerates in a fixed order, so server and
-## replay agree about where a unit appeared.
+## Within the smallest workable ring, the door FACES THE RALLY POINT
+## (D-20260821-a-recruit-steps-out-the-near-door): a recruit appears on
+## the side his orders will take him, instead of popping out wherever the
+## enumeration happened to start and marching around his own building.
+## The ring outranks the bearing — at the door beats two cells further
+## out on a better heading. Deterministic: `disk_offsets` enumerates in a
+## fixed order and the improvement test is strict, so ties resolve to the
+## earlier candidate and server and replay agree about where a unit
+## appeared.
 func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 	var home := buildings.cell_of(building)
+	var rally := buildings.rally_of(building)
+	var best := Vector2i.ZERO
+	var best_dist := 0
+	var best_ring := 0
+	var found := false
 	for offset in TorusSpace.disk_offsets(4):
-		if TorusSpace.hex_length(offset) < 2:
+		var ring := TorusSpace.hex_length(offset)
+		if ring < 2:
 			continue  # under the building itself
+		if found and ring > best_ring:
+			break  # sorted nearest-first (D-067): the workable ring is done
 		var candidate := space.normalize(home + offset)
 		if not is_passable(candidate):
 			continue
 		if buildings.building_at(candidate) >= 0:
 			continue
-		return candidate
+		var dist := space.distance(candidate, rally)
+		if not found or dist < best_dist:
+			found = true
+			best = candidate
+			best_dist = dist
+			best_ring = ring
+	if found:
+		return best
 	# Hemmed in on every side: put them at the door anyway rather than
 	# losing a squad somebody paid for.
 	return space.normalize(home + Vector2i(2, 0))

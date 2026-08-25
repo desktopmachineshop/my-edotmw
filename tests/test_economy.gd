@@ -806,28 +806,25 @@ func test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk() -> void:
 		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
 	}
 
-	# Ordered from a distance: walking, so spread out.
+	# The economy no longer touches shape AT ALL (D-20260820, amended on
+	# the owner's follow-up — the ring switch was a bandaid; the render
+	# layer gathers a crew round its node now). A crew keeps its def's
+	# formation from the road to the node and back.
 	var squad := sim.add_squad(def, 1, Vector2i(2, 8))
+	var spawn_shape := sim.shape_of(squad)
 	economy.order_gather(sim, squad, space.index(node_cell))
-	sim.tick()
-	assert_eq(sim.shape_of(squad), "sparse",
-		"a crew on the road should walk in open order, not ringed around nothing")
-
-	# Now let them arrive.
 	for _i in range(400):
 		sim.tick()
-		if sim.shape_of(squad) == "ring":
-			break
-
-	assert_eq(sim.shape_of(squad), "ring",
-		"a crew standing on its node should work AROUND it")
+	assert_eq(sim.shape_of(squad), spawn_shape,
+		"the economy must not touch a crew's formation — the surround is "
+		+ "DRAWN, not simulated")
 
 
 func test_a_player_ordered_formation_is_not_overwritten_by_the_economy() -> void:
-	# The economy asserts a crew's shape on EVERY tick, so a player who
-	# pressed a formation button on gatherers had his choice undone within
-	# 100 ms and the button looked broken. A player order latches: the
-	# automatic switch is a default, not an override.
+	# Historically the economy asserted a crew's shape every tick and a
+	# player's button looked broken (D-065). The assertion channel is
+	# gone entirely now (D-20260820, amended) — this test stays as the
+	# guard that nothing ever quietly starts overwriting again.
 	var space := TorusSpace.new(32, 16, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var economy := Economy.new(space)
@@ -854,10 +851,12 @@ func test_a_player_ordered_formation_is_not_overwritten_by_the_economy() -> void
 		"the economy overwrote a formation the player chose")
 
 
-func test_a_crew_the_player_has_never_touched_still_switches_itself() -> void:
-	# The other half of the same rule: latching must not disable the
-	# automatic switch for everybody else. Guards against "fixing" the test
-	# above by simply deleting the economy's shape control.
+func test_an_untouched_crew_keeps_its_own_formation_too() -> void:
+	# This test used to guard the automatic ring switch against exactly
+	# the deletion that has now happened — by the owner's explicit call
+	# (D-20260820, amended), with the render-side surround as the
+	# replacement. It now guards the NEW contract from the other side: a
+	# crew nobody touched keeps its def's formation through a full haul.
 	var space := TorusSpace.new(32, 16, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
 	var economy := Economy.new(space)
@@ -868,15 +867,18 @@ func test_a_crew_the_player_has_never_touched_still_switches_itself() -> void:
 	economy.nodes[space.index(node_cell)] = {
 		"kind": Economy.ResourceKind.FOOD, "remaining": 5000,
 	}
-	var squad := sim.add_squad(UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers"), 1, Vector2i(2, 8))
+	# Main's civ-aware roster lookup, this branch's shape snapshot: the
+	# assertion below needs the shape the squad SPAWNED with.
+	var squad := sim.add_squad(
+		UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers"), 1,
+		Vector2i(2, 8))
+	var spawn_shape := sim.shape_of(squad)
 	economy.order_gather(sim, squad, space.index(node_cell))
 
 	for _i in range(400):
 		sim.tick()
-		if sim.shape_of(squad) == "ring":
-			break
-	assert_eq(sim.shape_of(squad), "ring",
-		"an untouched crew should still ring the node it works")
+	assert_eq(sim.shape_of(squad), spawn_shape,
+		"an untouched crew keeps the formation its def gave it")
 
 
 func test_a_shape_change_is_offered_to_the_server_exactly_once() -> void:

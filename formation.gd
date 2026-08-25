@@ -561,16 +561,51 @@ static func soldier_transform(
 	# combat's aspect reads (D-20260819-facing-and-width-are-orders).
 	var angle := facing_angle(curve, time, space, ordered_facing)
 
-	var local := slot_offset(shape, slot, alive, spacing, files)
-	# Formation-local +y is forward, which is +z after rotation.
 	var offset := grounded_offset(
-		centre, Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle),
+		centre, slot_world_offset(shape, slot, alive, spacing, files, angle),
 		space, passable)
 
 	var basis := Basis(Vector3.UP, angle)
 	var origin := centre + offset
 	origin.y = terrain_height
 	return Transform3D(basis, origin)
+
+
+## Where one soldier stands RELATIVE to his formation's centre, for a
+## squad facing `angle` — formation-local +y is forward, which is +z
+## after rotating about UP.
+##
+## Extracted from `soldier_transform` rather than written beside it
+## (D-20260823): the battle-line drag preview has to ask this question
+## about a formation that does not exist yet — no squad, no curve — and
+## a preview that computed its own answer would be a preview that
+## eventually disagrees with where the men actually stand.
+static func slot_world_offset(shape: String, slot: int, alive: int,
+		spacing: float, files: int, angle: float) -> Vector3:
+	var local := slot_offset(shape, slot, alive, spacing, files)
+	return Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+
+
+## A formation's EFFECTIVE spacing: the unit's own spacing scaled by the
+## formation's `spacing_scale`, which is how close its men actually
+## stand (`_offset_for` applies exactly this internally).
+##
+## Public because the battle line has to deal FILES across a stroke, and
+## dealing them at the unit's raw spacing gave a tight formation the
+## files a loose one needs — it packed short of its own stroke and left a
+## gap at each end (D-20260823: tightness is closeness, never shape).
+static func effective_spacing(shape: String, spacing: float) -> float:
+	# Falls back to LINE for an unknown shape, exactly as `slot_offset`
+	# does — and deliberately without a second push_error, since that
+	# call shouts about the same typo. Answering `spacing` here while the
+	# geometry answered line's scale would be the quiet disagreement this
+	# whole decision exists to remove.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		def = FormationRoster.by_id(&"line")
+	if def == null:
+		return spacing
+	return spacing * maxf(def.spacing_scale, 0.01)
 
 
 ## All slot transforms for a squad, ready for PrimitiveUnit's MultiMesh.

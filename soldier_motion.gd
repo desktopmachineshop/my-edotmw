@@ -99,9 +99,20 @@ const FACE_TRAVEL_FULL_SPEED := 1.8
 ## scrum breathes instead of interpenetrating.
 const JOSTLE_RADIUS := 0.45
 
+## A target-centroid jump larger than this is a COORDINATE CHANGE — a
+## torus seam crossing or a reveal — not movement, so the whole stored
+## set shifts by it rather than anyone walking (D-20260821, amended).
+## Well above any real per-frame march, well below a map width.
+const TELEPORT_SHIFT := 8.0
+
 # squad id -> PackedVector3Array of eased render positions, parallel to
 # the transforms handed in. Client-side render state, nothing more.
 var _eased := {}
+
+## squad -> the target centroid this squad's marks had last frame, for
+## the seam/reveal shift above. Cleared with `_eased`, or a squad that
+## left view and came back would shift against a stale anchor.
+var _centroids := {}
 
 
 ## Ease `transforms` toward their authoritative values and return the
@@ -118,14 +129,47 @@ var _eased := {}
 ## direction change the lattice rotates faster than anyone can walk,
 ## and the cap is what turns "swept sideways in an arc" into "each man
 ## cuts the corner at his own pace".
+## `others` — drawn men of OVERLAPPING squads (previous frame's, one
+## frame of lag) — lets the jostle work ACROSS squads
+## (D-20260821-a-fight-loosens-a-formation): squads may stand on each
+## other, and their men sort it out individually instead of a whole
+## squad snapping away.
 func ease(squad_id, transforms: Array[Transform3D], delta: float,
-		max_step_speed: float = 0.0) -> Array[Transform3D]:
+		max_step_speed: float = 0.0,
+		others: PackedVector3Array = PackedVector3Array()) -> Array[Transform3D]:
 	if transforms.is_empty():
 		_eased.erase(squad_id)
+		_centroids.erase(squad_id)
 		return transforms
 
 	var stored: PackedVector3Array = _eased.get(squad_id, PackedVector3Array())
 	var count := transforms.size()
+
+	# A seam crossing or a reveal displaces every mark by one common
+	# vector: shift the stored set by the CENTROID's own jump so nobody
+	# WALKS a map width (D-20260821, amended). A coordinate change, not
+	# movement — and invisible, because the camera wraps the same way.
+	# Kept across this merge because main's cap makes it MORE necessary,
+	# not less: under a speed cap a wrap would otherwise be a man
+	# trudging the long way round the torus.
+	#
+	# BEFORE the deal/re-deal chain below, deliberately: a wrap is a
+	# map-wide "movement" to the re-deal test, which then assigns every
+	# man to the nearest STALE position and scrambles the formation —
+	# measured as 1.79 units of residue on the wrap test when this sat
+	# after it. Normalise the coordinate change first, and the chain
+	# below sees an ordinary frame.
+	var target_centroid := Vector3.ZERO
+	for i in range(count):
+		target_centroid += transforms[i].origin
+	target_centroid /= float(count)
+	if _centroids.has(squad_id):
+		var jump: Vector3 = target_centroid - _centroids[squad_id]
+		if jump.length() > TELEPORT_SHIFT:
+			for i in range(count):
+				stored[i] += jump
+	_centroids[squad_id] = target_centroid
+
 	if stored.size() > count and count > 0:
 		# Tier 3 (D-006 as amended): a casualty restamp no longer
 		# teleport-shuffles the line. Survivors are DEALT to the new
@@ -208,7 +252,7 @@ func ease(squad_id, transforms: Array[Transform3D], delta: float,
 	# stored positions — genuine per-soldier integration, which is
 	# exactly what the amendment legalises here and nowhere else.
 	stored = jostle(stored, transforms,
-		max_step if max_step > 0.0 else 1e9)
+		max_step if max_step > 0.0 else 1e9, others)
 	var steps := PackedVector3Array()
 	steps.resize(count)
 	var smoothed: PackedFloat32Array = _speeds.get(squad_id, PackedFloat32Array())
@@ -320,7 +364,8 @@ static func assign(old: PackedVector3Array,
 ## hard-bounds the total.
 static func jostle(positions: PackedVector3Array,
 		anchors: Array[Transform3D],
-		max_correction: float = 1e9) -> PackedVector3Array:
+		max_correction: float = 1e9,
+		others: PackedVector3Array = PackedVector3Array()) -> PackedVector3Array:
 	var out := positions.duplicate()
 	var n := out.size()
 	for i in range(n):
@@ -333,18 +378,38 @@ static func jostle(positions: PackedVector3Array,
 			var direction := between / d
 			out[i] += Vector3(-direction.x * push, 0.0, -direction.y * push)
 			out[j] += Vector3(direction.x * push, 0.0, direction.y * push)
+	# Foreign men push OUR men only (theirs move in their own pass, so
+	# nobody is displaced twice) — the cross-squad half of D-20260821.
 	for i in range(n):
-		var anchor: Vector3 = anchors[i].origin
-		var drift := out[i] - anchor
-		var flat := Vector2(drift.x, drift.z)
-		if flat.length() > MAX_RENDER_DRIFT:
-			var clamped := flat.normalized() * MAX_RENDER_DRIFT
-			var clamp_target := Vector3(
-				anchor.x + clamped.x, out[i].y, anchor.z + clamped.y)
-			var correction := clamp_target - out[i]
-			if correction.length() > max_correction:
-				correction = correction.normalized() * max_correction
-			out[i] += correction
+		for k in range(others.size()):
+			var between := Vector2(others[k].x - out[i].x, others[k].z - out[i].z)
+			var d := between.length()
+			if d >= JOSTLE_RADIUS or d < 0.0001:
+				continue
+			var direction := between / d
+			var push := JOSTLE_RADIUS - d
+			out[i] += Vector3(-direction.x * push, 0.0, -direction.y * push)
+	# The bound is on the jostle's OWN displacement — how far shoving
+	# moved a man from where his walk had him — NEVER on his distance to
+	# the mark.
+	#
+	# Kept from this branch through the merge with main, deliberately.
+	# Clamping toward the ANCHOR (what main did here, softened by
+	# `max_correction`) is a hidden pull: a man legitimately walking in
+	# from beyond the bound gets dragged toward bound-from-target on top
+	# of his own capped step, so he crosses ground faster than the cap
+	# allows. That shipped once already and is what the owner saw as men
+	# still jumping; `test_no_drawn_man_outruns_the_cap` fails on it.
+	# `max_correction` survives as a second ceiling on the same
+	# displacement, so main's cap-aware contract still holds.
+	var bound := minf(MAX_RENDER_DRIFT, maxf(max_correction, 0.0))
+	for i in range(n):
+		var moved := out[i] - positions[i]
+		var flat := Vector2(moved.x, moved.z)
+		if flat.length() > bound:
+			var clamped := flat.normalized() * bound
+			out[i] = Vector3(positions[i].x + clamped.x, out[i].y,
+				positions[i].z + clamped.y)
 	return out
 
 
@@ -366,6 +431,7 @@ const SPEED_SMOOTHING := 8.0
 ## the dictionary does not grow for the length of a match.
 func forget(squad_id) -> void:
 	_eased.erase(squad_id)
+	_centroids.erase(squad_id)
 	_speeds.erase(squad_id)
 
 

@@ -130,8 +130,11 @@ func test_engage_never_mutates_the_authoritative_input() -> void:
 func test_strike_decorate_leans_each_man_at_his_own_opponent() -> void:
 	# Two men, opponents on opposite sides. Squad-level decoration leaned
 	# everyone at ONE point; the duel must lean them apart.
+	# Opponents WITHIN STRIKE_REACH: a man only swings at a mark he can
+	# actually hit (the windmilling-at-air fix from the owner's siege
+	# screenshot).
 	var eased := _line([Vector3(0, 0, 0), Vector3(2, 0, 0)])
-	var defenders := _line([Vector3(-3, 0, 0), Vector3(5, 0, 0)])
+	var defenders := _line([Vector3(-1.4, 0, 0), Vector3(3.4, 0, 0)])
 	# A time at which slot 0's swing is near its peak and positive.
 	var time := 1.5 / 5.5
 	var out := CosmeticDuel.strike_decorate(

@@ -69,7 +69,14 @@ static func plan(from: Vector3, to: Vector3, squads: Array) -> Array:
 		var centre_along := (float(rank) + 0.5) * segment
 		var destination := from \
 			+ Vector3(direction.x, 0.0, direction.y) * centre_along
-		var spacing := maxf(float(squad.get("spacing", 1.0)), 0.01)
+		# The formation's EFFECTIVE spacing, not the unit's raw one
+		# (D-20260823): tightness is closeness, so a tight formation fits
+		# MORE men along the same frontage. Dealing files at the raw
+		# spacing gave a tight squad a loose squad's count, and it packed
+		# short of its own stroke with a gap at each end.
+		var spacing := maxf(Formation.effective_spacing(
+			String(squad.get("shape", "line")),
+			float(squad.get("spacing", 1.0))), 0.01)
 		var files := clampi(roundi(segment / spacing), 1,
 			maxi(int(squad.get("alive", 1)), 1))
 		out[index] = {
@@ -79,6 +86,41 @@ static func plan(from: Vector3, to: Vector3, squads: Array) -> Array:
 			"files": files,
 		}
 	return out
+
+
+## Where every man of one planned squad will stand, in world space —
+## the translucent discs the drag draws (D-20260823).
+##
+## `entry` is one element of `plan`'s output. The positions come from
+## `Formation.slot_world_offset`, the same call `soldier_transform` makes
+## to place a man for real, so the preview and the outcome cannot drift:
+## a preview with its own arithmetic is a preview that eventually lies.
+##
+## Ground height is NOT applied here — the caller samples terrain, since
+## only it has the sampler — and neither is the sim's passability nudge,
+## because the client draws its own soldiers without one and the preview
+## must match what the client will draw rather than what the server will
+## think.
+static func formation_points(entry: Dictionary, shape: String,
+		spacing: float, alive: int) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	if alive <= 0:
+		return out
+	var destination: Vector3 = entry.get("destination", Vector3.ZERO)
+	var angle := angle_of_quantised(int(entry.get("facing_quantised", 0)))
+	var files := int(entry.get("files", 0))
+	out.resize(alive)
+	for slot in range(alive):
+		out[slot] = destination + Formation.slot_world_offset(
+			shape, slot, alive, spacing, files, angle)
+	return out
+
+
+## The inverse of `quantise_angle` — the wire value back to radians,
+## matching `SquadSim.facing_angle_of` exactly, so the preview turns the
+## way the ordered squad will.
+static func angle_of_quantised(quantised: int) -> float:
+	return TAU * float(wrapi(quantised, 0, 4096)) / 4096.0
 
 
 ## One definition of angle -> wire quantisation (1/4096 of a turn),

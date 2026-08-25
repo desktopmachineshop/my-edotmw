@@ -452,3 +452,26 @@ func test_a_second_match_does_not_end_the_instant_it_starts() -> void:
 	assert_eq(m.phase, MatchState.Phase.RUNNING,
 		"The second match must not inherit the first one's ending")
 	assert_eq(m.winner, -1, "Nor its winner")
+
+
+func test_the_server_drops_its_building_reveal_baseline_with_the_match() -> void:
+	# Found in a playtest log: 106 building desyncs over one session that
+	# used the sandbox Regen button. `_return_to_lobby` cleared each
+	# client's `visible` baseline under a comment saying none of them may
+	# keep a reveal baseline from the old match — and left
+	# `known_buildings` (D-030's ever-revealed set, which the server
+	# HASHES) untouched beside it. Building ids restart at 0 in the next
+	# match, so the server hashed stale entries against a client that had
+	# torn its world down.
+	#
+	# A source scan, the idiom this project already uses for rules that
+	# live where GUT cannot reach (test_terrain_fog's caller check):
+	# server.gd needs a live ENetConnection to instantiate at all.
+	var source := FileAccess.get_file_as_string("res://server.gd")
+	assert_false(source.is_empty(), "server.gd must be readable")
+	var start := source.find("func _return_to_lobby")
+	assert_gt(start, 0, "there must be a _return_to_lobby to scan")
+	var body := source.substr(start, source.find("\nfunc ", start + 10) - start)
+	assert_true(body.contains("known_buildings"),
+		"_return_to_lobby must drop the building reveal baseline too, "
+		+ "or the next match's hash compares against the last match's set")

@@ -72,6 +72,10 @@ const C2S_ORDER_STANCE := 37
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
 const C2S_CHEAT_SPAWN_BUILDING := 32
+## Tear the world down and regenerate it on a fresh seed, seats held —
+## the D-075 return-to-lobby edge plus an immediate restart, driven from
+## the sandbox panel (D-20260821-the-sandbox-panel-runs-the-world).
+const C2S_CHEAT_REGEN_MAP := 38
 
 const S2C_WALLET := 9
 const S2C_NOTICE := 15
@@ -812,7 +816,8 @@ static func encode_cheat_add_resources() -> PackedByteArray:
 ## rather than a unit id — resolved against the requesting player's civ
 ## server-side, the same as C2S_ORDER_PRODUCE, so a client cannot name
 ## another civ's unit.
-static func encode_cheat_spawn_unit(archetype: String, cell_index: int, count: int) -> PackedByteArray:
+static func encode_cheat_spawn_unit(archetype: String, cell_index: int, count: int,
+		enemy := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_CHEAT_SPAWN_UNIT)
 	var name_bytes := archetype.to_utf8_buffer()
@@ -820,6 +825,10 @@ static func encode_cheat_spawn_unit(archetype: String, cell_index: int, count: i
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
 	buf.put_u8(count)
+	# For the ENEMY (D-20260821): the server resolves which seat that is —
+	# a client never names a player id, so it cannot aim a cheat at an
+	# arbitrary seat, only at "someone hostile to me".
+	buf.put_u8(1 if enemy else 0)
 	return buf.data_array
 
 
@@ -833,6 +842,7 @@ static func decode_cheat_spawn_unit(data: PackedByteArray) -> Dictionary:
 		"archetype": name_bytes.get_string_from_utf8(),
 		"cell": buf.get_u32(),
 		"count": int(buf.get_u8()),
+		"enemy": buf.get_u8() == 1,
 	}
 
 
@@ -842,7 +852,8 @@ static func decode_cheat_spawn_unit(data: PackedByteArray) -> Dictionary:
 ## buildable at all (not water/mountain/already occupied), so a spawned
 ## building never looks broken even though every game-balance rule around
 ## it is skipped.
-static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing: int = 0) -> PackedByteArray:
+static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing: int = 0,
+		enemy := false, offset := Vector2.ZERO) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_CHEAT_SPAWN_BUILDING)
 	var name_bytes := def_id.to_utf8_buffer()
@@ -850,6 +861,21 @@ static func encode_cheat_spawn_building(def_id: String, cell_index: int, facing:
 	buf.put_data(name_bytes)
 	buf.put_u32(cell_index)
 	buf.put_u8(facing & 0xFF)
+	buf.put_u8(1 if enemy else 0)
+	# The sub-cell offset the placement ghost promised (D-096's shared-
+	# pose rule): the cheat rides the ordinary placement flow, so the
+	# spawn has to land exactly where the preview stood.
+	buf.put_float(offset.x)
+	buf.put_float(offset.y)
+	return buf.data_array
+
+
+## REGEN_MAP: no payload — who asked is read from the connection, and the
+## fresh seed is ROLLED SERVER-SIDE (then travels to every client in the
+## ordinary map-settings packet), so a client cannot pick the world.
+static func encode_cheat_regen_map() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_CHEAT_REGEN_MAP)
 	return buf.data_array
 
 
@@ -863,6 +889,8 @@ static func decode_cheat_spawn_building(data: PackedByteArray) -> Dictionary:
 		"def_id": name_bytes.get_string_from_utf8(),
 		"cell": buf.get_u32(),
 		"facing": buf.get_u8(),
+		"enemy": buf.get_u8() == 1,
+		"offset": Vector2(buf.get_float(), buf.get_float()),
 	}
 
 
@@ -1135,7 +1163,8 @@ const LOBBY_SET_TEAM := 5
 ## this match. A seat with no `standing` key encodes as PLAYING, which is
 ## what every caller that predates the scoreboard means.
 static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase := 0,
-		sandbox := false, instant_build := false, ai_economy_only := false) -> PackedByteArray:
+		sandbox := false, instant_build := false, ai_economy_only := false,
+		resources := true, ai_frozen := false, reveal_all := false) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_LOBBY)
 	buf.put_u8(phase)
@@ -1153,6 +1182,9 @@ static func encode_lobby(admin_player: int, seats: Array, settings := {}, phase 
 	buf.put_u8(1 if sandbox else 0)
 	buf.put_u8(1 if instant_build else 0)
 	buf.put_u8(1 if ai_economy_only else 0)
+	buf.put_u8(1 if resources else 0)
+	buf.put_u8(1 if ai_frozen else 0)
+	buf.put_u8(1 if reveal_all else 0)
 	return buf.data_array
 
 
@@ -1187,6 +1219,9 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 		"sandbox": buf.get_u8() == 1,
 		"instant_build": buf.get_u8() == 1,
 		"ai_economy_only": buf.get_u8() == 1,
+		"resources": buf.get_u8() == 1,
+		"ai_frozen": buf.get_u8() == 1,
+		"reveal_all": buf.get_u8() == 1,
 	}
 
 

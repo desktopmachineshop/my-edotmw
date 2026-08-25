@@ -223,3 +223,18 @@ of them code on this stack: the VAT death clip (host bpy policy), exit
 criterion 8 (the player-count MEASUREMENT that supersedes D-018's 20 —
 to be taken once the stack merges, on hardware named), and criterion 9
 (the owner plays a battle and says the fight reads as a fight).
+
+**The drag shows the line it will form (D-20260823).** A right-drag now
+previews the battle line as translucent discs — one per living man, at
+the spot he will be commanded to — computed from the SAME
+`BattleLine.plan` + `Formation.slot_world_offset` the release sends, via
+one shared `_order_drag_squads()` gatherer. `slot_world_offset` was
+extracted from `soldier_transform`, not written beside it: a preview
+with its own arithmetic is a preview that eventually lies (D-096, third
+occurrence). Shape belongs to the GESTURE — long stroke, thin line;
+short stroke, deep block; the sizes between, square — and a dragged
+width already outranked a formation's declared ranks. Tightness belongs
+to the FORMATION and may only change closeness, which is why `plan` now
+deals files at `Formation.effective_spacing`: dealing them at the unit's
+raw spacing gave a tight squad a loose squad's file count, so it packed
+short of its own stroke and left a gap at each end.
