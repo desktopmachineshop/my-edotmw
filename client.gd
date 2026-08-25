@@ -3108,6 +3108,12 @@ func _activity_for(squad_id) -> Dictionary:
 ## purpose; still pure in replicated state, still finite.
 const SURROUND_STEP := 4.0
 
+## The drag preview's disc radius and how far it floats above the ground
+## (D-20260823). Small enough that a tight formation's discs stay
+## separate — which is the whole point of previewing a tight one.
+const ORDER_MARK_RADIUS := 0.28
+const ORDER_MARK_LIFT := 0.08
+
 # The static-target deal, CACHED per squad (D-20260821): recomputed only
 # when the target or the strength changes, so a man's mark holds instead
 # of hopping along the wall as his slot drifts. Per-soldier render
@@ -3468,6 +3474,12 @@ var _order_press_alt := false
 var _order_press_ctrl := false
 var _order_press_shift := false
 var _order_drag_line: MeshInstance3D = null
+## One translucent disc per man, at the spot he will be commanded to
+## (D-20260823-the-drag-shows-the-line-it-will-form). A MultiMesh rather
+## than a node per soldier: a battle line of eight squads is a few
+## hundred discs rebuilt on every mouse-move, which is the shape of thing
+## PrimitiveUnit already draws this way.
+var _order_drag_marks: MultiMeshInstance3D = null
 
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
@@ -5914,6 +5926,7 @@ func _charge_selected(screen_position: Vector2) -> void:
 ## the-battle-line): BattleLine.plan owns every decision; this gathers
 ## the inputs and sends what it returns through workstream 5's orders.
 func _finish_order_drag(press: Vector2, release: Vector2) -> void:
+	_hide_order_drag_marks()
 	if not _connected or _selected.is_empty() or _state.space == null:
 		return
 	var from := _world_under(press)
@@ -5921,15 +5934,7 @@ func _finish_order_drag(press: Vector2, release: Vector2) -> void:
 	if from == Vector3.INF or to == Vector3.INF:
 		_order_selected(press, _order_press_ctrl, _order_press_shift)
 		return
-	var squads := []
-	for squad in _selected:
-		squads.append({
-			"id": int(squad),
-			"at": _state.squad_world_position(int(squad), _now),
-			"alive": _state.alive_of(int(squad)),
-			"spacing": float(_state.composition.get(int(squad), {}).get("spacing", 1.0)),
-		})
-	var plan := BattleLine.plan(from, to, squads)
+	var plan := BattleLine.plan(from, to, _order_drag_squads())
 	if plan.is_empty():
 		_order_selected(press, _order_press_ctrl, _order_press_shift)
 		return
@@ -5951,6 +5956,86 @@ func _finish_order_drag(press: Vector2, release: Vector2) -> void:
 		% [plan.size(), Vector2(to.x - from.x, to.z - from.z).length()])
 
 
+## The selection as `BattleLine.plan` wants it. ONE gatherer, shared by
+## the preview and the order it previews (D-20260823) — two of these
+## would be two answers to "what is being commanded", and the preview
+## would drift from the send the first time either changed.
+func _order_drag_squads() -> Array:
+	var squads := []
+	for squad in _selected:
+		var info: Dictionary = _state.composition.get(int(squad), {})
+		squads.append({
+			"id": int(squad),
+			"at": _state.squad_world_position(int(squad), _now),
+			"alive": _state.alive_of(int(squad)),
+			"spacing": float(info.get("spacing", 1.0)),
+			"shape": String(info.get("shape", "line")),
+		})
+	return squads
+
+
+## Draw the formation the release will command: one translucent disc per
+## living man, at his own planned spot (D-20260823). Rebuilt per motion
+## event from the same `BattleLine.plan` the release sends.
+func _update_order_drag_marks(from: Vector3, to: Vector3) -> void:
+	var squads := _order_drag_squads()
+	var plan := BattleLine.plan(from, to, squads)
+	if plan.is_empty():
+		_hide_order_drag_marks()
+		return
+
+	var points := PackedVector3Array()
+	for i in range(plan.size()):
+		var squad: Dictionary = squads[i]
+		points.append_array(BattleLine.formation_points(plan[i],
+			String(squad["shape"]), float(squad["spacing"]),
+			int(squad["alive"])))
+	if points.is_empty():
+		_hide_order_drag_marks()
+		return
+
+	if _order_drag_marks == null:
+		_order_drag_marks = MultiMeshInstance3D.new()
+		var disc := CylinderMesh.new()
+		# A flat disc, not a sphere: it reads as ground marking rather
+		# than as a man, so nobody mistakes the preview for the troops.
+		disc.top_radius = ORDER_MARK_RADIUS
+		disc.bottom_radius = ORDER_MARK_RADIUS
+		disc.height = 0.02
+		disc.radial_segments = 12
+		disc.rings = 0
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.albedo_color = Color(1.0, 0.95, 0.4, 0.35)
+		# Drawn on top of the ground it marks, and never writing depth,
+		# so a disc on a slope is not half-swallowed by the hill.
+		material.no_depth_test = true
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		disc.material = material
+		var multi := MultiMesh.new()
+		multi.transform_format = MultiMesh.TRANSFORM_3D
+		multi.mesh = disc
+		_order_drag_marks.multimesh = multi
+		_order_drag_marks.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_order_drag_marks)
+
+	var multi := _order_drag_marks.multimesh
+	multi.instance_count = points.size()
+	for i in range(points.size()):
+		var at := points[i]
+		if _state.terrain_sampler.is_valid():
+			at.y = float(_state.terrain_sampler.call(at.x, at.z))
+		at.y += ORDER_MARK_LIFT
+		multi.set_instance_transform(i, Transform3D(Basis(), at))
+	_order_drag_marks.visible = true
+
+
+func _hide_order_drag_marks() -> void:
+	if _order_drag_marks != null:
+		_order_drag_marks.visible = false
+
+
 ## The stroke on the ground while the right button drags. A transient
 ## input hint on the canonical copy only — not world state, so the
 ## lattice-copy rule does not apply (the decision says so out loud).
@@ -5960,11 +6045,13 @@ func _update_order_drag_line(cursor: Vector2) -> void:
 	if _order_press.distance_to(cursor) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
 		if _order_drag_line != null:
 			_order_drag_line.visible = false
+		_hide_order_drag_marks()
 		return
 	var from := _world_under(_order_press)
 	var to := _world_under(cursor)
 	if from == Vector3.INF or to == Vector3.INF:
 		return
+	_update_order_drag_marks(from, to)
 	if _order_drag_line == null:
 		_order_drag_line = MeshInstance3D.new()
 		_order_drag_line.mesh = ImmediateMesh.new()
@@ -6385,6 +6472,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			_order_press = Vector2.INF
 			if _order_drag_line != null:
 				_order_drag_line.visible = false
+			_hide_order_drag_marks()
 			if press.distance_to(event.position) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
 				if _order_press_alt:
 					_face_selected(press)
@@ -8690,6 +8778,9 @@ func _teardown_match() -> void:
 	if _order_drag_line != null:
 		_order_drag_line.queue_free()
 		_order_drag_line = null
+	if _order_drag_marks != null:
+		_order_drag_marks.queue_free()
+		_order_drag_marks = null
 	_order_press = Vector2.INF
 	_static_deal.clear()
 	_drawn_cache.clear()
