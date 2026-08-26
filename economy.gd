@@ -170,14 +170,29 @@ func _bands(coord: Vector2i) -> Array:
 	var out := []
 
 	# Mountain-foot stone first: it outranks the ground biome's own table,
-	# because a foot cell IS a grassland/dry/forest cell — that is what
-	# makes it walkable — and stone has nowhere else to live.
+	# because a foot cell IS a grassland/dry/forest cell, and stone reads
+	# as belonging at the rock face. "A foot cell is walkable by
+	# construction" stopped being true when passability became the slope
+	# rule (D-20260826-passable-means-flat-enough-to-cross) — the foot of a
+	# cliff can be its lip seen from below — so walkability is CHECKED now,
+	# or D-087's unreachable-scenery defect comes back through this band.
 	if biome != TerrainGen.Biome.MOUNTAIN and biome != TerrainGen.Biome.PEAK \
 			and biome != TerrainGen.Biome.WATER and biome != TerrainGen.Biome.DEEP_WATER:
-		if _touches_mountain(coord):
+		if _touches_mountain(coord) and terrain.passable_at(space, coord):
 			out.append({"kind": ResourceKind.STONE, "below": 0.25})
 
 	match biome:
+		TerrainGen.Biome.MOUNTAIN, TerrainGen.Biome.PEAK:
+			# Walkable high ground grows stone
+			# (D-20260826-passable-means-flat-enough-to-cross). D-087 moved
+			# stone off mountain cells because they were unreachable
+			# scenery; a flat plateau no longer is, and reachable-but-bare
+			# ground would be #129's dead space with the fence moved. The
+			# sparse spelling on purpose: it answers the LOCAL slope rule,
+			# so a carved ramp cell stays bare — a node in a doorway would
+			# park a crew in the one cell an army needs.
+			if terrain.passable_at(space, coord):
+				out.append({"kind": ResourceKind.STONE, "below": 0.08})
 		TerrainGen.Biome.FOREST:
 			# Wet heart dense, dry edge thinned: density rides the same
 			# moisture that classified the cell as forest at all.

@@ -62,20 +62,43 @@ func test_the_class_the_mesher_steps_between_is_passability_itself() -> void:
 				% i + "cliff would stand somewhere the flow field does not stop")
 
 
-## Water and mountain are both impassable, and must NOT share a class: a corner
-## where a lake meets a peak would otherwise average sea level with rock and
-## hang the surface halfway up the mountainside.
-func test_water_and_mountain_are_different_classes() -> void:
-	assert_ne(TerrainGen.cliff_class_of(TerrainGen.Biome.WATER),
-		TerrainGen.cliff_class_of(TerrainGen.Biome.PEAK))
-	assert_eq(TerrainGen.cliff_class_of(TerrainGen.Biome.DEEP_WATER),
-		TerrainGen.cliff_class_of(TerrainGen.Biome.WATER))
-	assert_eq(TerrainGen.cliff_class_of(TerrainGen.Biome.MOUNTAIN),
-		TerrainGen.cliff_class_of(TerrainGen.Biome.PEAK))
-	for biome in [TerrainGen.Biome.BEACH, TerrainGen.Biome.GRASSLAND,
-			TerrainGen.Biome.DRY_GRASSLAND, TerrainGen.Biome.FOREST]:
-		assert_eq(TerrainGen.cliff_class_of(biome), TerrainGen.CliffClass.LAND,
-			"biome %d must be walkable ground" % biome)
+## The class derives from the PREDICATE, not the biome
+## (D-20260826-passable-means-flat-enough-to-cross): water and steep land
+## must not share a class (a corner where a lake meets a crag would
+## average sea level with rock and hang the surface halfway up the
+## mountainside), a flat plateau above the mountain line is ordinary LAND,
+## and a steep hillside below it is HIGH whatever it is painted as.
+func test_the_class_follows_the_predicate_not_the_biome() -> void:
+	var space := _shipped_space()
+	var terrain := TerrainGen.new()
+	var fields := terrain.build_fields(space)
+
+	var walkable_mountain := 0
+	var steep_low_ground := 0
+	for i in range(space.cell_count()):
+		var biome := fields.biome[i]
+		var cls := fields.cliff_class[i]
+		if biome == int(TerrainGen.Biome.WATER) \
+				or biome == int(TerrainGen.Biome.DEEP_WATER):
+			assert_eq(cls, int(TerrainGen.CliffClass.WATER),
+				"cell %d is water and must carry the WATER class" % i)
+			continue
+		assert_ne(cls, int(TerrainGen.CliffClass.WATER),
+			"cell %d is land and must never carry the WATER class" % i)
+		if cls == int(TerrainGen.CliffClass.LAND) \
+				and (biome == int(TerrainGen.Biome.MOUNTAIN)
+					or biome == int(TerrainGen.Biome.PEAK)):
+			walkable_mountain += 1
+		if cls == int(TerrainGen.CliffClass.HIGH) \
+				and biome != int(TerrainGen.Biome.MOUNTAIN) \
+				and biome != int(TerrainGen.Biome.PEAK):
+			steep_low_ground += 1
+	assert_gt(walkable_mountain, 0,
+		"no walkable plateau above the mountain line on the shipped map — "
+		+ "the ground #129 asked for does not exist")
+	assert_gt(steep_low_ground, 0,
+		"no steep blocked ground below the mountain line — the slope rule "
+		+ "is not what is deciding")
 
 
 # --- the corner pairing, checked geometrically ---------------------------
@@ -218,8 +241,9 @@ func test_every_stepped_edge_gets_exactly_one_rock_face() -> void:
 ## unit between a centre and an edge — the first version of this test used the
 ## centre height as the datum and failed on plain hillsides, which measured the
 ## slope rather than the hazard. The hazard is `round_axial` naming the cell on
-## the far side of a step: `cliff_rise` is 2.0 world units, so that lands far
-## outside the range this asserts.
+## the far side of a step: a blocked cell stands at least `max_slope` (0.8
+## world units) over some neighbour, so that lands outside the range this
+## asserts.
 func test_the_sampler_stays_on_the_walkable_plateau_beside_a_cliff() -> void:
 	var space := _shipped_space()
 	var terrain := TerrainGen.new()
@@ -274,8 +298,12 @@ func test_the_sampler_stays_on_the_walkable_plateau_beside_a_cliff() -> void:
 
 
 ## The same hazard stated the blunt way, for the cells where it can bite: a
-## soldier standing anywhere in a cell beside a mountain must never be lifted
-## onto the mountain's tier.
+## soldier standing anywhere in a walkable cell under a cliff must never be
+## lifted onto the blocked ground above it. Without `cliff_rise` (deleted,
+## D-20260826-passable-means-flat-enough-to-cross) the blocked cell is drawn
+## at its own natural height, so the test only means something where that
+## height actually clears the walkable cell's own drawn band — a blocked
+## neighbour merging smoothly is no hazard at all.
 func test_no_walkable_cell_samples_the_top_of_the_cliff_beside_it() -> void:
 	var space := _shipped_space()
 	var terrain := TerrainGen.new()
@@ -288,15 +316,21 @@ func test_no_walkable_cell_samples_the_top_of_the_cliff_beside_it() -> void:
 			continue
 		var cell := space.from_index(i)
 		var centre := space.to_world(cell)
+		var own_top := -INF
+		for vertex in range(TerrainGen.SURFACE_STRIDE):
+			own_top = maxf(own_top, surface[i * TerrainGen.SURFACE_STRIDE + vertex])
 		for direction in range(6):
 			var j := space.neighbor_index(i, direction)
 			if fields.cliff_class[j] != int(TerrainGen.CliffClass.HIGH):
 				continue
-			tested += 1
 			var top := surface[j * TerrainGen.SURFACE_STRIDE]
-			# Half the rise: comfortably above any ordinary slope and
-			# comfortably below the mountain tier.
-			var ceiling := top - terrain.cliff_rise * 0.5
+			# Only a neighbour standing a full skirt threshold above this
+			# cell's own drawn band is a cliff top to keep off; anything
+			# nearer is ordinary sloping ground the band test already covers.
+			if top < own_top + terrain.cliff_min_step:
+				continue
+			tested += 1
+			var ceiling := top - terrain.cliff_min_step * 0.5
 			for corner in range(6):
 				var a := _corner_world(space, Vector2i.ZERO, corner)
 				var b := _corner_world(space, Vector2i.ZERO, (corner + 1) % 6)
@@ -305,31 +339,29 @@ func test_no_walkable_cell_samples_the_top_of_the_cliff_beside_it() -> void:
 					TerrainChunk.height_at(space, surface, probe.x, probe.z),
 					ceiling,
 					"a soldier at the edge of walkable cell %s samples the "
-						% cell + "mountain's own tier (%.3f)" % top)
+						% cell + "cliff top beside it (%.3f)" % top)
 	assert_gt(tested, 0,
-		"no walkable cell on the shipped map touches a mountain; the test "
-		+ "proved nothing")
+		"no walkable cell on the shipped map sits under a drawn cliff; the "
+		+ "test proved nothing")
 
 
 # --- the tunables are read ----------------------------------------------
 
 
-## `cliff_rise` and `cliff_min_step` must both be CONNECTED to something. A
-## shipped knob that nothing reads is this project's fourth-most-repeated
-## defect, and two of them here would leave the ground exactly as flat as it was
-## while the code looked finished.
+## `cliff_min_step` must be CONNECTED to something. A shipped knob that
+## nothing reads is this project's fourth-most-repeated defect, and one
+## here would leave the ground exactly as flat as it was while the code
+## looked finished. (`cliff_rise` was the other half of this test until
+## D-20260826-passable-means-flat-enough-to-cross deleted it: a
+## slope-blocked cell has a step of at least `max_slope` to draw, so the
+## lift had nothing left to add and would stand a blocked rim above the
+## walkable plateau behind it.)
 func test_the_cliff_tunables_change_the_surface() -> void:
-	# The SMALLEST SHIPPED map (Skirmish), at shipped tuning, rather than a toy
-	# one. `cliff_rise` only has anything to add where the natural step at a
-	# passability boundary falls BELOW `cliff_min_step`, and that is a property
-	# of the gradient — which since D-105 is a property of feature size in cells
-	# and nothing else. Toy features are steep enough that every boundary already
-	# clears the threshold on its own, so the rise measurably does nothing and
-	# this test would report the defect it exists to catch.
+	# The SMALLEST SHIPPED map (Skirmish), at shipped tuning, rather than a
+	# toy one, for continuity with the numbers this test has always printed.
 	var space := TorusSpace.new(42, 48)
 
 	var flat := TerrainGen.new()
-	flat.cliff_rise = 0.0
 	flat.cliff_min_step = 1000.0
 	var carved := TerrainGen.new()
 
@@ -341,28 +373,16 @@ func test_the_cliff_tunables_change_the_surface() -> void:
 	assert_gt(carved_quads, 0,
 		"the shipped settings produce no cliffs on a Skirmish map")
 
-	# And the rise specifically: with the same threshold, lifting the impassable
-	# tier must draw more. The margin is thin on the smallest map — 82 faces
-	# against 77 — because most of a coastline clears `cliff_min_step` without
-	# any help; it is deterministic rather than close, and setting cliff_rise to
-	# 0.0 is exactly what it catches.
-	var unlifted := TerrainGen.new()
-	unlifted.cliff_rise = 0.0
-	var unlifted_quads := int(TerrainChunk.build_all(space, unlifted, 16)["cliff_quads"])
-	assert_gt(carved_quads, unlifted_quads,
-		"cliff_rise changed nothing: %d cliffs with it, %d without"
-			% [carved_quads, unlifted_quads])
 
-
-## Nothing above the water line may move because of any of this. Elevation and
-## passability are the simulation's, and D-097 is a rendering change — the same
-## split D-084 established and the reason this could land without touching the
-## wire at all.
+## Nothing above the water line may move because of the RENDERING knobs.
+## Elevation and passability are the simulation's, and the skirt threshold
+## and pillow are drawing choices — the same split D-084 established.
+## (`max_slope` and `ramp_chance` are deliberately absent here: those are
+## simulation inputs now, and their tests live in test_terrain.gd.)
 func test_the_simulation_sees_no_change() -> void:
 	var space := _shipped_space()
 	var carved := TerrainGen.new()
 	var flat := TerrainGen.new()
-	flat.cliff_rise = 0.0
 	flat.cliff_min_step = 1000.0
 	flat.pillow = 1.0
 

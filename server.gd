@@ -108,7 +108,7 @@ var _passable := PackedByteArray()
 
 ## The generator this match's world came from, kept so a refusal can say
 ## WHICH kind of impassable ground it hit. `_passable` collapses water and
-## mountain into one zero and cannot tell them apart, and "water, mountain,
+## steep ground into one zero and cannot tell them apart, and "water, steep,
 ## or already occupied" — one message covering every reason — is exactly
 ## the lie #55 reported. Null on a server whose map was never built (the
 ## tests that drive `_is_buildable` directly), which simply costs the
@@ -459,9 +459,10 @@ func _build_world() -> void:
 	# was out of scope — and nothing since put it back. The visible result
 	# only became obvious on the 128x64 map: the first capture frame after
 	# the map grew showed a squad standing in the middle of a lake. Water
-	# and mountains are impassable per TerrainGen.passability, and the flow
-	# field (D-007) already knows how to route around an impassable cell;
-	# it was simply never told.
+	# and ground too steep to walk are impassable per TerrainGen.passability
+	# (D-20260826-passable-means-flat-enough-to-cross), and the flow field
+	# (D-007) already knows how to route around an impassable cell; it was
+	# simply never told.
 	#
 	# The client builds its mesh from a default TerrainGen (client.gd's
 	# _build_terrain), so the server builds passability from the same
@@ -2209,7 +2210,8 @@ func _revealed_players() -> Dictionary:
 	return out
 
 
-## Buildable ground: passable terrain (no lakes, no mountains) with
+## Buildable ground: passable terrain (no lakes, no ground too steep to
+## walk — D-20260826-passable-means-flat-enough-to-cross) with
 ## nothing already standing on it — UNLESS `def`/`owner` name a compatible
 ## in-place upgrade (playtest fix, D.upgrade_from) for whatever is already
 ## there, which is the one deliberate exception.
@@ -2243,14 +2245,18 @@ func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> 
 func _build_refusal(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> String:
 	var index := _sim.space.index(cell)
 	if index < _passable.size() and _passable[index] == 0:
-		# Water and mountain are one zero in `_passable`; `_terrain` is what
-		# tells them apart, and a server whose map was never built (the
-		# tests that drive this directly) simply says neither.
+		# Water and steep ground are one zero in `_passable`; `_terrain` is
+		# what tells them apart, and a server whose map was never built (the
+		# tests that drive this directly) simply says neither. "Too steep"
+		# rather than "a mountain" since
+		# D-20260826-passable-means-flat-enough-to-cross: the biome no
+		# longer decides, and a flat plateau above the mountain line takes a
+		# foundation like any other ground.
 		if _terrain != null:
 			return "Cannot build there — that ground is under water" \
 				if _terrain.is_water(_sim.space, cell) \
-				else "Cannot build there — that is a mountain"
-		return "Cannot build there — water or mountain"
+				else "Cannot build there — that ground is too steep"
+		return "Cannot build there — water or steep ground"
 	# Resource nodes are ground you cannot build on (playtest fix). Nothing
 	# checked this before, so a town centre could be founded straight on top
 	# of a forest — the node stayed gatherable underneath and the building

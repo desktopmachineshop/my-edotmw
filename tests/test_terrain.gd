@@ -162,17 +162,136 @@ func test_neighbouring_cells_are_usually_similar() -> void:
 
 # --- passability feeds pathfinding -----------------------------------
 
-func test_passability_marks_water_and_mountains_impassable() -> void:
+## The per-cell law (D-20260826-passable-means-flat-enough-to-cross):
+## water is impassable, and land is impassable only for standing more than
+## `max_slope` world units above some neighbour — never for being high.
+## Ramps are a global post-pass and are tested on their own below, so this
+## runs with `ramp_chance` 0 to see the bare rule.
+func test_passability_blocks_water_and_steepness_never_altitude() -> void:
 	var space := _space()
 	var terrain := _terrain()
+	terrain.ramp_chance = 0.0
 	var passable := terrain.passability(space)
 
 	assert_eq(passable.size(), space.cell_count())
+	var high_and_walkable := 0
 	for i in range(space.cell_count()):
 		var cell := space.from_index(i)
 		var e := terrain.elevation_at(space, cell)
-		if e < terrain.sea_level or e >= terrain.mountain_level:
-			assert_eq(passable[i], 0, "Cell %s at elevation %.2f should be impassable" % [cell, e])
+		if e < terrain.sea_level:
+			assert_eq(passable[i], 0,
+				"Cell %s is under water and must be impassable" % cell)
+			continue
+		var worst := 0.0
+		for n in space.neighbors(cell):
+			var theirs := maxf(terrain.elevation_at(space, n), terrain.sea_level)
+			worst = maxf(worst, e - theirs)
+		var flat := worst * terrain.height_scale <= terrain.max_slope
+		assert_eq(passable[i], 1 if flat else 0,
+			"Cell %s at elevation %.2f rises %.2f world units over a neighbour "
+				% [cell, e, worst * terrain.height_scale]
+			+ "and should be %s" % ("passable" if flat else "impassable"))
+		if flat and e >= terrain.mountain_level:
+			high_and_walkable += 1
+	assert_gt(high_and_walkable, 0,
+		"No flat ground above the mountain line on this fixture — the whole "
+		+ "point of D-20260826 goes unexercised here")
+
+
+## `max_slope` must be CONNECTED — the declared-and-unread family, applied
+## to the knob this decision ships.
+func test_max_slope_is_read() -> void:
+	var space := _space()
+	var strict := _terrain()
+	strict.ramp_chance = 0.0
+	strict.max_slope = 0.2
+	var lax := _terrain()
+	lax.ramp_chance = 0.0
+	lax.max_slope = 1000.0
+
+	var strict_blocked := 0
+	var lax_blocked := 0
+	var strict_passable := strict.passability(space)
+	var lax_passable := lax.passability(space)
+	for i in range(space.cell_count()):
+		var e := strict.elevation_at(space, space.from_index(i))
+		if e < strict.sea_level:
+			continue
+		if strict_passable[i] == 0:
+			strict_blocked += 1
+		if lax_passable[i] == 0:
+			lax_blocked += 1
+	assert_eq(lax_blocked, 0,
+		"a slope nothing can exceed still blocked %d land cells" % lax_blocked)
+	assert_gt(strict_blocked, 0,
+		"a slope of 0.2 world units blocks nothing on this fixture — the knob "
+		+ "is not connected to the answer")
+
+
+## A pocket of walkable ground ringed by steepness gets a ramp when the
+## dice say so (D-20260826, owner's directive: 60% of the time on
+## average). `ramp_chance` 1.0 must connect every pocket a land route can
+## reach; 0.0 must carve nothing; and two identical generators must carve
+## identical ramps, because the client and the server each run this on
+## their own copy of the field.
+func test_ramps_connect_enclosed_pockets_when_the_dice_say_so() -> void:
+	var space := _space()
+	# A seed whose toy map holds several enclosed pockets, found by sweeping
+	# and pinned (the default 1337 holds none at this size). The setup guard
+	# below fails the FIXTURE, not the rule, if terrain changes under it.
+	var never := _terrain()
+	never.noise_seed = 15
+	never.ramp_chance = 0.0
+	var always := _terrain()
+	always.noise_seed = 15
+	always.ramp_chance = 1.0
+
+	var base := never.passability(space)
+	var carved := always.passability(space)
+
+	var carved_cells := 0
+	for i in range(space.cell_count()):
+		assert_true(base[i] != 1 or carved[i] == 1,
+			"carving may only ADD walkable ground, never remove it")
+		if carved[i] == 1 and base[i] == 0:
+			carved_cells += 1
+	assert_gt(carved_cells, 0,
+		"Setup: no ramp was carved anywhere — this fixture holds no enclosed "
+		+ "pocket, and the test proves nothing")
+
+	assert_lt(_passable_components(space, carved), _passable_components(space, base),
+		"ramps were carved but the walkable ground did not become better "
+		+ "connected — the path went nowhere")
+
+	var again := _terrain()
+	again.noise_seed = 15
+	again.ramp_chance = 1.0
+	assert_eq(carved, again.passability(space),
+		"two generators with the same seed carved different ramps — the "
+		+ "client and the server would disagree about where a squad may walk")
+
+
+func _passable_components(space: TorusSpace, passable: PackedByteArray) -> int:
+	var comp := PackedInt32Array()
+	comp.resize(space.cell_count())
+	comp.fill(-1)
+	var table := space.neighbor_table()
+	var count := 0
+	for i in range(space.cell_count()):
+		if passable[i] == 0 or comp[i] >= 0:
+			continue
+		count += 1
+		var frontier := PackedInt32Array([i])
+		comp[i] = count
+		while not frontier.is_empty():
+			var c := frontier[frontier.size() - 1]
+			frontier.resize(frontier.size() - 1)
+			for d in range(6):
+				var n := table[c * 6 + d]
+				if passable[n] == 1 and comp[n] < 0:
+					comp[n] = count
+					frontier.append(n)
+	return count
 
 
 func test_flow_field_routes_around_terrain() -> void:

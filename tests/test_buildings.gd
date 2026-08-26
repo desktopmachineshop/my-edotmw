@@ -1192,10 +1192,11 @@ func test_a_refused_build_names_which_of_the_four_reasons_it_was() -> void:
 	assert_eq(server._build_refusal(open), "",
 		"setup: ordinary open ground must refuse nothing")
 	assert_true(server._build_refusal(water).contains("water"),
-		"a lake must say it is water — not 'water, mountain, or already occupied'")
-	assert_true(server._build_refusal(mountain).contains("mountain"),
-		"a mountain must say it is a mountain")
-	assert_false(server._build_refusal(water).contains("mountain"),
+		"a lake must say it is water — not 'water, steep ground, or already occupied'")
+	assert_true(server._build_refusal(mountain).contains("steep"),
+		"steep ground must say it is too steep "
+		+ "(D-20260826-passable-means-flat-enough-to-cross: the biome no longer decides)")
+	assert_false(server._build_refusal(water).contains("steep"),
 		"and neither may name the other, or the message is the same shrug in longer words")
 
 	# The reason the issue exists: a forest, on ground that is neither

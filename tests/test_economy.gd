@@ -694,6 +694,40 @@ func test_natural_stone_sits_on_walkable_ground() -> void:
 	assert_gt(stone, 0, "the map should grow SOME natural stone at the mountain foot")
 
 
+func test_walkable_high_ground_grows_stone() -> void:
+	# D-20260826-passable-means-flat-enough-to-cross: a flat plateau above
+	# the mountain line is reachable ground now, and reachable-but-bare
+	# would be #129's dead space with the fence removed — so the walkable
+	# part of the MOUNTAIN/PEAK biome carries its own stone band. The
+	# walkability check in that band is what keeps D-087 honoured: the
+	# steep part still grows nothing, which the test above already pins by
+	# asserting every stone node stands on walkable ground.
+	var space := TorusSpace.new(84, 96, 1.0)
+	var terrain := TerrainGen.new()
+	var economy := Economy.new(space)
+	economy.generate(terrain, 1)
+
+	var walkable_high := 0
+	for i in range(space.cell_count()):
+		var biome := terrain.biome_at(space, space.from_index(i))
+		if (biome == TerrainGen.Biome.MOUNTAIN or biome == TerrainGen.Biome.PEAK) \
+				and terrain.passable_at(space, space.from_index(i)):
+			walkable_high += 1
+	assert_gt(walkable_high, 0,
+		"Setup: no walkable high ground on this fixture — nothing proved")
+
+	var plateau_stone := 0
+	for cell in economy.nodes:
+		if economy.kind_at(cell) != Economy.ResourceKind.STONE:
+			continue
+		var biome := terrain.biome_at(space, space.from_index(cell))
+		if biome == TerrainGen.Biome.MOUNTAIN or biome == TerrainGen.Biome.PEAK:
+			plateau_stone += 1
+	assert_gt(plateau_stone, 0,
+		"%d walkable high cells and not one grew stone — the plateau band is "
+			% walkable_high + "not connected to the generator")
+
+
 func test_a_tree_lasts_about_a_minute_under_one_crew() -> void:
 	# The design number: a single shipped gatherer squad works one tree out
 	# in roughly a minute. Pinned against the SHIPPED def, not a caricature
