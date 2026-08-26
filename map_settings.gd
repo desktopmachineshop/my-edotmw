@@ -217,12 +217,17 @@ func walkable_fraction() -> float:
 	while x < space.width:
 		var y := 0
 		while y < space.height:
-			# The same test `TerrainGen.passability` applies, which is why
-			# the test named above compares this against it on a real map
-			# rather than trusting two copies of a threshold to stay equal.
-			var e := terrain.elevation_at(space, Vector2i(x, y))
+			# The same rule `TerrainGen.passability` applies, through the
+			# generator's own sparse spelling
+			# (D-20260826-passable-means-flat-enough-to-cross: the slope
+			# rule reads six neighbours, so a lattice point costs seven
+			# noise samples now) — which is why the test named above
+			# compares this against the real array on a real map rather
+			# than trusting two spellings to stay equal. Carved ramps are
+			# invisible to the sparse spelling; they are a handful of
+			# cells, well inside the tolerance that test states.
 			sampled += 1
-			if e >= sea_level and e < mountain_level:
+			if terrain.passable_at(space, Vector2i(x, y)):
 				walkable += 1
 			y += step_y
 		x += step_x
@@ -446,8 +451,13 @@ func validate() -> String:
 		return space_error
 	if player_slots < 2:
 		return "a match needs at least two starting positions"
+	# An ordering constraint on the BIOME ladder (the beach band and the
+	# rock line both derive from it) — no longer a passability statement,
+	# since D-20260826-passable-means-flat-enough-to-cross blocks ground
+	# for steepness rather than altitude. Whether there is anywhere to
+	# WALK is the walkable_fraction sample below.
 	if sea_level >= mountain_level:
-		return "sea level is at or above the mountain line, leaving nowhere to walk"
+		return "sea level is at or above the mountain line"
 	# No beach check any more: `beach_level` is derived from the waterline
 	# (#125) and clamped as it is read, so the ordering this used to police
 	# cannot be violated. What it policed was a value only a preset could

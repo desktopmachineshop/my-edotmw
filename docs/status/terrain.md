@@ -147,3 +147,52 @@ deltas taken from interleaved pairs are still sound — that is what
 interleaving is for — but any absolute quoted from a long benchmarking
 session should be checked against a fresh one. This is the same lesson as
 M6's worst-tick figures taken while the host was building containers.
+
+**Passable means flat enough to cross, since 2026-08-26
+(D-20260826-passable-means-flat-enough-to-cross, #129).** Land is
+impassable for being STEEP, never for being high: a cell blocks when it
+stands more than `TerrainGen.max_slope` (0.8 world units — a soldier's
+own height) above any neighbour, `mountain_level` is purely a biome
+threshold, and a flat plateau above it is ordinary walkable, buildable
+ground that grows stone (`Economy._bands`). From a lobby playtest: "if
+the plateau is flat enough then building should be allowed." Blocked on
+#97 until soldiers stopped being drawn on ground their squad could not
+walk; #97's fix made the report's "units can walk there" observably
+false, and the request stood anyway.
+
+The things worth knowing before touching any of it:
+
+- **The slope is in WORLD units, so `height_scale` is simulation data
+  now** — the D-084 "stops being free" moment, taken deliberately. The
+  rules read the same number the picture is drawn from, which is the
+  whole point: `highlands` was **44.1% dead space drawn as gentle
+  hills** (14,368 of 32,592 cells) and is fully open now; `plains` and
+  `islands` are open country wall to wall; `continents` gains real
+  walls where the ground is genuinely steep (2.0% -> 7.0% of the map
+  blocked). `height_scale` was already replicated, so nothing new
+  crosses the wire.
+- **The rule is one-sided — the LIP blocks, the cliff base does not** —
+  or the valley floor is fenced off one cell out from every wall.
+- **An enclosed pocket gets a ramp carved to the mainland 60% of the
+  time** (`ramp_chance`, seeded per pocket, deterministic on both sides
+  of the wire; owner's directive). Water is never carved — an island is
+  not a plateau. A carved cell becomes LAND, so the mesher blends it
+  smooth instead of skirting it: skirted step = wall, smooth slope =
+  walkable, and the visual language stays honest.
+- **`cliff_rise` is DELETED, and `cliff_class_of(biome)` with it.** A
+  blocked cell has a >= 0.8 step to draw — twice `cliff_min_step` — so
+  the truthful drawing is visible by construction, and a lift would
+  stand a blocked rim above the walkable plateau behind it. Classes
+  derive from the predicate now; "passable exactly when LAND" survives
+  verbatim.
+- **The stone-at-the-foot band is walkability-CHECKED now**: "a foot
+  cell is walkable by construction" stopped being true (the foot of a
+  cliff can be its lip seen from below), and `test_economy` caught it
+  on the shipped map.
+- **The numbers above this section describe the superseded rule.** The
+  66-mountain-cells / 21.7%-impassable / 363-faces figures are the old
+  boundary; re-read counts off `gen-terrain-preview` on the current
+  tree rather than quoting them. Every timing tuned against the old
+  map's shape is stale where the ground changed — `continents` marches
+  lengthen, `highlands` marches shorten, and `test-load`'s
+  contact-dependent fog gates move with both (the standing rule).

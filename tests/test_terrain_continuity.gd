@@ -222,12 +222,11 @@ func test_the_pillow_changes_the_centre_vertex() -> void:
 	var moved := 0
 	for i in range(space.cell_count()):
 		var base := i * TerrainGen.SURFACE_STRIDE
-		# pillow 1.0 is the pre-D-096 behaviour exactly: the centre sits at the
-		# cell's own (clamped) elevation — plus D-097's rise, on the impassable
-		# tier that is deliberately drawn above its own elevation.
+		# pillow 1.0 is the pre-D-096 behaviour exactly: the centre sits at
+		# the cell's own (clamped) elevation. (It used to add D-097's
+		# cliff_rise on the impassable tier; the tier is gone —
+		# D-20260826-passable-means-flat-enough-to-cross.)
 		var own := maxf(raw[i], domed.sea_level) * domed.height_scale
-		if domed_fields.cliff_class[i] == int(TerrainGen.CliffClass.HIGH):
-			own += domed.cliff_rise
 		assert_almost_eq(domed_surface[base], own, 0.0001,
 			"pillow 1.0 must reproduce the old centre height")
 		# pillow 0.0 puts the centre on the plane of its own six corners.

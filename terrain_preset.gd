@@ -37,8 +37,12 @@ class_name TerrainPreset
 @export var elevation_frequency: float = 2.5
 @export var moisture_frequency: float = 4.0
 
-## Vertical exaggeration. Visual and tactical rather than structural —
-## passability is decided by the levels above, not by this.
+## Vertical exaggeration — and since
+## D-20260826-passable-means-flat-enough-to-cross, a SIMULATION input:
+## passability blocks ground drawn steeper than `TerrainGen.max_slope`
+## world units per hex, and this is the number that decides how steep the
+## ground is drawn. A preset near 1.0 is open country wall to wall,
+## because that is what it looks like.
 @export var height_scale: float = 2.0
 
 
@@ -46,7 +50,7 @@ func validate() -> String:
 	if id == &"":
 		return "terrain preset has no id"
 	if sea_level >= mountain_level:
-		return "preset %s has sea_level >= mountain_level, leaving no passable ground" % id
+		return "preset %s has sea_level >= mountain_level, which breaks the biome ladder" % id
 	if beach_level < sea_level or beach_level > mountain_level:
 		return "preset %s has beach_level outside the range between sea and mountain" % id
 	if elevation_frequency <= 0.0 or moisture_frequency <= 0.0:

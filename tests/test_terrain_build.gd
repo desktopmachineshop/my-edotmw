@@ -98,7 +98,8 @@ func test_a_slice_does_no_more_work_than_it_was_given() -> void:
 	var slices := 0
 	while not gen.fields_step(work, budget):
 		slices += 1
-		var done := int(work["cells_done"]) + int(work["corners_done"])
+		var done := int(work["cells_done"]) + int(work["classes_done"]) \
+			+ int(work["corners_done"])
 		assert_lte(done - previous, budget,
 			"A slice that overruns its budget is the freeze with extra steps")
 		assert_gt(done, previous, "Every slice must make progress or this never ends")

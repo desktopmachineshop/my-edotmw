@@ -134,4 +134,28 @@ slice 4, its own decision) is exactly that moment — at which point
 re-reading. Also revisit if a terrain preset ever makes mountains common
 enough that 2.0 units reads as a mesa rather than a cliff.
 
+**Amendment, 2026-08-26: the revisit trigger fired, and pieces (1) and
+(4) are superseded by
+`D-20260826-passable-means-flat-enough-to-cross`.** Passability is a
+slope rule now — land blocks for standing more than `max_slope` (0.8)
+world units above a neighbour, never for being high — so:
+
+- **`CliffClass` derives from the predicate, not the biome.**
+  `cliff_class_of(biome)` is deleted; a biome no longer knows whether it
+  is walkable. The invariant this entry stated — `passable[i] == 1`
+  exactly when the class is LAND — survives verbatim, and the tests that
+  pin it are unchanged.
+- **`cliff_rise` is deleted.** The problem it solved cannot occur under a
+  slope rule: a blocked cell has a step of at least `max_slope` — twice
+  `cliff_min_step` — to some neighbour, so the truthful drawing is
+  visible by construction. Kept, the lift would stand a blocked rim
+  ABOVE the walkable plateau behind it (plateau tops are LAND now) and
+  every mountain would read as a crater.
+
+Pieces (2) and (3) — within-class corner averaging with `cliff_min_step`
+merging, and the skirt per stepped edge — are unchanged and are what
+draws the new boundary. The core rule of this entry, that the wall is a
+DRAWING of the predicate the flow field routes around, is exactly what
+the successor preserves.
+
 ---

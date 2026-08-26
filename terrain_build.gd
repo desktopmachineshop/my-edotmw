@@ -62,7 +62,14 @@ const MESH_CELLS_PER_SLICE := 256
 ## (2026-08-18): pass one is ~4 us a cell, the corner pass ~55-110, meshing
 ## ~150-200. The bar is only as truthful as these are roughly right — equal
 ## weights put it at 50% when a third of the wall clock had passed.
+##
+## The class pass (D-20260826-passable-means-flat-enough-to-cross) is six
+## array reads and a compare per cell — no noise — so it is weighted below
+## even pass one rather than left out: a pass the bar cannot see is a
+## stretch where the bar stands still, which is the "must make progress"
+## failure with a paint job.
 const PASS_ONE_WEIGHT := 0.05
+const CLASS_PASS_WEIGHT := 0.01
 const MESH_WEIGHT := 2.5
 
 var space: TorusSpace
@@ -163,17 +170,19 @@ func is_complete() -> bool:
 ## believes twice.
 func progress() -> float:
 	var pass_one := _cells * PASS_ONE_WEIGHT
+	var classes := _cells * CLASS_PASS_WEIGHT
 	var corners := float(_cells)
 	var meshing := _cells * MESH_WEIGHT
-	var total := pass_one + corners + meshing
+	var total := pass_one + classes + corners + meshing
 	if total <= 0.0:
 		return 1.0
 	var done := 0.0
 	if fields == null:
 		done = int(_work.get("cells_done", 0)) * PASS_ONE_WEIGHT \
+			+ int(_work.get("classes_done", 0)) * CLASS_PASS_WEIGHT \
 			+ float(int(_work.get("corners_done", 0)))
 	else:
-		done = pass_one + corners \
+		done = pass_one + classes + corners \
 			+ meshing * float(_next) / float(maxi(_chunks.size(), 1))
 	return clampf(done / total, 0.0, 1.0)
 

@@ -73,10 +73,16 @@ const REFERENCE_WIDTH := 84.0
 ## player count is therefore a map-generation change, not a config tweak.
 @export var axis_repeats: int = 1
 ## Vertical exaggeration applied when building meshes. 15.0 (up from 2.0) is
-## the "for now" default requested after a live look at extreme relief —
-## purely cosmetic (surface_field is the only reader; passability still
-## thresholds the unscaled elevation_field, so this cannot change which
-## ground is walkable).
+## the "for now" default requested after a live look at extreme relief.
+##
+## SIMULATION DATA since D-20260826-passable-means-flat-enough-to-cross,
+## no longer cosmetic: `max_slope` is a limit on the DRAWN rise per hex,
+## so passability multiplies by this before comparing. That is the point
+## of the whole decision — the complaint it settles is ground that looks
+## walkable and is not, so the rules must read the same number the
+## picture is drawn from. A preset drawn nearly flat (`plains`, 1.2) is
+## honestly open country wall to wall. Replicated through `MapSettings`
+## like the levels below, so both sides answer identically.
 @export var height_scale: float = 15.0
 
 ## How much of its OWN elevation a cell's centre vertex keeps, against the mean
@@ -92,15 +98,42 @@ const REFERENCE_WIDTH := 84.0
 ## true height at its centre entirely. 0.15 keeps a trace of it — enough that a
 ## lone high cell still bulges — without the lighting picking the lattice out.
 ##
-## Purely cosmetic, like `height_scale`: `build_fields` is the only reader, and
-## `passability` still thresholds the unscaled elevation. It is therefore not
+## Purely cosmetic (unlike `height_scale`, since D-20260826): `build_fields`
+## is the only reader, and `passability` never sees it. It is therefore not
 ## on the wire, and both sides using their own default cannot desync.
 @export_range(0.0, 1.0, 0.01) var pillow: float = 0.15
 
-## Normalised thresholds in [0,1].
+## Normalised thresholds in [0,1]. Since
+## D-20260826-passable-means-flat-enough-to-cross, `sea_level` is the only
+## one passability reads: `mountain_level` is purely a BIOME threshold —
+## where rock and snow start — and a flat plateau above it is ordinary
+## walkable, buildable ground that happens to be rock.
 @export var sea_level: float = 0.38
 @export var beach_level: float = 0.44
 @export var mountain_level: float = 0.74
+
+## The largest rise, in WORLD units, between a cell and any of its six
+## neighbours that ground can still be walked over
+## (D-20260826-passable-means-flat-enough-to-cross). Land is impassable
+## for being STEEP, never for being high: cliff EDGES block, plateau TOPS
+## do not, and a gentle ascent through steep country is a mountain pass by
+## construction.
+##
+## 0.8 is a soldier's own height (the authored models stand 0.795) — the
+## rule a player can read off the screen: a rise taller than the man
+## walking it, inside one hex step, cannot be walked up. Swept on the
+## shipped map before choosing (the table is in the decision entry): 0.6
+## fractures the default map into 101 walkable components and blocks
+## 14.6% of it, 1.2 blocks 1.6% and the opened plateaus stop having
+## edges; 0.8 blocks 7.1% across 37 components, and every stranded pocket
+## stays under `min_spawn_landmass`, so no spawn can seat on ground no
+## army can reach.
+##
+## In world units rather than raw elevation for the same reason
+## `cliff_min_step` is: steepness is a thing you see. Both elevations are
+## clamped up to `sea_level` before differencing, so a seabed's depth
+## never counts against its beach.
+@export var max_slope: float = 0.8
 
 ## Moisture thresholds splitting land into dry grassland / grassland /
 ## forest. Constants rather than exports because `Economy.generate` shapes
@@ -544,23 +577,17 @@ func corner_weights(space: TorusSpace, cell_index: int, corner: int,
 ## around — two definitions that could disagree is how this project has been
 ## bitten before.
 ##
-## Water and mountain need separate classes even though both are impassable: a
-## corner where a lake meets a peak would otherwise average sea level with rock
-## and hang the surface halfway up the mountainside.
+## Since D-20260826-passable-means-flat-enough-to-cross the class derives from
+## the PREDICATE, never from the biome: HIGH is land the slope rule blocks,
+## whatever it is painted as, so a steep grass hillside steps and a flat rock
+## plateau does not. (`cliff_class_of(biome)` is gone with it — a biome no
+## longer knows whether it is walkable, so a class derived from one would be a
+## second spelling free to drift.)
+##
+## Water and steep land need separate classes even though both are impassable:
+## a corner where a lake meets a crag would otherwise average sea level with
+## rock and hang the surface halfway up the mountainside.
 enum CliffClass { WATER, LAND, HIGH }
-
-
-## Which class a biome belongs to. Derived from the biome rather than
-## re-thresholding the elevation, so there is one ladder of thresholds and not
-## two to keep in step (`biome_at`'s own warning).
-static func cliff_class_of(biome: Biome) -> CliffClass:
-	match biome:
-		Biome.DEEP_WATER, Biome.WATER:
-			return CliffClass.WATER
-		Biome.MOUNTAIN, Biome.PEAK:
-			return CliffClass.HIGH
-		_:
-			return CliffClass.LAND
 
 
 ## The smallest step, in WORLD units, that is drawn as a cliff rather than
@@ -582,44 +609,35 @@ static func cliff_class_of(biome: Biome) -> CliffClass:
 ## `height_scale` is a per-preset knob and this is a fraction of a hex's width
 ## whatever it is set to.
 ##
-## 0.4 was chosen from a measurement, not by eye. The natural step where two
-## classes meet on the shipped map is small — median 0.20 world units along the
-## coast, p90 0.65, and 0.66 at a mountain foot — because elevation is smooth
-## noise and `passability` is a level set on it, so the ground genuinely does
-## ramp across the boundary. At 0.8 only 87 faces were drawn on the whole map,
-## which is the "mechanism correct, shipped numbers do nothing" failure exactly.
-## At 0.4 roughly a quarter of the coastline gets a rock ledge and the rest
-## keeps its beach, which is the shore-versus-sea-cliff split D-097 wants.
+## 0.4 was chosen from a measurement, not by eye (D-097): under the old
+## elevation-threshold passability the natural step at a class boundary was
+## small — median 0.20 world units along the coast, 0.66 at a mountain foot —
+## because that boundary was a level set on smooth noise and could never fall
+## where the ground was already steep. A `cliff_rise` tier existed to lift the
+## impassable class into visibility for exactly that reason, and it is GONE
+## (D-20260826-passable-means-flat-enough-to-cross): a slope-blocked cell has a
+## step of at least `max_slope` — twice this threshold — to some neighbour, so
+## the wall is there to draw without help, and a lift would now stand a blocked
+## rim ABOVE the walkable plateau behind it and read as a crater.
 @export var cliff_min_step: float = 0.4
 
-## How far above its own elevation the impassable HIGH class is DRAWN, in world
-## units (D-097).
+## How often an enclosed pocket of walkable ground — a plateau ringed by
+## steepness — gets a RAMP carved to the main landmass
+## (D-20260826-passable-means-flat-enough-to-cross, owner's directive).
 ##
-## The one place the picture is deliberately not the data, and it needs saying
-## plainly. Measured on the shipped map, the natural rise from the last walkable
-## cell to the first mountain cell is 0.66 world units — under half a hex's
-## width, and quite invisible at play distance. The passability threshold is a
-## level set on smooth noise, so it can never fall anywhere the ground is
-## already steep: a truthful drawing of it, with no lift at all, is a truthful
-## drawing of nothing.
+## The slope rule creates such pockets by construction: a mesa whose every
+## approach exceeds `max_slope` is walkable and unreachable, which is the
+## dead-space complaint of #129 with the fence moved. So after the per-cell
+## rule, each pocket rolls once against this chance (seeded, per pocket, so
+## both sides of the wire agree) and a winner gets the shortest land path to
+## the mainland marked walkable. A carved cell becomes LAND, so the mesher
+## blends it smooth instead of skirting it — the ramp is DRAWN as a ramp,
+## and the visual language stays honest: skirted step = wall, smooth slope =
+## ground you can walk.
 ##
-## So mountains are lifted onto their own tier. The wall still stands EXACTLY
-## where `passability` changes — that is the part that must not be negotiable —
-## and the lift only makes it tall enough to see.
-##
-## Rendering only, like `height_scale` and `pillow`: `build_fields` is the sole
-## reader and `passability` still thresholds the unscaled elevation. Any cell a
-## soldier can walk on is LAND and is drawn at its own height, which is what
-## `tests/test_terrain_cliffs.gd`'s band test pins down.
-##
-## This used to add "and nothing stands on impassable ground for the offset to
-## disagree with", which was simply false (#97). Formation slots were pure
-## geometry with no passability input, so a squad on a coastline stamped men
-## onto the shelf behind it and every one of them jumped this whole 2.0 units.
-## They are pulled back onto walkable ground now
-## (D-20260818-a-soldier-stands-where-his-squad-could-walk); the lift stays
-## invisible to the SIMULATION, which is the part that was always the point.
-@export var cliff_rise: float = 2.0
+## Pockets separated from the mainland by WATER are islands, not plateaus,
+## and are never carved.
+@export_range(0.0, 1.0, 0.01) var ramp_chance: float = 0.6
 
 
 ## The height each of a corner's three owners renders it at, in world units
@@ -768,11 +786,6 @@ func fields_begin(space: TorusSpace) -> Dictionary:
 	# would evaluate the elevation and moisture noise eighteen times per hex.
 	var cell_color := PackedColorArray()
 	cell_color.resize(count)
-	# The rendered elevation: the clamped one, plus the tier the HIGH class is
-	# drawn on. Applied to the CENTRE as well as the corners, or a mountain hex
-	# would tilt into its own cliff.
-	var rendered := PackedFloat32Array()
-	rendered.resize(count)
 	# Every hex corner is visited three times — once per owning cell — and the
 	# warp's two noise samples are the most expensive thing in that loop. A hex
 	# lattice has two corners per cell, so computing each one once and looking
@@ -794,13 +807,16 @@ func fields_begin(space: TorusSpace) -> Dictionary:
 		"raw": raw,
 		"clamped": clamped,
 		"cell_color": cell_color,
-		"rendered": rendered,
 		"weight_done": weight_done,
 		"weight_cache": weight_cache,
-		# TWO cursors, and they are not interchangeable: a corner reads the
-		# three cells that meet there, so the corner pass cannot start on cell 0
-		# until the per-cell pass has finished the LAST one.
+		# THREE cursors, and they are not interchangeable: the slope rule
+		# reads all six neighbours' elevations, so the class pass cannot
+		# start on cell 0 until the per-cell pass has finished the LAST one —
+		# and a corner reads its three owners' CLASSES, so the corner pass in
+		# turn waits on the class pass (and on the one-shot ramp carve
+		# between them, D-20260826-passable-means-flat-enough-to-cross).
 		"cells_done": 0,
+		"classes_done": 0,
 		"corners_done": 0,
 	}
 
@@ -827,12 +843,10 @@ func fields_step(work: Dictionary, cell_budget: int = -1) -> bool:
 	var raw: PackedFloat32Array = work["raw"]
 	var clamped: PackedFloat32Array = work["clamped"]
 	var cell_color: PackedColorArray = work["cell_color"]
-	var rendered: PackedFloat32Array = work["rendered"]
 	# The cliff threshold in raw elevation units, converted once. A zero or
 	# negative height_scale would make every corner a cliff, so guard rather
 	# than divide by it.
 	var step := cliff_min_step / maxf(height_scale, 0.0001)
-	var rise := cliff_rise / maxf(height_scale, 0.0001)
 	var spent := 0
 
 	# Pass one: everything a cell can answer without reading a neighbour.
@@ -843,26 +857,50 @@ func fields_step(work: Dictionary, cell_budget: int = -1) -> bool:
 		var e := raw[i]
 		var b := _classify(space, cell, e)
 		fields.biome[i] = int(b)
-		# The identical predicate `passability()` applies, spelled once here so
-		# the rendering side and the flow field cannot drift (D-097).
-		fields.passable[i] = 0 if (e < sea_level or e >= mountain_level) else 1
-		var cliff := cliff_class_of(b)
-		fields.cliff_class[i] = int(cliff)
 		clamped[i] = maxf(e, sea_level)
 		cell_color[i] = color_of(b)
-		rendered[i] = clamped[i] + (rise if cliff == CliffClass.HIGH else 0.0)
 		i += 1
 		spent += 1
 	work["cells_done"] = i
 	if i < count:
 		return false
 
-	# Pass two: the corners, which read the cells pass one has just finished.
+	# Pass two: passability and the class the mesher steps between. Its own
+	# pass because the slope rule reads all six neighbours' elevations
+	# (D-20260826-passable-means-flat-enough-to-cross), which pass one has
+	# only just finished. The identical predicate `passability()` applies,
+	# through the same `_slope_passable` core, so the rendering side and
+	# the flow field cannot drift (D-097).
+	var table := space.neighbor_table()
+	var k := int(work["classes_done"])
+	while k < count and (cell_budget < 0 or spent < cell_budget):
+		fields.passable[k] = 1 if _slope_passable(raw, table, k) else 0
+		k += 1
+		spent += 1
+	work["classes_done"] = k
+	if k < count:
+		return false
+
+	# The ramp carve, once, between the per-cell rule and the classes that
+	# draw it. Not budgeted: it is one flood fill plus a handful of short
+	# searches, and slicing a global pass would only add resume states.
+	if not bool(work.get("ramps_done", false)):
+		_carve_ramps(space, raw, table, fields.passable)
+		for c2 in range(count):
+			var cls := CliffClass.LAND
+			if raw[c2] < sea_level:
+				cls = CliffClass.WATER
+			elif fields.passable[c2] == 0:
+				cls = CliffClass.HIGH
+			fields.cliff_class[c2] = int(cls)
+		work["ramps_done"] = true
+
+	# Pass three: the corners, which read the classes just settled.
 	var weight_done: PackedByteArray = work["weight_done"]
 	var weight_cache: PackedFloat32Array = work["weight_cache"]
 	var c := int(work["corners_done"])
 	while c < count and (cell_budget < 0 or spent < cell_budget):
-		_cell_corners(space, fields, c, clamped, cell_color, rendered,
+		_cell_corners(space, fields, c, clamped, cell_color,
 			weight_done, weight_cache, step)
 		c += 1
 		spent += 1
@@ -880,7 +918,7 @@ func fields_step(work: Dictionary, cell_budget: int = -1) -> bool:
 ## any cell boundary.
 func _cell_corners(space: TorusSpace, fields: TerrainFields, i: int,
 		clamped: PackedFloat32Array, cell_color: PackedColorArray,
-		rendered: PackedFloat32Array, weight_done: PackedByteArray,
+		weight_done: PackedByteArray,
 		weight_cache: PackedFloat32Array, step: float) -> void:
 	var base := i * SURFACE_STRIDE
 	var corner_total := 0.0
@@ -889,7 +927,7 @@ func _cell_corners(space: TorusSpace, fields: TerrainFields, i: int,
 		# Heights average WITHIN a passability class and step between them
 		# (D-097). Colour still averages over all three owners, so the cliff
 		# face and the ground above it belong to the same landscape.
-		var resolved := corner_heights(fields.cliff_class, rendered, trio, step)
+		var resolved := corner_heights(fields.cliff_class, clamped, trio, step)
 		var mine := resolved.x
 		if trio.y == i:
 			mine = resolved.y
@@ -950,7 +988,7 @@ func _cell_corners(space: TorusSpace, fields: TerrainFields, i: int,
 		corner_total += height
 	# The pillow, as a tunable rather than an implicit 1.0 — see `pillow`.
 	fields.surface[base] = lerpf(corner_total / 6.0,
-		rendered[i] * height_scale, pillow)
+		clamped[i] * height_scale, pillow)
 	var centre_colour := cell_color[i]
 	if centre_bleed > 0.0:
 		var ring := Color(0.0, 0.0, 0.0, 0.0)
@@ -960,17 +998,196 @@ func _cell_corners(space: TorusSpace, fields: TerrainFields, i: int,
 	fields.colors[base] = centre_colour
 
 
-## Squads cannot cross water or mountains in M1. This is the array the
+## Squads cannot cross water or ground steeper than `max_slope`
+## (D-20260826-passable-means-flat-enough-to-cross). This is the array the
 ## flow field routes around (D-007), which is what makes terrain interact
 ## with pathfinding rather than being decoration.
+##
+## THE definition, shared with `build_fields` through `_slope_passable`
+## and `_carve_ramps` so the drawn classes and the pathed predicate cannot
+## drift (D-097). `passable_at` below is the sparse spelling for callers
+## with no field in hand; it cannot see ramps, and says so.
 func passability(space: TorusSpace) -> PackedByteArray:
 	var field := elevation_field(space)
+	var table := space.neighbor_table()
 	var out := PackedByteArray()
 	out.resize(space.cell_count())
 	for i in range(space.cell_count()):
-		var e := field[i]
-		out[i] = 0 if (e < sea_level or e >= mountain_level) else 1
+		out[i] = 1 if _slope_passable(field, table, i) else 0
+	_carve_ramps(space, field, table, out)
 	return out
+
+
+## The per-cell slope rule over a completed elevation field: walkable
+## unless under water or standing more than `max_slope` world units above
+## some neighbour (both clamped up to sea level, so a seabed's depth never
+## counts against its beach).
+##
+## One-sided on purpose — the LIP of a cliff is blocked, the flat ground
+## at its base is not. A symmetric |Δe| would fence off the valley floor
+## one cell out from every wall, and the valley is where the game is
+## played. One side blocked is enough to stop a crossing: any single hex
+## step rising more than `max_slope` lands ON a blocked cell.
+func _slope_passable(field: PackedFloat32Array, table: PackedInt32Array,
+		i: int) -> bool:
+	var e := field[i]
+	if e < sea_level:
+		return false
+	var worst := 0.0
+	for d in range(6):
+		worst = maxf(worst, e - maxf(field[table[i * 6 + d]], sea_level))
+	return worst * height_scale <= max_slope
+
+
+## The slope rule for ONE cell, from the noise — `walkable_fraction`'s and
+## `Economy._bands`' spelling, for callers sampling scattered cells where
+## building the whole field would cost more than the answer.
+##
+## Answers the LOCAL rule only: a cell on a carved ramp (see
+## `_carve_ramps`) reads impassable here, because a ramp is a property of
+## the whole map's connectivity and this function deliberately reads seven
+## noise samples and nothing else. Fine for its callers — a fraction is an
+## estimate with a stated tolerance, and a band on a ramp cell would put a
+## resource node in a doorway. `tests/test_map_slider_ranges.gd` pins this
+## spelling against `passability()` on a real map.
+func passable_at(space: TorusSpace, cell: Vector2i) -> bool:
+	var e := elevation_at(space, cell)
+	if e < sea_level:
+		return false
+	var worst := 0.0
+	for n in space.neighbors(cell):
+		worst = maxf(worst, e - maxf(elevation_at(space, n), sea_level))
+	return worst * height_scale <= max_slope
+
+
+## Deterministic roll in [0, 1) from (seed, key) — Economy._roll's
+## FNV-style mixing, and for the same reason: integer ops only, so both
+## sides of the wire roll the same ramps from the replicated seed.
+const _FNV_OFFSET_BASIS := 0x811C9DC5
+const _FNV_PRIME := 0x01000193
+
+
+static func _roll(seed_value: int, key: int) -> float:
+	var h := _FNV_OFFSET_BASIS
+	h = ((h ^ (seed_value & 0xFFFFFFFF)) * _FNV_PRIME) & 0xFFFFFFFF
+	h = ((h ^ (key & 0xFFFFFFFF)) * _FNV_PRIME) & 0xFFFFFFFF
+	h = ((h ^ (h >> 15)) * _FNV_PRIME) & 0xFFFFFFFF
+	return float(h & 0xFFFFFF) / float(0x1000000)
+
+
+## Give an enclosed pocket of walkable ground a way in, `ramp_chance` of
+## the time (D-20260826-passable-means-flat-enough-to-cross, owner's
+## directive: "make ramps to plateaus happen on average 60% of the time").
+##
+## The slope rule strands pockets by construction — a mesa whose every
+## approach exceeds `max_slope` is walkable and unreachable. Each pocket
+## rolls once, keyed on its lowest cell index so the roll is a property of
+## the pocket rather than of visit order; a winner gets the shortest LAND
+## path to the already-connected world marked walkable. Water is never
+## carved — a pocket ringed by sea is an island, not a plateau, and stays
+## one.
+##
+## Everything here is deterministic on purpose: components are discovered
+## in cell-index order, the search expands its frontier in queue order
+## with neighbours in direction order, and the roll comes from the
+## replicated seed — so server and client, each running this on their own
+## copy of the field, carve identical ramps.
+func _carve_ramps(space: TorusSpace, field: PackedFloat32Array,
+		table: PackedInt32Array, passable: PackedByteArray) -> void:
+	if ramp_chance <= 0.0:
+		return
+	var count := space.cell_count()
+	var comp := PackedInt32Array()
+	comp.resize(count)
+	comp.fill(-1)
+	var sizes: Array[int] = []
+	var anchors: Array[int] = []
+	for i in range(count):
+		if passable[i] == 0 or comp[i] >= 0:
+			continue
+		var id := sizes.size()
+		var frontier := PackedInt32Array([i])
+		comp[i] = id
+		var size := 0
+		while not frontier.is_empty():
+			var c := frontier[frontier.size() - 1]
+			frontier.resize(frontier.size() - 1)
+			size += 1
+			for d in range(6):
+				var n := table[c * 6 + d]
+				if passable[n] == 1 and comp[n] < 0:
+					comp[n] = id
+					frontier.append(n)
+		sizes.append(size)
+		anchors.append(i)
+	if sizes.size() <= 1:
+		return
+
+	# The mainland is the largest component; ties break to the one
+	# discovered first, which is a fact about cell order rather than luck.
+	var main_id := 0
+	for g in range(sizes.size()):
+		if sizes[g] > sizes[main_id]:
+			main_id = g
+	var connected := PackedByteArray()
+	connected.resize(sizes.size())
+	connected[main_id] = 1
+
+	for g in range(sizes.size()):
+		if connected[g] == 1:
+			continue
+		if _roll(noise_seed, anchors[g]) >= ramp_chance:
+			continue
+		_carve_one(field, table, passable, comp, connected, g, count)
+
+
+## The shortest land route from pocket `g` to anything already connected,
+## carved: a breadth-first search out of the whole pocket at once, through
+## land cells only, stopping at the first already-connected cell it
+## touches. Every impassable cell on the recovered path becomes walkable,
+## and every pocket the path happens to cross is connected with it for
+## free — its own roll no longer matters, exactly as a real pass picks up
+## the valleys along its way.
+func _carve_one(field: PackedFloat32Array, table: PackedInt32Array,
+		passable: PackedByteArray, comp: PackedInt32Array,
+		connected: PackedByteArray, g: int, count: int) -> void:
+	var parent := PackedInt32Array()
+	parent.resize(count)
+	parent.fill(-2)
+	var queue := PackedInt32Array()
+	for i in range(count):
+		if comp[i] == g:
+			parent[i] = -1
+			queue.append(i)
+	var head := 0
+	var goal := -1
+	while head < queue.size() and goal < 0:
+		var c := queue[head]
+		head += 1
+		for d in range(6):
+			var n := table[c * 6 + d]
+			if parent[n] != -2:
+				continue
+			if field[n] < sea_level:
+				continue
+			parent[n] = c
+			if comp[n] >= 0 and connected[comp[n]] == 1:
+				goal = n
+				break
+			queue.append(n)
+	if goal < 0:
+		# No land route exists at any steepness: an island in fact, if not
+		# in biome. The roll is spent and nothing changes.
+		return
+	var walk := parent[goal]
+	while walk >= 0:
+		if passable[walk] == 0:
+			passable[walk] = 1
+			comp[walk] = g
+		elif comp[walk] >= 0:
+			connected[comp[walk]] = 1
+		walk = parent[walk]
+	connected[g] = 1
 
 
 ## Biome as simulation data (D-037).
