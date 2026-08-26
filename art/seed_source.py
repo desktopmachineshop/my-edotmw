@@ -68,9 +68,11 @@ if _ROOT not in sys.path:
 from art.buildings import ROSTER as BUILDING_ROSTER          # noqa: E402
 from art.buildings import build as build_building            # noqa: E402
 from art.lib.blend_source import (                           # noqa: E402
-    SOURCE_DIR, TOTAL_FRAMES, source_path,
+    SOURCE_DIR, source_path, total_frames,
 )
-from art.lib.clips import CLIP_ORDER, FRAMES_PER_CLIP, GROUP_OF, pose_at  # noqa: E402
+from art.lib.clips import (                                  # noqa: E402
+    FRAMES_PER_CLIP, GROUP_OF, clips_for, pose_at,
+)
 from art.lib.geom import pose_part                           # noqa: E402
 from art.lib.soldier import build as build_soldier           # noqa: E402
 from art.units import ROSTER as UNIT_ROSTER                  # noqa: E402
@@ -144,7 +146,7 @@ def _object_for(bpy, part):
     return obj
 
 
-def _key_clips(bpy, model, objects) -> None:
+def _key_clips(bpy, model, objects, clips) -> None:
     """Keyframe every part across the whole 64-frame timeline.
 
     The rotation for a frame is taken from `clips.pose_at`, converted from the
@@ -163,7 +165,7 @@ def _key_clips(bpy, model, objects) -> None:
     basis = _basis(mathutils)
     basis_inv = basis.inverted()
 
-    for clip_index, clip in enumerate(CLIP_ORDER):
+    for clip_index, clip in enumerate(clips):
         for f in range(FRAMES_PER_CLIP):
             frame = clip_index * FRAMES_PER_CLIP + f
             pose = pose_at(clip, f / FRAMES_PER_CLIP)
@@ -191,7 +193,7 @@ def _key_clips(bpy, model, objects) -> None:
                 keyframe.interpolation = "CONSTANT"
 
 
-def _markers(bpy) -> None:
+def _markers(bpy, clips) -> None:
     """A timeline marker at the start of each clip.
 
     Purely for the artist: scrubbing 64 unlabelled frames gives no clue where
@@ -202,7 +204,7 @@ def _markers(bpy) -> None:
     scene = bpy.context.scene
     for marker in list(scene.timeline_markers):
         scene.timeline_markers.remove(marker)
-    for i, clip in enumerate(CLIP_ORDER):
+    for i, clip in enumerate(clips):
         scene.timeline_markers.new(clip, frame=i * FRAMES_PER_CLIP)
 
 
@@ -218,10 +220,11 @@ def seed(name: str, model, force: bool, animated: bool = True) -> bool:
     objects = [_object_for(bpy, part) for part in model.parts]
     scene = bpy.context.scene
     if animated:
-        _key_clips(bpy, model, objects)
-        _markers(bpy)
+        clips = clips_for(name)
+        _key_clips(bpy, model, objects, clips)
+        _markers(bpy, clips)
         scene.frame_start = 0
-        scene.frame_end = TOTAL_FRAMES - 1
+        scene.frame_end = total_frames(name) - 1
     else:
         # A town hall does not walk (D-082 bakes no VAT for a building), so
         # keyframing 64 frames of identity would put a timeline in the file

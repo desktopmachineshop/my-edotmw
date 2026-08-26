@@ -54,7 +54,7 @@ from __future__ import annotations
 import math
 import os
 
-from .clips import CLIP_ORDER, FRAMES_PER_CLIP, GROUP_OF, pose_at
+from .clips import BASE_CLIPS, FRAMES_PER_CLIP, GROUP_OF, clips_for, pose_at
 from .geom import Model, Vec3, pose_part
 
 
@@ -113,17 +113,22 @@ def flatten(model: Model) -> dict:
     }
 
 
-def bake_frames(model: Model, flat: dict) -> tuple[list[list[Vec3]], list[list[Vec3]]]:
-    """Evaluate every frame of every clip.
+def bake_frames(model: Model, flat: dict,
+                clips: tuple[str, ...] = BASE_CLIPS) -> tuple[list[list[Vec3]], list[list[Vec3]]]:
+    """Evaluate every frame of every clip THIS MODEL bakes.
 
     Returns (positions_per_frame, normals_per_frame), each a list of
     `total_frames` lists of `vertex_count` vectors. Frames are independent by
     construction — see the module docstring in `clips.py`.
+
+    `clips` defaults to the base four rather than to CLIP_ORDER, because
+    CLIP_ORDER is now the index SPACE and not what any one model carries: a
+    caller that wants a model's own list asks `clips_for(name)` for it.
     """
     positions_per_frame: list[list[Vec3]] = []
     normals_per_frame: list[list[Vec3]] = []
 
-    for clip in CLIP_ORDER:
+    for clip in clips:
         for f in range(FRAMES_PER_CLIP):
             phase = f / FRAMES_PER_CLIP
             pose = pose_at(clip, phase)
@@ -357,7 +362,8 @@ def write_prop_glb(model: Model, path: str) -> dict:
     }
 
 
-def write_vat(name: str, flat: dict, path: str, frames=None) -> dict:
+def write_vat(name: str, flat: dict, path: str, frames=None,
+              clips: tuple[str, ...] | None = None) -> dict:
     """Bake every clip into a half-float EXR. Returns the layout metadata.
 
     `frames` is `(positions_per_frame, normals_per_frame)`. It is a parameter
@@ -373,9 +379,20 @@ def write_vat(name: str, flat: dict, path: str, frames=None) -> dict:
     if frames is None:
         raise ValueError("write_vat needs frames; see bake_frames or blend_source")
     positions_per_frame, normals_per_frame = frames
+    baked_clips = tuple(clips) if clips is not None else clips_for(name)
     rest = flat["positions"]
     width = len(rest)
     total_frames = len(positions_per_frame)
+    if total_frames != len(baked_clips) * FRAMES_PER_CLIP:
+        # The manifest's `clips` list is what the client resolves a clip NAME
+        # against, so a list that does not describe the rows actually present
+        # is worse than no list: every lookup past the mismatch lands on the
+        # wrong animation, and nothing anywhere fails.
+        raise SystemExit(
+            f"{name}: {total_frames} baked frames against {len(baked_clips)} "
+            f"clips x {FRAMES_PER_CLIP}. The frames and the clip list come "
+            "from different places (see blend_source.bake and bake_frames) and "
+            "they have drifted.")
     colour_row = total_frames * 2
     height = colour_row + 1
 
@@ -431,7 +448,7 @@ def write_vat(name: str, flat: dict, path: str, frames=None) -> dict:
         "total_frames": total_frames,
         "colour_row": colour_row,
         "frames_per_clip": FRAMES_PER_CLIP,
-        "clips": list(CLIP_ORDER),
+        "clips": list(baked_clips),
     }
 
 

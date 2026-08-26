@@ -461,7 +461,7 @@
       "vertices": 48
     }
   },
-  "source_hash": "32f2aec028575ff449a1671ac9795d923ccdaab0b10e8c3f05bd513a7eeebfed",
+  "source_hash": "46ff2f84f6cf4674dc0908dd90aa6a5dec350e509f72cae6592e6115be48ce66",
   "terrain": {
     "biomes": [
       "deep_water",
@@ -550,21 +550,24 @@
         "idle",
         "walk",
         "attack",
-        "rout"
+        "rout",
+        "chop",
+        "mine",
+        "forage"
       ],
-      "colour_row": 128,
+      "colour_row": 224,
       "frames_per_clip": 16,
-      "height": 129,
+      "height": 225,
       "model": "generated/models/gatherers.glb",
       "mounted": false,
       "placeholder": true,
       "source": "authored",
       "texture": "generated/textures/gatherers.jpg",
-      "total_frames": 64,
-      "triangles": 4824,
+      "total_frames": 112,
+      "triangles": 5384,
       "vat": "generated/vat/gatherers.exr",
-      "vertices": 14472,
-      "width": 14472
+      "vertices": 16152,
+      "width": 16152
     },
     "heavy_infantry": {
       "clips": [

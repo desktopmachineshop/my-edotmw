@@ -64,6 +64,31 @@ static func decorate_all(transforms: Array[Transform3D], time: float, speed: flo
 enum Activity { IDLE, WORKING, FIGHTING }
 
 
+## How far a working or fighting soldier leans, for a model whose own
+## animation shows none of it.
+const SWING_AMPLITUDE := 0.34
+
+## The same, for a model that animates the work ITSELF: NOTHING.
+##
+## This whole mechanism is a placeholder that predates having any animation
+## at all — a lunge toward the thing being worked, plus `idle_sway`, to say
+## "something is happening here" on a model that could not say it otherwise.
+## The gatherer draws a real axe stroke now
+## (`D-20260825-a-gatherer-carries-the-tool-for-the-job`), and the owner's
+## playtest reported the leftover as the crew "bobbing around, floating side
+## to side".
+##
+## It is not a matter of amplitude. A 3 Hz lunge against a 0.62 Hz chop beats
+## against it about five times per stroke, so ANY non-zero value is two
+## mechanisms doing one job at different rhythms — which is how a correct
+## animation ends up looking broken. It went 0.34 -> 0.11 -> 0.
+##
+## `decorate_activity` skips the idle sway as well when this is zero, because
+## halving one placeholder and leaving the other is not a decision anybody
+## made on purpose.
+const ANIMATED_SWING_AMPLITUDE := 0.0
+
+
 ## Lean and swing toward a point — chopping at a tree, striking at an
 ## enemy. Returns an offset to add to the soldier's position.
 ##
@@ -76,7 +101,7 @@ enum Activity { IDLE, WORKING, FIGHTING }
 ## Soldiers are deliberately out of phase with each other — a squad
 ## swinging in perfect unison reads as a machine, not a crew.
 static func work_swing(slot: int, time: float, toward: Vector3,
-		activity: int, amplitude: float = 0.34) -> Vector3:
+		activity: int, amplitude: float = SWING_AMPLITUDE) -> Vector3:
 	if activity == Activity.IDLE:
 		return Vector3.ZERO
 
@@ -101,9 +126,16 @@ static func work_swing(slot: int, time: float, toward: Vector3,
 ## `toward` in WORLD space. `toward` is the thing being worked or fought:
 ## the resource under them, or the enemy squad they are engaging.
 static func decorate_activity(transforms: Array[Transform3D], time: float,
-		speed: float, activity: int, toward: Vector3) -> Array[Transform3D]:
+		speed: float, activity: int, toward: Vector3,
+		amplitude: float = SWING_AMPLITUDE) -> Array[Transform3D]:
 	if activity == Activity.IDLE:
 		return decorate_all(transforms, time, speed)
+
+	# A model that animates its own work takes NO cosmetic motion at all —
+	# not the swing and not the sway. Both are placeholders for an animation
+	# that now exists; see `ANIMATED_SWING_AMPLITUDE`.
+	if amplitude <= 0.0:
+		return transforms.duplicate()
 
 	var out: Array[Transform3D] = []
 	for slot in range(transforms.size()):
@@ -111,6 +143,7 @@ static func decorate_activity(transforms: Array[Transform3D], time: float,
 		# Each soldier leans toward the target from where HE stands, so a
 		# ring around a tree all face inward and a line facing an enemy
 		# all lean the same way — without any of them being told which.
-		decorated.origin += work_swing(slot, time, toward - transforms[slot].origin, activity)
+		decorated.origin += work_swing(
+			slot, time, toward - transforms[slot].origin, activity, amplitude)
 		out.append(decorated)
 	return out

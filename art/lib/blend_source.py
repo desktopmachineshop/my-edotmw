@@ -84,7 +84,7 @@ from __future__ import annotations
 
 import os
 
-from .clips import CLIP_ORDER, FRAMES_PER_CLIP
+from .clips import FRAMES_PER_CLIP, clips_for
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -97,7 +97,17 @@ SOURCE_DIR = os.path.join(_ROOT, "art", "source")
 # scrubbing to the start rather than having to know about a hidden convention.
 REST_FRAME = 0
 
-TOTAL_FRAMES = FRAMES_PER_CLIP * len(CLIP_ORDER)
+
+def total_frames(name: str) -> int:
+    """How many frames `name`'s timeline is expected to hold.
+
+    A function rather than the module constant it used to be, because a model
+    bakes only ITS OWN clips now (`clips.clips_for`) — a gatherer's timeline
+    is 112 frames where a militia's is 64, and a single constant would have
+    baked 48 frames of frozen rout onto every soldier in the roster to serve
+    the one unit that swings an axe.
+    """
+    return FRAMES_PER_CLIP * len(clips_for(name))
 
 
 def source_path(name: str) -> str:
@@ -299,7 +309,7 @@ def bake(name: str, texture_dir: str | None = None) -> tuple[dict, tuple[list, l
 
     positions_per_frame: list[list] = []
     normals_per_frame: list[list] = []
-    for frame in range(TOTAL_FRAMES):
+    for frame in range(total_frames(name)):
         if frame == REST_FRAME:
             positions_per_frame.append(rest_positions)
             normals_per_frame.append(rest_normals)

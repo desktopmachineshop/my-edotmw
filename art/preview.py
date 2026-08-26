@@ -145,7 +145,13 @@ def main() -> None:
     for archetype in sorted(ROSTER):
         model = build_soldier(archetype, ROSTER[archetype])
         flat = flatten(model)
-        positions_per_frame, normals_per_frame = bake_frames(model, flat)
+        # Every clip in the index space, for every archetype — not each
+        # model's own list. This sheet is a COMPARISON of the generated tier,
+        # so its rows have to line up; a gatherer row three clips longer than
+        # a militia row would not concatenate, and a ragged sheet is worse at
+        # the one job it has.
+        positions_per_frame, normals_per_frame = bake_frames(
+            model, flat, CLIP_ORDER)
 
         height = 2.6 if ROSTER[archetype].mount else 2.1
         cells = [render(flat["positions"], flat["normals"], flat["colours"],

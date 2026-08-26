@@ -1080,9 +1080,24 @@ scenarios: _import
 # (a scene that rendered nothing still writes a perfectly valid PNG), AND
 # — mirroring test-load's combat/fog conditions — that this run's client
 # actually observed a casualty, a conceal, AND a reveal, not merely that it
+# DURATION was raised 60 -> 90 on 2026-08-25, and the reason is the standing
+# one: `conceal_events` needs a bot to wander OUT of vision, which happens on
+# the match's clock while the capture window is fixed wall-clock — so anything
+# that slows the client's start eats the margin.
+#
+# It had none. Measured A/B on one host, same seed: with the gatherer's
+# pre-tools assets the verdict passed twice at `conceal_events=1` and 71-72
+# state-hash checks; with the tooled gatherer (double the VAT, seven clips
+# instead of four) it failed three times at 0 and 66 checks. Six ticks of
+# window, against a gate clearing by exactly one event.
+#
+# At 90 it clears with room — 10 conceal and 10 reveal events, 106 checks.
+# This is CLAUDE.md's "when the opening changes, every timing tuned against
+# the old one is stale" applied to an ASSET getting heavier, and the honest
+# direction is to lengthen the run rather than to weaken the check.
 # didn't complain (D-022's standing rule).
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="60" BOTS="3": _import
+test-client SECONDS="90" BOTS="3": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -1383,10 +1398,42 @@ seed-art-source ONLY="":
     [ -n "{{ONLY}}" ] && args="--only={{ONLY}}"
     "{{blender_python}}" art/seed_source.py $args
 
-# Write the four clips onto a RIGGED art/source/<name>.blend.
+# Put the axe and the pickaxe on the gatherer's back.
+#
+# A migration like seed-art-source and author-clips, never part of the build:
+# it edits art/source/gatherers.blend, and `build-assets` bakes whatever the
+# .blend says. It refuses to run against a model that already has the tools,
+# because a second run would attach a second pair — restore the source from
+# git first if you are re-tuning where they sit.
+#
+# Order matters and the recipe below is the whole of it:
+#
+#   attach-tools               the tools become part of the mesh, on two bones
+#   author-clips gatherers     chop/mine/forage, drawing the right one
+#   build-assets               bake it into the game
+#
+# author-clips REFUSES if the sockets are missing, so the middle step cannot
+# silently write a work clip onto a model with nothing in its fist.
+[doc("Attach the axe and pickaxe to art/source/gatherers.blend")]
+attach-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    "{{blender_python}}" art/attach_tools.py
+    echo "Now animate them: {{just_executable()}} author-clips gatherers"
+
+# Write a rigged art/source/<name>.blend's clips onto its bones.
 #
 # A migration like seed-art-source, never part of the build: it edits the
 # .blend, and `build-assets` bakes whatever the .blend says.
+#
+# Which clips depends on the archetype: the base four for most of the
+# roster, plus chop/mine/forage for the gatherer, who is the only unit that
+# carries tools (`clips_for` in art/lib/clips.py).
 #
 # A model that arrives rigged arrives with a SKELETON and no ACTIONS, which
 # is a T-posed soldier sliding across the ground. `art/clips.py` animates
@@ -1397,7 +1444,7 @@ seed-art-source ONLY="":
 #
 # Re-runnable: it clears the previous animation first, so tuning a stride
 # is edit-and-rerun rather than edit-and-hope.
-[doc("Author idle/walk/attack/rout onto a rigged art/source/<name>.blend")]
+[doc("Author a rigged art/source/<name>.blend's clips onto its bones")]
 author-clips NAME="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1493,8 +1540,14 @@ gen-model-preview SECONDS="1.2": _import
 # one look.
 #
 # MODEL is a `UnitDef.model_id`, not a unit id — several units share one.
+# CLIP names a pose to hold, and `unit_shot.gd` has taken one since it was
+# written — the recipe simply never passed it, so every shot this recipe has
+# ever produced was a `walk`. That matters more since a model can carry clips
+# others do not (D-20260825): the gatherer's axe and pickaxe are ON ITS BACK
+# in every clip but `chop` and `mine`, so a walk shot is the one framing that
+# cannot show whether it draws them.
 [doc("Render one unit model close up to artifacts/unit-shot.png")]
-gen-unit-shot MODEL="gatherers": _import
+gen-unit-shot MODEL="gatherers" CLIP="walk": _import
     #!/usr/bin/env bash
     set -euo pipefail
     gate="$(bash host-gate.sh acquire medium 'gen-unit-shot' $$)"
@@ -1508,7 +1561,7 @@ gen-unit-shot MODEL="gatherers": _import
         exit 1
     fi
     log="{{artifacts_dir}}/unit-shot.log"
-    "$godot" --path . --rendering-method gl_compatibility         --resolution 1000x1000 unit_shot.tscn -- --model="{{MODEL}}"         --out="res://artifacts/unit-shot.png" | tee "$log"
+    "$godot" --path . --rendering-method gl_compatibility         --resolution 1000x1000 unit_shot.tscn -- --model="{{MODEL}}"         --clip="{{CLIP}}" --out="res://artifacts/unit-shot.png" | tee "$log"
     if [ ! -s "{{artifacts_dir}}/unit-shot.png" ]; then
         echo "VERDICT: FAIL - no PNG was written"
         exit 1

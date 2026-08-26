@@ -1247,7 +1247,8 @@ func _refresh_squads() -> void:
 		var decorated := CosmeticDuel.strike_decorate(
 				eased, enemy_transforms, paired, _now, speed) if dueling \
 			else CosmeticOffset.decorate_activity(
-				eased, _now, speed, int(doing["activity"]), doing["toward"])
+				eased, _now, speed, int(doing["activity"]), doing["toward"],
+				float(doing["swing"]))
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1259,7 +1260,8 @@ func _refresh_squads() -> void:
 		var clip := AnimationState.clip_for(
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
-			speed > MOVING_SPEED_EPSILON)
+			speed > MOVING_SPEED_EPSILON,
+			int(doing["working"]))
 		# Per-man cadence from the motion layer's own measurements
 		# (D-20260824): each drawn man strides at the pace HE moves, not
 		# the squad's — the squad speed is the fallback inside.
@@ -2996,6 +2998,8 @@ func _pursuit_speed_of(squad_id) -> float:
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
+		"working": AnimationState.NOT_WORKING,
+		"swing": CosmeticOffset.SWING_AMPLITUDE,
 		"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 	}
 	var info: Dictionary = _state.composition.get(squad_id, {})
@@ -3006,9 +3010,18 @@ func _activity_for(squad_id) -> Dictionary:
 	# wire — so "is this crew working?" needs nothing new. The node is
 	# under the crew's own centre, so leaning inward IS leaning at it.
 	if String(info.get("shape", "")) == "ring":
+		var centre := _state.squad_world_position(squad_id, _now)
+		# A model that draws its own axe stroke needs almost none of the
+		# whole-body lean this predates it — see
+		# `CosmeticOffset.ANIMATED_SWING_AMPLITUDE` for why the two fight.
+		var crew := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
+		var animated := crew != null and UnitMesh.animates_work(crew.model_id)
 		return {
 			"activity": CosmeticOffset.Activity.WORKING,
-			"toward": _state.squad_world_position(squad_id, _now),
+			"toward": centre,
+			"working": _working_kind(centre),
+			"swing": CosmeticOffset.ANIMATED_SWING_AMPLITUDE if animated \
+				else CosmeticOffset.SWING_AMPLITUDE,
 			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 		}
 
@@ -3038,9 +3051,41 @@ func _activity_for(squad_id) -> Dictionary:
 	# real shots on, even though the shot itself is never named on the wire.
 	return {
 		"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward,
+		"working": AnimationState.NOT_WORKING,
+		"swing": CosmeticOffset.SWING_AMPLITUDE,
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
 		"enemy_squad": enemy_squad,
 	}
+
+
+## Which RESOURCE a crew standing here is working, or `NOT_WORKING`.
+##
+## Derived, like everything else `_activity_for` answers, and for the same
+## reason: `_state.nodes` is already on this client, already fog-gated by the
+## server, and already keyed by cell — so the wire learns nothing new and
+## every client agrees by construction, the same shape as D-052's colour.
+##
+## A crew RINGS its node, so its centre cell is the node's. When that cell
+## holds nothing the answer is the one immediate neighbour that does: a crew
+## re-targeted to the next tree (D-087's 8-cell retarget) is briefly settled
+## off-centre, and a wood crew that flickered to `forage` for a tick would be
+## more distracting than the shrug of picking one of two adjacent trees.
+##
+## Falls back to `FOOD` — empty hands — rather than to a tool, because a
+## fogged or freshly felled cell is exactly where guessing "axe" would draw a
+## crew swinging at nothing.
+func _working_kind(centre: Vector3) -> int:
+	if _state.space == null or _state.nodes.is_empty():
+		return AnimationState.NOT_WORKING
+	var cell := _state.space.world_to_cell(centre)
+	var here := int(_state.nodes.get(_state.space.index(cell), -1))
+	if here >= 0:
+		return here
+	for neighbour in _state.space.neighbors(cell):
+		var kind := int(_state.nodes.get(_state.space.index(neighbour), -1))
+		if kind >= 0:
+			return kind
+	return Economy.ResourceKind.FOOD
 
 
 ## Arrow visuals for ranged attacks (squads and buildings alike). Purely
