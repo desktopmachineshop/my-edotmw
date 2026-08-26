@@ -42,10 +42,16 @@ Six things to know before touching any of it:
   (spear + kite shield), archers = the kettle-helm crossbow body,
   general = the thane (banner + runed axe) with a mixed retinue, bombard
   = the wooden gun with three tenders in the crossbow body
-  (D-20260826-a-squad-wears-more-than-one-model). Gildedreach borrows
-  the two surviving authored HUMAN models (sellswords = heavy_infantry,
-  outriders = cavalry). Everything else is the primitive tier — which is
-  the designed degradation, not a regression (D-064).
+  (D-20260826-a-squad-wears-more-than-one-model), and its gatherers are
+  the dwarf miner with his tools. Gildedreach borrows the two surviving
+  authored HUMAN models (sellswords = heavy_infantry, outriders =
+  cavalry). Everything else is the primitive tier — including the other
+  five civs' GATHERERS, by the owner's explicit call (2026-08-26): the
+  dwarf miner stops standing in for every civ's crews the moment the civ
+  it belongs to exists, and a capsule crew is the designed degradation
+  (D-064) until each civ's own body arrives. This supersedes
+  D-20260824's "the dwarf is the gatherer model for every civ", whose
+  own revisit trigger was the fantasy pivot.
 - **D-067's building-rush rules are re-scoped to TROOPS.** Siege units
   (breaker, engine, ram, bombard) are excluded from both the solo and
   the pair rule: cracking a defended building alone is their design
