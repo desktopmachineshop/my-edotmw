@@ -70,6 +70,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/host-load.md
 
+@docs/status/sandbox.md
+
 @docs/status/playtests-2026-08.md
 
 @docs/status/m8-plan.md

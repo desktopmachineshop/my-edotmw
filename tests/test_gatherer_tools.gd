@@ -327,66 +327,47 @@ func test_a_model_without_the_work_clips_falls_back_to_something_it_has() -> voi
 		clips.find("idle"), "forage has no tool in it and no stroke either")
 
 
-# --- a crew addresses its node ----------------------------------------
+# --- no placeholder motion on a model that animates itself -------------
 
-## Every other formation addresses something AHEAD of the squad, so one facing
-## serves all of it. A gathering ring is the one shape whose subject is at its
-## own CENTRE — and it used the same single facing, so the far half of a crew
-## had its back to the tree and chopped away from it. The owner's playtest
-## reported that as a crew "weirdly standing around doing the motion".
-func test_a_gathering_crew_faces_the_thing_it_is_working() -> void:
-	var space := TorusSpace.new()
-	var alive := 8
-	var turned := 0
-	for slot in range(alive):
-		var local := Formation.slot_offset("ring", slot, alive, 1.0, 0)
-		if local.length() <= 0.001:
-			continue
-		var turn := Formation.inward_turn("ring", local)
-		# The direction he ends up looking, in formation space, must point
-		# back at the middle — i.e. oppose where he is standing.
-		var looking := Vector2(sin(turn), cos(turn))
-		assert_almost_eq(looking.dot(-local.normalized()), 1.0, 0.001,
-			"slot %d stands at (%.2f, %.2f) and looks away from the centre"
-				% [slot, local.x, local.y])
-		turned += 1
-	assert_gt(turned, 4, "Setup: a ring of %d should place men off-centre" % alive)
-	assert_not_null(space)
+## A working crew goes through the DUEL pipeline now
+## (D-20260820-men-gather-round-what-they-strike): its men are dealt to
+## perimeter points round the node and stepped into contact. That path applies
+## `CosmeticOffset`'s lunge and sway — placeholders from before this model
+## drew anything — at the FIGHTING rate of 5.5 Hz, against a chop cycle of
+## 0.62. Nine beats a stroke, which is how a correct animation ends up looking
+## broken; the owner's playtest called it "bobbing around, floating side to
+## side".
+##
+## Passing zero turns the whole decoration off rather than merely shrinking
+## it, because halving one placeholder and leaving the other is not a decision
+## anybody made on purpose.
+func test_a_self_animating_model_takes_no_cosmetic_lunge() -> void:
+	var men: Array[Transform3D] = []
+	var marks: Array[Transform3D] = []
+	var paired := PackedInt32Array()
+	for i in range(4):
+		men.append(Transform3D(Basis(), Vector3(float(i) * 0.6, 0.0, 0.0)))
+		marks.append(Transform3D(Basis(), Vector3(float(i) * 0.6, 0.0, 0.9)))
+		paired.append(i)
 
+	var still := CosmeticDuel.strike_decorate(men, marks, paired, 3.7, 0.0, 0.0)
+	assert_eq(still.size(), men.size())
+	for i in range(men.size()):
+		assert_almost_eq(still[i].origin.distance_to(men[i].origin), 0.0,
+			0.00001,
+			"slot %d was moved by the placeholder decoration even though its "
+				% i
+			+ "model animates its own work")
 
-## And nobody ELSE turns. A line that faced its own middle would have its
-## flanks looking inward at each other instead of at the enemy, which is the
-## facing D-20260819 made an order and combat's aspect reads.
-func test_no_other_formation_turns_its_men() -> void:
-	for shape in ["line", "column", "wedge", "sparse", "tight"]:
-		for slot in range(6):
-			var local := Formation.slot_offset(shape, slot, 12, 1.0, 0)
-			assert_eq(Formation.inward_turn(shape, local), 0.0,
-				"'%s' turned slot %d away from the squad's facing" % [shape, slot])
-
-
-## It moves the BASIS and nothing else. Positions are what the simulation
-## reads — `Engagement`'s contact set, selection, culling — so a facing change
-## that moved a man would be a rendering tweak with a combat consequence.
-func test_facing_the_node_moves_nobody() -> void:
-	var space := TorusSpace.new()
-	var curve := StateCurve.new()
-	curve.append_axial(0.0, Vector2(4.0, 4.0))
-
-	# The men stand where the ring puts them, turned or not: a soldier's
-	# position is the squad centre plus his slot offset, and `inward_turn`
-	# is applied to the BASIS after that.
-	var centre := curve.sample_world(0.0, space)
-	for slot in range(8):
-		var placed := Formation.soldier_transform(
-			curve, 0.0, slot, 8, "ring", 1.0, space)
-		var local := Formation.slot_offset("ring", slot, 8, 1.0, 0)
-		var flat := Vector3(placed.origin.x - centre.x, 0.0,
-			placed.origin.z - centre.z)
-		assert_almost_eq(flat.length(), local.length(), 0.001,
-			"slot %d stands at a different distance from the node than the "
-				% slot
-			+ "ring placed him — facing has moved a man, not just turned him")
+	# And the guard is not vacuous: at the normal amplitude somebody moves.
+	var swung := CosmeticDuel.strike_decorate(
+		men, marks, paired, 3.7, 0.0, CosmeticOffset.SWING_AMPLITUDE)
+	var moved := 0.0
+	for i in range(men.size()):
+		moved = maxf(moved, swung[i].origin.distance_to(men[i].origin))
+	assert_gt(moved, 0.01,
+		"nobody moved at full amplitude either, so the check above proves "
+		+ "nothing about the gate")
 
 
 # --- the hands close on the tool --------------------------------------

@@ -1213,6 +1213,45 @@ func _refresh_squads() -> void:
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
 			dueling = not enemy_transforms.is_empty()
+		elif (doing.has("ring_centre") or doing.has("rect_centre")) \
+				and not transforms.is_empty():
+			# A STATIC target (D-20260820-men-gather-round-what-they-
+			# strike): perimeter points stand in for the duel's
+			# defenders, dealt ONE PER MAN so the squad wraps the target
+			# instead of piling onto the near arc. A building is a BOX
+			# and gets its rectangle (second amendment); a tree keeps
+			# the ring. Everything downstream — engage's bounds, the
+			# strike, the easing — is the same pipeline a melee runs.
+			var ring: Array[Transform3D]
+			if doing.has("rect_centre"):
+				ring = Engagement.rect_points(doing["rect_centre"],
+					(doing["rect_half"] as Vector2)
+						+ Vector2(Engagement.CONTACT_GAP, Engagement.CONTACT_GAP),
+					float(doing["rect_yaw"]), transforms.size())
+			else:
+				ring = Engagement.ring_points(doing["ring_centre"],
+					float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
+					transforms.size())
+			var men := PackedVector3Array()
+			men.resize(transforms.size())
+			for i in range(transforms.size()):
+				men[i] = transforms[i].origin
+			# The deal HOLDS while the target and the strength hold
+			# (D-20260821): recomputing it every frame hopped every
+			# man's mark along the wall as his slot drifted.
+			var deal_key: String = str(doing.get("target_key", "")) 				+ "|" + str(transforms.size())
+			var cached: Dictionary = _static_deal.get(squad_id, {})
+			if String(cached.get("key", "")) == deal_key:
+				paired = cached["paired"]
+			else:
+				var ring_positions := PackedVector3Array()
+				ring_positions.resize(ring.size())
+				for i in range(ring.size()):
+					ring_positions[i] = ring[i].origin
+				paired = SoldierMotion.assign(ring_positions, transforms)
+				_static_deal[squad_id] = {"key": deal_key, "paired": paired}
+			enemy_transforms = ring
+			dueling = true
 		if dueling and not transforms.is_empty():
 			# The torus tax (Engagement's own note): an enemy engaged
 			# across the seam derives a whole map away in canonical
@@ -1221,20 +1260,80 @@ func _refresh_squads() -> void:
 			enemy_transforms = Engagement.shifted(enemy_transforms,
 				Engagement.aligning_offset(transforms[0].origin,
 					enemy_transforms[0].origin, offsets))
-			paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			var surround := doing.has("rect_centre") or doing.has("ring_centre")
+			if paired.is_empty():
+				paired = CosmeticDuel.opponents(transforms, enemy_transforms)
+			# A static target grants the SURROUND budget (D-20260820,
+			# third amendment): a building does not hit back, so men may
+			# leave formation properly to wrap it — "they hold formation
+			# too hard" was the owner's exact reading of the tight melee
+			# bound applied to a siege.
 			transforms = CosmeticDuel.engage(
-				transforms, enemy_transforms, paired, _state.terrain_sampler)
+				transforms, enemy_transforms, paired, _state.terrain_sampler,
+				SURROUND_STEP if surround else Engagement.MAX_STEP)
+
+		# No drawn man stands inside a building (D-20260820, third
+		# amendment): slots clamp against terrain only, so a line's slots
+		# can land inside a footprint — projected out to the nearest face
+		# here, BEFORE easing, so men walk out rather than popping.
+		if not transforms.is_empty():
+			var boxes := _nearby_building_boxes(centre, world_radius + 6.0)
+			# Trees are obstacles for drawn men too (D-20260821, amended):
+			# a marching line filters around a wood man by man and the
+			# velocity clamp walks each one back to his slot beyond it.
+			# A crew's OWN worked node is exempt — standing at the tree
+			# is the job.
+			var discs := _nearby_node_discs(centre, world_radius,
+				String(doing.get("target_key", "")))
+			if not boxes.is_empty() or not discs.is_empty():
+				for i in range(transforms.size()):
+					var pushed := transforms[i]
+					for box in boxes:
+						pushed.origin = Engagement.push_out_of_box(
+							pushed.origin, box["centre"], box["half"], box["yaw"])
+					for disc in discs:
+						pushed.origin = Engagement.push_out_of_disc(
+							pushed.origin, disc["centre"], disc["radius"])
+					transforms[i] = pushed
 
 		# Eased so soldiers walk to their slots when the squad turns
 		# instead of the whole block snapping round (D-059), then decorated
 		# with sway, footfall and whatever the squad is visibly doing.
-		# Capped at a jog above this unit's own walking pace, so a man
-		# chases a slot that swept away from him (a direction change
-		# rotates the whole lattice) instead of being dragged along the
-		# arc — see SoldierMotion.ease.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta,
-			_pursuit_speed_of(squad_id))
+		# Foreign drawn men within overlap range (previous frame's — one
+		# frame of lag), so OUR men adjust to THEIRS individually
+		# (D-20260821) instead of squads snapping apart. Two bounds keep
+		# this out of the frame budget at 72-squad scale: MARCHING squads
+		# skip the gather entirely (columns interpenetrate by design —
+		# the jostle is for the scrum, the decision says so), and foreign
+		# men are prefiltered per MAN to the overlap disk rather than
+		# copied wholesale per squad.
 		var speed := _state.squad_speed(squad_id, _now)
+		var neighbours := PackedVector3Array()
+		if speed <= MOVING_SPEED_EPSILON:
+			var own_at := centre + offset
+			for other_id in _drawn_cache:
+				if other_id == squad_id:
+					continue
+				var record: Dictionary = _drawn_cache[other_id]
+				if (record["centre"] as Vector3).distance_to(own_at) 						> world_radius + float(record["radius"]) + 1.0:
+					continue
+				var men: PackedVector3Array = record["men"]
+				for k in range(men.size()):
+					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
+						neighbours.append(men[k])
+		# The speed cap is MAIN's `_pursuit_speed_of` (1.35x this unit's
+		# walk) rather than the local sprint computation this branch
+		# carried: same knob, one shared definition with two callers, and
+		# it sits BELOW the squad's sprint, so "a man may rise to the
+		# squad's sprint to catch up, but no faster" still holds.
+		var eased := _motion.ease(squad_id, transforms, _frame_delta,
+			_pursuit_speed_of(squad_id), neighbours)
+		var drawn_men := PackedVector3Array()
+		drawn_men.resize(eased.size())
+		for i in range(eased.size()):
+			drawn_men[i] = eased[i].origin
+		_drawn_cache[squad_id] = {"men": drawn_men,
+			"centre": centre + offset, "radius": world_radius}
 		# The REAL speed, not a literal 1.0 — which is what sat here and is
 		# why every standing squad in every match bobbed on the spot.
 		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
@@ -1244,8 +1343,15 @@ func _refresh_squads() -> void:
 		# feeding it the wrong input. Noticed only when an authored model
 		# with a real VAT idle clip made the extra whole-body bounce read as
 		# a defect instead of as capsule-era "life".
+		# A model that draws its own work stroke takes NO cosmetic lunge or
+		# sway — see `CosmeticDuel.strike_decorate`. Only the WORKING case
+		# can have one: a soldier's `attack` clip is a stroke at an enemy,
+		# not at the tree he is standing on.
+		var self_animated := int(doing["activity"]) == CosmeticOffset.Activity.WORKING \
+			and UnitMesh.animates_work(_model_id_of(squad_id))
 		var decorated := CosmeticDuel.strike_decorate(
-				eased, enemy_transforms, paired, _now, speed) if dueling \
+				eased, enemy_transforms, paired, _now, speed,
+				0.0 if self_animated else float(doing["swing"])) if dueling \
 			else CosmeticOffset.decorate_activity(
 				eased, _now, speed, int(doing["activity"]), doing["toward"],
 				float(doing["swing"]))
@@ -3006,27 +3112,37 @@ func _activity_for(squad_id) -> Dictionary:
 	if info.is_empty() or _state.space == null:
 		return idle
 
-	# A gathering crew rings its node, and that shape reaches us over the
-	# wire — so "is this crew working?" needs nothing new. The node is
-	# under the crew's own centre, so leaning inward IS leaning at it.
-	if String(info.get("shape", "")) == "ring":
-		var centre := _state.squad_world_position(squad_id, _now)
-		# A model that draws its own axe stroke needs almost none of the
-		# whole-body lean this predates it — see
-		# `CosmeticOffset.ANIMATED_SWING_AMPLITUDE` for why the two fight.
-		var crew := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
-		var animated := crew != null and UnitMesh.animates_work(crew.model_id)
-		return {
-			"activity": CosmeticOffset.Activity.WORKING,
-			"toward": centre,
-			"working": _working_kind(centre),
-			"swing": CosmeticOffset.ANIMATED_SWING_AMPLITUDE if animated \
-				else CosmeticOffset.SWING_AMPLITUDE,
-			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
-		}
-
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
-	if def == null or def.damage <= 0.0:
+	if def == null:
+		return idle
+
+	# A working crew gathers round its node
+	# (D-20260820-men-gather-round-what-they-strike, as amended): the
+	# signal is no longer a shape the economy set — that bandaid is
+	# gone — but the crew itself: a CARRIER standing on a cell this
+	# client KNOWS holds a node is working it. Both halves were already
+	# on this client (D-030's node knowledge, the def's own field).
+	if def.carry_capacity > 0:
+		var crew_at := _state.squad_world_position(squad_id, _now)
+		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
+		if _state.nodes.has(crew_cell):
+			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
+			return {
+				"activity": CosmeticOffset.Activity.WORKING,
+				"toward": node_at,
+				# WHICH tool the job calls for. The kind is the node this
+				# crew is standing on, which the test above already had in
+				# hand — so the axe/pickaxe/bare-hands choice costs one
+				# dictionary read and nothing on the wire
+				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
+				"working": int(_state.nodes[crew_cell]),
+				"swing": CosmeticOffset.SWING_AMPLITUDE,
+				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
+				"ring_centre": node_at, "ring_radius": 0.9,
+				"target_key": "n:%d" % crew_cell,
+			}
+
+	if def.damage <= 0.0:
 		return idle
 
 	_refresh_enemy_scan()
@@ -3044,6 +3160,24 @@ func _activity_for(squad_id) -> Dictionary:
 			toward = entry["at"]
 			enemy_squad = int(entry["id"])
 	if toward == Vector3.ZERO:
+		# No enemy SQUAD in reach — but a melee squad battering an enemy
+		# BUILDING should gather round it, not stand in a line swinging
+		# at air (D-20260820-men-gather-round-what-they-strike). Known
+		# buildings only, which is all a client ever has (D-030).
+		if def.armour_class != "missile":
+			var box := _building_box_near(here, mine, def.attack_range)
+			if not box.is_empty():
+				return {
+					"activity": CosmeticOffset.Activity.FIGHTING,
+					"toward": box["centre"],
+					"working": AnimationState.NOT_WORKING,
+					"swing": CosmeticOffset.SWING_AMPLITUDE,
+					"is_ranged": false, "interval": def.attack_interval,
+					"enemy_squad": -1,
+					"rect_centre": box["centre"], "rect_half": box["half"],
+					"rect_yaw": box["yaw"],
+					"target_key": "b:%d" % int(box.get("id", -1)),
+				}
 		return idle
 	# `armour_class == "missile"` is the shipped-data gate for "ranged" —
 	# see UnitDef's header on the field: a squad's cadence toward the arrow
@@ -3058,34 +3192,153 @@ func _activity_for(squad_id) -> Dictionary:
 	}
 
 
-## Which RESOURCE a crew standing here is working, or `NOT_WORKING`.
-##
-## Derived, like everything else `_activity_for` answers, and for the same
-## reason: `_state.nodes` is already on this client, already fog-gated by the
-## server, and already keyed by cell — so the wire learns nothing new and
-## every client agrees by construction, the same shape as D-052's colour.
-##
-## A crew RINGS its node, so its centre cell is the node's. When that cell
-## holds nothing the answer is the one immediate neighbour that does: a crew
-## re-targeted to the next tree (D-087's 8-cell retarget) is briefly settled
-## off-centre, and a wood crew that flickered to `forage` for a tick would be
-## more distracting than the shrug of picking one of two adjacent trees.
-##
-## Falls back to `FOOD` — empty hands — rather than to a tool, because a
-## fogged or freshly felled cell is exactly where guessing "axe" would draw a
-## crew swinging at nothing.
-func _working_kind(centre: Vector3) -> int:
+## How far a man may travel to wrap a static target — the surround
+## budget (D-20260820, third amendment). Larger than the melee bound on
+## purpose; still pure in replicated state, still finite.
+const SURROUND_STEP := 4.0
+
+## The drag preview's disc radius and how far it floats above the ground
+## (D-20260823). Small enough that a tight formation's discs stay
+## separate — which is the whole point of previewing a tight one.
+const ORDER_MARK_RADIUS := 0.28
+const ORDER_MARK_LIFT := 0.08
+
+# The static-target deal, CACHED per squad (D-20260821): recomputed only
+# when the target or the strength changes, so a man's mark holds instead
+# of hopping along the wall as his slot drifts. Per-soldier render
+# memory — the amendment's territory. squad -> {"key", "paired"}
+var _static_deal := {}
+# Last frame's drawn men per squad, for the cross-squad jostle:
+# squad -> {"men": PackedVector3Array, "centre": Vector3, "radius": float}
+var _drawn_cache := {}
+
+## Every known building's box, resolved ONCE per frame — canonical
+## position, half extents, yaw, owner. The first version resolved defs
+## and worlds inside the per-squad loop and froze the game: the SIXTH
+## appearance of the lookup-inside-the-loop defect this project keeps
+## paying for, written one screen below _refresh_enemy_scan, which
+## exists to prevent exactly this.
+var _building_scan: Array = []
+var _building_scan_at := -1.0
+
+
+func _refresh_building_scan() -> void:
+	if is_equal_approx(_building_scan_at, _now):
+		return
+	_building_scan_at = _now
+	_building_scan = []
+	if _state.space == null:
+		return
+	for id in _state.buildings:
+		var info: Dictionary = _state.buildings[id]
+		if bool(info.get("destroyed", false)):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
+		if def == null:
+			continue
+		var half := Vector2.ZERO
+		if def.mesh_size != Vector3.ZERO:
+			half = Vector2(def.mesh_size.x, def.mesh_size.z) * 0.5
+		else:
+			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
+			half = Vector2(span, span)
+		_building_scan.append({
+			"id": int(id),
+			"at": _state.space.to_world(
+				_state.space.from_index(int(info.get("cell", 0)))),
+			"half": half,
+			"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0))),
+			"owner": int(info.get("owner", -1)),
+			"reach": maxf(half.x, half.y),
+		})
+
+
+## Node-cell discs within a squad's extent (D-20260821, amended): the
+## trees its drawn men must not stand inside. `worked_key` skips the
+## crew's own node.
+func _nearby_node_discs(centre: Vector3, radius: float,
+		worked_key: String) -> Array:
+	var out := []
 	if _state.space == null or _state.nodes.is_empty():
-		return AnimationState.NOT_WORKING
-	var cell := _state.space.world_to_cell(centre)
-	var here := int(_state.nodes.get(_state.space.index(cell), -1))
-	if here >= 0:
-		return here
-	for neighbour in _state.space.neighbors(cell):
-		var kind := int(_state.nodes.get(_state.space.index(neighbour), -1))
-		if kind >= 0:
-			return kind
-	return Economy.ResourceKind.FOOD
+		return out
+	var centre_cell := _state.space.world_to_cell(centre)
+	var cells := ceili(radius / (_state.space.hex_size * TorusSpace.SQRT_3)) + 1
+	for offset in TorusSpace.disk_offsets(mini(cells, 6)):
+		var cell := _state.space.index(centre_cell + offset)
+		if not _state.nodes.has(cell):
+			continue
+		if worked_key == "n:%d" % cell:
+			continue
+		var at := _state.space.to_world(_state.space.from_index(cell))
+		at += Engagement.aligning_offset(centre, at,
+			_state.space.lattice_offsets())
+		# Radius by KIND (the owner's "all resources"): a stone or gold
+		# pile is squatter and wider than a tree trunk, and a disc sized
+		# for canopies let men wade through the piles.
+		var kind := int(_state.nodes[cell])
+		# FOOD orchards and WOOD forests are both trees (the owner named
+		# the food trees explicitly); the mineral piles are squatter and
+		# wider.
+		var footprint := 0.7
+		if kind == Economy.ResourceKind.GOLD or kind == Economy.ResourceKind.STONE:
+			footprint = 1.0
+		out.append({"centre": at, "radius": footprint})
+	return out
+
+
+## The cached scan, aligned to `centre`'s lattice frame and filtered to
+## `search`. Per squad this is B alignments over precomputed entries —
+## the cheap half of what used to freeze the frame.
+func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
+	_refresh_building_scan()
+	var out := []
+	var offsets := _state.space.lattice_offsets()
+	for entry in _building_scan:
+		var at: Vector3 = entry["at"]
+		at += Engagement.aligning_offset(centre, at, offsets)
+		if Vector2(at.x - centre.x, at.z - centre.z).length() \
+				<= search + float(entry["reach"]):
+			out.append({"centre": at, "half": entry["half"],
+				"yaw": entry["yaw"]})
+	return out
+
+
+## The nearest ENEMY building a melee squad at `here` can reach, as a
+## BOX target for the gather-round treatment (D-20260820, second
+## amendment: a building is a rectangle, and men line its faces). Half
+## extents from what the client actually DRAWS — mesh_size when the def
+## carries one (the wall family, oblong on purpose), else the square
+## footprint_radius * 1.9 stand-in the build markers and culling extents
+## use — and the yaw from the same facing byte the renderer rotates by.
+func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
+	if _state.space == null:
+		return {}
+	_refresh_building_scan()
+	var best := {}
+	var best_d := INF
+	var offsets := _state.space.lattice_offsets()
+	for entry in _building_scan:
+		if int(entry["owner"]) == mine:
+			continue
+		var centre: Vector3 = entry["at"]
+		# The building's copy nearest this squad — the torus tax.
+		centre += Engagement.aligning_offset(here, centre, offsets)
+		var half: Vector2 = (entry["half"] as Vector2) + Vector2(0.4, 0.4)
+		var d := Vector2(centre.x - here.x, centre.z - here.z).length()
+		if d - maxf(half.x, half.y) <= reach and d < best_d:
+			best_d = d
+			best = {"centre": centre, "half": half, "yaw": entry["yaw"],
+				"id": entry["id"]}
+	return best
+
+
+## The model a squad draws with, or `&""`. One lookup in one place, because two
+## callers asking the roster the same question is how they come to disagree
+## about the answer.
+func _model_id_of(squad_id) -> StringName:
+	var def := UnitRoster.by_id(StringName(String(
+		_state.composition.get(squad_id, {}).get("def_id", ""))))
+	return def.model_id if def != null else &""
 
 
 ## Arrow visuals for ranged attacks (squads and buildings alike). Purely
@@ -3243,6 +3496,11 @@ func _update_missiles() -> void:
 ## The building armed for placement, or "" — a ghost of it follows the
 ## cursor until you click the ground or cancel.
 var _placing: StringName = &""
+## Whether the armed placement is a sandbox CHEAT spawn rather than an
+## ordinary build order (D-20260821 follow-up): same ghost, same pose,
+## same controls — the commit sends the cheat packet (honouring the
+## enemy checkbox) instead of a build order, and needs no builder squad.
+var _placing_cheat := false
 var _placement_ghost: MeshInstance3D = null
 
 ## Pool of ghost boxes previewing a drag-to-build-a-line's whole line
@@ -3314,6 +3572,12 @@ var _order_press_alt := false
 var _order_press_ctrl := false
 var _order_press_shift := false
 var _order_drag_line: MeshInstance3D = null
+## One translucent disc per man, at the spot he will be commanded to
+## (D-20260823-the-drag-shows-the-line-it-will-form). A MultiMesh rather
+## than a node per soldier: a battle line of eight squads is a few
+## hundred discs rebuilt on every mouse-move, which is the shape of thing
+## PrimitiveUnit already draws this way.
+var _order_drag_marks: MultiMeshInstance3D = null
 
 ## Terrain passability, derived from the SAME TerrainGen that built the
 ## mesh, so the build preview agrees with the server about where the water
@@ -5779,6 +6043,7 @@ func _charge_selected(screen_position: Vector2) -> void:
 ## the-battle-line): BattleLine.plan owns every decision; this gathers
 ## the inputs and sends what it returns through workstream 5's orders.
 func _finish_order_drag(press: Vector2, release: Vector2) -> void:
+	_hide_order_drag_marks()
 	if not _connected or _selected.is_empty() or _state.space == null:
 		return
 	var from := _world_under(press)
@@ -5786,15 +6051,7 @@ func _finish_order_drag(press: Vector2, release: Vector2) -> void:
 	if from == Vector3.INF or to == Vector3.INF:
 		_order_selected(press, _order_press_ctrl, _order_press_shift)
 		return
-	var squads := []
-	for squad in _selected:
-		squads.append({
-			"id": int(squad),
-			"at": _state.squad_world_position(int(squad), _now),
-			"alive": _state.alive_of(int(squad)),
-			"spacing": float(_state.composition.get(int(squad), {}).get("spacing", 1.0)),
-		})
-	var plan := BattleLine.plan(from, to, squads)
+	var plan := BattleLine.plan(from, to, _order_drag_squads())
 	if plan.is_empty():
 		_order_selected(press, _order_press_ctrl, _order_press_shift)
 		return
@@ -5816,6 +6073,86 @@ func _finish_order_drag(press: Vector2, release: Vector2) -> void:
 		% [plan.size(), Vector2(to.x - from.x, to.z - from.z).length()])
 
 
+## The selection as `BattleLine.plan` wants it. ONE gatherer, shared by
+## the preview and the order it previews (D-20260823) — two of these
+## would be two answers to "what is being commanded", and the preview
+## would drift from the send the first time either changed.
+func _order_drag_squads() -> Array:
+	var squads := []
+	for squad in _selected:
+		var info: Dictionary = _state.composition.get(int(squad), {})
+		squads.append({
+			"id": int(squad),
+			"at": _state.squad_world_position(int(squad), _now),
+			"alive": _state.alive_of(int(squad)),
+			"spacing": float(info.get("spacing", 1.0)),
+			"shape": String(info.get("shape", "line")),
+		})
+	return squads
+
+
+## Draw the formation the release will command: one translucent disc per
+## living man, at his own planned spot (D-20260823). Rebuilt per motion
+## event from the same `BattleLine.plan` the release sends.
+func _update_order_drag_marks(from: Vector3, to: Vector3) -> void:
+	var squads := _order_drag_squads()
+	var plan := BattleLine.plan(from, to, squads)
+	if plan.is_empty():
+		_hide_order_drag_marks()
+		return
+
+	var points := PackedVector3Array()
+	for i in range(plan.size()):
+		var squad: Dictionary = squads[i]
+		points.append_array(BattleLine.formation_points(plan[i],
+			String(squad["shape"]), float(squad["spacing"]),
+			int(squad["alive"])))
+	if points.is_empty():
+		_hide_order_drag_marks()
+		return
+
+	if _order_drag_marks == null:
+		_order_drag_marks = MultiMeshInstance3D.new()
+		var disc := CylinderMesh.new()
+		# A flat disc, not a sphere: it reads as ground marking rather
+		# than as a man, so nobody mistakes the preview for the troops.
+		disc.top_radius = ORDER_MARK_RADIUS
+		disc.bottom_radius = ORDER_MARK_RADIUS
+		disc.height = 0.02
+		disc.radial_segments = 12
+		disc.rings = 0
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.albedo_color = Color(1.0, 0.95, 0.4, 0.35)
+		# Drawn on top of the ground it marks, and never writing depth,
+		# so a disc on a slope is not half-swallowed by the hill.
+		material.no_depth_test = true
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		disc.material = material
+		var multi := MultiMesh.new()
+		multi.transform_format = MultiMesh.TRANSFORM_3D
+		multi.mesh = disc
+		_order_drag_marks.multimesh = multi
+		_order_drag_marks.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_order_drag_marks)
+
+	var multi := _order_drag_marks.multimesh
+	multi.instance_count = points.size()
+	for i in range(points.size()):
+		var at := points[i]
+		if _state.terrain_sampler.is_valid():
+			at.y = float(_state.terrain_sampler.call(at.x, at.z))
+		at.y += ORDER_MARK_LIFT
+		multi.set_instance_transform(i, Transform3D(Basis(), at))
+	_order_drag_marks.visible = true
+
+
+func _hide_order_drag_marks() -> void:
+	if _order_drag_marks != null:
+		_order_drag_marks.visible = false
+
+
 ## The stroke on the ground while the right button drags. A transient
 ## input hint on the canonical copy only — not world state, so the
 ## lattice-copy rule does not apply (the decision says so out loud).
@@ -5825,11 +6162,13 @@ func _update_order_drag_line(cursor: Vector2) -> void:
 	if _order_press.distance_to(cursor) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
 		if _order_drag_line != null:
 			_order_drag_line.visible = false
+		_hide_order_drag_marks()
 		return
 	var from := _world_under(_order_press)
 	var to := _world_under(cursor)
 	if from == Vector3.INF or to == Vector3.INF:
 		return
+	_update_order_drag_marks(from, to)
 	if _order_drag_line == null:
 		_order_drag_line = MeshInstance3D.new()
 		_order_drag_line.mesh = ImmediateMesh.new()
@@ -6177,7 +6516,10 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 				# actually a drag or just a click.
 				if _placing != &"":
 					var armed_def := BuildingSim.def_by_id(_placing)
-					if armed_def != null and armed_def.footprint_radius == 0:
+					# A cheat spawn places one piece per click, walls
+					# included — the drag path compiles BUILD orders,
+					# which need a builder squad a cheat does not have.
+					if armed_def != null and armed_def.footprint_radius == 0 							and not _placing_cheat:
 						_placing_drag = true
 						_placing_drag_start = _snapped_placement_cell(event.position)
 						# The SNAPPED start, not the raw cursor point. A run
@@ -6247,6 +6589,7 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 			_order_press = Vector2.INF
 			if _order_drag_line != null:
 				_order_drag_line.visible = false
+			_hide_order_drag_marks()
 			if press.distance_to(event.position) < BattleLine.DRAG_ORDER_THRESHOLD_PX:
 				if _order_press_alt:
 					_face_selected(press)
@@ -7067,6 +7410,22 @@ func _snapped_placement_cell(screen_position: Vector2) -> Vector2i:
 
 ## Place the armed building, or do nothing if none is armed.
 ## Returns true if the click was consumed by placement.
+## Arm a sandbox building spawn through the ordinary placement flow —
+## ghost, facing controls, validity colouring — with no builder-squad or
+## selection requirement (D-20260821 follow-up: "the same as the way
+## spawning for me works").
+func _arm_cheat_building(def_id: String) -> void:
+	if not _connected or _state.space == null:
+		return
+	_cheat_arm_kind = ""
+	_placing = StringName(def_id)
+	_placing_cheat = true
+	_placing_facing = 0
+	_placing_free_facing = -1
+	_last_snap_cell = Vector2i(-1, -1)
+	_update_placement_ghost()
+
+
 func _place_armed_building(screen_position: Vector2) -> bool:
 	if _placing == &"":
 		return false
@@ -7074,11 +7433,24 @@ func _place_armed_building(screen_position: Vector2) -> bool:
 	# no inferable type and the whole script fails to parse.
 	var squad: int = int(_selected[0]) if not _selected.is_empty() else -1
 	var def_id := _placing
+	var cheat := _placing_cheat
 	var free_def := _free_rotating_armed_def()
 	var pose := _armed_pose(screen_position, free_def)
 	_cancel_placement()
 	var cell: Vector2i = pose["cell"]
-	if cell.x < 0 or squad < 0:
+	if cell.x < 0 or (squad < 0 and not cheat):
+		return true
+
+	# The sandbox spawn rides the SAME pose the ghost drew (D-096's
+	# shared-answer rule): cell, facing and sub-cell offset all travel,
+	# so the building lands exactly where the preview stood — for the
+	# sender or, with the enemy box ticked, for the first hostile seat.
+	if cheat:
+		_peer.send(0, NetProtocol.encode_cheat_spawn_building(
+			String(def_id), _state.space.index(cell), int(pose["facing"]),
+			_cheat_spawn_enemy, pose["offset"]), ENetPacketPeer.FLAG_RELIABLE)
+		print("client: cheat-spawned a %s at %s%s" % [def_id, cell,
+			" (enemy)" if _cheat_spawn_enemy else ""])
 		return true
 
 	# No signed-range dance any more: `facing` is an UNSIGNED 0-255 byte on
@@ -7344,6 +7716,7 @@ func _round_axial(q: float, r: float) -> Vector2i:
 
 func _cancel_placement() -> void:
 	_placing = &""
+	_placing_cheat = false
 	_placing_drag = false
 	_placing_free_facing = -1
 	if _placement_ghost != null:
@@ -8526,7 +8899,12 @@ func _teardown_match() -> void:
 	if _order_drag_line != null:
 		_order_drag_line.queue_free()
 		_order_drag_line = null
+	if _order_drag_marks != null:
+		_order_drag_marks.queue_free()
+		_order_drag_marks = null
 	_order_press = Vector2.INF
+	_static_deal.clear()
+	_drawn_cache.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
@@ -9033,11 +9411,19 @@ func _refresh_lobby() -> void:
 ## `LOBBY_SET_OPTION` channel a map slider sends through (a "key=value"
 ## pair, not one opcode per flag). Visible to everyone so a non-admin can
 ## at least see the flags a host has enabled; only the admin can flip them.
+## ONE checkbox since D-20260821-the-sandbox-panel-runs-the-world: the
+## other flags (instant build, AI economy-only, resources) live on the
+## in-match dev panel, where the person iterating actually is — they ride
+## the same admin-gated LOBBY_SET_OPTION channel, which D-077
+## deliberately never phase-locked.
 const SANDBOX_OPTIONS := [
-	{"key": "sandbox", "label": "Sandbox mode (enables cheats below)"},
-	{"key": "instant_build", "label": "Instant construction & production"},
-	{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+	{"key": "sandbox", "label": "Sandbox mode (opens the dev tools panel in match)"},
 ]
+
+## The dev panel's own copies of the match-wide sandbox flags — synced
+## from `_state.lobby` on every refresh so another admin's toggle shows
+## up here too. key -> CheckBox.
+var _debug_option_boxes := {}
 
 
 func _refresh_sandbox_panel() -> void:
@@ -9106,6 +9492,10 @@ var _debug_visible_last := false
 var _cheat_arm_kind: String = ""
 var _cheat_arm_id: String = ""
 var _cheat_arm_count: int = 1
+## Whether the next armed spawn is for the first HOSTILE seat instead of
+## the sender (D-20260821) — resolved server-side, so this client never
+## names a player id.
+var _cheat_spawn_enemy := false
 
 
 func _build_debug_panel() -> void:
@@ -9195,20 +9585,61 @@ func _build_debug_panel() -> void:
 		var idx := building_picker.selected
 		if idx < 0 or idx >= defs.size():
 			return
-		_cheat_arm_kind = "building"
-		_cheat_arm_id = String((defs[idx] as BuildingDef).id)
-		_debug_status_label.text = "Armed: %s — click the ground (right-click cancels)" \
-			% _cheat_arm_id)
+		var def_id := String((defs[idx] as BuildingDef).id)
+		_arm_cheat_building(def_id)
+		_debug_status_label.text = ("Placing: %s — the ghost follows the cursor; "
+			+ "click to spawn, V or scroll rotates, right-click cancels") % def_id)
 	building_row.add_child(building_arm_button)
+
+	var enemy_box := CheckBox.new()
+	enemy_box.text = "Spawn for the ENEMY (first hostile seat)"
+	enemy_box.add_theme_font_size_override("font_size", 13)
+	enemy_box.toggled.connect(func(pressed: bool): _cheat_spawn_enemy = pressed)
+	col.add_child(enemy_box)
 
 	var cancel_button := _styled_button("Cancel spawn mode", Color(0.7, 0.4, 0.4))
 	cancel_button.pressed.connect(_on_cheat_cancel_pressed)
 	col.add_child(cancel_button)
 
+	col.add_child(HSeparator.new())
+
+	# Match-wide settings, moved here from the lobby (D-20260821): the
+	# same admin-gated LOBBY_SET_OPTION messages the lobby checkboxes
+	# sent — D-077 never phase-locked them, so they work mid-match.
+	var settings_label := Label.new()
+	settings_label.text = "Match settings (host only):"
+	settings_label.add_theme_font_size_override("font_size", 13)
+	col.add_child(settings_label)
+	for option in [
+		{"key": "instant_build", "label": "Instant construction & production"},
+		{"key": "ai_economy_only", "label": "AI civs: economy only, never attack"},
+		{"key": "resources", "label": "Resource nodes (applies on regen)"},
+		{"key": "ai_frozen", "label": "Freeze AI (no thinking, no orders)"},
+		{"key": "reveal_all", "label": "Full world visibility (fog off, humans only)"},
+	]:
+		var key := String(option["key"])
+		var box := CheckBox.new()
+		box.text = String(option["label"])
+		box.add_theme_font_size_override("font_size", 13)
+		box.toggled.connect(_on_sandbox_option_toggled.bind(key))
+		col.add_child(box)
+		_debug_option_boxes[key] = box
+
+	var regen_button := _styled_button("Regen map (new seed)", Color(0.5, 0.65, 0.8))
+	regen_button.pressed.connect(func():
+		if not _connected:
+			return
+		_debug_status_label.text = "Regenerating the world - the match restarts on a fresh map..."
+		_peer.send(0, NetProtocol.encode_cheat_regen_map(), ENetPacketPeer.FLAG_RELIABLE))
+	col.add_child(regen_button)
+
 	_debug_status_label = Label.new()
 	_debug_status_label.add_theme_font_size_override("font_size", 12)
 	_debug_status_label.modulate = Color(0.9, 0.85, 0.4)
 	_debug_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# Two wrapped lines' worth of reserve, so the content-fitted window
+	# below does not measure an EMPTY label and then clip the armed text.
+	_debug_status_label.custom_minimum_size = Vector2(0.0, 34.0)
 	col.add_child(_debug_status_label)
 
 	col.add_child(HSeparator.new())
@@ -9233,6 +9664,18 @@ func _build_debug_panel() -> void:
 	_debug_nodes_label.add_theme_font_size_override("font_size", 12)
 	_debug_nodes_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_debug_nodes_label)
+
+	# Size the window to its CONTENT (owner request): the fixed 300x500
+	# was clipping as the panel grew a control per session. Deferred a
+	# frame so theme fonts have resolved and the column knows its real
+	# minimum; capped so a tall panel never runs off the screen.
+	(func():
+		if _debug_window == null:
+			return
+		var wanted := col.get_combined_minimum_size() + Vector2(24.0, 20.0)
+		var cap := DisplayServer.screen_get_size().y - 120
+		_debug_window.size = Vector2i(int(wanted.x), mini(int(wanted.y), cap))
+	).call_deferred()
 
 
 ## Bound at build time from the same cap `server.gd`'s CHEAT_SPAWN_MAX_
@@ -9270,10 +9713,11 @@ func _fire_armed_cheat(screen_position: Vector2) -> bool:
 	match _cheat_arm_kind:
 		"unit":
 			_peer.send(0, NetProtocol.encode_cheat_spawn_unit(
-				_cheat_arm_id, cell_index, _cheat_arm_count), ENetPacketPeer.FLAG_RELIABLE)
-		"building":
-			_peer.send(0, NetProtocol.encode_cheat_spawn_building(_cheat_arm_id, cell_index),
+				_cheat_arm_id, cell_index, _cheat_arm_count, _cheat_spawn_enemy),
 				ENetPacketPeer.FLAG_RELIABLE)
+		# "building" is gone: cheat building spawns arm the ordinary
+		# placement flow now (_arm_cheat_building) and commit through
+		# _place_armed_building, never through this click handler.
 		_:
 			return false
 	return true
@@ -9287,6 +9731,15 @@ func _refresh_debug_panel() -> void:
 	if _debug_window == null:
 		return
 	var showing: bool = bool(_state.lobby.get("sandbox", false)) and not _state.in_lobby()
+	if showing:
+		# Reflect the server's own answer, not this client's last click —
+		# another admin (or the launch flag) may have set these.
+		for key in _debug_option_boxes:
+			var box: CheckBox = _debug_option_boxes[key]
+			var lobby_key := "resources" if String(key) == "resources" else String(key)
+			box.set_pressed_no_signal(bool(_state.lobby.get(lobby_key,
+				String(key) == "resources")))
+			box.disabled = not _state.is_admin()
 	if showing and _debug_sync_label != null:
 		var desyncs := _state.desync_count + _state.building_desync_count
 		_debug_sync_label.text = "State sync: %s" % _state.desync_summary()

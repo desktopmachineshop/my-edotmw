@@ -437,42 +437,6 @@ static func facing_angle(curve: StateCurve, time: float, space: TorusSpace,
 	return atan2(world_dir.x, world_dir.z)
 
 
-## How far a soldier turns from his squad's facing to look at what the squad
-## is standing ON, in radians. Zero for every shape but the gathering ring.
-##
-## ## Why a ring needs this and a line does not
-##
-## Every other formation addresses something AHEAD of the squad, so one facing
-## serves all of it (D-20260819-facing-and-width-are-orders resolves that
-## facing in one place, and combat's aspect reads the same value). A gathering
-## ring is the one shape whose subject is at its own CENTRE — so a single
-## facing puts the far half of the crew's backs to the tree, chopping away
-## from it.
-##
-## The owner's playtest reported the result as a crew "weirdly standing around
-## doing the motion", which is exactly what it was: the men were animated, and
-## half of them were addressing empty ground.
-##
-## Pure in (shape, slot offset) like everything else here, so it costs no
-## state and both sides derive the same man facing the same way. It turns only
-## the BASIS — positions are untouched, so nothing the simulation reads off a
-## derived position (`Engagement`'s contact set, selection, culling) can see
-## it at all.
-static func inward_turn(shape: String, local: Vector2) -> float:
-	if not faces_centre(shape):
-		return 0.0
-	if local.length_squared() <= 1e-8:
-		return 0.0
-	# Formation-local +y is forward, so this is the turn from "forward" to
-	# "toward the middle".
-	return atan2(-local.x, -local.y)
-
-
-## Whether a shape's soldiers address its own centre rather than the front.
-static func faces_centre(shape: String) -> bool:
-	return shape == "ring"
-
-
 ## The slot offset a soldier actually stands at: `offset` as the formation
 ## drew it, or the furthest fraction of it that still lands on ground the
 ## squad itself could walk on.
@@ -597,16 +561,51 @@ static func soldier_transform(
 	# combat's aspect reads (D-20260819-facing-and-width-are-orders).
 	var angle := facing_angle(curve, time, space, ordered_facing)
 
-	var local := slot_offset(shape, slot, alive, spacing, files)
-	# Formation-local +y is forward, which is +z after rotation.
 	var offset := grounded_offset(
-		centre, Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle),
+		centre, slot_world_offset(shape, slot, alive, spacing, files, angle),
 		space, passable)
 
-	var basis := Basis(Vector3.UP, angle + inward_turn(shape, local))
+	var basis := Basis(Vector3.UP, angle)
 	var origin := centre + offset
 	origin.y = terrain_height
 	return Transform3D(basis, origin)
+
+
+## Where one soldier stands RELATIVE to his formation's centre, for a
+## squad facing `angle` — formation-local +y is forward, which is +z
+## after rotating about UP.
+##
+## Extracted from `soldier_transform` rather than written beside it
+## (D-20260823): the battle-line drag preview has to ask this question
+## about a formation that does not exist yet — no squad, no curve — and
+## a preview that computed its own answer would be a preview that
+## eventually disagrees with where the men actually stand.
+static func slot_world_offset(shape: String, slot: int, alive: int,
+		spacing: float, files: int, angle: float) -> Vector3:
+	var local := slot_offset(shape, slot, alive, spacing, files)
+	return Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+
+
+## A formation's EFFECTIVE spacing: the unit's own spacing scaled by the
+## formation's `spacing_scale`, which is how close its men actually
+## stand (`_offset_for` applies exactly this internally).
+##
+## Public because the battle line has to deal FILES across a stroke, and
+## dealing them at the unit's raw spacing gave a tight formation the
+## files a loose one needs — it packed short of its own stroke and left a
+## gap at each end (D-20260823: tightness is closeness, never shape).
+static func effective_spacing(shape: String, spacing: float) -> float:
+	# Falls back to LINE for an unknown shape, exactly as `slot_offset`
+	# does — and deliberately without a second push_error, since that
+	# call shouts about the same typo. Answering `spacing` here while the
+	# geometry answered line's scale would be the quiet disagreement this
+	# whole decision exists to remove.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		def = FormationRoster.by_id(&"line")
+	if def == null:
+		return spacing
+	return spacing * maxf(def.spacing_scale, 0.01)
 
 
 ## All slot transforms for a squad, ready for PrimitiveUnit's MultiMesh.
@@ -682,12 +681,6 @@ static func soldier_transforms_sampled(
 	# soldiers are, and that is the exact failure D-006 exists to prevent.
 	var centre := curve.sample_world(time, space)
 	var angle := facing_angle(curve, time, space, ordered_facing)
-	# Hoisted only when it IS invariant. A gathering ring turns every man to
-	# face the middle (`inward_turn`), so its basis is per-slot and is built
-	# inside the loop instead — hoisting it there is what made this path
-	# disagree with `soldier_transform`, which is the one disagreement D-006
-	# exists to prevent and the one this file's own test checks for.
-	var turns := faces_centre(shape)
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
 	# Hoisted for the same reason everything else here is: without terrain
@@ -702,9 +695,6 @@ static func soldier_transforms_sampled(
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
 		var local := slot_offset(shape, slot, alive, spacing, files)
-		var facing := basis
-		if turns:
-			facing = Basis(Vector3.UP, angle + inward_turn(shape, local))
 		var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
 		# Clamped BEFORE the height is sampled, so a man pulled back off the
 		# rock takes the height of the ground he ends up on rather than of
@@ -713,5 +703,5 @@ static func soldier_transforms_sampled(
 			offset = grounded_offset(centre, offset, space, passable)
 		var origin := centre + offset
 		origin.y = terrain_sampler.call(origin.x, origin.z) if sample_terrain else 0.0
-		out[i] = Transform3D(facing, origin)
+		out[i] = Transform3D(basis, origin)
 	return out

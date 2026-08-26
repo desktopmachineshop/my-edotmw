@@ -63,3 +63,11 @@ not an amendment to this one, since it would need seat-scoped wire state
 `encode_lobby`'s per-seat fields do not currently carry.
 
 ---
+
+**Amended 2026-08-21 (D-20260821-the-sandbox-panel-runs-the-world):**
+the panel grew — map regen, a resources on/off flag (a FOURTH sandbox
+option on the same channel), enemy spawns — and the lobby now shows only
+the master Sandbox checkbox, with `instant_build`/`ai_economy_only`
+moved onto the in-match panel. The safety structure above is unchanged:
+same gating, same channel, still unreachable without `--sandbox=1` or an
+admin's explicit toggle.

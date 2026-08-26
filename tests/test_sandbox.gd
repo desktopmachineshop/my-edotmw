@@ -200,3 +200,178 @@ func test_the_same_scenario_without_economy_only_does_attack() -> void:
 		if NetProtocol.opcode_of(packet) == NetProtocol.C2S_ORDER_ATTACK_MOVE:
 			attacked = true
 	assert_true(attacked, "setup: an ordinary AI should attack a visible enemy right beside it")
+
+
+# --- D-20260821-the-sandbox-panel-runs-the-world -------------------------
+
+func test_spawn_cheats_round_trip_the_enemy_flag() -> void:
+	var unit := NetProtocol.decode_cheat_spawn_unit(
+		NetProtocol.encode_cheat_spawn_unit("militia", 77, 5, true))
+	assert_true(bool(unit["enemy"]))
+	var mine := NetProtocol.decode_cheat_spawn_unit(
+		NetProtocol.encode_cheat_spawn_unit("militia", 77, 5))
+	assert_false(bool(mine["enemy"]), "the default spawns for the sender")
+	var building := NetProtocol.decode_cheat_spawn_building(
+		NetProtocol.encode_cheat_spawn_building("tower", 42, 3, true))
+	assert_true(bool(building["enemy"]))
+
+
+func test_regen_map_has_its_own_opcode_and_no_payload() -> void:
+	var bytes := NetProtocol.encode_cheat_regen_map()
+	assert_eq(NetProtocol.opcode_of(bytes), NetProtocol.C2S_CHEAT_REGEN_MAP)
+	assert_eq(bytes.size(), 1, "who asked is read from the connection")
+
+
+func test_lobby_packet_round_trips_the_resources_flag() -> void:
+	var off := NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0, true, false, false, false))
+	assert_false(bool(off["resources"]))
+	var default_on := NetProtocol.decode_lobby(NetProtocol.encode_lobby(1, [], {}, 0))
+	assert_true(bool(default_on["resources"]),
+		"resources default ON — a world with no nodes is the sandbox exception")
+
+
+func test_resources_is_a_fourth_admin_gated_sandbox_option() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	assert_true(m.resources_enabled, "on by default")
+	assert_false(m.set_sandbox_option(2, "resources", false), "not the admin")
+	assert_true(m.resources_enabled)
+	assert_true(m.set_sandbox_option(1, "resources", false))
+	assert_false(m.resources_enabled)
+	assert_false(m.sandbox, "flags stay independent (D-077)")
+
+
+func test_enemy_of_finds_a_hostile_seat_and_only_a_hostile_seat() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	# Free-for-all (team 0 is not a team, D-050): each is the other's enemy.
+	assert_eq(m.enemy_of(1), 2)
+	assert_eq(m.enemy_of(2), 1)
+	# Allied: nobody left to spawn for — the handler must refuse, loudly.
+	# Each player sets their OWN seat (the permission a human seat has;
+	# the first version had the admin set player 2's seat, which is
+	# refused, and the refusal made this assertion test nothing).
+	assert_true(m.set_team(1, m.seat_of(1), 1))
+	assert_true(m.set_team(2, m.seat_of(2), 1))
+	assert_eq(m.enemy_of(1), -1, "an ally is not an enemy, and there is no one else")
+
+
+func test_ai_frozen_is_an_admin_gated_sandbox_option() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	assert_false(m.ai_frozen, "off by default — a frozen AI is a dev request, never a state a match wakes up in")
+	assert_false(m.set_sandbox_option(2, "ai_frozen", true), "not the admin")
+	assert_true(m.set_sandbox_option(1, "ai_frozen", true))
+	assert_true(m.ai_frozen)
+
+
+func test_lobby_packet_round_trips_the_ai_frozen_flag() -> void:
+	var frozen := NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0, true, false, false, true, true))
+	assert_true(bool(frozen["ai_frozen"]))
+	var default_off := NetProtocol.decode_lobby(NetProtocol.encode_lobby(1, [], {}, 0))
+	assert_false(bool(default_off["ai_frozen"]))
+
+
+func test_cheat_spawn_building_round_trips_facing_and_offset() -> void:
+	# The cheat rides the SAME placement flow as an ordinary build now
+	# (ghost, facing, sub-cell offset) — so the wire has to carry what the
+	# ghost promised, or the spawn drifts from the preview, which is the
+	# exact defect D-096's shared-pose rule exists to prevent.
+	var decoded := NetProtocol.decode_cheat_spawn_building(
+		NetProtocol.encode_cheat_spawn_building("tower", 42, 137, true,
+			Vector2(0.25, -0.4)))
+	assert_eq(int(decoded["facing"]), 137)
+	assert_true(bool(decoded["enemy"]))
+	assert_almost_eq((decoded["offset"] as Vector2).x, 0.25, 0.001)
+	assert_almost_eq((decoded["offset"] as Vector2).y, -0.4, 0.001)
+
+
+# --- full world visibility (D-20260821, second amendment) ----------------
+
+func test_reveal_all_is_an_admin_gated_sandbox_option() -> void:
+	var m := MatchState.new()
+	m.require_admin_start = true
+	m.add_player(1)
+	m.add_player(2)
+	assert_false(m.reveal_all, "off by default — fog is the game")
+	assert_false(m.set_sandbox_option(2, "reveal_all", true), "not the admin")
+	assert_true(m.set_sandbox_option(1, "reveal_all", true))
+	assert_true(m.reveal_all)
+
+
+func test_lobby_packet_round_trips_reveal_all() -> void:
+	var on := NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0, true, false, false, true, false, true))
+	assert_true(bool(on["reveal_all"]))
+	assert_false(bool(NetProtocol.decode_lobby(
+		NetProtocol.encode_lobby(1, [], {}, 0))["reveal_all"]))
+
+
+func test_a_revealed_player_sees_every_cell_and_nobody_else_does() -> void:
+	# The hook is inside Vision itself, because every gate — squads,
+	# buildings, resource nodes — already funnels through `is_visible`.
+	# A second data-hiding path is exactly what D-004 forbids.
+	var space := _space()
+	var vision := Vision.new()
+	var far := space.index(Vector2i(30, 14))
+	assert_false(vision.is_visible(1, far), "nobody has stamped anything")
+	vision.reveal_all_players = {1: true}
+	assert_true(vision.is_visible(1, far), "the revealed player sees unstamped ground")
+	assert_false(vision.is_visible(2, far),
+		"and only that player — an AI keeps its honest fog")
+
+
+func test_reveal_all_lights_the_ground_for_the_client_too() -> void:
+	# Terrain fog is derived CLIENT-side (D-106), so a server that sends
+	# everything still leaves the ground black unless this half knows.
+	var state := ClientState.new()
+	state.space = TorusSpace.new(16, 8)
+	state.player = 1
+	state.lobby = {"seats": [{"player": 1, "team": 0}], "reveal_all": true}
+	var fog := TerrainFog.new(state.space)
+	fog.rebuild(state, 0.0)
+	for i in range(state.space.width * state.space.height):
+		assert_eq(fog.level_at(i), TerrainFog.VISIBLE,
+			"every cell is lit, including ground no squad has ever approached")
+
+
+func test_reveal_all_stamps_the_map_once_not_every_refresh() -> void:
+	# A dev flag gets left ON, and this rebuild runs four times a second
+	# (client.gd's FOG_INTERVAL) over 32,592 cells on the shipped map.
+	# Work, not milliseconds — the D-106 lesson about timing gates.
+	var state := ClientState.new()
+	state.space = TorusSpace.new(16, 8)
+	state.player = 1
+	state.lobby = {"seats": [{"player": 1, "team": 0}], "reveal_all": true}
+	var fog := TerrainFog.new(state.space)
+	fog.rebuild(state, 0.0)
+	var after_first := fog.stamps_last_rebuild
+	fog.rebuild(state, 0.5)
+	assert_eq(fog.stamps_last_rebuild, 0,
+		"the second refresh stamps nothing — everything is already visible")
+	assert_gt(after_first, 0, "and the first one did the work")
+	assert_eq(fog.level_at(3), TerrainFog.VISIBLE, "the field still says visible")
+
+	# Turning it back off must return the real field, not leave the map lit.
+	state.lobby["reveal_all"] = false
+	fog.rebuild(state, 1.0)
+	assert_eq(fog.level_at(3), TerrainFog.EXPLORED,
+		"with the flag off, ground nobody can see drops back to remembered")
+
+	# And ON again. This phase is the one that catches a latch that never
+	# clears: with the flag off nothing READS the latch, so dropping the
+	# reset line is invisible until somebody toggles back — and then the
+	# map stays dim forever. Observed: without the reset, this assert is
+	# the only one in the suite that goes red.
+	state.lobby["reveal_all"] = true
+	fog.rebuild(state, 1.5)
+	assert_eq(fog.level_at(3), TerrainFog.VISIBLE,
+		"toggling back on lights the map again")

@@ -83,9 +83,14 @@ static func opponents(attackers: Array[Transform3D],
 ## pure — a stepped man takes the height of the ground he steps onto.
 ## Without one his own slot height is kept, which over a step of at most
 ## MAX_STEP is a smaller error than the sway already applied on top.
+## `max_step` defaults to the melee bound; a STATIC target passes a
+## larger surround budget (D-20260820, third amendment) — a building
+## does not hit back, so men may leave formation properly to wrap it,
+## and the travel stays a pure function of replicated state either way.
 static func engage(attackers: Array[Transform3D],
 		defenders: Array[Transform3D], paired: PackedInt32Array,
-		terrain_sampler := Callable()) -> Array[Transform3D]:
+		terrain_sampler := Callable(),
+		max_step: float = Engagement.MAX_STEP) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	out.resize(attackers.size())
 	var sample := terrain_sampler.is_valid()
@@ -116,11 +121,11 @@ static func engage(attackers: Array[Transform3D],
 			# apart. Closing the full gap would double-count the approach
 			# and stand them inside each other. A man already too close
 			# steps back — men fight toe to toe, not model-in-model.
-			var step := clampf((gap - CONTACT_GAP) / 2.0, -MAX_STEP, MAX_STEP)
+			var step := clampf((gap - CONTACT_GAP) / 2.0, -max_step, max_step)
 			# A man whose half-share cannot reach contact takes REAR_LEAN
 			# instead: he is a rear rank queued behind the fight, and his
 			# full step would put him inside his own front rank.
-			if gap - 2.0 * MAX_STEP > CONTACT_GAP:
+			if gap - 2.0 * max_step > CONTACT_GAP:
 				step = REAR_LEAN
 			var direction := toward / gap
 			origin.x += direction.x * step
@@ -135,17 +140,40 @@ static func engage(attackers: Array[Transform3D],
 ## replacement for `CosmeticOffset.decorate_activity`, which leans a
 ## whole squad at one squad-level point. Runs after `SoldierMotion.ease`,
 ## exactly where decorate_activity ran.
+## A man only SWINGS when his mark is actually in front of him: queued
+## rear ranks lean and wait. Without the gate, every crowded man behind
+## a siege windmilled at air — the owner's screenshot, in one clause.
+const STRIKE_REACH := Engagement.CONTACT_GAP + 1.0
+
+
+## `amplitude` is how far a man lunges at his mark, and passing 0 turns this
+## decoration OFF ENTIRELY — sway included, not just the lunge.
+##
+## Both halves of it are placeholders that predate having any animation
+## (`CosmeticOffset.ANIMATED_SWING_AMPLITUDE`), and a model that draws its own
+## stroke wants neither: a 5.5 Hz lunge against a 0.62 Hz chop beats against it
+## nine times a stroke, which is how a correct animation ends up looking
+## broken. The owner's playtest reported the leftover as crews "bobbing around,
+## floating side to side".
+##
+## It is a parameter rather than a lookup because this function is pure and
+## static and has no business knowing what a model bakes; the caller does
+## (`UnitMesh.animates_work`).
 static func strike_decorate(eased: Array[Transform3D],
 		defenders: Array[Transform3D], paired: PackedInt32Array,
-		time: float, speed: float) -> Array[Transform3D]:
+		time: float, speed: float,
+		amplitude: float = CosmeticOffset.SWING_AMPLITUDE) -> Array[Transform3D]:
+	if amplitude <= 0.0:
+		return eased.duplicate()
 	var out: Array[Transform3D] = []
 	out.resize(eased.size())
 	for i in range(eased.size()):
 		var decorated := CosmeticOffset.decorate(eased[i], i, time, speed)
 		var j := paired[i] if i < paired.size() else -1
 		if j >= 0 and j < defenders.size():
-			decorated.origin += CosmeticOffset.work_swing(i, time,
-				defenders[j].origin - eased[i].origin,
-				CosmeticOffset.Activity.FIGHTING)
+			var toward := defenders[j].origin - eased[i].origin
+			if Vector2(toward.x, toward.z).length() <= STRIKE_REACH:
+				decorated.origin += CosmeticOffset.work_swing(i, time,
+					toward, CosmeticOffset.Activity.FIGHTING, amplitude)
 		out[i] = decorated
 	return out

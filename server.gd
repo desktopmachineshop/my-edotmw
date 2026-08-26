@@ -522,14 +522,20 @@ func _build_world() -> void:
 	# without anything here reasoning about fairness (D-036).
 	_economy = Economy.new(space)
 	_depleted_nodes.clear()
-	_economy.generate(terrain, 1)
-	# Fairness on an asymmetric map is a post-pass now, not a property of
-	# the generator (D-036 revised): every start is guaranteed a minimum
-	# of each resource within reach.
-	_economy.balance_for_spawns(_spawn_points, _passable,
-		_config.fairness_radius, _config.fairness_quota)
+	# The sandbox panel's Resources toggle (D-20260821): consulted at
+	# GENERATION time, so it takes effect on the next regen. The Economy
+	# object itself always exists — gathering machinery over zero nodes
+	# is a no-op, not a null crash.
+	if _match.resources_enabled:
+		_economy.generate(terrain, 1)
+		# Fairness on an asymmetric map is a post-pass now, not a property
+		# of the generator (D-036 revised): every start is guaranteed a
+		# minimum of each resource within reach.
+		_economy.balance_for_spawns(_spawn_points, _passable,
+			_config.fairness_radius, _config.fairness_quota)
 	_sim.economy = _economy
-	print("server: %d resource nodes generated" % _economy.node_count())
+	print("server: %d resource nodes generated%s" % [_economy.node_count(),
+		"" if _match.resources_enabled else " (resources OFF — sandbox)"])
 
 	# Scenario homes, once, now that spawn points and passability exist
 	# (D-098). Computed for every SEAT rather than lazily per join, because
@@ -669,9 +675,17 @@ func _process(delta: float) -> void:
 		# AI seats think on the server's clock, after the world has moved
 		# but before it is replicated, so they act on the same tick a human
 		# would be reacting to (D-051).
-		for brain in _ai_players:
-			brain.set_time(_sim.time)
-			brain.update(_sim.time)
+		# Full world visibility, refreshed each tick from the seat list
+		# because seats change and a stale set would leave a departed
+		# player's id revealed (D-20260821). HUMAN seats only.
+		_sim.vision.reveal_all_players = _revealed_players()
+		# The sandbox freeze (D-20260821): skipped entirely, not fed a
+		# no-op — a frozen brain must not advance its own timers either,
+		# or thawing it fires every decision it queued while "frozen".
+		if not _match.ai_frozen:
+			for brain in _ai_players:
+				brain.set_time(_sim.time)
+				brain.update(_sim.time)
 		_replicate()
 
 		if _sim.tick_count % _status_every_ticks == 0:
@@ -947,7 +961,9 @@ func _admit_player(peer, player: int) -> void:
 	# correctly; this direct-join path just never got them.
 	peer.send(0, NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
-		_match.sandbox, _match.instant_build, _match.ai_economy_only), ENetPacketPeer.FLAG_RELIABLE)
+		_match.sandbox, _match.instant_build, _match.ai_economy_only,
+		_match.resources_enabled, _match.ai_frozen,
+		_match.reveal_all), ENetPacketPeer.FLAG_RELIABLE)
 	peer.send(0, NetProtocol.encode_map_settings(_settings.to_dict()),
 		ENetPacketPeer.FLAG_RELIABLE)
 
@@ -1169,6 +1185,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_cheat_spawn_unit(peer, data)
 			NetProtocol.C2S_CHEAT_SPAWN_BUILDING:
 				_handle_cheat_spawn_building(peer, data)
+			NetProtocol.C2S_CHEAT_REGEN_MAP:
+				_handle_cheat_regen_map(peer, data)
 			NetProtocol.C2S_ORDER_PRODUCE:
 				_handle_order_produce(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
@@ -2081,16 +2099,28 @@ func _handle_cheat_spawn_unit(peer, data: PackedByteArray) -> void:
 		return
 	var order := NetProtocol.decode_cheat_spawn_unit(data)
 	var player := int(record["player"])
+	# "For the ENEMY" (D-20260821): the server resolves which seat that
+	# is — first hostile — and the archetype resolves against the
+	# TARGET's civ, so D-047's "a client cannot name another civ's unit"
+	# still holds with the civ being the recipient's.
+	if bool(order.get("enemy", false)):
+		player = _match.enemy_of(player)
+		if player < 0:
+			_notify(peer, "No enemy seat to spawn for")
+			return
 	var def := UnitRoster.for_civ_archetype(_civ_of(player), StringName(order["archetype"]))
 	if def == null:
-		_notify(peer, "Your people do not field %s" % order["archetype"])
+		_notify(peer, "%s do not field %s" % [
+			"They" if player != int(record["player"]) else "Your people",
+			order["archetype"]])
 		return
 
 	var cell := _sim.space.from_index(int(order["cell"]))
 	var count := clampi(int(order["count"]), 1, CHEAT_SPAWN_MAX_COUNT)
 	for _i in range(count):
 		_sim.add_squad(def, player, cell)
-	_notify(peer, "Cheat: spawned %d x %s" % [count, order["archetype"]])
+	_notify(peer, "Cheat: spawned %d x %s%s" % [count, order["archetype"],
+		" for the enemy" if player != int(record["player"]) else ""])
 
 
 ## CHEAT_SPAWN_BUILDING: raise a COMPLETE building instantly, bypassing
@@ -2118,13 +2148,65 @@ func _handle_cheat_spawn_building(peer, data: PackedByteArray) -> void:
 		return
 
 	var player := int(record["player"])
+	if bool(order.get("enemy", false)):
+		player = _match.enemy_of(player)
+		if player < 0:
+			_notify(peer, "No enemy seat to spawn for")
+			return
 	# Same generic safety wrap as `_do_order_build` — `add_building` is the
 	# one place that knows whether `def` wants a 6-way hex direction or a
 	# continuous byte.
 	var facing := posmod(int(order.get("facing", 0)), 256)
-	_buildings.add_building(def, player, cell, true, -1, facing)
+	_buildings.add_building(def, player, cell, true, -1, facing,
+		order.get("offset", Vector2.ZERO))
 	_refresh_passability()
-	_notify(peer, "Cheat: spawned a %s" % def.display_name)
+	_notify(peer, "Cheat: spawned a %s%s" % [def.display_name,
+		" for the enemy" if player != int(record["player"]) else ""])
+
+
+## CHEAT_REGEN_MAP (D-20260821-the-sandbox-panel-runs-the-world): tear
+## the world down and regenerate it on a fresh seed, seats held. Admin-
+## gated beyond the ordinary sandbox check, because it restarts EVERY
+## player's match — the same gate the option channel already applies.
+##
+## Every step is the ordinary, tested path: `_return_to_lobby` is the
+## D-075 edge `test_return_to_lobby.gd` guards (world dropped, seats and
+## sandbox flags held), and `_on_match_started` is the same start a
+## lobby click runs — the client rides the exact match->lobby->match
+## sequence it already knows, terrain streaming included. The seed is
+## force-rolled EVEN IF PINNED: the pin governs lobby rerolls, and
+## regenerating the identical map is the one thing nobody pressing this
+## button wants.
+func _handle_cheat_regen_map(peer, _data: PackedByteArray) -> void:
+	var record = _validated_cheat(peer)
+	if record == null:
+		return
+	if not _match.is_admin(int(record["player"])):
+		_notify(peer, "Only the host can regenerate the map")
+		return
+	print("server: sandbox map regen ordered by player %d" % int(record["player"]))
+	_return_to_lobby()
+	_match.map_settings.roll_seed()
+	if _match.start_match():
+		_on_match_started()
+		# The phase changed twice with nobody clicking anything: the
+		# ordinary start path broadcasts the lobby AFTER _on_match_started
+		# (see LOBBY_START above), and this path owes the same packet or
+		# every client is left drawing a lobby over a running match.
+		_broadcast_lobby()
+
+
+## The players the sandbox's full-visibility flag applies to: human
+## seats only (D-20260821). Empty — the shared instance every real match
+## uses — whenever the flag is off.
+func _revealed_players() -> Dictionary:
+	if not _match.reveal_all:
+		return {}
+	var out := {}
+	for seat in _match.seats:
+		if String(seat["kind"]) == "human":
+			out[int(seat["player"])] = true
+	return out
 
 
 ## Buildable ground: passable terrain (no lakes, no mountains) with
@@ -2688,7 +2770,8 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 				# as a bool rather than a float and MUST NOT fall through
 				# to set_map_option's float() cast on something like "1"
 				# meant as true.
-				if ["sandbox", "instant_build", "ai_economy_only"].has(parts[0]):
+				if ["sandbox", "instant_build", "ai_economy_only", "resources",
+						"ai_frozen", "reveal_all"].has(parts[0]):
 					ok = _match.set_sandbox_option(player, parts[0], parts[1] != "0")
 					if ok and parts[0] == "ai_economy_only":
 						for brain in _ai_players:
@@ -2775,6 +2858,13 @@ func _return_to_lobby() -> void:
 	# the player could already see — the same defect `_recipients` records.
 	for peer in _clients:
 		_clients[peer]["visible"] = {}
+		# And the BUILDING baseline beside it (D-030's ever-revealed set,
+		# which the server hashes). It was missed here for as long as
+		# leaving to the lobby has existed, and the sandbox Regen button
+		# made it easy to hit: building ids restart at 0 in the next
+		# match, so a stale set hashed old ids against a client that had
+		# torn its world down — 106 building desyncs in one playtest.
+		_clients[peer]["known_buildings"] = {}
 
 	# `return_to_lobby` rolls the next match's map unless the seed is
 	# pinned (D-100), so the seed is worth naming here: it is the one
@@ -3027,7 +3117,8 @@ func _broadcast_lobby() -> void:
 	_settings = _match.map_settings
 	var packet := NetProtocol.encode_lobby(_match.admin_player, _match.scoreboard(),
 		_settings.to_dict(), int(_match.phase),
-		_match.sandbox, _match.instant_build, _match.ai_economy_only)
+		_match.sandbox, _match.instant_build, _match.ai_economy_only,
+		_match.resources_enabled, _match.ai_frozen, _match.reveal_all)
 	# `_recipients()`, not `_clients` — the third time this exact drift has
 	# been found, and see that function's own doc for the first two. An AI
 	# seat is a client (D-051), it is told the lobby once at admission, and

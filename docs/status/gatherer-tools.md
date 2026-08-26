@@ -68,32 +68,27 @@ animation:
   the property that makes an art change reviewable at all when nineteen of the
   twenty source files are binary.
 
-**A crew now FACES the node it is working, and that was the "standing around"**
-(owner's playtest). The crew was already centred on the node and ringed around
-it — but every soldier shares the squad's facing, so the far half had its back
-to the tree and chopped away from it. `Formation.inward_turn` turns a ring's
-men to look at their own centre; every other shape addresses something ahead
-and is untouched. Pure in (shape, slot offset), and it moves only the BASIS, so
-nothing the simulation reads off a derived position (`Engagement`'s contact set,
-selection, culling) can see it.
+**A crew FACES the node it is working — and that is `main`'s mechanism, not
+this branch's.** The owner reported crews "weirdly standing around doing the
+motion", which was the facing: every soldier shares the squad's facing, so the
+far half of a crew had its back to the tree. This branch first fixed it in
+`Formation` with a per-slot inward turn for the ring shape; the merge with
+`D-20260820-men-gather-round-what-they-strike` made that redundant and it was
+REMOVED. Main deals a working crew's men to perimeter points and `CosmeticDuel`
+turns each to face his own mark, which covers a node's ring and a building's
+box with one mechanism. Two ways to decide where a working man looks is exactly
+the kind of pair that comes to disagree.
 
-**And it caught the defect this project's own test exists for.** Soldier
-transforms are derived by TWO paths — `soldier_transform` and the hoisted bulk
-loop — and the first version changed only one. Positions matched; the basis did
-not, and `test_bulk_derivation_matches_the_single_soldier_path` said so on every
-ring slot. A per-slot facing cannot be hoisted out of the loop, which is exactly
-what the hoisting comment warned about.
+**But the merge would have brought the placeholder motion back, and that is
+worth knowing.** A working crew goes through the DUEL pipeline now, and
+`CosmeticDuel.strike_decorate` applies `CosmeticOffset`'s lunge and sway at the
+FIGHTING rate — 5.5 Hz against a 0.62 Hz chop, nine beats a stroke. Silencing
+it in `decorate_activity`, which is what this branch did before the merge, no
+longer reaches a gatherer at all. `strike_decorate` takes an amplitude now and
+the client passes 0 for a model that animates its own work; zero turns the
+whole decoration off rather than shrinking it.
 
-**The placeholder body motion is gone for models that animate their own work.**
-`CosmeticOffset`'s work swing and idle sway predate having any animation at all
-— a lunge plus a sway to say "something is happening" on a model that could not
-say it otherwise — and the owner reported the leftover as crews "bobbing around,
-floating side to side". It is not a matter of amplitude: a 3 Hz lunge against a
-0.62 Hz chop beats against it about five times per stroke, so any non-zero value
-is two mechanisms doing one job at different rhythms. 0.34 -> 0.11 -> 0, and the
-sway goes with it.
-
-**Both hands are on the haft now, solved rather than posed.** The first version
+**Both hands are on the haft now, solved rather than posed.****Both hands are on the haft now, solved rather than posed.** The first version
 swung both arms along the SAME arc with a small lateral nudge, so the off arm
 mimed the stroke empty-handed beside a tool only the leading hand held. The off
 hand is now placed by a two-bone IK solve onto a point down the haft — which has

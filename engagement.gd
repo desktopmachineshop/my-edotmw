@@ -118,6 +118,93 @@ static func shifted(transforms: Array[Transform3D],
 	return out
 
 
+## `count` points evenly around a circle — the stand-ins the duel
+## pipeline uses for a STATIC target's "defenders"
+## (D-20260820-men-gather-round-what-they-strike). Pure and phase-fixed,
+## so every frame deals the same ring and nothing jitters.
+static func ring_points(centre: Vector3, radius: float,
+		count: int) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	var n := maxi(count, 1)
+	out.resize(n)
+	for i in range(n):
+		var angle := TAU * float(i) / float(n)
+		out[i] = Transform3D(Basis(),
+			centre + Vector3(sin(angle) * radius, 0.0, cos(angle) * radius))
+	return out
+
+
+## `count` points evenly (by arc length) around a RECTANGLE's perimeter —
+## the stand-ins for a BOX-shaped static target
+## (D-20260820-men-gather-round-what-they-strike, second amendment: a
+## building is a box, and men lining a box stand on its faces, not on a
+## circle through its corners). `half` is the half-extents in the box's
+## own frame, `yaw` its world rotation. Pure and phase-fixed.
+static func rect_points(centre: Vector3, half: Vector2, yaw: float,
+		count: int) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	var n := maxi(count, 1)
+	out.resize(n)
+	var hx := maxf(half.x, 0.01)
+	var hz := maxf(half.y, 0.01)
+	var perimeter := 4.0 * (hx + hz)
+	for i in range(n):
+		var t := perimeter * float(i) / float(n)
+		var local := Vector2.ZERO
+		if t < 2.0 * hx:                      # front face, +z, right to left
+			local = Vector2(hx - t, hz)
+		elif t < 2.0 * (hx + hz):             # left face, -x
+			local = Vector2(-hx, hz - (t - 2.0 * hx))
+		elif t < 4.0 * hx + 2.0 * hz:         # back face, -z, left to right
+			local = Vector2(-hx + (t - 2.0 * hx - 2.0 * hz), -hz)
+		else:                                  # right face, +x
+			local = Vector2(hx, -hz + (t - 4.0 * hx - 2.0 * hz))
+		var turned := local.rotated(-yaw)
+		out[i] = Transform3D(Basis(),
+			centre + Vector3(turned.x, 0.0, turned.y))
+	return out
+
+
+## A drawn man never stands INSIDE a building
+## (D-20260820, third amendment): a position inside the box is projected
+## to its nearest face, margin included. Pure; the caller decides which
+## boxes are near enough to test. This exists because formation slots
+## clamp against TERRAIN passability by design (the building-stamped
+## array is the sim's own and cannot be reproduced under fog), so a
+## line's slots can legitimately land inside a footprint — and the
+## owner's screenshots showed exactly that, twice.
+static func push_out_of_box(position: Vector3, centre: Vector3,
+		half: Vector2, yaw: float, margin: float = 0.35) -> Vector3:
+	var local := Vector2(position.x - centre.x, position.z - centre.z).rotated(yaw)
+	var hx := half.x + margin
+	var hz := half.y + margin
+	if absf(local.x) >= hx or absf(local.y) >= hz:
+		return position
+	# Inside: exit through the nearest face.
+	var out := local
+	if hx - absf(local.x) <= hz - absf(local.y):
+		out.x = hx if local.x >= 0.0 else -hx
+	else:
+		out.y = hz if local.y >= 0.0 else -hz
+	var turned := out.rotated(-yaw)
+	return Vector3(centre.x + turned.x, position.y, centre.z + turned.y)
+
+
+## The box rule's round sibling (D-20260821, amended): a drawn man
+## inside a tree's disc steps out to its rim. Pure.
+static func push_out_of_disc(position: Vector3, centre: Vector3,
+		radius: float) -> Vector3:
+	var flat := Vector2(position.x - centre.x, position.z - centre.z)
+	var d := flat.length()
+	if d >= radius:
+		return position
+	if d < 0.0001:
+		flat = Vector2(radius, 0.0)
+	else:
+		flat = flat / d * radius
+	return Vector3(centre.x + flat.x, position.y, centre.z + flat.y)
+
+
 ## For each attacker transform, the index of the nearest defender
 ## transform (horizontal distance; first-found wins ties, so the answer is
 ## deterministic for identical inputs). O(attackers × defenders), paid

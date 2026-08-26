@@ -66,19 +66,28 @@ func test_overlapping_men_push_apart_and_separated_men_stand() -> void:
 
 
 func test_the_amendments_bound_holds_where_the_drift_is_made() -> void:
-	# Positions handed in ALREADY past the bound (a hostile caller, or
-	# accumulated drift): the clamp must pull them back. The first
-	# version piled men on one spot, and one jostle iteration could not
-	# push anyone past the bound anyway — a fixture that cannot violate
-	# the rule cannot see the rule removed.
-	var drifted := PackedVector3Array([Vector3(3.0, 0, 0), Vector3(9, 0, 9)])
-	var anchors := _t([Vector3.ZERO, Vector3(9, 0, 9)])
-	var clamped := SoldierMotion.jostle(drifted, anchors)
-	assert_lte(Vector2(clamped[0].x, clamped[0].z).length(),
-		SoldierMotion.MAX_RENDER_DRIFT + 0.001,
-		"the bound is enforced where the drift is made, not promised")
-	assert_almost_eq(clamped[1].distance_to(Vector3(9, 0, 9)), 0.0, 0.001,
-		"a man on his anchor is untouched")
+	# The bound is on the jostle's OWN displacement — how far shoving
+	# moved a man this pass — never his distance to the mark: the
+	# anchor-relative version silently teleported every legitimate
+	# long walker to bound-from-target and shipped red before the cap
+	# test caught it. A dense pile can shove a man hard; however hard,
+	# he moves at most MAX_RENDER_DRIFT from where his walk had him.
+	var pile := PackedVector3Array()
+	var anchors_list := []
+	for i in range(12):
+		pile.append(Vector3(0.01 * float(i), 0, 0))
+		anchors_list.append(Vector3(0.01 * float(i), 0, 0))
+	var shoved := SoldierMotion.jostle(pile, _t(anchors_list))
+	for i in range(shoved.size()):
+		assert_lte(shoved[i].distance_to(pile[i]),
+			SoldierMotion.MAX_RENDER_DRIFT + 0.001,
+			"shoving displaces at most the bound, from where the walk had him")
+	# And a man walking in from far beyond the bound is NOT touched by
+	# the clamp at all — the walk is the velocity clamp's business.
+	var walker := PackedVector3Array([Vector3(0, 0, 0)])
+	var far_mark := _t([Vector3(0, 0, 40)])
+	assert_eq(SoldierMotion.jostle(walker, far_mark)[0], Vector3(0, 0, 0),
+		"distance to the mark is not the jostle's to shorten")
 
 
 func test_ease_actually_jostles() -> void:
@@ -138,3 +147,44 @@ func _all_scripts(path: String, out: Array) -> void:
 		var normalised := String(file_name).trim_suffix(".remap")
 		if normalised.ends_with(".gd"):
 			out.append(path.path_join(normalised))
+
+
+func test_no_drawn_man_outruns_the_cap() -> void:
+	# The owner's rule, verbatim: a man may rise to the squad's sprint to
+	# catch up, but no faster — and NEVER teleport, however far the mark.
+	var motion := SoldierMotion.new()
+	var start := _t([Vector3.ZERO])
+	motion.ease(1, start, 0.1, 4.0)
+	# A mark INSIDE the wrap threshold: a whole-set jump past it is a
+	# coordinate change and shifts instead (its own test below) — the
+	# clamp governs everything nearer, which is every real walk.
+	var far := _t([Vector3(0, 0, 5)])
+	var drawn := motion.ease(1, far, 0.1, 4.0)
+	assert_almost_eq(drawn[0].origin.distance_to(Vector3.ZERO), 0.4, 0.01,
+		"one tenth of a second at sprint 4 is 0.4 ground — exactly")
+
+
+func test_a_seam_crossing_shifts_instead_of_walking() -> void:
+	# Every mark displacing by one common huge vector is a COORDINATE
+	# change (a torus wrap, a reveal), not movement: the whole stored set
+	# shifts with it and the formation arrives already formed.
+	var motion := SoldierMotion.new()
+	var here := _t([Vector3(0, 0, 0), Vector3(2, 0, 0)])
+	motion.ease(1, here, 0.1)
+	var wrapped := _t([Vector3(50, 0, 0), Vector3(52, 0, 0)])
+	var drawn := motion.ease(1, wrapped, 0.016)
+	for i in range(2):
+		assert_lt(drawn[i].origin.distance_to(wrapped[i].origin), 0.5,
+			"after a wrap the men are AT their marks, not marching a "
+			+ "map-width — the camera wrapped the same way")
+
+
+func test_a_tree_pushes_a_drawn_man_to_its_rim() -> void:
+	var inside := Engagement.push_out_of_disc(
+		Vector3(10.2, 0.3, 10), Vector3(10, 0, 10), 0.7)
+	assert_almost_eq(Vector2(inside.x - 10, inside.z - 10).length(), 0.7,
+		0.001, "out to the rim, along his own bearing")
+	assert_almost_eq(inside.y, 0.3, 0.001, "height untouched")
+	var outside := Vector3(15, 0, 10)
+	assert_eq(Engagement.push_out_of_disc(outside, Vector3(10, 0, 10), 0.7),
+		outside, "a man clear of the canopy is not touched")

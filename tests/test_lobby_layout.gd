@@ -44,7 +44,11 @@ const FITTING_WINDOWS := [
 
 const SHORT_WINDOWS := [
 	Vector2(1152.0, 648.0),    # HudLayout.min_window_size() — the floor
-	Vector2(1366.0, 768.0),
+	# 1366x768 stopped being short when D-20260821 moved two sandbox
+	# checkboxes out of the lobby — the page now fits it. A fixture that
+	# asserts "too short" has to actually be too short, so it moved down
+	# a rung; the FITTING list above gains the freed size.
+	Vector2(1366.0, 700.0),
 ]
 
 
