@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_levy"
+display_name = "City Watch"
+civ = &"gildedreach"
+archetype = &"levy"
+squad_size = 30
+health = 68.0
+damage = 6.3
+move_speed = 3.4
+attack_range = 1.9
+attack_interval = 1.0
+armour_class = "infantry"
+mesh_primitive = "capsule"
+mesh_color = Color(0.78, 0.62, 0.2, 1)
+build_time = 9.0
+cost = 45
+cost_food = 45

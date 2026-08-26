@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"thornwood_greatbow"
+display_name = "Dawnfletch Sentinels"
+civ = &"thornwood"
+archetype = &"greatbow"
+squad_size = 16
+health = 55.0
+damage = 16.0
+move_speed = 2.8
+attack_range = 9.5
+attack_interval = 2.2
+formation_spacing = 1.4
+armour_class = "missile"
+mesh_primitive = "cylinder"
+mesh_color = Color(0.2, 0.36, 0.24, 1)
+build_time = 16.0
+cost = 90
+cost_food = 40
+cost_wood = 50

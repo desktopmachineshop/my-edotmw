@@ -55,7 +55,7 @@ func _sim() -> SquadSim:
 
 
 func _militia() -> UnitDef:
-	var def := UnitRoster.by_id(&"legion_militia")
+	var def := UnitRoster.by_id(&"gildedreach_levy")
 	assert_not_null(def, "setup: the shipped militia def must load")
 	return def
 

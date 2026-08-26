@@ -410,7 +410,7 @@ func test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one() -> vo
 	# range and kept firing — which is why the numbers looked merely
 	# ungenerous rather than broken.
 	var space := TorusSpace.new(42, 48, 1.0)
-	var militia := UnitRoster.by_id(&"legion_militia")
+	var militia := UnitRoster.by_id(&"gildedreach_levy")
 	assert_not_null(militia)
 
 	var dealt := []
@@ -437,13 +437,35 @@ func test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one() -> vo
 		% [dealt[1], dealt[0]])
 
 
-## Every unit a player can put in the field early. Gatherers and the
-## general are deliberately absent from the PAIR rule below and present in
-## the SOLO one — see each test.
+## Every LINE troop of the six fantasy civs (#191). Gatherers and the
+## generals are deliberately absent from the PAIR rule below and present
+## in the SOLO one — see each test. SIEGE units (breaker, engine, ram,
+## bombard) are absent from BOTH: cracking a defended building alone is
+## their design brief, not a rush exploit — the Ember Bombard's whole
+## identity is outranging the tower — so D-067's "no single squad" rule
+## is scoped to troops, exactly as its own text says ("any STARTING
+## troop"), and the siege train pays for the licence in speed, fragility
+## and gold.
+## Light troops two squads of which cannot take a TOWER — the D-067
+## carve-out, re-measured against the fantasy roster. Populated by
+## running `_rush_cost` per troop, not by judgement: an entry here is a
+## unit the tower demonstrably stops in pairs, and the companion test
+## below keeps every one of them honest about still hurting it.
+const TOWER_EXCEPTIONS: Array[StringName] = [
+	&"windmarch_skirmishers",
+]
+
+
 const STARTING_TROOPS := [
-	&"legion_militia", &"legion_spearmen", &"legion_archers", &"legion_heavy",
-	&"northmen_militia", &"northmen_spearmen", &"northmen_skirmishers",
-	&"northmen_cavalry",
+	&"stoneblood_levy", &"stoneblood_heavy", &"stoneblood_skirmishers",
+	&"gravesworn_levy", &"gravesworn_spearmen", &"gravesworn_shades",
+	&"thornwood_levy", &"thornwood_archers", &"thornwood_cavalry",
+	&"thornwood_greatbow",
+	&"windmarch_levy", &"windmarch_skirmishers", &"windmarch_cavalry",
+	&"windmarch_bowriders",
+	&"gildedreach_levy", &"gildedreach_spearmen", &"gildedreach_archers",
+	&"gildedreach_cavalry", &"gildedreach_sellswords",
+	&"emberdeep_levy", &"emberdeep_heavy", &"emberdeep_archers",
 ]
 
 
@@ -457,8 +479,9 @@ func test_no_single_starting_squad_can_raze_a_defended_building() -> void:
 	# second against buildings, so "the strongest solo attacker" is not
 	# obvious by inspection and changes whenever a `.tres` does.
 	for building in [&"town_centre", &"tower"]:
-		for unit_id in STARTING_TROOPS + [&"legion_gatherers",
-				&"northmen_gatherers", &"legion_general", &"northmen_general"]:
+		for unit_id in STARTING_TROOPS + [&"emberdeep_gatherers",
+				&"windmarch_gatherers", &"stoneblood_general",
+				&"gravesworn_general"]:
 			var result := _rush_cost(building, unit_id, 1)
 			assert_false(bool(result["razed"]),
 				"one squad of %s razed a defended %s in %.0fs — that is the early rush this rule exists to stop"
@@ -483,19 +506,18 @@ func test_two_squads_of_any_line_troop_can_take_a_town_centre() -> void:
 func test_two_squads_of_any_line_troop_but_light_skirmishers_can_take_a_tower() -> void:
 	# Same rule against the purpose-built defence, with ONE measured
 	# exception that is a design statement rather than an oversight:
-	# northmen_skirmishers are the cheapest, flimsiest unit in the roster
-	# (30 food, 42 HP a man, 1260 to a squad) and the tower outranges them
-	# 5 cells to 3, so they take fire on the approach and while shooting,
-	# and break — they rout at 36 morale and each tower shell kills two of
-	# them at once. Light raiders do not crack a fortification; their own
-	# side's militia, spearmen and cavalry all do.
+	# TOWER_EXCEPTIONS below are the fantasy roster's light troops: cheap,
+	# flimsy screens and harassers the tower outranges, shells and breaks
+	# on the approach. Light raiders do not crack a fortification; their
+	# own side's line and heavy troops all do. Each entry is measured, not
+	# assumed — see the constant.
 	#
 	# No tower HP/damage pair was found that stops a lone militia squad and
 	# still loses to two skirmisher squads — the sweep is in D-067. If one
 	# is ever wanted, it needs a mechanic (siege equipment, a damage type),
 	# not another number.
 	for unit_id in STARTING_TROOPS:
-		if unit_id == &"northmen_skirmishers":
+		if TOWER_EXCEPTIONS.has(unit_id):
 			continue
 		var result := _rush_cost(&"tower", unit_id, 2)
 		assert_true(bool(result["razed"]),
@@ -508,7 +530,7 @@ func test_light_skirmishers_still_hurt_a_tower_even_though_two_cannot_take_it() 
 	# still be doing real damage, so a future change that makes them
 	# harmless to buildings fails here rather than hiding behind the
 	# documented carve-out.
-	var result := _rush_cost(&"tower", &"northmen_skirmishers", 2)
+	var result := _rush_cost(&"tower", &"windmarch_skirmishers", 2)
 	assert_lt(float(result["health"]), 1700.0 * 0.75,
 		"two skirmisher squads left the tower on %.0f HP — they are not fighting it at all"
 			% result["health"])
@@ -1419,7 +1441,7 @@ func test_a_wall_can_be_destroyed_with_shipped_data() -> void:
 	var wall_cell := Vector2i(20, 20)
 	var wall := buildings.add_building(BuildingSim.def_by_id(&"wall"), 1, wall_cell, true)
 
-	var militia := UnitRoster.by_id(&"legion_militia")
+	var militia := UnitRoster.by_id(&"gildedreach_levy")
 	assert_not_null(militia)
 	var squad := sim.add_squad(militia, 2, Vector2i(20, 22))
 	sim.order_attack_move(squad, wall_cell)

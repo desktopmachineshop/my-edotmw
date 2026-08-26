@@ -719,7 +719,7 @@ func test_client_state_hands_the_passability_to_formation() -> void:
 	var state := ClientState.new()
 	state.handle_packet(NetProtocol.encode_welcome(1, W, H, []))
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 0, "def_id": "legion_militia", "alive": 40, "shape": "line", "owner": 1},
+		{"id": 0, "def_id": "gildedreach_levy", "alive": 40, "shape": "line", "owner": 1},
 	]))
 	state.curves[0] = curve
 

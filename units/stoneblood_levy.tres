@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"stoneblood_levy"
+display_name = "Hillkin Clubs"
+civ = &"stoneblood"
+archetype = &"levy"
+squad_size = 24
+health = 95.0
+damage = 8.5
+move_speed = 3.2
+attack_range = 1.9
+attack_interval = 1.0
+armour_class = "infantry"
+mesh_primitive = "capsule"
+mesh_color = Color(0.45, 0.5, 0.58, 1)
+build_time = 9.0
+cost = 50
+cost_food = 50

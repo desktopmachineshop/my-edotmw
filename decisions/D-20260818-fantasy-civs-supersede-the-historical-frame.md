@@ -1,6 +1,6 @@
-### D-20260818-fantasy-civs-supersede-the-historical-frame · 2026-08-18 · **PROPOSED — owner call, not in force**
+### D-20260818-fantasy-civs-supersede-the-historical-frame · 2026-08-18 · **ACCEPTED 2026-08-26** — the owner's call, made in issue #191
 
-**Decision (proposed):** The game's civilisations are FANTASY folks, not
+**Decision:** The game's civilisations are FANTASY folks, not
 historical cultures. The six-civ historical roster of D-071 (Legion,
 Northmen, Magyars, Byzantines, Carthaginians, Chinese) is superseded as
 CONTENT; the candidate replacement set and full rosters are designed in
@@ -87,3 +87,26 @@ fearlessness (`rout_threshold 0`) is the nearest candidate and is
 flagged for verification in the design doc rather than assumed.
 
 ---
+
+---
+
+**AMENDED 2026-08-26 — Accepted and implemented.** Issue #191 is the
+owner's call: the pivot is in force, the six civs and their rosters from
+`docs/plans/fantasy-civs.md` ship as `civs/*.tres` and `units/*.tres`,
+and `legion` and `northmen` are deleted. Two notes recorded at
+implementation rather than left to be discovered:
+
+- **The naming tension with D-20260823-fantasy-civs-on-a-four-epoch-ladder
+  is real and left OPEN.** That entry (also the owner's call, five days
+  later) names the six by the same axes as Dominion, Warhost, Centaurs,
+  Deepholds, Gilded and Sylvans, with different bases for three of them
+  (humans for giant-kin, orcs for the deathless, goblins for the free
+  cities). #191 and this entry's plan are what the owner told the
+  implementation to build, so THIS set's ids ship; renaming to the
+  four-epoch entry's set is a mechanical id sweep whenever the owner
+  picks one set over the other. The four-epoch LADDER itself is
+  untouched by this choice — the axes are identical by construction.
+- The plan predates D-20260823-the-opening-is-a-crew-and-a-general, so
+  its "all six civs field the neutral founders and gatherers" line is
+  stale: each civ fields its own gatherers and its own general, per that
+  decision, extending the plan's rosters from 27 units to 39.

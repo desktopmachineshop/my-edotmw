@@ -190,7 +190,7 @@ func _client_in_a_match() -> ClientState:
 	state.handle_packet(NetProtocol.encode_welcome(
 		1, 16, 8, PackedInt32Array([0, 1]), [], 40, 0))
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 0, "def_id": "legion_militia", "alive": 30, "shape": "line", "owner": 1},
+		{"id": 0, "def_id": "gildedreach_levy", "alive": 30, "shape": "line", "owner": 1},
 	]))
 	return state
 
@@ -227,8 +227,8 @@ func test_a_client_stays_in_its_seat_when_it_leaves_a_match() -> void:
 	# the client returns to is the one it was already sitting in.
 	var state := _client_in_a_match()
 	state.handle_packet(NetProtocol.encode_lobby(1, [
-		{"kind": "human", "player": 1, "civ": "legion", "team": 0, "name": "Player 1"},
-		{"kind": "ai", "player": 2, "civ": "northmen", "team": 0, "name": "AI 2"},
+		{"kind": "human", "player": 1, "civ": "stoneblood", "team": 0, "name": "Player 1"},
+		{"kind": "ai", "player": 2, "civ": "gravesworn", "team": 0, "name": "AI 2"},
 	], {}, int(MatchState.Phase.LOBBY)))
 
 	state.leave_match()

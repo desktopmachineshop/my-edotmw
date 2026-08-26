@@ -85,8 +85,8 @@ func test_an_all_ai_server_reports_its_seats() -> void:
 	var server := _server_with(4, 84, 96)
 	var match_state := MatchState.new()
 	match_state.players_expected = 4
-	match_state.add_ai_player(1, &"legion")
-	match_state.add_ai_player(2, &"northmen")
+	match_state.add_ai_player(1, &"stoneblood")
+	match_state.add_ai_player(2, &"gravesworn")
 	server._match = match_state
 
 	var line: String = server._memory_line(10_000_000, 10_000_000)

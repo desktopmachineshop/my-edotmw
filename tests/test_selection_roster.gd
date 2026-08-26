@@ -21,7 +21,7 @@ extends GutTest
 ## kept its dead for the rest of the match.
 
 
-const MILITIA := "legion_militia"
+const MILITIA := "gildedreach_levy"
 
 
 ## A client that owns three militia squads, welcomed onto a small map.

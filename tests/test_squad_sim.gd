@@ -529,7 +529,7 @@ func test_settled_squads_keep_distinct_centres_and_nothing_more() -> void:
 	# so stacking is never total.
 	var space := TorusSpace.new(64, 32, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
-	var def := UnitRoster.by_id(&"legion_militia")
+	var def := UnitRoster.by_id(&"gildedreach_levy")
 	assert_not_null(def, "setup: the shipped militia def should exist")
 
 	var squads := []
@@ -558,7 +558,7 @@ func test_a_squad_claims_the_room_its_formation_actually_covers() -> void:
 	# other here rather than in prose.
 	var space := TorusSpace.new(64, 32, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
-	var def := UnitRoster.by_id(&"legion_militia")
+	var def := UnitRoster.by_id(&"gildedreach_levy")
 	var squad := sim.add_squad(def, 1, Vector2i(8, 8))
 
 	var world: float = Formation.footprint(
@@ -583,7 +583,7 @@ func test_an_enemy_is_not_pushed_out_of_its_own_attack_range() -> void:
 	# looks like.
 	var space := TorusSpace.new(64, 32, 1.0)
 	var sim := SquadSim.new(space, CurveReplicator.new())
-	var def := UnitRoster.by_id(&"legion_militia")
+	var def := UnitRoster.by_id(&"gildedreach_levy")
 
 	var mine := sim.add_squad(def, 1, Vector2i(20, 10))
 	var theirs := sim.add_squad(def, 2, Vector2i(20, 10))

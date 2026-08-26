@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"emberdeep_ram"
+display_name = "Deepram"
+civ = &"emberdeep"
+archetype = &"ram"
+squad_size = 6
+health = 200.0
+damage = 8.0
+move_speed = 2.4
+attack_range = 1.5
+attack_interval = 1.5
+damage_vs_buildings = 1.0
+formation_shape = "tight"
+formation_spacing = 1.5
+armour_class = "infantry"
+mesh_primitive = "hull"
+mesh_color = Color(0.42, 0.3, 0.2, 1)
+build_time = 28.0
+cost = 100
+cost_wood = 80
+cost_stone = 20

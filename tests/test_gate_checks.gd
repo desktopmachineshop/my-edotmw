@@ -76,7 +76,7 @@ func test_a_gated_run_passes_and_says_what_it_proved() -> void:
 	# The numbers are a real `test-scenario siege 4 15` run.
 	var bots := _log("ok-bots", "known_squads_max=11 nodes_known_max=128\n")
 	var server := _log("ok-server",
-		"FOG_TOTAL_SQUADS=32\nFOG_TOTAL_NODES=7694\nCIVS_FIELDED 2 of 2 — legion=16, northmen=16\n")
+		"FOG_TOTAL_SQUADS=32\nFOG_TOTAL_NODES=7694\nCIVS_FIELDED 2 of 2 — stoneblood=16, gravesworn=16\n")
 
 	var result := _check(["fog-squads", bots, server])
 	assert_eq(result["code"], 0, "a gated run must pass: %s" % result["out"])
@@ -100,7 +100,7 @@ func test_an_ungated_run_fails() -> void:
 
 
 func test_one_civ_fails() -> void:
-	var server := _log("one-civ", "CIVS_FIELDED 1 of 2 — legion=32\n")
+	var server := _log("one-civ", "CIVS_FIELDED 1 of 2 — stoneblood=32\n")
 	assert_eq(_check(["civs", server])["code"], 1,
 		"a match in which one roster never played must fail (D-046 criterion 10)")
 

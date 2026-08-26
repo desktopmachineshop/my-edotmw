@@ -39,6 +39,12 @@ lower DPS than `legion_militia` at 2.5× the cost. Two rules came out of
 it: price must buy power, and no unit may lead on both axes within its
 role.
 
+**The CIV HALF of M9 is implemented as of 2026-08-26** (issue #191,
+`D-20260818-fantasy-civs-supersede-the-historical-frame` Accepted): the
+six fantasy civs ship as data and Legion/Northmen are deleted — see
+`docs/status/fantasy-civs.md`, including the OPEN naming tension with the
+entry below. The epoch ladder remains design-only.
+
 **The setting is FANTASY and the ladder is FOUR rungs as of 2026-08-23**
 (`decisions/D-20260823-fantasy-civs-on-a-four-epoch-ladder.md`, owner's
 call) — medieval → imperial → modern → futuristic, superseding D-069's

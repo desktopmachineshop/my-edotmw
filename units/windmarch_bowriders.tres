@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"windmarch_bowriders"
+display_name = "Bowriders"
+civ = &"windmarch"
+archetype = &"bowriders"
+squad_size = 16
+health = 58.0
+damage = 7.5
+move_speed = 6.2
+attack_range = 5.0
+attack_interval = 1.2
+formation_spacing = 1.4
+armour_class = "cavalry"
+mesh_primitive = "box"
+mesh_color = Color(0.68, 0.58, 0.4, 1)
+build_time = 14.0
+cost = 60
+cost_food = 35
+cost_gold = 25
+vision_range = 20.0

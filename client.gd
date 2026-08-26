@@ -2851,7 +2851,7 @@ const BUILD_KEYS := {
 	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
-	"T": &"gatherers", "M": &"militia", "P": &"spearmen",
+	"T": &"gatherers", "M": &"levy", "P": &"spearmen",
 	"R": &"archers", "C": &"cavalry",
 }
 
@@ -9544,7 +9544,17 @@ func _build_debug_panel() -> void:
 	unit_row.add_theme_constant_override("separation", 6)
 	col.add_child(unit_row)
 	var unit_picker := OptionButton.new()
-	for archetype in TRAIN_KEYS.values():
+	# EVERY archetype the roster knows, not just the hotkeyed handful — the
+	# six-civ roster has archetypes only one civ fields (bombard, shades,
+	# greatbow...), and a spawn cheat that cannot name them cannot test
+	# them. The server resolves the archetype against the target's civ
+	# (D-047) and refuses politely when their people do not field it.
+	var spawnable := {}
+	for def in UnitRoster.load_all():
+		spawnable[def.archetype] = true
+	var spawn_names := spawnable.keys()
+	spawn_names.sort()
+	for archetype in spawn_names:
 		unit_picker.add_item(String(archetype))
 	unit_row.add_child(unit_picker)
 	var count_box := SpinBox.new()

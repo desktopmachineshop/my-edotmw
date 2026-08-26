@@ -4,9 +4,9 @@
 
 [resource]
 script = ExtResource("1")
-id = &"northmen_general"
-display_name = "Warlord"
-civ = &"northmen"
+id = &"gildedreach_general"
+display_name = "Lord-Treasurer"
+civ = &"gildedreach"
 archetype = &"general"
 squad_size = 8
 health = 220.0
@@ -19,14 +19,10 @@ formation_spacing = 0.9
 morale = 160.0
 rout_threshold = 18.0
 armour_class = "infantry"
-bonus_vs = {}
 mesh_primitive = "capsule"
-mesh_color = Color(0.2, 0.35, 0.7, 1)
-model_id = &""
+is_general = true
 build_time = 24.0
 cost = 220
 cost_food = 120
-cost_wood = 0
 cost_gold = 100
 vision_range = 14.0
-is_general = true

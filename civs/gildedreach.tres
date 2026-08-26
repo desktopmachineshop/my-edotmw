@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="CivDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://civ_def.gd" id="1_civ"]
+
+[resource]
+script = ExtResource("1_civ")
+id = &"gildedreach"
+display_name = "Gildedreach"
+summary = "Economy and flexibility. The broadest roster in the game and the best gatherers — an army bought rather than bred, excellent at nothing until the gold flows."
+colour = Color(0.78, 0.62, 0.2, 1)
+starting_food = 250
+starting_wood = 200
+starting_gold = 60
+starting_stone = 0
+squad_cap_bonus = 0
+production_speed = 1.0
+gather_speed = 1.15

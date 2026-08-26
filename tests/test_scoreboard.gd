@@ -108,9 +108,9 @@ func test_the_scoreboard_annotates_seats_without_writing_on_them() -> void:
 ## D-033; nothing put it on the wire, so no client could draw it.
 func test_standing_survives_the_wire() -> void:
 	var seats := [
-		{"kind": "human", "player": 1, "civ": "legion", "team": 1, "name": "Player 1",
+		{"kind": "human", "player": 1, "civ": "stoneblood", "team": 1, "name": "Player 1",
 			"standing": MatchState.Standing.VICTOR},
-		{"kind": "ai", "player": 2, "civ": "northmen", "team": 0, "name": "AI 2",
+		{"kind": "ai", "player": 2, "civ": "gravesworn", "team": 0, "name": "AI 2",
 			"standing": MatchState.Standing.ELIMINATED},
 	]
 	var decoded := NetProtocol.decode_lobby(
@@ -120,7 +120,7 @@ func test_standing_survives_the_wire() -> void:
 	assert_eq(int(decoded["seats"][1]["standing"]), MatchState.Standing.ELIMINATED)
 	# The fields that were already there must still be, in the right seats
 	# — a byte inserted in the wrong place decodes as plausible nonsense.
-	assert_eq(String(decoded["seats"][1]["civ"]), "northmen")
+	assert_eq(String(decoded["seats"][1]["civ"]), "gravesworn")
 	assert_eq(String(decoded["seats"][1]["name"]), "AI 2")
 	assert_eq(int(decoded["seats"][0]["team"]), 1)
 	assert_eq(String(decoded["seats"][1]["kind"]), "ai")
@@ -129,7 +129,7 @@ func test_standing_survives_the_wire() -> void:
 func test_a_seat_with_no_standing_encodes_as_playing() -> void:
 	# Every caller that predates the scoreboard means exactly this.
 	var decoded := NetProtocol.decode_lobby(NetProtocol.encode_lobby(1, [
-		{"kind": "human", "player": 1, "civ": "legion", "team": 0, "name": "Player 1"},
+		{"kind": "human", "player": 1, "civ": "stoneblood", "team": 0, "name": "Player 1"},
 	]))
 	assert_eq(int(decoded["seats"][0]["standing"]), MatchState.Standing.PLAYING)
 
@@ -141,8 +141,8 @@ func test_a_seat_with_no_standing_encodes_as_playing() -> void:
 func _client(standings := {}) -> ClientState:
 	var state := ClientState.new()
 	var seats := []
-	for entry in [[1, "legion", 1, "human"], [2, "northmen", 1, "ai"],
-			[3, "legion", 2, "human"], [4, "northmen", 0, "ai"]]:
+	for entry in [[1, "stoneblood", 1, "human"], [2, "gravesworn", 1, "ai"],
+			[3, "stoneblood", 2, "human"], [4, "gravesworn", 0, "ai"]]:
 		seats.append({
 			"kind": String(entry[3]), "player": int(entry[0]), "civ": String(entry[1]),
 			"team": int(entry[2]), "name": "Player %d" % int(entry[0]),
@@ -180,7 +180,7 @@ func test_every_player_is_listed_with_colour_civ_and_team() -> void:
 		# (D-052), so the board cannot disagree with the army.
 		assert_eq(row["colour"], state.colour_of(int(row["player"])),
 			"The swatch must be the colour that player's army wears")
-	assert_eq(String(rows[0]["civ"]), "legion")
+	assert_eq(String(rows[0]["civ"]), "stoneblood")
 	assert_eq(int(rows[1]["team"]), 1)
 	assert_eq(String(rows[1]["kind"]), "ai")
 	assert_true(bool(rows[0]["is_you"]), "This client is player 1")
