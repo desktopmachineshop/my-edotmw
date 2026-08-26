@@ -89,6 +89,35 @@ ROSTER: dict[str, SoldierParams] = {
         tunic_mask=0.7,
     ),
 
+    # The hero squad's leader (D-20260826-the-dwarf-roster-wears-supplied-
+    # models). The AUTHORED source (art/source/general.blend, a supplied
+    # Tripo thane) always wins over this generated fallback — the entry
+    # exists because build_units iterates this dict, and a fresh clone with
+    # no authored bake still needs a stand-in that reads as the grandest
+    # figure on the field.
+    "general": SoldierParams(
+        helmet="crested",
+        weapon="axe",
+        shield=False,
+        cloak=True,
+        scale=1.08,
+        bulk=1.1,
+        cloth=(0.5, 0.36, 0.2),
+    ),
+
+    # The bombard's gun carriage — slot 0 of the cannon crew
+    # (D-20260826-a-squad-wears-more-than-one-model). Same note as the
+    # general: the authored source wins; this fallback is a stocky
+    # "soldier" nobody should ever see outside an unbuilt clone.
+    "cannon": SoldierParams(
+        helmet="none",
+        weapon="none",
+        shield=False,
+        bulk=1.4,
+        scale=0.7,
+        cloth=(0.45, 0.35, 0.25),
+    ),
+
     # The founding party (D-031): better than line infantry and the only unit
     # that can raise a town hall. Cloak and crest mark them as the thing a
     # player cannot afford to lose in the first two minutes.
