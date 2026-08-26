@@ -44,6 +44,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/art-pipeline.md
 
+@docs/status/gatherer-tools.md
+
 @docs/status/terrain.md
 
 @docs/status/spawns.md
@@ -465,6 +467,24 @@ art/seed_source.py       Wrote the initial .blend files from the legacy
                         militia that is in the game rather than an empty
                         scene. A migration, never part of the build, and
                         it refuses to overwrite an artist's file.
+art/attach_tools.py      Puts the axe and the pickaxe on the gatherer's
+                        back (D-20260825). A MIGRATION like seed_source.py,
+                        never part of the build: it edits the .blend, and
+                        `build-assets` bakes what the .blend says. The tools
+                        become part of the SOLDIER MESH because they have to
+                        — where a fist is mid-swing exists only in the VAT,
+                        so a tool drawn from its own MultiMesh could be
+                        placed at the soldier and never IN HIS HAND. One
+                        bone per tool, weighted 1.0, whose REST pose is the
+                        tool stowed; a clip that uses it sets that bone from
+                        the HAND's matrix. Orientation is MEASURED, never a
+                        magic angle per file. It also gives each HAND two
+                        finger joints, because the supplied rig has none and
+                        an open mitt cannot grip a haft. The handle is found by a
+                        BALL AROUND THE BUTT TIP, not by the mesh's principal
+                        axis, because a pickaxe's wide head drags that axis
+                        off the haft and hung the tool 0.103 out of the fist.
+                        Every step asserts its own result.
 model_preview.gd         Renders every authored model, animated, and
                         screenshots it. The picture is the point.
 cover_preview.gd         The same idea for ground cover: every prop, on
@@ -629,6 +649,19 @@ machine and say which. Two runs of
 `build-assets` must be **byte-identical** — fixed seeds, sorted iteration,
 no timestamps — and a test fails if `generated/` is stale with respect to
 `art/`.
+
+**A model bakes only ITS OWN clips, and a clip index is a NUMBERING**
+(`D-20260825-a-gatherer-carries-the-tool-for-the-job`). `CLIP_ORDER` in
+`art/lib/clips.py` is the index space; `clips_for(archetype)` says which
+PREFIX of it a given model carries, and the manifest records it per model.
+Most of the roster bakes the base four — the gatherer bakes three more,
+because it is the only unit carrying tools. **Resolve every clip index
+through `UnitMesh.clip_index`**: the shader finds a row by arithmetic
+(`clip * frames_per_clip + local`), so asking a four-clip model for clip 4
+lands on its NORMALS block and the model comes apart with nothing failing.
+A model's triangle count is also a TEXTURE WIDTH — one VAT column per
+flattened vertex against a 16,384 limit — and `art/build.py` refuses to
+write a VAT past it.
 
 **Soldiers are animated by a vertex animation texture (D-082), and the
 phase is DERIVED, never accumulated.** `phase = fract(t*rate + hash(slot))`,

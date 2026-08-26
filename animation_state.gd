@@ -46,8 +46,15 @@ const CLIP_IDLE := 0
 const CLIP_WALK := 1
 const CLIP_ATTACK := 2
 const CLIP_ROUT := 3
+## The gatherer's work clips. Only the gatherer bakes these; see
+## `EXTRA_CLIPS` in art/lib/clips.py and `UnitMesh.clip_index`, which is what
+## every caller must resolve through — an index here is a place in the NUMBERING,
+## not a promise that a given model has that row.
+const CLIP_CHOP := 4
+const CLIP_MINE := 5
+const CLIP_FORAGE := 6
 
-const CLIP_NAMES := ["idle", "walk", "attack", "rout"]
+const CLIP_NAMES := ["idle", "walk", "attack", "rout", "chop", "mine", "forage"]
 
 ## Metres of ground covered by one full walk cycle (two steps). Sets the
 ## relationship between move speed and playback rate, which is the difference
@@ -67,6 +74,45 @@ const IDLE_RATE := 0.28
 const ROUT_RATE_SCALE := 1.6
 const MIN_WALK_RATE := 0.35
 
+## Cadences for the work clips, in cycles per second.
+##
+## Nothing in the simulation sets these: gathering resolves as a rate per tick
+## (`Economy._gather`) and has no stroke in it at all, so there is no
+## authoritative number to derive a cadence from the way `walk` derives one
+## from ground speed. They are chosen for how the work READS, and the two
+## swings are deliberately different — a woodcutter takes one big stroke and a
+## miner chips twice per cycle (`art/lib/clips.py`), so an equal cadence would
+## make the pick look frantic beside the axe.
+##
+## They are also one-way, like everything else in this file: a wrong number
+## here is a squad that looks busy at the wrong speed, never a squad that
+## gathers at the wrong speed.
+const CHOP_RATE := 0.62
+const MINE_RATE := 0.5
+const FORAGE_RATE := 0.55
+
+## How much each man's work cadence differs from his crew's, either way.
+##
+## Where each man STARTS his stroke is his own arrival at the node
+## (`PrimitiveUnit._write_work_phases`). This is the other half: how fast he
+## works once he has started.
+##
+## Both halves are needed and they do different jobs. Arrival separates a crew
+## by a measured 0.272 s over eight men — about 17% of a `chop` cycle, which is
+## real but not wide. Without a rate difference on top, that spacing would then
+## be held forever, and a crew that happened to arrive together would stay in
+## step for the rest of the match.
+##
+## Marching gets its rate variation from each man's OWN drawn ground speed
+## (D-20260824). Work has no such measurement — a crew gathers at a rate per
+## tick with no stroke in it — so this one is hashed from (squad, slot).
+## Derived, not stored, identical on every client, and out of D-006's reach.
+##
+## Kept small. This is men doing the same job beside each other, not a crowd
+## doing different ones; past about 0.2 the slowest man visibly lags the
+## fastest within one cycle and the crew stops looking like a crew.
+const WORK_RATE_SPREAD := 0.14
+
 
 ## Which clip a squad's soldiers should play.
 ##
@@ -74,14 +120,48 @@ const MIN_WALK_RATE := 0.35
 ## because a broken squad that still swings reads as a squad that is fine —
 ## and D-019's rout has been invisible on screen since M2, which is criterion 7
 ## of D-063.
-static func clip_for(routing: bool, fighting: bool, moving: bool) -> int:
+## `working` is the resource kind a gathering crew is stood on
+## (`Economy.ResourceKind`), or `NOT_WORKING` for everyone else. It ranks
+## BELOW moving on purpose: a crew hauling a load across the map is walking,
+## and only a crew that has arrived is working.
+static func clip_for(routing: bool, fighting: bool, moving: bool,
+		working: int = NOT_WORKING) -> int:
 	if routing:
 		return CLIP_ROUT
 	if fighting:
 		return CLIP_ATTACK
 	if moving:
 		return CLIP_WALK
+	if working != NOT_WORKING:
+		return work_clip_for(working)
 	return CLIP_IDLE
+
+
+## Not a resource kind. Distinct from every `Economy.ResourceKind` value, and
+## negative so a caller that forgets to translate cannot land on FOOD (0) —
+## which would have every idle squad in the game picking fruit.
+const NOT_WORKING := -1
+
+
+## Which clip a crew working `kind` plays.
+##
+## The one place the mapping from a RESOURCE to a TOOL lives, so the axe and
+## the pickaxe cannot end up on different sides of it in two callers. Ore and
+## masonry share the pick because they are the same motion at the same rock;
+## fruit gets no tool at all, which is the whole reason `forage` exists as a
+## separate clip rather than a slower `chop`.
+##
+## An unknown kind falls to `forage` rather than to `idle`: a crew that is
+## demonstrably working should be seen working, and empty hands are the one
+## answer that is never wrong about which tool it is holding.
+static func work_clip_for(kind: int) -> int:
+	match kind:
+		Economy.ResourceKind.WOOD:
+			return CLIP_CHOP
+		Economy.ResourceKind.GOLD, Economy.ResourceKind.STONE:
+			return CLIP_MINE
+		_:
+			return CLIP_FORAGE
 
 
 ## Playback rate in cycles per second.
@@ -96,6 +176,12 @@ static func rate_for(clip: int, speed: float) -> float:
 			return maxf(absf(speed) / STRIDE_LENGTH, MIN_WALK_RATE) * ROUT_RATE_SCALE
 		CLIP_ATTACK:
 			return 1.0
+		CLIP_CHOP:
+			return CHOP_RATE
+		CLIP_MINE:
+			return MINE_RATE
+		CLIP_FORAGE:
+			return FORAGE_RATE
 		_:
 			return IDLE_RATE
 
@@ -125,5 +211,40 @@ static func phase_offset(squad_id: int, slot: int) -> float:
 ## Written on clip CHANGE, not per frame — see `PrimitiveUnit.set_clip_data`.
 ## The per-frame hot loop stays transforms only, because D-045 measured the
 ## client frame at 97% CPU in derivation and this is that same loop.
-static func custom_data(squad_id: int, slot: int, clip: int, speed: float) -> Color:
-	return Color(float(clip), phase_offset(squad_id, slot), rate_for(clip, speed), 0.0)
+## `row` is which clip block of THIS MODEL'S VAT to sample, which is not the
+## same number as `clip` for a model that bakes a different set of clips —
+## `UnitMesh.clip_index` is the translation and `PrimitiveUnit` does it. It
+## defaults to `clip`, which is right for every model baking the base four.
+##
+## The RATE still comes from `clip`, the intent: a cadence describes the work
+## being done, not the row that happened to be available for drawing it.
+static func custom_data(squad_id: int, slot: int, clip: int, speed: float,
+		row: int = -1) -> Color:
+	return Color(float(row if row >= 0 else clip),
+		phase_offset(squad_id, slot), man_rate(squad_id, slot, clip, speed), 0.0)
+
+
+## The cadence ONE man plays `clip` at.
+##
+##
+## The squad's rate for everything but the work clips, where each man gets his
+## own — see `WORK_RATE_SPREAD`. Derived from (squad, slot), so a soldier keeps
+## his cadence because it is recomputed to the same value rather than because
+## anyone remembered it.
+static func man_rate(squad_id: int, slot: int, clip: int, speed: float) -> float:
+	var rate := rate_for(clip, speed)
+	if not is_work_clip(clip):
+		return rate
+	# A second hash, mixed differently from `phase_offset`'s: reusing that one
+	# would tie a man's cadence to where he starts in the cycle, so the crew
+	# would fan out in one predictable direction instead of scattering.
+	var h := int(squad_id) * 2654435761 + int(slot) * 40503
+	h = (h ^ (h >> 15)) * 2246822519
+	h = h ^ (h >> 13)
+	var unit := float(h & 0xFFFF) / 65536.0
+	return rate * (1.0 + WORK_RATE_SPREAD * (unit * 2.0 - 1.0))
+
+
+## Whether `clip` is one of the gatherer's work clips.
+static func is_work_clip(clip: int) -> bool:
+	return clip == CLIP_CHOP or clip == CLIP_MINE or clip == CLIP_FORAGE

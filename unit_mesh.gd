@@ -230,6 +230,59 @@ static func corpse_material_for(model_id: StringName, team_colour: Color,
 	return material
 
 
+## Which row block of THIS model's VAT plays `wanted`, an `AnimationState`
+## clip index.
+##
+## ## Why a clip index has to be translated at all
+##
+## `AnimationState.CLIP_NAMES` is the NUMBERING every clip shares; a model's
+## manifest entry says which prefix of it that model actually baked
+## (`clips_for` in art/lib/clips.py). Most of the roster bakes four; the
+## gatherer bakes seven, because it is the only unit carrying tools.
+##
+## The translation cannot happen in the shader. `unit_vat.gdshaderinc` finds a
+## row at `clip * frames_per_clip + local`, so asking a four-clip militia for
+## clip 4 is not an out-of-range error — row 64 of its VAT is the first NORMALS
+## row, and the model would come apart into a cloud with nothing reporting
+## anything. So it happens here, on the CPU, where "this model has no such
+## clip" is a fact the manifest can answer.
+##
+## The fallback is stated per clip rather than always idle: a gatherer model
+## that has not been rebuilt should still swing at a tree, and `attack` is the
+## nearest thing every model has to a work stroke. `forage` has no tool in it
+## and falls to `idle`, which is what it looks like anyway.
+##
+## Same shape as `death_clip_for` below, and the same reason: the manifest has
+## carried a per-model clip list since M7, and reading it is how a model gains
+## a clip without every caller learning about it.
+static func clip_index(model_id: StringName, wanted: int) -> int:
+	var clips: Array = layout_for(model_id).get("clips", [])
+	if clips.is_empty():
+		return wanted
+	var found := clips.find(_clip_name(wanted))
+	if found >= 0:
+		return found
+	for fallback in CLIP_FALLBACK.get(wanted, []):
+		found = clips.find(_clip_name(fallback))
+		if found >= 0:
+			return found
+	return maxi(0, clips.find("idle"))
+
+
+## What each clip degrades to on a model that never baked it, in order.
+const CLIP_FALLBACK := {
+	AnimationState.CLIP_CHOP: [AnimationState.CLIP_ATTACK],
+	AnimationState.CLIP_MINE: [AnimationState.CLIP_ATTACK],
+	AnimationState.CLIP_FORAGE: [AnimationState.CLIP_IDLE],
+}
+
+
+static func _clip_name(index: int) -> String:
+	if index < 0 or index >= AnimationState.CLIP_NAMES.size():
+		return ""
+	return String(AnimationState.CLIP_NAMES[index])
+
+
 ## The clip index a corpse of `model_id` samples, from the manifest's own
 ## clip list — the upgrade path D-20260819 records: the moment a rebuilt
 ## bake ships a "death" clip, corpses use it with no code change here.
@@ -241,6 +294,18 @@ static func death_clip_for(model_id: StringName) -> int:
 	if death >= 0:
 		return death
 	return clips.find("idle")
+
+
+## Whether `model_id`'s bake shows the WORK itself, or the render layer has to
+## suggest it by leaning the whole soldier about
+## (`CosmeticOffset.SWING_AMPLITUDE`).
+##
+## Asked of the manifest rather than of the archetype: "is this a gatherer" is
+## the wrong question — what matters is whether this MODEL was baked with the
+## work clips, and a `generated/` from before that bake was not.
+static func animates_work(model_id: StringName) -> bool:
+	var clips: Array = layout_for(model_id).get("clips", [])
+	return clips.has("chop") or clips.has("mine")
 
 
 ## Whether `model_id`'s bake carries a real death clip, or corpses of it

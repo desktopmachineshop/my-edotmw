@@ -1343,10 +1343,18 @@ func _refresh_squads() -> void:
 		# feeding it the wrong input. Noticed only when an authored model
 		# with a real VAT idle clip made the extra whole-body bounce read as
 		# a defect instead of as capsule-era "life".
+		# A model that draws its own work stroke takes NO cosmetic lunge or
+		# sway — see `CosmeticDuel.strike_decorate`. Only the WORKING case
+		# can have one: a soldier's `attack` clip is a stroke at an enemy,
+		# not at the tree he is standing on.
+		var self_animated := int(doing["activity"]) == CosmeticOffset.Activity.WORKING \
+			and UnitMesh.animates_work(_model_id_of(squad_id))
 		var decorated := CosmeticDuel.strike_decorate(
-				eased, enemy_transforms, paired, _now, speed) if dueling \
+				eased, enemy_transforms, paired, _now, speed,
+				0.0 if self_animated else float(doing["swing"])) if dueling \
 			else CosmeticOffset.decorate_activity(
-				eased, _now, speed, int(doing["activity"]), doing["toward"])
+				eased, _now, speed, int(doing["activity"]), doing["toward"],
+				float(doing["swing"]))
 		unit.set_slot_transforms(decorated)
 
 		# Which clip these soldiers play (D-065). Derived from state the
@@ -1358,7 +1366,8 @@ func _refresh_squads() -> void:
 		var clip := AnimationState.clip_for(
 			_state.routed_of(squad_id),
 			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
-			speed > MOVING_SPEED_EPSILON)
+			speed > MOVING_SPEED_EPSILON,
+			int(doing["working"]))
 		# Per-man cadence from the motion layer's own measurements
 		# (D-20260824): each drawn man strides at the pace HE moves, not
 		# the squad's — the squad speed is the fallback inside.
@@ -3095,15 +3104,14 @@ func _pursuit_speed_of(squad_id) -> float:
 func _activity_for(squad_id) -> Dictionary:
 	var idle := {
 		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
+		"working": AnimationState.NOT_WORKING,
+		"swing": CosmeticOffset.SWING_AMPLITUDE,
 		"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 	}
 	var info: Dictionary = _state.composition.get(squad_id, {})
 	if info.is_empty() or _state.space == null:
 		return idle
 
-	# A gathering crew rings its node, and that shape reaches us over the
-	# wire — so "is this crew working?" needs nothing new. The node is
-	# under the crew's own centre, so leaning inward IS leaning at it.
 	var def := UnitRoster.by_id(StringName(String(info.get("def_id", ""))))
 	if def == null:
 		return idle
@@ -3122,6 +3130,13 @@ func _activity_for(squad_id) -> Dictionary:
 			return {
 				"activity": CosmeticOffset.Activity.WORKING,
 				"toward": node_at,
+				# WHICH tool the job calls for. The kind is the node this
+				# crew is standing on, which the test above already had in
+				# hand — so the axe/pickaxe/bare-hands choice costs one
+				# dictionary read and nothing on the wire
+				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
+				"working": int(_state.nodes[crew_cell]),
+				"swing": CosmeticOffset.SWING_AMPLITUDE,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
 				"target_key": "n:%d" % crew_cell,
@@ -3155,6 +3170,8 @@ func _activity_for(squad_id) -> Dictionary:
 				return {
 					"activity": CosmeticOffset.Activity.FIGHTING,
 					"toward": box["centre"],
+					"working": AnimationState.NOT_WORKING,
+					"swing": CosmeticOffset.SWING_AMPLITUDE,
 					"is_ranged": false, "interval": def.attack_interval,
 					"enemy_squad": -1,
 					"rect_centre": box["centre"], "rect_half": box["half"],
@@ -3168,6 +3185,8 @@ func _activity_for(squad_id) -> Dictionary:
 	# real shots on, even though the shot itself is never named on the wire.
 	return {
 		"activity": CosmeticOffset.Activity.FIGHTING, "toward": toward,
+		"working": AnimationState.NOT_WORKING,
+		"swing": CosmeticOffset.SWING_AMPLITUDE,
 		"is_ranged": def.armour_class == "missile", "interval": def.attack_interval,
 		"enemy_squad": enemy_squad,
 	}
@@ -3311,6 +3330,15 @@ func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 			best = {"centre": centre, "half": half, "yaw": entry["yaw"],
 				"id": entry["id"]}
 	return best
+
+
+## The model a squad draws with, or `&""`. One lookup in one place, because two
+## callers asking the roster the same question is how they come to disagree
+## about the answer.
+func _model_id_of(squad_id) -> StringName:
+	var def := UnitRoster.by_id(StringName(String(
+		_state.composition.get(squad_id, {}).get("def_id", ""))))
+	return def.model_id if def != null else &""
 
 
 ## Arrow visuals for ranged attacks (squads and buildings alike). Purely

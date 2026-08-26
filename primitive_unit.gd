@@ -179,6 +179,16 @@ func set_clip_data(squad_id: int, clip: int, speed: float,
 		return
 
 	var rate := AnimationState.rate_for(clip, speed)
+	# Which BLOCK of this model's VAT that clip lives in. Only the gatherer
+	# bakes the work clips, so every other model resolves `chop` to its
+	# `attack` rather than sampling a row that holds normals — see
+	# `UnitMesh.clip_index`, which is where that would go silently wrong.
+	var row := UnitMesh.clip_index(_model_id, clip)
+	if man_speeds.size() > 0 and AnimationState.is_work_clip(clip):
+		# A man starts his first stroke when HE settles at the node, not when
+		# the squad's centre stopped — see `_write_work_phases`.
+		_write_work_phases(squad_id, clip, row, man_speeds)
+		return
 	var per_man := man_speeds.size() > 0 		and (clip == AnimationState.CLIP_WALK or clip == AnimationState.CLIP_ROUT)
 	if per_man:
 		_write_per_man_rates(squad_id, clip, man_speeds)
@@ -197,12 +207,12 @@ func set_clip_data(squad_id: int, clip: int, speed: float,
 	# to walk" (no walk line during a march) from "it was told and the
 	# picture still froze" (walk line present) — the same
 	# instrument-the-live-run move D-038's ownership bug needed.
-	print("client: CLIP squad=%d %s rate=%.2f speed=%.2f" % [
-		squad_id, AnimationState.CLIP_NAMES[clip], rate, speed])
+	print("client: CLIP squad=%d %s rate=%.2f speed=%.2f row=%d" % [
+		squad_id, AnimationState.CLIP_NAMES[clip], rate, speed, row])
 
 	for i in range(mm.instance_count):
 		mm.set_instance_custom_data(
-			i, AnimationState.custom_data(squad_id, i, clip, speed))
+			i, AnimationState.custom_data(squad_id, i, clip, speed, row))
 
 
 ## Per-man cadence, change-driven per man. `_man_offsets` carries each
@@ -232,6 +242,7 @@ func _write_per_man_rates(squad_id: int, clip: int,
 			_man_rates[i] = -1.0
 			_man_offsets[i] = AnimationState.phase_offset(squad_id, i)
 	var clip_changed := clip != _last_clip
+	var row := UnitMesh.clip_index(_model_id, clip)
 	_last_clip = clip
 	_last_rate = -1.0
 	for i in range(count):
@@ -246,7 +257,135 @@ func _write_per_man_rates(squad_id: int, clip: int,
 		_man_rates[i] = rate
 		custom_data_writes += 1
 		mm.set_instance_custom_data(i,
-			Color(float(clip), _man_offsets[i], rate, 0.0))
+			Color(float(row), _man_offsets[i], rate, 0.0))
+
+
+## Below this drawn speed a man counts as having ARRIVED and settled into
+## his slot. A hair above zero rather than zero: the render layer eases men
+## toward their slots exponentially, so a soldier approaches his without ever
+## formally reaching it, and a test for exact rest would never fire.
+const SETTLE_SPEED := 0.08
+
+## Which men have started working, so an arrival is latched once rather than
+## re-latched every frame. Cleared whenever the clip leaves the work family.
+var _man_working := PackedByteArray()
+## When the first and last man of this crew started, for the diagnostic below.
+var _work_first := -1.0
+var _work_last := -1.0
+
+
+## Per-man work phase, anchored on ARRIVAL.
+##
+## ## Why arrival rather than a hash
+##
+## `phase = fract(offset + TIME * rate)` is keyed to the global clock, so a
+## crew that has just settled is already somewhere in the middle of a stroke:
+## a man can be caught with his axe buried in the tree the instant he stops
+## walking. Anchoring the cycle to the moment he starts working makes the
+## first thing he does the wind-up, which is what it should be.
+##
+## And it is ARRIVAL, not the squad stopping. Those are different moments: the
+## squad's curve goes quiet when its CENTRE reaches the node, while its men are
+## still easing into a ring around it for a measured 0.272 s afterwards.
+## Keying every man to the squad's stop would put them all on the same beat
+## again, which is the thing being fixed.
+##
+## This file never asks for that easing itself — `man_speeds` arrives as a
+## plain array from `client.gd`, which is the only place allowed to hold the
+## render layer's per-soldier motion. `tests/test_tier_three.gd` enforces
+## that by grepping for the class name, so do not name it here even in a
+## comment: the whole point of that guard is that a grep finds every toucher.
+##
+## ## Why this is allowed
+##
+## `_man_offsets` is already per-soldier render state, and has been since
+## D-20260824 gave each man his own stride. D-006 clause 2 as amended by
+## D-20260819-tier-three-lives-on-the-render-side permits exactly this:
+## bounded, one-way and outcome-blind. Nothing simulation-side reads it, two
+## clients may legitimately disagree about where in his swing a man is, and no
+## outcome depends on the answer — the same freedom `CosmeticOffset` has.
+##
+## The per-man RATE spread stays on top of it (`AnimationState.man_rate`).
+## Arrival decides where each man starts; the rate spread is what stops a crew
+## that happened to arrive together from staying in step forever.
+func _write_work_phases(squad_id: int, clip: int, row: int,
+		man_speeds: PackedFloat32Array) -> void:
+	var mm := _multimesh_instance.multimesh
+	var count := mini(mm.instance_count, man_speeds.size())
+	var now := Time.get_ticks_msec() / 1000.0
+
+	if clip != _last_clip:
+		# The same diagnosis line the other two write paths emit. Without it a
+		# work clip is the one thing in this file that changes silently, and
+		# "the renderer was never told to chop" and "it was told and the
+		# picture still froze" are the two cases this print exists to
+		# separate (see `set_clip_data`).
+		print("client: CLIP squad=%d %s rate=%.2f row=%d (per-man, on arrival)"
+			% [squad_id, AnimationState.CLIP_NAMES[clip],
+				AnimationState.rate_for(clip, 0.0), row])
+
+	if _man_working.size() != mm.instance_count or clip != _last_clip:
+		_man_working = PackedByteArray()
+		_man_working.resize(mm.instance_count)
+		_man_rates = PackedFloat32Array()
+		_man_rates.resize(mm.instance_count)
+		_man_offsets = PackedFloat32Array()
+		_man_offsets.resize(mm.instance_count)
+		for i in range(mm.instance_count):
+			_man_rates[i] = -1.0
+		_work_first = -1.0
+		_work_last = -1.0
+	_last_clip = clip
+	_last_rate = -1.0
+
+	for i in range(count):
+		if _man_working[i] != 0:
+			continue
+		if man_speeds[i] > SETTLE_SPEED:
+			# Still walking in. HOLD him at the start of the wind-up, with the
+			# tool at rest, until he actually arrives.
+			#
+			# Held by writing rate ZERO rather than by re-anchoring his offset
+			# every frame: `phase = fract(offset + TIME * rate)` freezes on its
+			# own when the rate is nothing, so this is one write per man
+			# instead of one per man per frame on the client's hottest loop
+			# (D-041 measured the frame at 97% CPU in derivation). The same
+			# rate-zero idiom D-20260819 already uses to hold a falling man's
+			# pose.
+			if _man_rates[i] != 0.0:
+				_man_rates[i] = 0.0
+				_man_offsets[i] = 0.0
+				custom_data_writes += 1
+				mm.set_instance_custom_data(i, Color(float(row), 0.0, 0.0, 0.0))
+			continue
+
+		# Arrived. Anchor his cycle so that fract(offset + t * rate) is 0 at
+		# t = now — the first thing he does is the wind-up — and let it run.
+		var rate := AnimationState.man_rate(squad_id, i, clip, 0.0)
+		var offset := fposmod(-now * rate, 1.0)
+		_man_offsets[i] = offset
+		_man_rates[i] = rate
+		_man_working[i] = 1
+		custom_data_writes += 1
+		mm.set_instance_custom_data(i, Color(float(row), offset, rate, 0.0))
+		if _work_first < 0.0:
+			_work_first = now
+		_work_last = now
+		if _worked_count() == count:
+			# The number the design question turns on: how far apart a crew
+			# actually arrives. Printed once per crew per stint, because a
+			# guess about it is what the hash was standing in for.
+			print("client: WORK squad=%d %s — %d men settled over %.2fs"
+				% [squad_id, AnimationState.CLIP_NAMES[clip], count,
+					_work_last - _work_first])
+
+
+func _worked_count() -> int:
+	var n := 0
+	for byte in _man_working:
+		if byte != 0:
+			n += 1
+	return n
 
 
 ## Sets per-soldier slot transforms. Caller (formation/curve code, not

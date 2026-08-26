@@ -30,6 +30,8 @@ const BUILDING_SPACING := 4.2
 @export var out_path: String = "res://artifacts/models-godot.png"
 
 var _units: Array[PrimitiveUnit] = []
+## Framed once the grid exists — see `_frame_grid`.
+var _camera: Camera3D = null
 var _space: TorusSpace
 var _terrain_sampler: Callable
 var _elapsed := 0.0
@@ -131,13 +133,30 @@ func _parse_arguments() -> void:
 			out_path = text.trim_prefix("--out=")
 
 
+## How far back the camera stands is DERIVED from the grid, not tuned.
+##
+## The constant it replaces was tuned for four clip columns and silently
+## clipped anything wider — which is the second time this file has had that
+## exact failure (see BUILDING_SPACING's note, where the roster grew from
+## four buildings to nine), and the first time was already written down as a
+## warning here. Adding the gatherer's three work clips made it three times.
+##
+## So the framing now follows whatever the grid actually is. A row or a
+## column added later reframes the shot instead of falling off the edge of
+## it, and this file stops being able to make the mistake its own docstring
+## is about.
+const CAMERA_PITCH := 27.0
+const CAMERA_FOV := 62.0
+## Slack around the grid, as a share of the spacing it is measured against.
+const CAMERA_MARGIN := 0.75
+
+
 func _build_environment() -> void:
-	var camera := Camera3D.new()
-	camera.position = Vector3(0.0, 14.0, 30.0)
-	camera.rotation_degrees = Vector3(-27.0, 0.0, 0.0)
-	camera.fov = 62.0
-	add_child(camera)
-	camera.make_current()
+	_camera = Camera3D.new()
+	_camera.rotation_degrees = Vector3(-CAMERA_PITCH, 0.0, 0.0)
+	_camera.fov = CAMERA_FOV
+	add_child(_camera)
+	_camera.make_current()
 
 	add_child(WorldLook.make_sun(true))
 
@@ -164,13 +183,18 @@ func _build_squads() -> void:
 
 	for row in range(archetypes.size()):
 		var def := archetypes[row]
+		# EVERY clip in the numbering, not each model's own list, so the sheet
+		# stays a rectangle — a model that never baked the work clips draws
+		# its fallback there (`UnitMesh.clip_index`), which is itself worth
+		# seeing. The counts printed below say which is which.
 		for clip in range(AnimationState.CLIP_NAMES.size()):
 			var unit := PrimitiveUnit.new()
 			add_child(unit)
 			unit.rebuild(def, colours[clip % colours.size()])
 
 			var origin := Vector3(
-				(float(clip) - 1.5) * COLUMN_SPACING,
+				(float(clip) - float(AnimationState.CLIP_NAMES.size() - 1) * 0.5)
+					* COLUMN_SPACING,
 				0.0,
 				-float(row) * ROW_SPACING)
 			unit.position = origin
@@ -192,12 +216,49 @@ func _build_squads() -> void:
 			unit.set_clip_data(row * 10 + clip, clip, 3.2)
 			_units.append(unit)
 
+	_frame_grid(archetypes.size(), AnimationState.CLIP_NAMES.size())
+
 	print("model_preview: %d archetypes x %d clips = %d squads, %d soldiers each"
 		% [archetypes.size(), AnimationState.CLIP_NAMES.size(), _units.size(),
 			SOLDIERS_PER_SQUAD])
+	for def in archetypes:
+		print("model_preview: %s baked %s" % [def.model_id,
+			str(UnitMesh.layout_for(def.model_id).get("clips", []))])
 	print("model_preview: renderer=%s adapter=%s"
 		% [ProjectSettings.get_setting("rendering/renderer/rendering_method"),
 			RenderingServer.get_video_adapter_name()])
+
+
+## Stand far enough back to hold `rows` x `columns` of squads, and aim at the
+## middle of them.
+##
+## Both extents are checked because either can be the binding one: seven
+## clips make the sheet wide, and a roster that grows makes it deep. The
+## horizontal field is derived from the vertical one and the viewport's
+## aspect, since `Camera3D.fov` is the vertical angle.
+func _frame_grid(rows: int, columns: int) -> void:
+	if _camera == null:
+		return
+	var half_width := (float(maxi(columns, 1) - 1) * 0.5 + CAMERA_MARGIN) \
+		* COLUMN_SPACING
+	var half_depth := (float(maxi(rows, 1) - 1) * 0.5 + CAMERA_MARGIN) \
+		* ROW_SPACING
+	var centre := Vector3(0.0, 0.0, -float(maxi(rows, 1) - 1) * ROW_SPACING * 0.5)
+
+	var aspect := float(get_viewport().get_visible_rect().size.aspect())
+	var half_v := deg_to_rad(CAMERA_FOV) * 0.5
+	var half_h := atan(tan(half_v) * maxf(aspect, 0.1))
+	# The depth extent is foreshortened by the pitch; the width is not.
+	var for_width := half_width / maxf(tan(half_h), 0.01)
+	var for_depth := half_depth * sin(deg_to_rad(CAMERA_PITCH)) \
+		/ maxf(tan(half_v), 0.01) + half_depth
+	var distance := maxf(for_width, for_depth)
+
+	var pitch := deg_to_rad(CAMERA_PITCH)
+	_camera.position = centre + Vector3(
+		0.0, distance * sin(pitch), distance * cos(pitch))
+	print("model_preview: framed %dx%d grid from %.1f units back"
+		% [rows, columns, distance])
 
 
 func _process(delta: float) -> void:

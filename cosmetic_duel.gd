@@ -146,9 +146,25 @@ static func engage(attackers: Array[Transform3D],
 const STRIKE_REACH := Engagement.CONTACT_GAP + 1.0
 
 
+## `amplitude` is how far a man lunges at his mark, and passing 0 turns this
+## decoration OFF ENTIRELY — sway included, not just the lunge.
+##
+## Both halves of it are placeholders that predate having any animation
+## (`CosmeticOffset.ANIMATED_SWING_AMPLITUDE`), and a model that draws its own
+## stroke wants neither: a 5.5 Hz lunge against a 0.62 Hz chop beats against it
+## nine times a stroke, which is how a correct animation ends up looking
+## broken. The owner's playtest reported the leftover as crews "bobbing around,
+## floating side to side".
+##
+## It is a parameter rather than a lookup because this function is pure and
+## static and has no business knowing what a model bakes; the caller does
+## (`UnitMesh.animates_work`).
 static func strike_decorate(eased: Array[Transform3D],
 		defenders: Array[Transform3D], paired: PackedInt32Array,
-		time: float, speed: float) -> Array[Transform3D]:
+		time: float, speed: float,
+		amplitude: float = CosmeticOffset.SWING_AMPLITUDE) -> Array[Transform3D]:
+	if amplitude <= 0.0:
+		return eased.duplicate()
 	var out: Array[Transform3D] = []
 	out.resize(eased.size())
 	for i in range(eased.size()):
@@ -158,6 +174,6 @@ static func strike_decorate(eased: Array[Transform3D],
 			var toward := defenders[j].origin - eased[i].origin
 			if Vector2(toward.x, toward.z).length() <= STRIKE_REACH:
 				decorated.origin += CosmeticOffset.work_swing(i, time,
-					toward, CosmeticOffset.Activity.FIGHTING)
+					toward, CosmeticOffset.Activity.FIGHTING, amplitude)
 		out[i] = decorated
 	return out

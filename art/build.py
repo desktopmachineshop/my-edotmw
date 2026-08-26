@@ -54,6 +54,7 @@ from art.scatter.props import build as build_prop               # noqa: E402
 from art.scatter.props import settle as settle_prop             # noqa: E402
 from art.scatter.props import validate as validate_prop         # noqa: E402
 from art.terrain.atlas import write_atlas                       # noqa: E402
+from art.lib.clips import clips_for                            # noqa: E402
 from art.units import ROSTER                                    # noqa: E402
 
 TRIANGLE_BUDGET = 300
@@ -80,6 +81,20 @@ PLACEHOLDER_ARCHETYPES = frozenset({"gatherers"})
 # Buildings are few and never instanced in the thousands, so their budget is
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400
+
+## The widest VAT this project will write, in pixels.
+##
+## A model's triangle count is a TEXTURE WIDTH: `art/lib/bake.py` gives every
+## flattened vertex a column, so 5,461 triangles is 16,383 pixels across.
+## 16,384 is the 2D texture limit shared by every GPU this game targets — the
+## owner's Iris Xe included — and a texture that exceeds it is not created at
+## all. So the failure is not a slow frame: it is a squad that does not render,
+## on somebody else's machine, long after the build said fine.
+##
+## Checked here rather than left to the triangle budgets above because those
+## are per-source (a soldier, a tool, an imported placeholder) while this is a
+## property of the SUM, and the sum is what the texture has to hold.
+MAX_VAT_WIDTH = 16384
 
 GENERATED = os.path.join(_ROOT, "generated")
 
@@ -167,7 +182,14 @@ def build_units(only: str | None) -> dict:
         write_glb(archetype, flat, glb_path)
         # LODs and vertex compression off — see MODEL_PARAMS.
         ensure_import_params(glb_path, MODEL_PARAMS)
-        layout = write_vat(archetype, flat, vat_path, frames)
+        layout = write_vat(archetype, flat, vat_path, frames,
+                           clips=clips_for(archetype))
+        if layout["width"] > MAX_VAT_WIDTH:
+            raise SystemExit(
+                f"{archetype}: a {layout['width']}-pixel VAT exceeds the "
+                f"{MAX_VAT_WIDTH} texture limit ({tris} triangles x 3). The "
+                "model cannot be uploaded on the hardware this game targets — "
+                "reduce it, or split the archetype.")
         # A VAT that Godot re-imports as a compressed 3D texture is silently
         # ruined; see godot_import.py.
         ensure_import_params(vat_path, VAT_PARAMS)
