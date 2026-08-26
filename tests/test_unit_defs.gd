@@ -95,10 +95,14 @@ func test_squad_renders_as_one_multimesh_not_one_node_per_soldier() -> void:
 	unit.rebuild(def)
 
 	assert_eq(unit.get_child_count(), 1,
-		"A squad should add exactly one MultiMeshInstance3D child (D-009), not one node per soldier")
+		"A squad should add exactly one body composite (D-009 as amended by "
+		+ "D-20260826-a-squad-wears-more-than-one-model), not one node per soldier")
 
-	var mmi := unit.get_child(0) as MultiMeshInstance3D
-	assert_not_null(mmi, "PrimitiveUnit's child should be a MultiMeshInstance3D")
+	var body := unit.get_child(0)
+	assert_eq(body.get_child_count(), 1,
+		"a single-model squad should hold exactly one MultiMesh group")
+	var mmi := body.get_child(0) as MultiMeshInstance3D
+	assert_not_null(mmi, "the body's child should be a MultiMeshInstance3D")
 	if mmi == null:
 		return
 
@@ -117,8 +121,11 @@ func test_rebuild_is_idempotent_and_tracks_squad_size() -> void:
 	unit.rebuild(def)
 
 	assert_eq(unit.get_child_count(), 1,
-		"Rebuilding should reuse the existing MultiMeshInstance3D, not stack up children")
-	var mmi := unit.get_child(0) as MultiMeshInstance3D
+		"Rebuilding should reuse the existing body composite, not stack up children")
+	assert_eq(unit.get_child(0).get_child_count(), 1,
+		"Rebuilding a single-model squad should leave exactly one group, "
+		+ "not stack up MultiMeshes")
+	var mmi := unit.get_child(0).get_child(0) as MultiMeshInstance3D
 	assert_eq(mmi.multimesh.instance_count, def.squad_size)
 
 

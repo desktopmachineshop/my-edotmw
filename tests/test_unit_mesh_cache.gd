@@ -35,6 +35,18 @@ func _first_model() -> StringName:
 	return &""
 
 
+## A uniform squad's single MultiMesh group, under the body composite
+## (D-20260826-a-squad-wears-more-than-one-model). Asserting through this
+## helper keeps every test below pinned to "exactly one group" for a
+## single-model squad — a mixed squad's extra groups are covered in
+## tests/test_squad_models.gd.
+func _only_group(unit: PrimitiveUnit) -> MultiMeshInstance3D:
+	var body := unit.get_child(0)
+	assert_eq(body.get_child_count(), 1,
+		"a single-model squad must stay a single MultiMesh group")
+	return body.get_child(0) as MultiMeshInstance3D
+
+
 func test_a_model_is_pulled_off_disk_once_however_many_squads_want_it() -> void:
 	var model_id := _first_model()
 	if model_id == &"":
@@ -89,10 +101,12 @@ func test_a_missing_model_degrades_to_the_primitive_rather_than_failing() -> voi
 	unit.rebuild(def, Color.RED)
 
 	# The whole point of the empty default (D-064): a clone with no generated/
-	# still plays. One child, a mesh, and the right instance count — the same
-	# structural contract D-009's test asserts.
+	# still plays. One body, one group, a mesh, and the right instance count —
+	# the structural contract D-009's test asserts, as amended by
+	# D-20260826-a-squad-wears-more-than-one-model (groups live under a body
+	# composite so the lattice mirrors can clone them as one).
 	assert_eq(unit.get_child_count(), 1)
-	var child := unit.get_child(0) as MultiMeshInstance3D
+	var child := _only_group(unit)
 	assert_not_null(child)
 	assert_not_null(child.multimesh.mesh,
 		"a squad whose art is missing must still draw something")
@@ -113,7 +127,7 @@ func test_an_authored_squad_carries_per_soldier_animation_data() -> void:
 	add_child_autofree(unit)
 	unit.rebuild(def, Color.BLUE)
 
-	var child := unit.get_child(0) as MultiMeshInstance3D
+	var child := _only_group(unit)
 	assert_true(child.multimesh.use_custom_data,
 		"D-065 carries clip, phase and rate in MultiMesh custom data; without "
 		+ "it every soldier animates identically and in lockstep")
@@ -172,9 +186,12 @@ func test_a_squad_at_a_steady_pace_rewrites_nothing() -> void:
 		"a squad breaking into a run must have its playback rate updated")
 
 
-## Still exactly one child, whichever path a squad renders on. D-009's own test
-## covers the primitive; this covers the authored one, because the authored
-## path was the plausible place to add a second node for a weapon or an LOD.
+## Still exactly one MultiMesh GROUP for a single-model squad, whichever path
+## it renders on. D-009's own test covers the primitive; this covers the
+## authored one, because the authored path was the plausible place to add a
+## second node for a weapon or an LOD. A squad that names several models is
+## the one sanctioned exception (D-20260826-a-squad-wears-more-than-one-model)
+## and gets one group PER MODEL — covered in tests/test_squad_models.gd.
 func test_an_authored_squad_is_still_one_multimesh() -> void:
 	var model_id := _first_model()
 	if model_id == &"":
@@ -189,7 +206,8 @@ func test_an_authored_squad_is_still_one_multimesh() -> void:
 	add_child_autofree(unit)
 	unit.rebuild(def, Color.GREEN)
 	assert_eq(unit.get_child_count(), 1,
-		"one MultiMesh per squad (D-009), authored models included")
+		"one body composite per squad")
+	assert_not_null(_only_group(unit))
 
 
 ## What used to be here toggled a squad between the opaque and fog-ghost
@@ -211,7 +229,7 @@ func test_an_authored_squad_gets_one_opaque_material() -> void:
 	var unit := PrimitiveUnit.new()
 	add_child_autofree(unit)
 	unit.rebuild(def, Color.GREEN)
-	var material := (unit.get_child(0) as MultiMeshInstance3D).material_override
+	var material := _only_group(unit).material_override
 	assert_eq(unit.get_child_count(), 1)
 	assert_not_null(material, "an authored model renders through its VAT shader")
 	assert_eq((material as ShaderMaterial).shader,

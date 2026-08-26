@@ -4,17 +4,51 @@ class_name PrimitiveUnit
 ## Tier-1 mesh generation (D-011): capsule/box/cylinder placeholder
 ## meshes composed from UnitDef data, zero art dependency.
 ##
-## Renders a whole squad as one MultiMeshInstance3D (D-009) — never one
+## Renders a whole squad as MultiMeshInstance3D buckets (D-009) — never one
 ## Node per soldier. Soldier slot transforms are expected to come from a
 ## formation function (D-019) driven by the squad's curve (D-006), not
 ## from per-soldier simulation state; this script only owns the mesh/
 ## MultiMesh setup, not movement.
+##
+## ## A squad may wear MORE THAN ONE model
+## (D-20260826-a-squad-wears-more-than-one-model)
+##
+## A hero squad is one general and a retinue with mixed kit; a cannon crew
+## is one gun carriage and its tenders. `UnitDef.slot_models` names the
+## models of the leading slots and `UnitDef.model_mix` is dealt across the
+## rest, so this file groups slots by model and draws one MultiMesh per
+## distinct model — still a handful of draw calls per squad, never a node
+## per soldier. Every group hangs off ONE `_body` node, which is what the
+## lattice mirrors clone: `LatticeCopies` already recurses into composites
+## (a forest chunk is exactly this shape), so a mixed squad wraps the seam
+## the same way a uniform one does.
+##
+## Slots are routed by DRAWN index: the LOD sampler
+## (`Formation.soldier_transforms_sampled`) picks `i * alive / n`, so drawn
+## index 0 is always slot 0 and the leader survives every thinning tier.
+## The remaining drawn indices deal the mix in drawn order — which mix
+## entry a particular background dwarf wears at half detail is cosmetic,
+## and no outcome reads it (D-006 clause 2).
 
 @export var unit_def: UnitDef
 
-var _multimesh_instance: MultiMeshInstance3D
+## The composite this squad draws: one MultiMeshInstance3D child per
+## distinct model. Mirrors clone THIS node, so a rebuild that changes the
+## group list only needs a resync.
+var _body: Node3D
 
-## The extra views of this squad's ONE MultiMesh, one per lattice copy of
+var _groups: Array[MultiMeshInstance3D] = []
+var _group_models: Array[StringName] = []
+var _group_authored: Array[bool] = []
+## Drawn index -> (group, instance-within-group). Locals are assigned in
+## drawn order, so however many soldiers are written this frame, each
+## group's written instances are a PREFIX of its buffer — which is what
+## `visible_instance_count` needs to be true.
+var _index_group := PackedInt32Array()
+var _index_local := PackedInt32Array()
+var _total_instances := 0
+
+## The extra views of this squad's body, one per lattice copy of
 ## the torus beyond the first that the camera can see
 ## (D-20260818-entities-are-drawn-at-every-visible-copy). Empty for a squad
 ## standing well inside the map, which is nearly all of them.
@@ -32,10 +66,6 @@ var _mirrors: Array[Node3D] = []
 ## `_squad_footprint` reached for `node.position` in the first place.
 var lattice_offsets: Array[Vector3] = []
 
-## Whether this squad is wearing an authored model (D-064) rather than a
-## primitive. Decides which material path applies and whether the MultiMesh
-## carries the per-soldier animation data D-065 needs.
-var _authored := false
 var _model_id: StringName = &""
 var _owner_colour := Color(0, 0, 0, 0)
 
@@ -66,7 +96,22 @@ func _ready() -> void:
 		rebuild(unit_def)
 
 
-## Builds (or rebuilds) the MultiMesh for this squad from its UnitDef.
+## Which model formation slot `i` of this squad wears.
+##
+## Static and pure so a test can ask it the same question the renderer
+## answers, without a scene tree. The order is: the named leading slots,
+## then the mix dealt round-robin, then `model_id` for everyone else —
+## and both extra fields default empty, so the whole existing roster
+## resolves to `model_id` exactly as before.
+static func model_for_slot(def: UnitDef, i: int) -> StringName:
+	if i < def.slot_models.size():
+		return def.slot_models[i]
+	if not def.model_mix.is_empty():
+		return def.model_mix[(i - def.slot_models.size()) % def.model_mix.size()]
+	return def.model_id
+
+
+## Builds (or rebuilds) the model groups for this squad from its UnitDef.
 ## Call again if unit_def changes or squad_size changes mid-match
 ## (reinforcement/attrition).
 ## `owner_colour` identifies WHOSE squad this is (D-052). Colour used to
@@ -77,60 +122,99 @@ func _ready() -> void:
 func rebuild(def: UnitDef, owner_colour := Color(0, 0, 0, 0)) -> void:
 	unit_def = def
 
-	if _multimesh_instance == null:
-		_multimesh_instance = MultiMeshInstance3D.new()
-		add_child(_multimesh_instance)
+	if _body == null:
+		_body = Node3D.new()
+		add_child(_body)
+
+	# Freed NOW, not queued: `LatticeCopies.resync` below copies the body's
+	# CURRENT children, and a queue_free'd group is still a child until the
+	# end of the frame — every mirror would adopt a mesh about to vanish.
+	for group in _groups:
+		_body.remove_child(group)
+		group.free()
+	_groups = []
+	_group_models = []
+	_group_authored = []
 
 	_owner_colour = owner_colour
 	_model_id = def.model_id
 	_last_clip = -1
 	_last_rate = -1.0
 	custom_data_writes = 0
+	_man_rates = PackedFloat32Array()
+	_man_offsets = PackedFloat32Array()
+	_man_working = PackedByteArray()
 
-	# Authored model first, primitive as the fallback (D-064). A missing
-	# `generated/` degrades to the capsule rather than failing, which is what
-	# keeps the bots, the tests and an unbuilt fresh clone running.
-	var mesh: Mesh = null
-	if _model_id != &"":
-		mesh = UnitMesh.mesh_for(_model_id)
-	_authored = mesh != null
-	if not _authored:
-		mesh = _build_primitive_mesh(def)
+	# One group per distinct model, in first-appearance (= slot) order.
+	_total_instances = maxi(def.squad_size, 1)
+	_index_group.resize(_total_instances)
+	_index_local.resize(_total_instances)
+	var group_of_model := {}
+	var counts: Array[int] = []
+	for i in range(_total_instances):
+		var model := model_for_slot(def, i)
+		if not group_of_model.has(model):
+			group_of_model[model] = _group_models.size()
+			_group_models.append(model)
+			counts.append(0)
+		var g: int = group_of_model[model]
+		_index_group[i] = g
+		_index_local[i] = counts[g]
+		counts[g] += 1
 
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	# Per-soldier clip, phase and rate (D-065). Declared before instance_count,
-	# because changing the format after allocation discards the buffer.
-	mm.use_custom_data = _authored
-	mm.mesh = mesh
-	mm.instance_count = def.squad_size
+	for g in range(_group_models.size()):
+		# Authored model first, primitive as the fallback (D-064). A missing
+		# `generated/` degrades to the capsule rather than failing, which is
+		# what keeps the bots, the tests and an unbuilt fresh clone running.
+		var mesh: Mesh = null
+		if _group_models[g] != &"":
+			mesh = UnitMesh.mesh_for(_group_models[g])
+		var authored := mesh != null
+		if not authored:
+			mesh = _build_primitive_mesh(def)
+		_group_authored.append(authored)
 
-	_multimesh_instance.multimesh = mm
-	_apply_material(def)
-	# Every copy reads the SAME MultiMesh and the SAME material, so a
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		# Per-soldier clip, phase and rate (D-065). Declared before
+		# instance_count, because changing the format after allocation
+		# discards the buffer.
+		mm.use_custom_data = authored
+		mm.mesh = mesh
+		mm.instance_count = counts[g]
+
+		var instance := MultiMeshInstance3D.new()
+		instance.multimesh = mm
+		_body.add_child(instance)
+		_groups.append(instance)
+		_apply_material(def, g)
+
+	# Every copy reads the SAME MultiMeshes and the SAME materials, so a
 	# rebuild has to be re-pointed at them rather than repeated.
-	LatticeCopies.resync(_multimesh_instance, _mirrors)
+	LatticeCopies.resync(_body, _mirrors)
 
 
-## Attach the right material for the current model and owner.
+## Attach the right material for one group's model and the owner.
 ##
 ## Split out of `rebuild` because the two render paths answer it differently:
 ## an authored model gets a whole ShaderMaterial built around its VAT, a
 ## primitive a StandardMaterial3D, and the caller should not have to know
-## which one a squad is using.
-func _apply_material(def: UnitDef) -> void:
-	if _authored:
+## which one a group is using.
+func _apply_material(def: UnitDef, g: int) -> void:
+	if _group_authored[g]:
 		var colour := _owner_colour
 		if colour.a <= 0.0:
 			colour = def.mesh_color
-		var material := UnitMesh.material_for(_model_id, colour)
+		var material := UnitMesh.material_for(_group_models[g], colour)
 		if material != null:
-			_multimesh_instance.material_override = material
+			_groups[g].material_override = material
 			return
 		# The mesh loaded but its VAT did not. Fall through rather than render
 		# an un-materialled model.
-		push_warning("PrimitiveUnit: no VAT for '%s'; falling back" % _model_id)
-		_authored = false
+		push_warning("PrimitiveUnit: no VAT for '%s'; falling back"
+			% _group_models[g])
+		_group_authored[g] = false
+		_groups[g].multimesh.use_custom_data = false
 
 	var standard := StandardMaterial3D.new()
 	# The unit's own colour survives as a tint on the player's, so two
@@ -143,7 +227,38 @@ func _apply_material(def: UnitDef) -> void:
 	# Opaque, always. There used to be a fog-ghost branch here fading a
 	# concealed squad; D-099 draws one not at all, so a squad this file
 	# renders is a squad someone can see.
-	_multimesh_instance.material_override = standard
+	_groups[g].material_override = standard
+
+
+func _any_authored() -> bool:
+	for authored in _group_authored:
+		if authored:
+			return true
+	return false
+
+
+## Route one soldier's custom data to the MultiMesh his slot's model lives
+## in. Silently skips a primitive-fallback group — a capsule has no VAT to
+## index, and its MultiMesh carries no custom data buffer at all.
+func _write_custom(i: int, data: Color) -> void:
+	var g := _index_group[i]
+	if not _group_authored[g]:
+		return
+	_groups[g].multimesh.set_instance_custom_data(_index_local[i], data)
+
+
+## Which VAT row block each group plays for `clip` — resolved per MODEL,
+## because a mixed squad's members do not share a clip table: the tenders'
+## body bakes a walk, the gun carriage bakes nothing but its rest pose, and
+## `UnitMesh.clip_index` is where "this model has no such clip" degrades
+## safely instead of sampling a normals row.
+func _rows_for(clip: int) -> PackedInt32Array:
+	var rows := PackedInt32Array()
+	rows.resize(_groups.size())
+	for g in range(_groups.size()):
+		rows[g] = UnitMesh.clip_index(_group_models[g], clip) \
+			if _group_authored[g] else 0
+	return rows
 
 
 ## Per-soldier animation state (D-065).
@@ -161,35 +276,24 @@ func _apply_material(def: UnitDef) -> void:
 ## phase is fract(offset + TIME*rate), so the offset absorbs the switch.
 func set_clip_data(squad_id: int, clip: int, speed: float,
 		man_speeds: PackedFloat32Array = PackedFloat32Array()) -> void:
-	if not _authored or _multimesh_instance == null:
+	if _groups.is_empty() or not _any_authored():
 		if _clip_guard_reported == 0:
 			# Once, not per frame: this return is why a squad can march with
 			# its model in the rest pose — no custom data means the shader
 			# derives phase from zeros. Silent for a whole diagnosis session.
 			_clip_guard_reported = 1
-			print("client: CLIP-GUARD squad=%d model=%s authored=%s no-mmi=%s" % [
-				squad_id, _model_id, _authored, _multimesh_instance == null])
-		return
-	var mm := _multimesh_instance.multimesh
-	if mm == null or not mm.use_custom_data:
-		if _clip_guard_reported == 0:
-			_clip_guard_reported = 1
-			print("client: CLIP-GUARD squad=%d no-mm=%s custom=%s" % [
-				squad_id, mm == null, mm != null and mm.use_custom_data])
+			print("client: CLIP-GUARD squad=%d model=%s no-groups=%s" % [
+				squad_id, _model_id, _groups.is_empty()])
 		return
 
 	var rate := AnimationState.rate_for(clip, speed)
-	# Which BLOCK of this model's VAT that clip lives in. Only the gatherer
-	# bakes the work clips, so every other model resolves `chop` to its
-	# `attack` rather than sampling a row that holds normals — see
-	# `UnitMesh.clip_index`, which is where that would go silently wrong.
-	var row := UnitMesh.clip_index(_model_id, clip)
 	if man_speeds.size() > 0 and AnimationState.is_work_clip(clip):
 		# A man starts his first stroke when HE settles at the node, not when
 		# the squad's centre stopped — see `_write_work_phases`.
-		_write_work_phases(squad_id, clip, row, man_speeds)
+		_write_work_phases(squad_id, clip, man_speeds)
 		return
-	var per_man := man_speeds.size() > 0 		and (clip == AnimationState.CLIP_WALK or clip == AnimationState.CLIP_ROUT)
+	var per_man := man_speeds.size() > 0 \
+		and (clip == AnimationState.CLIP_WALK or clip == AnimationState.CLIP_ROUT)
 	if per_man:
 		_write_per_man_rates(squad_id, clip, man_speeds)
 		return
@@ -201,18 +305,19 @@ func set_clip_data(squad_id: int, clip: int, speed: float,
 	_last_rate = rate
 	_man_rates = PackedFloat32Array()
 	custom_data_writes += 1
+	var rows := _rows_for(clip)
 	# Diagnosis print (issue: walk reads as frozen during a steady march).
 	# Writes happen on CHANGE only, so this is a handful of lines per squad
 	# per order, not spam. What it separates: "the renderer was never told
 	# to walk" (no walk line during a march) from "it was told and the
 	# picture still froze" (walk line present) — the same
 	# instrument-the-live-run move D-038's ownership bug needed.
-	print("client: CLIP squad=%d %s rate=%.2f speed=%.2f row=%d" % [
-		squad_id, AnimationState.CLIP_NAMES[clip], rate, speed, row])
+	print("client: CLIP squad=%d %s rate=%.2f speed=%.2f rows=%s" % [
+		squad_id, AnimationState.CLIP_NAMES[clip], rate, speed, rows])
 
-	for i in range(mm.instance_count):
-		mm.set_instance_custom_data(
-			i, AnimationState.custom_data(squad_id, i, clip, speed, row))
+	for i in range(_total_instances):
+		_write_custom(i, AnimationState.custom_data(
+			squad_id, i, clip, speed, rows[_index_group[i]]))
 
 
 ## Per-man cadence, change-driven per man. `_man_offsets` carries each
@@ -229,26 +334,26 @@ var _man_offsets := PackedFloat32Array()
 
 func _write_per_man_rates(squad_id: int, clip: int,
 		man_speeds: PackedFloat32Array) -> void:
-	var mm := _multimesh_instance.multimesh
-	var count := mini(mm.instance_count, man_speeds.size())
+	var count := mini(_total_instances, man_speeds.size())
 	var now := Time.get_ticks_msec() / 1000.0
-	var resized := _man_rates.size() != mm.instance_count
+	var resized := _man_rates.size() != _total_instances
 	if resized:
 		_man_rates = PackedFloat32Array()
-		_man_rates.resize(mm.instance_count)
+		_man_rates.resize(_total_instances)
 		_man_offsets = PackedFloat32Array()
-		_man_offsets.resize(mm.instance_count)
-		for i in range(mm.instance_count):
+		_man_offsets.resize(_total_instances)
+		for i in range(_total_instances):
 			_man_rates[i] = -1.0
 			_man_offsets[i] = AnimationState.phase_offset(squad_id, i)
 	var clip_changed := clip != _last_clip
-	var row := UnitMesh.clip_index(_model_id, clip)
+	var rows := _rows_for(clip)
 	_last_clip = clip
 	_last_rate = -1.0
 	for i in range(count):
 		var rate := AnimationState.rate_for(clip, man_speeds[i])
 		var old_rate := _man_rates[i]
-		if not clip_changed and old_rate > 0.0 				and absf(rate - old_rate) < maxf(old_rate, 0.01) * 0.07:
+		if not clip_changed and old_rate > 0.0 \
+			and absf(rate - old_rate) < maxf(old_rate, 0.01) * 0.07:
 			continue
 		if old_rate > 0.0:
 			# Keep fract(offset + now*rate) continuous across the switch.
@@ -256,8 +361,8 @@ func _write_per_man_rates(squad_id: int, clip: int,
 				_man_offsets[i] + now * (old_rate - rate), 1.0)
 		_man_rates[i] = rate
 		custom_data_writes += 1
-		mm.set_instance_custom_data(i,
-			Color(float(row), _man_offsets[i], rate, 0.0))
+		_write_custom(i,
+			Color(float(rows[_index_group[i]]), _man_offsets[i], rate, 0.0))
 
 
 ## Below this drawn speed a man counts as having ARRIVED and settled into
@@ -308,11 +413,11 @@ var _work_last := -1.0
 ## The per-man RATE spread stays on top of it (`AnimationState.man_rate`).
 ## Arrival decides where each man starts; the rate spread is what stops a crew
 ## that happened to arrive together from staying in step forever.
-func _write_work_phases(squad_id: int, clip: int, row: int,
+func _write_work_phases(squad_id: int, clip: int,
 		man_speeds: PackedFloat32Array) -> void:
-	var mm := _multimesh_instance.multimesh
-	var count := mini(mm.instance_count, man_speeds.size())
+	var count := mini(_total_instances, man_speeds.size())
 	var now := Time.get_ticks_msec() / 1000.0
+	var rows := _rows_for(clip)
 
 	if clip != _last_clip:
 		# The same diagnosis line the other two write paths emit. Without it a
@@ -320,18 +425,18 @@ func _write_work_phases(squad_id: int, clip: int, row: int,
 		# "the renderer was never told to chop" and "it was told and the
 		# picture still froze" are the two cases this print exists to
 		# separate (see `set_clip_data`).
-		print("client: CLIP squad=%d %s rate=%.2f row=%d (per-man, on arrival)"
+		print("client: CLIP squad=%d %s rate=%.2f rows=%s (per-man, on arrival)"
 			% [squad_id, AnimationState.CLIP_NAMES[clip],
-				AnimationState.rate_for(clip, 0.0), row])
+				AnimationState.rate_for(clip, 0.0), rows])
 
-	if _man_working.size() != mm.instance_count or clip != _last_clip:
+	if _man_working.size() != _total_instances or clip != _last_clip:
 		_man_working = PackedByteArray()
-		_man_working.resize(mm.instance_count)
+		_man_working.resize(_total_instances)
 		_man_rates = PackedFloat32Array()
-		_man_rates.resize(mm.instance_count)
+		_man_rates.resize(_total_instances)
 		_man_offsets = PackedFloat32Array()
-		_man_offsets.resize(mm.instance_count)
-		for i in range(mm.instance_count):
+		_man_offsets.resize(_total_instances)
+		for i in range(_total_instances):
 			_man_rates[i] = -1.0
 		_work_first = -1.0
 		_work_last = -1.0
@@ -341,6 +446,7 @@ func _write_work_phases(squad_id: int, clip: int, row: int,
 	for i in range(count):
 		if _man_working[i] != 0:
 			continue
+		var row := rows[_index_group[i]]
 		if man_speeds[i] > SETTLE_SPEED:
 			# Still walking in. HOLD him at the start of the wind-up, with the
 			# tool at rest, until he actually arrives.
@@ -356,7 +462,7 @@ func _write_work_phases(squad_id: int, clip: int, row: int,
 				_man_rates[i] = 0.0
 				_man_offsets[i] = 0.0
 				custom_data_writes += 1
-				mm.set_instance_custom_data(i, Color(float(row), 0.0, 0.0, 0.0))
+				_write_custom(i, Color(float(row), 0.0, 0.0, 0.0))
 			continue
 
 		# Arrived. Anchor his cycle so that fract(offset + t * rate) is 0 at
@@ -367,7 +473,7 @@ func _write_work_phases(squad_id: int, clip: int, row: int,
 		_man_rates[i] = rate
 		_man_working[i] = 1
 		custom_data_writes += 1
-		mm.set_instance_custom_data(i, Color(float(row), offset, rate, 0.0))
+		_write_custom(i, Color(float(row), offset, rate, 0.0))
 		if _work_first < 0.0:
 			_work_first = now
 		_work_last = now
@@ -388,23 +494,25 @@ func _worked_count() -> int:
 	return n
 
 
-## Sets per-soldier slot transforms. Caller (formation/curve code, not
-## yet implemented — see D-006/D-019) is responsible for computing
-## `transforms` from the squad curve + formation shape; this function
-## just pushes them into the MultiMesh.
+## Sets per-soldier slot transforms. Caller (formation/curve code) is
+## responsible for computing `transforms` from the squad curve + formation
+## shape; this function just routes them into each model group's MultiMesh.
 func set_slot_transforms(transforms: Array[Transform3D]) -> void:
-	if _multimesh_instance == null or _multimesh_instance.multimesh == null:
+	if _groups.is_empty():
 		push_error("PrimitiveUnit.set_slot_transforms called before rebuild()")
 		return
 
-	var mm := _multimesh_instance.multimesh
-	var count: int = mini(transforms.size(), mm.instance_count)
+	var count: int = mini(transforms.size(), _total_instances)
+	var written := PackedInt32Array()
+	written.resize(_groups.size())
 	for i in range(count):
-		mm.set_instance_transform(i, transforms[i])
+		var g := _index_group[i]
+		_groups[g].multimesh.set_instance_transform(_index_local[i], transforms[i])
+		written[g] += 1
 
 	# Draw only the slots that were actually written this frame.
 	#
-	# Without this the MultiMesh keeps drawing all `instance_count`
+	# Without this each MultiMesh keeps drawing all `instance_count`
 	# instances, and the ones past `count` render at whatever transform
 	# they last held. A squad that lost half its soldiers therefore went
 	# on displaying them, frozen, for the rest of the match — casualties
@@ -413,22 +521,24 @@ func set_slot_transforms(transforms: Array[Transform3D]) -> void:
 	#
 	# It is also what makes render LOD possible at all (D-045): drawing
 	# fewer soldiers than the squad has is exactly writing fewer
-	# transforms than `instance_count`.
-	mm.visible_instance_count = count
+	# transforms than `instance_count`. Per group the written instances
+	# are a prefix of the buffer, because locals were dealt in drawn
+	# order at rebuild — see `_index_local`.
+	for g in range(_groups.size()):
+		_groups[g].multimesh.visible_instance_count = written[g]
 
 
 ## Draw this squad at EVERY lattice copy of the torus the camera can see,
 ## or nowhere at all when the list is empty
 ## (D-20260818-entities-are-drawn-at-every-visible-copy).
 ##
-## Costs one thin `MultiMeshInstance3D` per extra copy, sharing this
-## squad's single MultiMesh and its single material. Nothing is derived
-## twice: `set_slot_transforms` wrote canonical world-space transforms
-## once, and per-soldier derivation is ~96% of the client's frame at scale
-## (D-045), so a second view of that buffer is a transform and a
-## reference. Godot culls the off-screen ones at the RenderingServer
-## level, which is what already makes 1,287 terrain mesh instances
-## affordable.
+## Costs one thin composite per extra copy, sharing this squad's
+## MultiMeshes and materials. Nothing is derived twice: `set_slot_transforms`
+## wrote canonical world-space transforms once, and per-soldier derivation
+## is ~96% of the client's frame at scale (D-045), so a second view of
+## those buffers is a transform and a few references. Godot culls the
+## off-screen ones at the RenderingServer level, which is what already
+## makes 1,287 terrain mesh instances affordable.
 ##
 ## The mirrors are children of THIS node, which never moves — the soldier
 ## transforms are canonical world space, so a copy is a pure translation
@@ -436,10 +546,10 @@ func set_slot_transforms(transforms: Array[Transform3D]) -> void:
 ## bent by.
 func set_lattice_offsets(offsets: Array[Vector3]) -> void:
 	lattice_offsets = offsets
-	if _multimesh_instance == null:
+	if _body == null:
 		return
 	visible = not offsets.is_empty()
-	LatticeCopies.draw(_multimesh_instance, _mirrors, Vector3.ZERO, offsets)
+	LatticeCopies.draw(_body, _mirrors, Vector3.ZERO, offsets)
 
 
 func _build_primitive_mesh(def: UnitDef) -> Mesh:
