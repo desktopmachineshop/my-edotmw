@@ -127,7 +127,11 @@ const REFERENCE_WIDTH := 84.0
 ## 14.6% of it, 1.2 blocks 1.6% and the opened plateaus stop having
 ## edges; 0.8 blocks 7.1% across 37 components, and every stranded pocket
 ## stays under `min_spawn_landmass`, so no spawn can seat on ground no
-## army can reach.
+## army can reach. That argument is a belt now rather than the only
+## strap: as of `D-20260827-every-start-shares-one-landmass` starts are
+## sampled from the largest walkable component outright, so a pocket
+## that grew past the bar would be rejected for being a pocket rather
+## than surviving on its size.
 ##
 ## In world units rather than raw elevation for the same reason
 ## `cliff_min_step` is: steepness is a thing you see. Both elevations are
