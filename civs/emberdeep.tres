@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="CivDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://civ_def.gd" id="1_civ"]
+
+[resource]
+script = ExtResource("1_civ")
+id = &"emberdeep"
+display_name = "Emberdeep"
+summary = "Fortification and siege. The slowest army in the game, the hardest to remove from anywhere it stands — and the one civ that both holds walls and reliably brings them down."
+colour = Color(0.68, 0.36, 0.16, 1)
+starting_food = 250
+starting_wood = 160
+starting_gold = 0
+starting_stone = 100
+squad_cap_bonus = 0
+production_speed = 1.0
+gather_speed = 1.0

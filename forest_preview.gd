@@ -260,16 +260,52 @@ func _build_squad() -> void:
 	var unit := PrimitiveUnit.new()
 	add_child(unit)
 	unit.rebuild(def, PlayerColours.of_index(0))
-	var origin := _centre + Vector3(0.0, 0.0, 6.0)
+	# INSIDE the wood, not beside it (2026-08-27, from the playtest report
+	# "models don't adhere to collision avoidance with resources"): a
+	# squad on open ground could never show whether the trunk clearance
+	# works, which is the fourth instance of this file's own framing
+	# lesson. Two units south of the densest wood's centre puts the front
+	# rank among the stand.
+	var origin := _centre + Vector3(0.0, 0.0, 5.0)
 	unit.position = origin
 
 	var transforms: Array[Transform3D] = []
 	for i in range(SQUAD_SIZE):
 		var local := Vector3((float(i % 4) - 1.5) * 1.15, 0.0, float(i / 4) * -1.25)
+		# The SAME per-trunk push the client applies to drawn men
+		# (`ResourceVisuals.clearance_discs` + `Engagement.push_out_of_disc`)
+		# — so this picture shows the game's answer, not this preview's.
+		var world := origin + local
+		for entry in _node_discs_near(world):
+			world = Engagement.push_out_of_disc(
+				world, entry["centre"], float(entry["radius"]))
+		local = world - origin
 		local.y = _ground(origin.x + local.x, origin.z + local.z) - origin.y
 		transforms.append(Transform3D(Basis(), local))
 	unit.set_slot_transforms(transforms)
 	unit.set_clip_data(0, 0, 3.2)
+
+
+## The trunk clearance discs within a couple of cells of `world` — the
+## preview-side twin of client.gd's `_nearby_node_discs`, built from the
+## one shared definition.
+func _node_discs_near(world: Vector3) -> Array:
+	var out := []
+	var centre_cell := _space.world_to_cell(world)
+	for offset in TorusSpace.disk_offsets(2):
+		var cell := _space.index(centre_cell + offset)
+		var kind := _economy.kind_at(cell)
+		if kind < 0:
+			continue
+		var neighbours: Array = []
+		for dir in range(6):
+			neighbours.append(_biomes[_space.neighbor_index(cell, dir)])
+		var at := _space.to_world(_space.from_index(cell))
+		for disc in ResourceVisuals.clearance_discs(kind, _biomes[cell],
+				neighbours, _moisture[cell], cell, _space.hex_size):
+			out.append({"centre": at + (disc["offset"] as Vector3),
+				"radius": disc["radius"]})
+	return out
 
 
 func _pose(at: Vector3, yaw: float, scale: float) -> Transform3D:
@@ -352,4 +388,42 @@ func _process(delta: float) -> void:
 		return
 	print("forest_preview: wrote %s (%dx%d)"
 		% [out_path, image.get_width(), image.get_height()])
+
+	# A SECOND framing, close on the squad among the trunks (2026-08-27):
+	# the wide shot judges the wood as a mass and cannot show whether a
+	# man stands inside a tree — the clearance question needs the camera
+	# at the squad. Same scene, same rig, one camera move.
+	var camera := get_viewport().get_camera_3d()
+	var squad_at := _centre + Vector3(0.0, 0.0, 5.0)
+	squad_at.y = _ground(squad_at.x, squad_at.z)
+	# Below the foliage line, level with the men, and NOT inside a tree:
+	# in the densest wood on the patch a fixed offset lands the camera in
+	# a trunk or a canopy as often as not, so candidates are tried in
+	# order and the first one clear of every clearance disc (plus a
+	# margin) wins — the same discs the men themselves are pushed by.
+	var eye := squad_at + Vector3(0.4, 1.5, 3.0)
+	for candidate in [Vector3(0.4, 1.7, 5.5), Vector3(-1.8, 1.7, 5.8),
+			Vector3(2.2, 1.7, 5.2), Vector3(0.0, 1.7, 7.0),
+			Vector3(-2.6, 1.7, 4.6), Vector3(2.8, 1.7, 4.2)]:
+		var at := squad_at + (candidate as Vector3)
+		var clear := true
+		for entry in _node_discs_near(at):
+			var flat := Vector2(at.x - (entry["centre"] as Vector3).x,
+				at.z - (entry["centre"] as Vector3).z)
+			if flat.length() < float(entry["radius"]) + 0.5:
+				clear = false
+				break
+		if clear:
+			eye = at
+			break
+	camera.position = eye
+	camera.look_at(squad_at + Vector3(0.0, 1.0, -0.6))
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var close := get_viewport().get_texture().get_image()
+	var close_path := out_path.get_basename() + "-squad.png"
+	var close_err := close.save_png(ProjectSettings.globalize_path(close_path))
+	if close_err == OK:
+		print("forest_preview: wrote %s (%dx%d)"
+			% [close_path, close.get_width(), close.get_height()])
 	get_tree().quit(0)

@@ -461,7 +461,7 @@
       "vertices": 48
     }
   },
-  "source_hash": "46ff2f84f6cf4674dc0908dd90aa6a5dec350e509f72cae6592e6115be48ce66",
+  "source_hash": "e6344348eecbc824a510dc63b8cb06c2e4c91982f0dade80ca21bb189e643eb3",
   "terrain": {
     "biomes": [
       "deep_water",
@@ -494,14 +494,35 @@
       "height": 129,
       "model": "generated/models/archers.glb",
       "mounted": false,
-      "placeholder": false,
+      "placeholder": true,
       "source": "authored",
-      "texture": "",
+      "texture": "generated/textures/archers.jpg",
       "total_frames": 64,
-      "triangles": 100,
+      "triangles": 4900,
       "vat": "generated/vat/archers.exr",
-      "vertices": 300,
-      "width": 300
+      "vertices": 14700,
+      "width": 14700
+    },
+    "cannon": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/cannon.glb",
+      "mounted": false,
+      "placeholder": true,
+      "source": "authored",
+      "texture": "generated/textures/cannon.jpg",
+      "total_frames": 64,
+      "triangles": 5199,
+      "vat": "generated/vat/cannon.exr",
+      "vertices": 15597,
+      "width": 15597
     },
     "cavalry": {
       "clips": [
@@ -569,6 +590,27 @@
       "vertices": 16152,
       "width": 16152
     },
+    "general": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/general.glb",
+      "mounted": false,
+      "placeholder": true,
+      "source": "authored",
+      "texture": "generated/textures/general.jpg",
+      "total_frames": 64,
+      "triangles": 4800,
+      "vat": "generated/vat/general.exr",
+      "vertices": 14400,
+      "width": 14400
+    },
     "heavy_infantry": {
       "clips": [
         "idle",
@@ -602,14 +644,14 @@
       "height": 129,
       "model": "generated/models/militia.glb",
       "mounted": false,
-      "placeholder": false,
+      "placeholder": true,
       "source": "authored",
-      "texture": "",
+      "texture": "generated/textures/militia.jpg",
       "total_frames": 64,
-      "triangles": 132,
+      "triangles": 4900,
       "vat": "generated/vat/militia.exr",
-      "vertices": 396,
-      "width": 396
+      "vertices": 14700,
+      "width": 14700
     },
     "skirmishers": {
       "clips": [
@@ -644,14 +686,14 @@
       "height": 129,
       "model": "generated/models/spearmen.glb",
       "mounted": false,
-      "placeholder": false,
+      "placeholder": true,
       "source": "authored",
-      "texture": "",
+      "texture": "generated/textures/spearmen.jpg",
       "total_frames": 64,
-      "triangles": 148,
+      "triangles": 4900,
       "vat": "generated/vat/spearmen.exr",
-      "vertices": 444,
-      "width": 444
+      "vertices": 14700,
+      "width": 14700
     }
   }
 }

@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"windmarch_levy"
+display_name = "Colt Levy"
+civ = &"windmarch"
+archetype = &"levy"
+squad_size = 28
+health = 61.0
+damage = 6.5
+move_speed = 4.4
+attack_range = 1.9
+attack_interval = 1.0
+formation_spacing = 1.2
+armour_class = "cavalry"
+mesh_primitive = "box"
+mesh_color = Color(0.72, 0.6, 0.38, 1)
+build_time = 9.0
+cost = 38
+cost_food = 38

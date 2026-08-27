@@ -145,8 +145,8 @@ func _client_in_a_lobby(admin: bool) -> Node3D:
 		state.handle_packet(NetProtocol.encode_welcome(
 			1, 16, 8, PackedInt32Array([0, 1]), [], 40, 0))
 	state.handle_packet(NetProtocol.encode_lobby(1, [
-		{"kind": "human", "player": 1, "civ": "legion", "team": 0, "name": "Player 1"},
-		{"kind": "ai", "player": 2, "civ": "northmen", "team": 0, "name": "AI 2"},
+		{"kind": "human", "player": 1, "civ": "stoneblood", "team": 0, "name": "Player 1"},
+		{"kind": "ai", "player": 2, "civ": "gravesworn", "team": 0, "name": "AI 2"},
 	], MapSettings.new().to_dict(), int(MatchState.Phase.LOBBY), true, false, false))
 	assert_eq(state.is_admin(), admin, "Setup: the client should know whether it hosts")
 

@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"stoneblood_skirmishers"
+display_name = "Cragthrowers"
+civ = &"stoneblood"
+archetype = &"skirmishers"
+squad_size = 12
+health = 110.0
+damage = 14.0
+move_speed = 3.0
+attack_range = 5.5
+attack_interval = 1.8
+damage_vs_buildings = 0.35
+formation_spacing = 1.8
+armour_class = "missile"
+mesh_primitive = "cylinder"
+mesh_color = Color(0.5, 0.52, 0.56, 1)
+build_time = 14.0
+cost = 65
+cost_food = 45
+cost_wood = 20

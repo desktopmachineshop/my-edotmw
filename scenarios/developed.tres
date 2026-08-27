@@ -35,7 +35,7 @@ shape = ""
 
 [sub_resource type="Resource" id="militia"]
 script = ExtResource("2")
-archetype = &"militia"
+archetype = &"levy"
 count = 2
 offset = Vector2i(1, 2)
 alive = -1

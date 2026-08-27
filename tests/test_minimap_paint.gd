@@ -178,7 +178,7 @@ func test_the_client_paints_buildings_on_the_minimap() -> void:
 
 
 func _squad(owner: int) -> Dictionary:
-	return {"def_id": "legion_militia", "alive": 30, "shape": "line",
+	return {"def_id": "gildedreach_levy", "alive": 30, "shape": "line",
 		"spacing": 1.0, "owner": owner, "tier": 0}
 
 

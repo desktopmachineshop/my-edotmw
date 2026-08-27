@@ -77,7 +77,16 @@ MOUNTED_TRIANGLE_BUDGET = 460   # a horse is a second body; stated, not implied
 # could hurt most. `just bench-render` is the instrument, and it has not
 # been run against this. Treat every entry here as owing that measurement.
 PLACEHOLDER_TRIANGLE_BUDGET = 6000
-PLACEHOLDER_ARCHETYPES = frozenset({"gatherers"})
+# The whole supplied dwarf roster now, not just the gatherer
+# (D-20260826-the-dwarf-roster-wears-supplied-models) — which fires
+# D-20260824's "any second entry" trigger on purpose: the owner supplies
+# the roster as Tripo models for the fantasy pivot's Deepholds, and the
+# binding ceiling has moved from taste to physics — every one of these is
+# decimated at import to keep body + kit under MAX_VAT_WIDTH / 3 = 5,461
+# triangles, so the real budget is the VAT check below. The bench-render
+# debt named above now covers five models instead of one.
+PLACEHOLDER_ARCHETYPES = frozenset({
+    "gatherers", "militia", "spearmen", "archers", "general", "cannon"})
 # Buildings are few and never instanced in the thousands, so their budget is
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400

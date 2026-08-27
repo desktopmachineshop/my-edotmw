@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_archers"
+display_name = "Quarrel Companies"
+civ = &"gildedreach"
+archetype = &"archers"
+squad_size = 24
+health = 55.0
+damage = 10.0
+move_speed = 3.2
+attack_range = 6.5
+attack_interval = 1.8
+armour_class = "missile"
+bonus_vs = {
+"infantry": 1.3
+}
+mesh_primitive = "cylinder"
+mesh_color = Color(0.66, 0.54, 0.26, 1)
+build_time = 12.0
+cost = 70
+cost_food = 30
+cost_wood = 30
+cost_gold = 10

@@ -35,9 +35,14 @@ func _ready() -> void:
 		elif text.begins_with("--burst="):
 			burst = int(text.trim_prefix("--burst="))
 
+	# A model may be worn as a def's whole squad, or by only some slots of a
+	# mixed one (D-20260826-a-squad-wears-more-than-one-model) — a general
+	# or a gun carriage is findable through `slot_models`, not `model_id`.
 	var def: UnitDef = null
 	for candidate in UnitRoster.load_all():
-		if candidate.model_id == model_id:
+		if candidate.model_id == model_id \
+				or candidate.slot_models.has(StringName(model_id)) \
+				or candidate.model_mix.has(StringName(model_id)):
 			def = candidate
 			break
 	if def == null:
@@ -46,8 +51,8 @@ func _ready() -> void:
 		return
 
 	print("unit_shot: %s (model '%s') textured=%s"
-		% [def.id, def.model_id,
-			"yes" if UnitMesh.texture_for(def.model_id) != null else "no"])
+		% [def.id, model_id,
+			"yes" if UnitMesh.texture_for(StringName(model_id)) != null else "no"])
 
 	# THE GAME'S CAMERA ANGLE, not a turntable's.
 	#
@@ -85,10 +90,17 @@ func _ready() -> void:
 	world.environment = WorldLook.make_environment(true)
 	add_child(world)
 
-	# One soldier, at the origin, drawn exactly as a squad member is.
+	# One soldier, at the origin, drawn exactly as a squad member is. The
+	# def is duplicated and pinned to the REQUESTED model: a mixed squad's
+	# def would otherwise draw its base model when what was asked for is
+	# the leader in its slot_models.
+	var shown := def.duplicate() as UnitDef
+	shown.model_id = StringName(model_id)
+	shown.slot_models = []
+	shown.model_mix = []
 	var unit := PrimitiveUnit.new()
 	add_child(unit)
-	unit.rebuild(def, PlayerColours.of_index(0))
+	unit.rebuild(shown, PlayerColours.of_index(0))
 	unit.set_slot_transforms([Transform3D(Basis(), Vector3.ZERO)] as Array[Transform3D])
 
 	# Which CLIP to show. Without this the shot is always the rest pose, and a

@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_levy"
+display_name = "Corpse Levy"
+civ = &"gravesworn"
+archetype = &"levy"
+squad_size = 48
+health = 40.0
+damage = 4.8
+move_speed = 3.0
+attack_range = 1.9
+attack_interval = 1.0
+formation_shape = "sparse"
+rout_threshold = 0.0
+morale_loss_per_casualty = 0.0
+armour_class = "infantry"
+mesh_primitive = "capsule"
+mesh_color = Color(0.72, 0.74, 0.62, 1)
+build_time = 8.0
+cost = 32
+cost_food = 32

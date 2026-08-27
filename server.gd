@@ -683,7 +683,18 @@ func _process(delta: float) -> void:
 		# The sandbox freeze (D-20260821): skipped entirely, not fed a
 		# no-op — a frozen brain must not advance its own timers either,
 		# or thawing it fires every decision it queued while "frozen".
-		if not _match.ai_frozen:
+		#
+		# And not once the match is DECIDED. A winner's brain kept
+		# thinking after its last enemy was eliminated: `_enemy_target()`
+		# finds nothing hostile, the scouting fallback cycles the DEAD
+		# player's spawn — now occupied by the winner's own army — and
+		# every one of those attack-moves lands on a cell holding only
+		# friends, which is exactly what `ally_objectives` counts. The
+		# first fully-decided ladder run since that guard existed failed
+		# on 7 of them, all post-victory. A finished match has no moves
+		# left for anyone; the stats a brain reports should end where the
+		# match did.
+		if not _match.ai_frozen and _match.phase != MatchState.Phase.FINISHED:
 			for brain in _ai_players:
 				brain.set_time(_sim.time)
 				brain.update(_sim.time)

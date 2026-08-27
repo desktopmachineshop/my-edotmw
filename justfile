@@ -1426,6 +1426,36 @@ attach-tools:
     "{{blender_python}}" art/attach_tools.py
     echo "Now animate them: {{just_executable()}} author-clips gatherers"
 
+# A migration like attach-tools, for FIGHTING kit: weapon into the fist,
+# shield onto the forearm, standard onto the back, each skinned 1.0 to an
+# existing bone so it follows whatever author-clips does to the arm
+# (D-20260826-the-dwarf-roster-wears-supplied-models).
+[doc("Attach a unit's fighting kit to art/source/<TARGET>.blend")]
+attach-kit TARGET="militia":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    "{{blender_python}}" art/attach_kit.py --name "{{TARGET}}"
+    echo "Now animate it: {{just_executable()}} author-clips {{TARGET}}"
+
+# Bind an UNRIGGED authored body to the family skeleton with automatic
+# weights (D-20260826). A migration: run once, against a source restored
+# from git, then attach-kit and author-clips.
+[doc("Give a bare art/source/<TARGET>.blend the DONOR's skeleton")]
+transplant-rig TARGET="spearmen" DONOR="militia":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{blender_python}}" ]; then
+        echo "FAIL: no bpy environment at {{blender_venv}}"
+        echo "Run: {{just_executable()}} bootstrap-art"
+        exit 1
+    fi
+    "{{blender_python}}" art/transplant_rig.py --name "{{TARGET}}" --donor "{{DONOR}}"
+
 # Write a rigged art/source/<name>.blend's clips onto its bones.
 #
 # A migration like seed-art-source, never part of the build: it edits the

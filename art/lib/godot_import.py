@@ -101,6 +101,26 @@ type="CompressedTexture2D"
 
 """
 
+# A brand-new MESH needs a scene stub, not the texture one. Every model
+# before the dwarf roster had been imported by Godot at least once before
+# this file ever touched its `.import`, so the texture-flavoured _STUB was
+# only ever a patch target and its importer line never read. The first
+# NEVER-imported `.glb` (generated/models/general.glb) hit the stub path,
+# was stamped `importer="texture"`, and Godot then failed to import it as
+# an image on every scan — a model that exists, is in the manifest, and
+# loads as nothing, forever, with one error line in a build log.
+_SCENE_STUB = """[remap]
+
+importer="scene"
+importer_version=1
+type="PackedScene"
+
+[params]
+
+"""
+
+_SCENE_SUFFIXES = (".glb", ".gltf")
+
 
 def ensure_import_params(asset_path: str, params: dict[str, str]) -> None:
     """Force `params` into the asset's `.import`, leaving everything else alone.
@@ -113,7 +133,9 @@ def ensure_import_params(asset_path: str, params: dict[str, str]) -> None:
     import_path = asset_path + ".import"
 
     if not os.path.exists(import_path):
-        body = _STUB + "".join(f"{k}={v}\n" for k, v in sorted(params.items()))
+        stub = _SCENE_STUB if asset_path.lower().endswith(_SCENE_SUFFIXES) \
+            else _STUB
+        body = stub + "".join(f"{k}={v}\n" for k, v in sorted(params.items()))
         with open(import_path, "w", newline="\n") as handle:
             handle.write(body)
         return

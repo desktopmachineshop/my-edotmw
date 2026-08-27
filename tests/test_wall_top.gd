@@ -210,7 +210,7 @@ func test_destroying_a_tower_drops_its_occupant_to_the_ground() -> void:
 	# EVERY move order) and melee the defender on top of the tower
 	# instead of sieging the building from the ground, which is a real
 	# and interesting mechanic but not the one this test is isolating.
-	var attacker := sim.add_squad(UnitRoster.by_id(&"legion_militia"), 2, door_cell)
+	var attacker := sim.add_squad(UnitRoster.by_id(&"gildedreach_levy"), 2, door_cell)
 	for _i in range(50):
 		sim.tick()
 		if sim.buildings.is_destroyed(tower):
@@ -230,12 +230,12 @@ func test_a_melee_squad_cannot_hit_a_tier_1_defender_even_when_adjacent() -> voi
 	_tower(sim, tower_cell, 0)
 	var door_cell := sim.space.normalize(tower_cell + TorusSpace.DIRECTIONS[0])
 
-	var defender := sim.add_squad(UnitRoster.by_id(&"legion_archers"), 1, door_cell)
+	var defender := sim.add_squad(UnitRoster.by_id(&"thornwood_archers"), 1, door_cell)
 	sim.order_move(defender, tower_cell)
 	sim.tick()
 	assert_eq(sim.tier_of(defender), 1, "setup: defender climbed")
 
-	var attacker := sim.add_squad(UnitRoster.by_id(&"legion_militia"), 2, door_cell)
+	var attacker := sim.add_squad(UnitRoster.by_id(&"gildedreach_levy"), 2, door_cell)
 	var defender_before := sim.alive_of(defender)
 	var attacker_before := sim.alive_of(attacker)
 	for _i in range(50):
@@ -254,12 +254,16 @@ func test_a_ranged_squad_can_hit_a_tier_1_defender() -> void:
 	_tower(sim, tower_cell, 0)
 	var door_cell := sim.space.normalize(tower_cell + TorusSpace.DIRECTIONS[0])
 
-	var defender := sim.add_squad(UnitRoster.by_id(&"legion_archers"), 1, door_cell)
+	var defender := sim.add_squad(UnitRoster.by_id(&"thornwood_archers"), 1, door_cell)
 	sim.order_move(defender, tower_cell)
 	sim.tick()
 	assert_eq(sim.tier_of(defender), 1, "setup: defender climbed")
 
-	var attacker := sim.add_squad(UnitRoster.by_id(&"northmen_skirmishers"), 2, door_cell)
+	# Cragthrowers, because the RANGED property is what this test needs:
+	# the old northmen javelins were the roster's light missile troop, and
+	# their nearest fantasy namesake (windmarch harriers) is a melee
+	# lancer that structurally cannot hit tier 1.
+	var attacker := sim.add_squad(UnitRoster.by_id(&"stoneblood_skirmishers"), 2, door_cell)
 	var before := sim.alive_of(defender)
 	for _i in range(100):
 		sim.tick()
@@ -290,7 +294,7 @@ func test_the_height_bonus_extends_a_defenders_effective_range() -> void:
 	_tower(sim, tower_cell, 0)
 	var door_cell := sim.space.normalize(tower_cell + TorusSpace.DIRECTIONS[0])
 
-	var archer_def: UnitDef = UnitRoster.by_id(&"legion_archers")
+	var archer_def: UnitDef = UnitRoster.by_id(&"thornwood_archers")
 	assert_not_null(archer_def)
 	var hex_width := sim.space.hex_size * TorusSpace.SQRT_3
 	var base_range_cells := floori(archer_def.attack_range / hex_width)
@@ -320,7 +324,7 @@ func test_the_same_archer_at_ground_level_cannot_reach_that_far() -> void:
 	# height bonus, not from the archer's own stats alone.
 	var sim := _sim()
 	var origin := Vector2i(10, 8)
-	var archer_def: UnitDef = UnitRoster.by_id(&"legion_archers")
+	var archer_def: UnitDef = UnitRoster.by_id(&"thornwood_archers")
 	var hex_width := sim.space.hex_size * TorusSpace.SQRT_3
 	var base_range_cells := floori(archer_def.attack_range / hex_width)
 	var target_cell := sim.space.normalize(origin + Vector2i(base_range_cells + 1, 0))

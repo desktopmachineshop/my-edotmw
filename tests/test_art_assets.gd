@@ -27,7 +27,12 @@ const MOUNTED_TRIANGLE_BUDGET := 460
 ## grow without anybody noticing, and the SET, so a second placeholder is
 ## a deliberate edit to a test rather than a quiet line in a Python dict.
 const PLACEHOLDER_TRIANGLE_BUDGET := 6000
-const PLACEHOLDER_MODELS := ["gatherers"]
+## The supplied dwarf roster (D-20260826-the-dwarf-roster-wears-supplied-
+## models): every entry is decimated at import so body + kit stays under
+## the VAT width ceiling, which is the binding budget for these. Sorted,
+## because the manifest comparison below is order-sensitive.
+const PLACEHOLDER_MODELS := [
+	"archers", "cannon", "gatherers", "general", "militia", "spearmen"]
 
 ## What the staleness hash covers. `.blend` is here because authored sources
 ## ARE the source of truth (D-20260821-game-assets-are-files): a model edited

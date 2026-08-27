@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"emberdeep_bombard"
+display_name = "Ember Bombard"
+civ = &"emberdeep"
+archetype = &"bombard"
+squad_size = 4
+health = 110.0
+damage = 34.0
+move_speed = 2.4
+attack_range = 11.0
+attack_interval = 4.5
+damage_vs_buildings = 1.0
+formation_shape = "tight"
+formation_spacing = 1.6
+armour_class = "missile"
+mesh_primitive = "hull"
+mesh_color = Color(0.46, 0.32, 0.2, 1)
+model_id = &"archers"
+slot_models = Array[StringName]([&"cannon"])
+build_time = 36.0
+cost = 140
+cost_wood = 60
+cost_stone = 80

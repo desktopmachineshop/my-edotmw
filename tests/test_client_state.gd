@@ -217,14 +217,14 @@ func test_living_squad_count_matches_what_the_cap_actually_limits() -> void:
 	var state := ClientState.new()
 	state.handle_packet(NetProtocol.encode_welcome(1, W, H, []))
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 1, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 1},
-		{"id": 2, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 1},
-		{"id": 3, "def_id": "legion_militia", "alive": 10, "shape": "line", "owner": 2},
+		{"id": 1, "def_id": "gildedreach_levy", "alive": 10, "shape": "line", "owner": 1},
+		{"id": 2, "def_id": "gildedreach_levy", "alive": 10, "shape": "line", "owner": 1},
+		{"id": 3, "def_id": "gildedreach_levy", "alive": 10, "shape": "line", "owner": 2},
 	]))
 	assert_eq(state.living_squad_count(), 2, "only this player's squads")
 
 	state.handle_packet(NetProtocol.encode_squad_info([
-		{"id": 2, "def_id": "legion_militia", "alive": 0, "shape": "line", "owner": 1},
+		{"id": 2, "def_id": "gildedreach_levy", "alive": 0, "shape": "line", "owner": 1},
 	]))
 	assert_eq(state.living_squad_count(), 1, "and only the living ones")
 

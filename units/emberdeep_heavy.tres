@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"emberdeep_heavy"
+display_name = "Shieldwall Vanguard"
+civ = &"emberdeep"
+archetype = &"heavy"
+squad_size = 20
+health = 130.0
+damage = 10.5
+move_speed = 2.8
+attack_range = 1.9
+attack_interval = 1.15
+formation_shape = "tight"
+armour_class = "infantry"
+mesh_primitive = "capsule"
+mesh_color = Color(0.6, 0.32, 0.16, 1)
+model_id = &"spearmen"
+build_time = 16.0
+cost = 80
+cost_food = 55
+cost_stone = 25

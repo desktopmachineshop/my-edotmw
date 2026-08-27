@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_engine"
+display_name = "Contract Engines"
+civ = &"gildedreach"
+archetype = &"engine"
+squad_size = 4
+health = 100.0
+damage = 26.0
+move_speed = 2.4
+attack_range = 9.0
+attack_interval = 3.5
+damage_vs_buildings = 0.9
+formation_shape = "tight"
+formation_spacing = 1.6
+armour_class = "missile"
+mesh_primitive = "hull"
+mesh_color = Color(0.56, 0.48, 0.3, 1)
+build_time = 32.0
+cost = 130
+cost_wood = 60
+cost_gold = 70

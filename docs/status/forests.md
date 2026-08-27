@@ -124,3 +124,35 @@ Three things to carry forward:
   still tops up no wood anywhere, the worst-off start keeping 4 wood nodes
   in reach against 13. Issue #55's "nodes block 30% of walkable cells" is
   28.7% -> **20.7%** and should be re-read off the recipe, not assumed.
+
+**And drawn men could stand INSIDE the trees the stands drew
+(2026-08-27, from a playtest of the fantasy-civ roster: "authored models
+don't adhere to collision avoidance with resources").** The drawn-men
+avoidance (D-20260821, amended) carved ONE 0.7-unit disc at each node
+CELL CENTRE — written before D-108, whose stands jitter every tree
+between 0.34 and 0.78 of a hex AWAY from that centre. So the clearance
+guarded the one spot a tree can never stand and left the outer half of
+every stand bare; a man pushed to a perfectly legal spot stood
+chest-deep in an offset pine, and the chunky dwarf bodies finally made
+it readable. Three things, each bought by LOOKING:
+
+- **The discs are per TRUNK now, from the same `trees_for` placements
+  the renderer draws** (`ResourceVisuals.clearance_discs` — one
+  definition, read by client.gd, forest_preview and the tests, D-096's
+  shared-arithmetic rule). Cached per cell on the client; the cache dies
+  with the match, because a regenerated world reuses cell indices for
+  different forests.
+- **The first fix was not enough, and only a render could say so**:
+  every trunk was correctly clear and a soldier still stood waist-deep
+  in a pine, because a CONIFER'S foliage reaches the ground where a
+  broadleaf holds its canopy overhead. Skirted species (pine, spruce,
+  swamp cypress) take a 0.85 clearance against the trunk's 0.45; men
+  still walk under held-up canopies, which is the woods working.
+- **`gen-forest-preview` now also writes `forest-godot-squad.png`** — a
+  second framing, close on a squad standing at the wood's edge with the
+  clearance applied, because the wide shot judges a wood as a mass and
+  cannot show whether a man is inside a tree. The camera HUNTS a clear
+  spot through the same discs (the densest wood eats any fixed offset),
+  and the squad stands at the tree line, because a camera inside a
+  ground-skirted pine stand photographs foliage whatever it does.
+  `docs/playtest/p39-resource-clearance-{before,after}.png` is the pair.

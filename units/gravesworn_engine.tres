@@ -1,0 +1,29 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_engine"
+display_name = "Carrion Hurler"
+civ = &"gravesworn"
+archetype = &"engine"
+squad_size = 3
+health = 90.0
+damage = 30.0
+move_speed = 2.4
+attack_range = 10.0
+attack_interval = 4.0
+damage_vs_buildings = 1.0
+formation_shape = "tight"
+formation_spacing = 1.6
+rout_threshold = 0.0
+morale_loss_per_casualty = 0.0
+armour_class = "missile"
+mesh_primitive = "hull"
+mesh_color = Color(0.5, 0.48, 0.42, 1)
+build_time = 30.0
+cost = 120
+cost_food = 30
+cost_wood = 60
+cost_gold = 30

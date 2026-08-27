@@ -143,6 +143,29 @@ class_name UnitDef
 ## art task exactly as a code branch would make it a programming task.
 @export var model_id: StringName = &""
 
+## A squad that WEARS MORE THAN ONE MODEL (D-20260826-a-squad-wears-more-
+## than-one-model). Schema addition 2026-08-26, against D-010.
+##
+## `slot_models` names the models of the LEADING formation slots, one entry
+## per slot: a hero squad's slot 0 is its general, a cannon crew's slot 0 is
+## the gun carriage. Slot 0 is also the LAST slot render LOD ever drops
+## (`Formation.soldier_transforms_sampled` picks `i * alive / n`, so drawn
+## index 0 is always slot 0) — the one soldier the squad is ABOUT stays on
+## screen at every distance.
+##
+## `model_mix` is dealt round-robin across every slot past `slot_models`, so
+## a retinue reads as a body of dwarfs with mixed kit rather than eight
+## copies of one man. Empty means every remaining slot wears `model_id`,
+## which is what the whole existing roster does — both fields default empty,
+## so no shipped .tres changed meaning.
+##
+## RENDER-ONLY, deliberately. The simulation knows `squad_size` and `alive`
+## and nothing else (D-005/D-024): which slot wears which mesh changes no
+## outcome, so these fields are read by `PrimitiveUnit` and by nothing on
+## the server.
+@export var slot_models: Array[StringName] = []
+@export var model_mix: Array[StringName] = []
+
 # Economy
 # Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).
 # A unit with carry_capacity > 0 IS a gatherer — no separate boolean to

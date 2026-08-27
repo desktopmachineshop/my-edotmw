@@ -131,7 +131,7 @@ func test_no_animation_input_can_reach_the_composition_hash() -> void:
 	var state := ClientState.new()
 	state.space = TorusSpace.new(16, 8)
 	state.composition[1] = {
-		"def_id": "legion_militia", "alive": 10, "shape": "line",
+		"def_id": "gildedreach_levy", "alive": 10, "shape": "line",
 		"spacing": 1.0, "owner": 0,
 	}
 	var before := state.composition_hash()

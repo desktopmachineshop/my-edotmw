@@ -258,7 +258,7 @@ def _warn_if_flat(mesh, layer) -> None:
 
 
 def convert(glb: str, name: str, height: float, owner_mask: float,
-            force: bool) -> None:
+            force: bool, decimate: int = 0, yaw: float = 0.0) -> None:
     import bpy
 
     target = source_path(name)
@@ -294,6 +294,49 @@ def convert(glb: str, name: str, height: float, owner_mask: float,
     obj.name = name
     obj.data.name = name
 
+    # Some supplied files arrive with leftover ACTIONS (Tripo exports ship
+    # preview animations). The gatherer's had none, so this never mattered
+    # before — but an action left assigned poses the armature, which would
+    # deform the mesh under the decimation below and bake into every frame
+    # of a model whose clips are meant to be authored by author_clips.py
+    # (which writes its own and clears these anyway). The REST pose is the
+    # contract; anything else is discarded out loud.
+    for action in list(bpy.data.actions):
+        print(f"  dropping supplied action '{action.name}' — clips are "
+              "authored, not imported (D-20260824)")
+        bpy.data.actions.remove(action)
+    for other in bpy.data.objects:
+        if other.type != "ARMATURE":
+            continue
+        for pose_bone in other.pose.bones:
+            pose_bone.location = (0.0, 0.0, 0.0)
+            pose_bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            pose_bone.scale = (1.0, 1.0, 1.0)
+
+    # Decimate BEFORE anything measures or samples: a VAT column exists per
+    # flattened CORNER, and the 16,384-texture-width ceiling every targeted
+    # GPU shares works out to 5,461 triangles for a whole model, kit
+    # included (art/build.py's MAX_VAT_WIDTH). The supplied Tripo bodies
+    # arrive at ~9,600-10,300 triangles — none of them can bake at all
+    # without this pass. Decimating first also means the COLOR_0 sampling
+    # below colours the geometry that actually ships, and the collapse
+    # preserves the vertex groups a skinned mesh's weights live in.
+    if decimate > 0:
+        obj.data.calc_loop_triangles()
+        source_tris = len(obj.data.loop_triangles)
+        if source_tris > decimate:
+            for other in bpy.data.objects:
+                other.select_set(other == obj)
+            bpy.context.view_layer.objects.active = obj
+            modifier = obj.modifiers.new("decimate", "DECIMATE")
+            modifier.decimate_type = "COLLAPSE"
+            modifier.ratio = decimate / float(source_tris)
+            bpy.ops.object.modifier_apply(modifier="decimate")
+            obj.data.calc_loop_triangles()
+            print(f"  decimated {source_tris} -> "
+                  f"{len(obj.data.loop_triangles)} triangles "
+                  f"(asked for {decimate})")
+
     # THE RIG IS KEPT, and that is what makes the model animatable.
     #
     # `blend_source.bake` steps the timeline and flattens through the
@@ -315,6 +358,43 @@ def convert(glb: str, name: str, height: float, owner_mask: float,
             bpy.data.objects.remove(other, do_unlink=True)
 
     root = armature if armature is not None else obj
+
+    # FACING is not part of the glTF contract, and the supplied bodies do
+    # not agree on one: the shieldwarden arrived facing -Y (this project's
+    # forward), the crossbow body facing +X and the warrior likewise — a
+    # T-posed humanoid gives no machine-readable clue beyond its toes, and
+    # an unrigged model not even that. So the yaw is STATED per import and
+    # verified below (toes) and by a render.
+    #
+    # Applied to the DATA — bone rest positions and mesh vertices — NOT as
+    # an object rotation, and the difference was found the expensive way:
+    # `author_clips.py` poses bones in ARMATURE space and measures forward
+    # from the toes in that same space, so a yaw parked on the object left
+    # every clip authored against a rig whose local forward was still
+    # sideways — a baked walk that marches at 90 degrees to the model's
+    # face. Rotating the data keeps local == world and every downstream
+    # assumption true. (Scale stays on the root, unapplied, because scale
+    # interacts with skinning the other way — see below.)
+    if yaw != 0.0:
+        import math as _math
+        from mathutils import Matrix
+        rotation = Matrix.Rotation(_math.radians(yaw), 4, "Z")
+        for other in bpy.data.objects:
+            if other.type not in ("ARMATURE", "MESH"):
+                continue
+            # Data-level transforms only compose if every object's local
+            # frame is the identity the glTF importer normally leaves;
+            # a mesh parented with its own rotation would rotate apart
+            # from its bones.
+            local = other.matrix_local.to_3x3()
+            if max(abs(local[0][1]), abs(local[0][2]), abs(local[1][0]),
+                   abs(local[1][2]), abs(local[2][0]), abs(local[2][1])) > 1e-4:
+                raise SystemExit(
+                    f"{name}: '{other.name}' carries its own local rotation, "
+                    "so a data-level yaw would twist it apart from the rig. "
+                    "Open the file and sort the transforms out by hand.")
+            other.data.transform(rotation)
+        bpy.context.view_layer.update()
 
     # Measured in WORLD space and corrected on the ROOT object, UNAPPLIED.
     #
@@ -340,6 +420,24 @@ def convert(glb: str, name: str, height: float, owner_mask: float,
         -(max(ys) + min(ys)) * 0.5 * scale,
         -min(zs) * scale,
     )
+
+    # FACING is asserted, not trusted (the archers body shipped a quarter
+    # turn wrong on the first pass of exactly this converter). A rigged
+    # humanoid's toes point the way it faces; -Y is this project's forward
+    # (author_clips measures the same thing the same way). An unrigged
+    # model gives nothing to measure, so only the render can check it.
+    if armature is not None:
+        toe_y = []
+        for bone in armature.data.bones:
+            if "toe" in bone.name.lower():
+                direction = (armature.matrix_world.to_3x3()
+                             @ (bone.tail_local - bone.head_local)).normalized()
+                toe_y.append(direction.y)
+        if toe_y and sum(toe_y) / len(toe_y) > -0.5:
+            raise SystemExit(
+                f"{name}: the toes point y={sum(toe_y) / len(toe_y):+.2f}, "
+                "so this model does not face -Y. Pass --yaw to turn it — "
+                "the supplied bodies do not agree on a forward axis.")
 
     image = _basecolor_image(bpy, obj)
     if image is None:
@@ -373,11 +471,23 @@ def main() -> None:
                              "this model takes (D-052). 0 keeps its own.")
     parser.add_argument("--force", action="store_true",
                         help="replace an existing source")
+    parser.add_argument("--yaw", type=float, default=0.0,
+                        help="degrees to turn the model about Z so it faces "
+                             "-Y, this project's forward. Stated per model "
+                             "and checked by a render — supplied bodies do "
+                             "not agree on a forward axis.")
+    parser.add_argument("--decimate", type=int, default=0,
+                        help="collapse the mesh to roughly this many "
+                             "triangles first (0 keeps it as supplied). The "
+                             "VAT width limit works out to 5,461 triangles "
+                             "per model, kit included — see art/build.py's "
+                             "MAX_VAT_WIDTH.")
     args = parser.parse_args()
 
     if not os.path.exists(args.glb):
         raise SystemExit(f"{args.glb}: no such file")
-    convert(args.glb, args.name, args.height, args.owner_mask, args.force)
+    convert(args.glb, args.name, args.height, args.owner_mask, args.force,
+            args.decimate, args.yaw)
 
 
 if __name__ == "__main__":

@@ -90,16 +90,26 @@ func test_a_thing_with_no_copy_on_screen_reports_nowhere() -> void:
 func _unit() -> PrimitiveUnit:
 	var unit := PrimitiveUnit.new()
 	add_child_autofree(unit)
-	unit.rebuild(UnitRoster.by_id(&"legion_militia"))
+	unit.rebuild(UnitRoster.by_id(&"gildedreach_levy"))
 	return unit
 
 
+## The visible views of a squad — its body composite and every visible
+## mirror of it (D-20260826-a-squad-wears-more-than-one-model wrapped the
+## squad's MultiMesh groups in one Node3D body, which is what the mirrors
+## clone).
 func _drawn_children(unit: PrimitiveUnit) -> Array:
 	var out := []
 	for child in unit.get_children():
-		if child is MultiMeshInstance3D and (child as MultiMeshInstance3D).visible:
+		if child is Node3D and (child as Node3D).visible \
+				and (child as Node3D).get_child_count() > 0:
 			out.append(child)
 	return out
+
+
+## The one MultiMesh group of a single-model squad's view.
+func _mmi_of(view: Node3D) -> MultiMeshInstance3D:
+	return view.get_child(0) as MultiMeshInstance3D
 
 
 func test_a_squad_is_drawn_at_every_copy_it_is_given() -> void:
@@ -135,9 +145,9 @@ func test_the_extra_copies_share_the_one_derived_multimesh() -> void:
 
 	var drawn := _drawn_children(unit)
 	assert_gt(drawn.size(), 1, "setup: more than one view")
-	var first := drawn[0] as MultiMeshInstance3D
+	var first := _mmi_of(drawn[0])
 	for child in drawn:
-		var view := child as MultiMeshInstance3D
+		var view := _mmi_of(child)
 		assert_true(view.multimesh == first.multimesh,
 			"a copy allocated its own MultiMesh, so its soldiers are derived twice")
 		assert_true(view.material_override == first.material_override,
