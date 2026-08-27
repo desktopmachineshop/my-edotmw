@@ -56,8 +56,19 @@ Six things to know before touching any of it:
   (breaker, engine, ram, bombard) are excluded from both the solo and
   the pair rule: cracking a defended building alone is their design
   brief — the Ember Bombard's identity is outranging the tower. The
-  tower's pair-rule carve-out list is `TOWER_EXCEPTIONS` in
-  `tests/test_buildings.gd`, re-measured against the new roster.
+  tower's pair-rule carve-out was `TOWER_EXCEPTIONS` in
+  `tests/test_buildings.gd` — **that list is gone as of 2026-08-27**
+  (`D-20260827-a-buildings-hp-is-one-knob-and-the-rule-needs-two`, #152).
+  It was not re-measured against the new roster after all: the pair rule
+  was left asking all 22 troops, ten of which are cavalry, missile or
+  light infiltrators, and 15 of 22 failed it on `main`. The pair rule is
+  asked of LINE troops now (`levy`, `spearmen`, `heavy`, `sellswords`,
+  derived from `UnitDef.archetype` and asserted against the roster), and
+  the tower and town centre carry re-derived HP. **The lesson is the
+  roster-wide one, not the siege one:** a hand-written list of unit ids
+  survives a roster replacement looking perfectly plausible, and the
+  same day it was written it was already asking horse archers to crack
+  fortifications.
 - **Every ladder and load-test number taken before this is measured
   against civs that no longer exist.** The standing quote-it-with-its-cap
   and quote-it-with-its-squad-count rules apply with a third clause:
