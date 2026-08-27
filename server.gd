@@ -214,6 +214,10 @@ var _reported_drop := false
 
 
 func _ready() -> void:
+	# Which build this is, first line, before anything can fail (#178).
+	# Both binaries print it and the handshake carries it, so a bug
+	# report that quotes one line of a log says what it was taken from.
+	print(BuildVersion.banner("server"))
 	var args := CmdArgs.parse(OS.get_cmdline_user_args())
 	# Refuse an argument that is not the number it will be read as, before
 	# any of it chooses a world (D-20260817-recipe-args-are-positional).

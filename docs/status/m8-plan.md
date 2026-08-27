@@ -1,4 +1,8 @@
-**M8 (Steam) is PLANNED but NOT BUILT** — the planning session ran on
+**M8's first rung is BUILT as of 2026-08-27** — `just export`
+produces the shipping builds (D-094 criterion 1, #178); see
+`docs/status/m8-export.md`. Everything else below is still planning.
+
+**M8 (Steam) is otherwise PLANNED but NOT BUILT** — the planning session ran on
 2026-08-14 and produced **D-087 through D-094**, closing every question
 in the old "Blocking M7 / product-level" block (Q3, Q5, Q10, Q11, Q13,
 Q14). Everything in them is design; no code, no export preset, no

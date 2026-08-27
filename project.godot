@@ -7,8 +7,25 @@ config_version=5
 [application]
 
 config/name="my-edotmw"
+
+; THE build version, and the only place it is written down (D-20260827).
+; `BuildVersion.string()` reads it at runtime, `just export` reads it out
+; of this file to name the artifacts, and the protocol handshake carries
+; it so a refusal can name both builds (#179). A literal, never a
+; timestamp or a git sha: D-081's byte-identical rule applies to anything
+; the build generates, and a clean clone must produce the same bytes as
+; this one.
+config/version="0.1.0-alpha"
 config/features=PackedStringArray("4.7")
-run/main_scene=""
+
+; Which scene an EXPORTED build starts in. The checkout has always been
+; driven by an explicit scene argument (`godot --path . server.tscn`),
+; which an exported binary does not accept — its main scene is baked in.
+; The `server` feature tag is set by the server export presets, so one
+; project produces both binaries without a launcher scene deciding at
+; runtime what the preset already knows.
+run/main_scene="res://client.tscn"
+run/main_scene.server="res://server.tscn"
 
 [display]
 
