@@ -1,0 +1,69 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS37: begin
+
+OBS37 ROSTER - every archetype each building lists, for every civ.
+  'resolved' = the civ fields it (D-047 lets a civ field a subset,
+  so a blank is expected, not a fault). 'queued' = the REAL server
+  handler accepted the order.
+server: SIM_CIVS 1=emberdeep
+  emberdeep      town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:heavy=ok barracks:archers=ok barracks:ram=ok barracks:bombard=ok
+server: SIM_CIVS 1=gildedreach
+  gildedreach    town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:spearmen=ok barracks:archers=ok barracks:cavalry=ok barracks:sellswords=ok barracks:engine=ok
+server: SIM_CIVS 1=gravesworn
+  gravesworn     town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:spearmen=ok barracks:shades=ok barracks:engine=ok
+server: SIM_CIVS 1=stoneblood
+  stoneblood     town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:heavy=ok barracks:skirmishers=ok barracks:breaker=ok
+server: SIM_CIVS 1=thornwood
+  thornwood      town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:archers=ok barracks:cavalry=ok barracks:greatbow=ok
+server: SIM_CIVS 1=windmarch
+  windmarch      town_centre:gatherers=ok town_centre:general=ok barracks:levy=ok barracks:skirmishers=ok barracks:cavalry=ok barracks:bowriders=ok
+
+OBS37 COSTS - deducted exactly once, and all-or-nothing when short.
+server: SIM_CIVS 1=emberdeep
+server: SIM_CIVS 1=emberdeep
+  emberdeep      emberdeep_levy           spent=[48, 0, 0, 0] want=[48, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford Hearth Levy
+server: SIM_CIVS 1=gildedreach
+server: SIM_CIVS 1=gildedreach
+  gildedreach    gildedreach_levy         spent=[45, 0, 0, 0] want=[45, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford City Watch
+server: SIM_CIVS 1=gravesworn
+server: SIM_CIVS 1=gravesworn
+  gravesworn     gravesworn_levy          spent=[32, 0, 0, 0] want=[32, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford Corpse Levy
+server: SIM_CIVS 1=stoneblood
+server: SIM_CIVS 1=stoneblood
+  stoneblood     stoneblood_levy          spent=[50, 0, 0, 0] want=[50, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford Hillkin Clubs
+server: SIM_CIVS 1=thornwood
+server: SIM_CIVS 1=thornwood
+  thornwood      thornwood_levy           spent=[40, 0, 0, 0] want=[40, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford Glade Wardens
+server: SIM_CIVS 1=windmarch
+server: SIM_CIVS 1=windmarch
+  windmarch      windmarch_levy           spent=[38, 0, 0, 0] want=[38, 0, 0, 0] exact=true | one short: refused=true wallet untouched=true notice=Cannot afford Colt Levy
+
+OBS37 SQUAD CAP - the refusal, and whether it names the civ's OWN cap.
+server: SIM_CIVS 1=emberdeep
+  emberdeep      base cap 6 -> civ cap 6 (bonus 0) | order at cap accepted=false | notice=At the squad cap (6) — gatherers count too
+server: SIM_CIVS 1=gildedreach
+  gildedreach    base cap 6 -> civ cap 6 (bonus 0) | order at cap accepted=false | notice=At the squad cap (6) — gatherers count too
+server: SIM_CIVS 1=gravesworn
+  gravesworn     base cap 6 -> civ cap 10 (bonus 4) | order at cap accepted=false | notice=At the squad cap (10) — gatherers count too
+server: SIM_CIVS 1=stoneblood
+  stoneblood     base cap 6 -> civ cap 6 (bonus 0) | order at cap accepted=false | notice=At the squad cap (6) — gatherers count too
+server: SIM_CIVS 1=thornwood
+  thornwood      base cap 6 -> civ cap 6 (bonus 0) | order at cap accepted=false | notice=At the squad cap (6) — gatherers count too
+server: SIM_CIVS 1=windmarch
+  windmarch      base cap 6 -> civ cap 6 (bonus 0) | order at cap accepted=false | notice=At the squad cap (6) — gatherers count too
+
+OBS37 RALLY - set through the server's own order handler, then a
+  squad is PRODUCED and never touched again. Its destination must
+  become the rally cell (the D-038 regression refused orders to
+  produced squads; the D-061 one never sent the rally at all).
+server: SIM_CIVS 1=emberdeep
+  rally set through _handle_order_rally: stored=(20, 3) wanted=(20, 3) match=true
+  produced emberdeep_levy as squad 0 after 0.0s at (16, 6), destination=(20, 3) (rally (20, 3)) obeys=true
+  after walking: at (20, 3), arrived=true
+  n/cap readout inputs: living_squad_count=1 squad_cap_for=400
+OBS37: end
+WARNING: 429 ObjectDB instances were leaked at exit (run with `--verbose` for details).
+   at: cleanup (core/object/object.cpp:2536)
+ERROR: 32 resources still in use at exit (run with --verbose for details).
+   at: clear (core/io/resource.cpp:822)
