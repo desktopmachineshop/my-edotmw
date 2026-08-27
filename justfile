@@ -996,6 +996,130 @@ test-unit FILTER="" TEST="": _import
 # _verdict_ok(), so check 1/2 already fail on them; check 3 is the one
 # condition bot_client.gd cannot check itself, because a client never
 # learns the server's TOTAL squad count, only what it can see.
+# The protocol version handshake, both ways (#179, D-094 criterion 3).
+#
+# `test-load` and `test-scenario` prove the ACCEPT path on every run —
+# `gate-check.sh handshake` fails a run in which anybody joined without
+# one. Nothing they do can reach the REFUSAL, because every binary in
+# this repo is built from the same net_protocol.gd and therefore agrees
+# with itself by construction.
+#
+# So this recipe presents a deliberately wrong build to a REAL server
+# over a REAL socket, and fails unless it is refused with a message that
+# names both builds. That is the observed-to-fail rule made permanent
+# rather than performed once by hand and written up: a refusal path
+# nothing ever takes is a refusal path that will be broken the first time
+# it matters, and that first time is a player's.
+#
+# It checks BOTH directions in one run, and the second half is not
+# decoration: a server that refused everybody would satisfy the first
+# half perfectly.
+[doc("Prove a version-mismatched client is refused, and a matched one is not (#179)")]
+test-handshake:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gate="$(bash host-gate.sh acquire heavy 'test-handshake' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    mkdir -p "{{artifacts_dir}}"
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
+    "{{just_executable()}}" up
+
+    stale_log="{{artifacts_dir}}/test-handshake-stale.log"
+    matched_log="{{artifacts_dir}}/test-handshake-matched.log"
+    server_log="{{artifacts_dir}}/test-handshake-server.log"
+
+    # THE wrong version, derived from the right one rather than typed, so
+    # bumping PROTOCOL_VERSION cannot silently make this recipe test a
+    # version that happens to be valid again.
+    ours="$(grep -oE '^const PROTOCOL_VERSION := [0-9]+' net_protocol.gd | grep -oE '[0-9]+$')"
+    if [ -z "$ours" ]; then
+        echo "test-handshake: could not read PROTOCOL_VERSION out of net_protocol.gd" >&2
+        exit 1
+    fi
+    stale=$((ours + 1))
+    echo "test-handshake: this build speaks protocol $ours; presenting $stale"
+
+    # 1. The wrong build. Its bot never becomes a client, so it cannot
+    #    take the server down with it on the way out (which is a rule of
+    #    its own in server.gd's disconnect path, and was worth having).
+    stale_status=0
+    "{{just_executable()}}" run-bots-protocol 1 8 "$stale" > "$stale_log" 2>&1 || stale_status=$?
+
+    # 2. The right one, against the SAME still-running server.
+    matched_status=0
+    "{{just_executable()}}" run-bots 1 8 > "$matched_log" 2>&1 || matched_status=$?
+
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} stop server >/dev/null 2>&1 || true
+        docker compose -p {{compose_project}} logs server > "$server_log" 2>&1 || true
+    fi
+
+    fail=0
+
+    # The server said so, naming the protocol it was offered.
+    if ! grep -q "server: REFUSED a client on protocol $stale" "$server_log"; then
+        echo "test-handshake: the server did not refuse protocol $stale (see $server_log)" >&2
+        fail=1
+    fi
+    # The CLIENT said so too, and could say what to do about it. A
+    # refusal the far end never hears is a silent disconnect, which is
+    # the confusing symptom this whole ticket replaces.
+    if ! grep -q "REFUSED —" "$stale_log"; then
+        echo "test-handshake: the stale client was never told why (see $stale_log)" >&2
+        fail=1
+    fi
+    if ! grep -q "Update to the same build as the server" "$stale_log"; then
+        echo "test-handshake: the refusal did not tell the player what to do (see $stale_log)" >&2
+        fail=1
+    fi
+    if ! grep -q "refused=1" "$stale_log"; then
+        echo "test-handshake: the stale run's verdict did not report a refusal (see $stale_log)" >&2
+        fail=1
+    fi
+
+    # And the matched build got in — otherwise a server that refused
+    # everyone would pass everything above. Asked through the SAME
+    # `gate-check.sh handshake` that `test-load` and `test-scenario` run
+    # on every ordinary run, rather than by a private grep here: the
+    # comparison lives in one place, so this recipe cannot pass a check
+    # the gate would fail (D-20260818-the-fast-loop-carries-the-gate's
+    # rule, applied in the other direction).
+    bash gate-check.sh handshake "$matched_log" "$server_log" || fail=1
+    if [ "$matched_status" -ne 0 ]; then
+        echo "test-handshake: the matched bot exited with status $matched_status" >&2
+        fail=1
+    fi
+
+    if [ "$fail" -ne 0 ]; then
+        exit 1
+    fi
+    echo "test-handshake: clean — protocol $stale refused with an actionable message, protocol $ours admitted"
+    grep -E "server: REFUSED" "$server_log"
+    grep -E "REFUSED —" "$stale_log"
+
+# `run-bots`, but claiming a protocol version of your choosing. Dev-only
+# and used by exactly one caller (`test-handshake`) — a separate recipe
+# rather than a fourth positional argument on `run-bots`, because just
+# binds arguments POSITIONALLY and a load test silently measured on the
+# wrong protocol is precisely the class of accident
+# D-20260817-recipe-args-are-positional exists to stop.
+[doc("run-bots claiming PROTOCOL instead of this build's (dev only, #179)")]
+run-bots-protocol N DURATION PROTOCOL: _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
+    bash recipe-arg.sh int PROTOCOL "{{PROTOCOL}}"
+    gate="$(bash host-gate.sh acquire heavy 'run-bots-protocol' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --protocol={{PROTOCOL}}
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}} --protocol={{PROTOCOL}}
+    fi
+
 [doc("Load test: server + N bots for DURATION seconds, then verify the run")]
 test-load N DURATION:
     #!/usr/bin/env bash
@@ -1040,11 +1164,13 @@ test-load N DURATION:
         exit 1
     fi
 
-    # The three comparisons that need BOTH logs, in gate-check.sh rather
+    # The comparisons that need BOTH logs, in gate-check.sh rather
     # than inline (D-20260818-the-fast-loop-carries-the-gate): fog gating
     # of squads (D-026 criterion 6's load half), fog gating of resource
-    # positions (D-061), and both civilisations having fielded something
-    # (D-046 criterion 10). They were written here and copied nowhere, so
+    # positions (D-061), both civilisations having fielded something
+    # (D-046 criterion 10), and every client having joined through the
+    # protocol version handshake (#179, D-094 criterion 3). They were
+    # written here and copied nowhere, so
     # `test-scenario` — the loop people iterate in, because this one is
     # five minutes — asserted none of them. The reasoning for each lives
     # in the script; a test fails if this recipe makes a check the fast
@@ -1052,6 +1178,7 @@ test-load N DURATION:
     bash gate-check.sh fog-squads "$bots_log" "$server_log"
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
+    bash gate-check.sh handshake "$bots_log" "$server_log"
 
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
@@ -1163,7 +1290,7 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
         exit 1
     fi
 
-    # 4. The same three log comparisons the GATE makes, from the same
+    # 4. The same log comparisons the GATE makes, from the same
     #    script (D-20260818-the-fast-loop-carries-the-gate). This recipe
     #    said "the checks follow test-load's shape" and had copied one of
     #    four; the missing three cost nothing here, because a scenario
@@ -1174,6 +1301,7 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     bash gate-check.sh fog-squads "$bots_log" "$server_log"
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
+    bash gate-check.sh handshake "$bots_log" "$server_log"
 
     # 5. Engine diagnostics, by line PREFIX rather than by scary word.
     if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' \

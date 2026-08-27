@@ -44,6 +44,16 @@ var _clients := {}
 var _next_player := 1
 var _peak_clients := 0
 
+## Peers that have connected and not yet said hello (#179): peer ->
+## the msec at which they arrived. A connection is NOT a client here —
+## it becomes one in `_handle_hello`, and until then it has no player
+## id, no seat and no lobby broadcast. That ordering is the point: the
+## alternative spends a seat on somebody about to be refused, and
+## D-033's seat lifecycle is not something to run backwards.
+var _pending := {}
+var _handshakes_accepted := 0
+var _handshakes_refused := 0
+
 ## player id -> civ id (D-047).
 ##
 ## Assigned round-robin at join for now, so a mixed match is the default
@@ -616,6 +626,7 @@ func _process(delta: float) -> void:
 		return
 
 	_service_network()
+	_sweep_silent_peers()
 
 	# No world, no ticks. In lobby mode the simulation does not exist yet
 	# (D-049), and everything below this line assumes it does.
@@ -808,6 +819,16 @@ func _print_summary(reason: String) -> void:
 	# remove the row — D-024), so this is stable for the whole run and safe
 	# to read from any point in the log, including the periodic status
 	# line below.
+	# A structured marker, same shape and same reason as CIVS_FIELDED
+	# above: `gate-check.sh` fails a run in which nobody was observed to
+	# complete the handshake (#179). A version field nothing exercises is
+	# a version field that will be wrong the first time it matters, and
+	# "no client was refused" is what an unreached check and a healthy run
+	# report identically — so the gate reads ACCEPTED, which only a real
+	# join can raise.
+	print("server: HANDSHAKE accepted=%d refused=%d protocol=%d build=%s" % [
+		_handshakes_accepted, _handshakes_refused,
+		NetProtocol.PROTOCOL_VERSION, BuildVersion.string()])
 	print("server: FOG_TOTAL_SQUADS=%d" % _sim.squad_count())
 	# The same shape for resources (D-061): the best-informed client must
 	# know FEWER nodes than exist, or positions are not being gated.
@@ -901,7 +922,76 @@ func _service_network() -> void:
 				return
 
 
+## A socket opened. Nobody is admitted yet — the protocol handshake
+## (#179, D-094 criterion 3) decides that, and until it arrives this peer
+## costs a dictionary entry and nothing else.
 func _on_connect(peer: ENetPacketPeer) -> void:
+	_pending[peer] = Time.get_ticks_msec()
+
+
+## The version handshake. The one gate every socket client passes through.
+##
+## AI seats do not come this way — they are LoopbackPeers created inside
+## this process (D-051), so there is no build for them to disagree with
+## and nothing to check. That is the same reason they are exempt from
+## D-075's no-humans rule: an AI is not a client that connected.
+func _handle_hello(peer, data: PackedByteArray) -> void:
+	if not _pending.has(peer):
+		# A second hello, or one from a peer already admitted. Ignored
+		# rather than acted on: re-running admission would spawn a second
+		# opening for a player who already has one.
+		return
+	var hello := NetProtocol.decode_hello(data)
+	var protocol := int(hello["protocol"])
+	if protocol != NetProtocol.PROTOCOL_VERSION:
+		print("server: REFUSED a client on protocol %d (build %s) — this server speaks %d (build %s)" % [
+			protocol, str(hello["build"]), NetProtocol.PROTOCOL_VERSION, BuildVersion.string()])
+		_refuse(peer, NetProtocol.REFUSED_PROTOCOL)
+		return
+	_pending.erase(peer)
+	_handshakes_accepted += 1
+	_admit_connection(peer)
+
+
+## Send the refusal and drop the peer.
+##
+## `peer_disconnect_later` rather than `_now`: the refusal is the whole
+## point of the exchange and `_now` discards anything still queued, so
+## the client would see a bare disconnect and have nothing to show a
+## player. Reliable on channel 0 like everything else (D-042).
+func _refuse(peer, reason: int) -> void:
+	_handshakes_refused += 1
+	_pending.erase(peer)
+	peer.send(0, NetProtocol.encode_refused(reason, NetProtocol.PROTOCOL_VERSION,
+		BuildVersion.string()), ENetPacketPeer.FLAG_RELIABLE)
+	peer.peer_disconnect_later(0)
+
+
+## Refuse anybody who connected and never introduced themselves — which
+## is exactly what a client built before this handshake existed does. It
+## would otherwise sit connected forever, admitted to nothing, with
+## nothing anywhere saying why.
+func _sweep_silent_peers() -> void:
+	if _pending.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	var expired := []
+	for peer in _pending:
+		if float(now - int(_pending[peer])) / 1000.0 >= NetProtocol.HELLO_TIMEOUT_SECONDS:
+			expired.append(peer)
+	for peer in expired:
+		print("server: REFUSED a client that never sent a version handshake within %.0fs — too old to say which build it is" % NetProtocol.HELLO_TIMEOUT_SECONDS)
+		_refuse(peer, NetProtocol.REFUSED_SILENT)
+
+
+## Everything that used to happen the instant a socket opened. Reached
+## only through `_handle_hello`, so a player id is spent on somebody who
+## has proved they speak this protocol.
+##
+## `peer` is untyped for the same reason `_admit_player`'s is: everything
+## here needs of a peer is `send()`, and a test that could only reach
+## this through a real UDP socket is a test that does not get written.
+func _admit_connection(peer) -> void:
 	var player := _next_player
 	_next_player += 1
 
@@ -1056,7 +1146,8 @@ func _admit_player(peer, player: int) -> void:
 	# The rest arrive as they are revealed, in `_replicate`.
 	_send_visible_nodes(peer, player, _record_for(peer))
 
-	# Registration happened at the top of _on_connect, before the lobby
+	# Registration happened at the top of _admit_connection, before the
+	# lobby
 	# branch — a player has to be seated before anyone can decide whether
 	# there is a lobby to wait in.
 	print("server: player %d joined with %d squads (%d connected) — match %s" % [
@@ -1117,7 +1208,14 @@ func _all_squad_ids() -> Array:
 	return ids
 
 
-func _on_disconnect(peer: ENetPacketPeer) -> void:
+## `peer` is untyped for the same reason `_admit_connection`'s is:
+## nothing here is ENet-specific — it is a dictionary key and a client
+## record — and a rule that can only be reached through a real UDP
+## socket is a rule nothing tests. #179 added one worth testing.
+func _on_disconnect(peer) -> void:
+	# A peer refused at the handshake, or one that dropped before sending
+	# it, was never a client and has no record to unwind.
+	_pending.erase(peer)
 	var record = _record_for(peer)
 	if record != null:
 		var player := int(record["player"])
@@ -1147,6 +1245,15 @@ func _on_disconnect(peer: ENetPacketPeer) -> void:
 
 		print("server: player %d left (%d connected)" % [player, _clients.size() - 1])
 	_clients.erase(peer)
+	# A peer that was never admitted is not a client LEAVING (#179).
+	# Without this, one connection from a build on the wrong protocol
+	# would refuse it, drop it, and then take the whole server down on
+	# the way out under D-075's rule below — a server anybody with a
+	# stale zip could end by double-clicking it. `record` is the only
+	# honest test for "this was a client": _clients was erased above and
+	# a refused peer never appeared in it.
+	if record == null:
+		return
 	if _clients.is_empty() and _sim != null and _sim.squad_count() > 0:
 		_print_summary("last client left")
 
@@ -1184,7 +1291,17 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 ## somebody wondered why it never ran out of food.
 func _dispatch(peer, data: PackedByteArray) -> void:
 		var opcode := NetProtocol.opcode_of(data)
+		# Nothing but a hello is heard from a peer that has not said one
+		# (#179). Dropped in silence rather than push_error'd: a build on
+		# the wrong protocol may be sending perfectly well-formed packets
+		# of a shape this one does not have, and a wall of "unknown
+		# opcode" is the confusing symptom the handshake exists to
+		# replace with one sentence.
+		if _pending.has(peer) and opcode != NetProtocol.C2S_HELLO:
+			return
 		match opcode:
+			NetProtocol.C2S_HELLO:
+				_handle_hello(peer, data)
 			NetProtocol.C2S_ORDER_MOVE:
 				_handle_order_move(peer, data)
 			NetProtocol.C2S_ORDER_STOP:

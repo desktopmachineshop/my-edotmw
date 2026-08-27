@@ -80,6 +80,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m8-export.md
 
+@docs/status/join-handshake.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md
@@ -365,6 +367,14 @@ replay_log.gd            Replays ARE the curve log (D-016), byte-
 --- networking ---
 net_protocol.gd          The one definition of the wire protocol, shared
                         by server, client and bots so they can't drift.
+                        Owns PROTOCOL_VERSION and the JOIN HANDSHAKE
+                        (D-20260827, #179): a client's first packet is a
+                        HELLO and the server admits nobody before it, so
+                        a mismatched build is refused with a sentence
+                        naming both builds instead of producing desyncs.
+                        The version is its OWN number, never the build
+                        string — two builds can differ and speak the
+                        same wire.
 client_state.gd          Everything a client knows, with no rendering
                         attached. The GUI client and the load-test bots
                         both run THIS — so test-load exercises the real
@@ -901,6 +911,11 @@ Dev loop and tests:
   ~150 s). Fails unless the server's log confirms it actually played the
   scenario.
 - `just scenarios` — the shipped mid-game scenarios and what each is for
+- `just test-handshake` — presents a deliberately wrong protocol version
+  to a real server over a real socket and fails unless it is REFUSED with
+  an actionable message, and unless a matched build is admitted in the
+  same run (#179). The refusal path nothing else in the estate can reach,
+  because every binary here is built from one `net_protocol.gd`.
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

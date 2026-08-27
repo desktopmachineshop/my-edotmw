@@ -649,6 +649,12 @@ func _service_network() -> void:
 			ENetConnection.EVENT_CONNECT:
 				_connected = true
 				print("client: connected")
+				# The version handshake, first thing and before any order
+				# (#179, D-094 criterion 3). The server admits nobody
+				# until it arrives, so this is not optional politeness —
+				# a client that never sends it is refused after
+				# NetProtocol.HELLO_TIMEOUT_SECONDS.
+				_send_hello()
 			ENetConnection.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
@@ -656,6 +662,12 @@ func _service_network() -> void:
 				var from_peer: ENetPacketPeer = event[1]
 				while from_peer.get_available_packet_count() > 0:
 					_state.handle_packet(from_peer.get_packet())
+				# Checked after the packets are drained rather than
+				# inside the loop: the refusal is the last thing this
+				# connection will ever carry, and reacting mid-drain
+				# would leave the rest of it unread.
+				if not _state.refusal.is_empty() and not _refusal_shown:
+					_show_refusal()
 
 
 ## The chunk size the ground is meshed at (D-017).
@@ -1895,6 +1907,11 @@ var _settings_panel: Control = null
 var _scoreboard_panel: Control = null
 var _scoreboard_rows: VBoxContainer = null
 ## The defeat screen (see `_build_defeat_screen`/`_refresh_defeat`).
+## Whether the refusal screen has already been built (#179). A refusal
+## arrives once, but `_service_network` runs every frame and the socket
+## stays readable until ENet finishes the disconnect.
+var _refusal_shown := false
+
 var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
 ## Whether this player has ever had a living squad or building since the
@@ -9054,6 +9071,95 @@ func _load_settings() -> void:
 	# fighting that would make screenshots depend on whoever ran last.
 	if _run_seconds <= 0.0 and bool(config.get_value("client", "fullscreen", false)):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+# --- the join handshake, and being refused ------------------------------
+#
+# #179 / D-094 criterion 3. Before this the protocol carried no version
+# at all, so a stale build meeting a new server produced a scatter of
+# confusing desyncs instead of one sentence — a symptom that costs a
+# debugging session and ends in "you were on last week's build".
+#
+# The refusal SCREEN is deliberately small here and deliberately its own
+# layer: #180 gives this client a pre-connection main menu, and a refusal
+# belongs on THAT, with the address still in the field and a "join again"
+# button. Until it exists there is nowhere else for the message to go,
+# and a client that vanished or hung would be exactly the reported
+# defect in #162.
+
+
+func _send_hello() -> void:
+	_peer.send(0, NetProtocol.encode_hello(
+		NetProtocol.PROTOCOL_VERSION, BuildVersion.string()),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+func _show_refusal() -> void:
+	_refusal_shown = true
+	var text := str(_state.refusal.get("text", ""))
+	# Loudly, in both places: the log for a bug report to quote, and the
+	# screen for the player who has to act on it. push_error rather than
+	# print because this ends the session.
+	push_error("client: REFUSED by the server
+" + text)
+	print("client: REFUSED by the server — " + text.replace("
+", " "))
+	_build_refusal_screen(text)
+
+
+func _build_refusal_screen(text: String) -> void:
+	var layer := CanvasLayer.new()
+	# Above everything, the lobby included: nothing behind it can be
+	# acted on, because there is no connection left to act through.
+	layer.layer = 20
+	add_child(layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(460.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "CANNOT JOIN"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	var headline := Label.new()
+	headline.text = "Refused by the server"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	var body := Label.new()
+	body.text = text
+	body.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	body.modulate = HudTheme.TEXT_DIM
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.custom_minimum_size = Vector2(460.0, 0.0)
+	column.add_child(body)
+
+	var button_row := CenterContainer.new()
+	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
+	quit.pressed.connect(func() -> void: get_tree().quit())
+	button_row.add_child(quit)
+	column.add_child(button_row)
 
 
 # --- defeat screen ------------------------------------------------------
