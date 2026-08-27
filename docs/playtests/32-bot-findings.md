@@ -121,11 +121,11 @@ are hardware frames rather than llvmpipe ones. That does not matter for a
 correctness picture; it is recorded because the recipe's own comment claims
 software rasterisation.
 
-| file | seam | focus cell | copies reported |
+| file (committed copy) | seam | focus cell | copies reported |
 |---|---|---|---|
-| `artifacts/seam-q.png` | width wrap | (0, 36) | seam squad 3, control 3 |
-| `artifacts/seam-r.png` | height wrap | (22, 0) | seam squad **4**, control 3 |
-| `artifacts/seam-corner.png` | both | (0, 0) | seam squad **4**, control 4 |
+| `docs/playtest/p40-seam-q.png` | width wrap | (0, 36) | seam squad 3, control 3 |
+| `docs/playtest/p40-seam-r.png` | height wrap | (22, 0) | seam squad **4**, control 3 |
+| `docs/playtest/p40-seam-corner.png` | both | (0, 0) | seam squad **4**, control 4 |
 
 ### Criterion 1 — nothing is visible on either seam
 
@@ -156,9 +156,9 @@ crosses. That is motion, and it stays with the owner.
 
 ### One thing the frames raise, which belongs to #48 rather than here
 
-`artifacts/seam-corner.png` shows **dozens of small grey quads scattered across
+`docs/playtest/p40-seam-corner.png` shows **dozens of small grey quads scattered across
 gently rolling green ground**, most of them detached-looking rather than attached
-to any visible wall. In `artifacts/seam-r.png` the same geometry reads correctly
+to any visible wall. In `docs/playtest/p40-seam-r.png` the same geometry reads correctly
 — clear vertical rock faces down the coast and up the slopes, walls rather than
 holes, which is D-097 working.
 
@@ -171,8 +171,8 @@ is a terrain-rendering question and not a seam one.
 
 `playtest_seam_shot.gd` places its men by sampling `TerrainChunk.height_at` and
 **does not apply the passability clamp the real client applies**
-(`D-20260818-a-soldier-stands-where-his-squad-could-walk`). In `seam-q.png` and
-`seam-r.png` the focus cell is coastal and some men therefore stand in shallow
+(`D-20260818-a-soldier-stands-where-his-squad-could-walk`). In `p40-seam-q.png` and
+`p40-seam-r.png` the focus cell is coastal and some men therefore stand in shallow
 water. That is the preview's simplification, not the game's behaviour.
 
 ## Bugs filed

@@ -2,8 +2,8 @@
 
 **Ticket:** [#47](https://github.com/desktopmachineshop/my-edotmw/issues/47) — stays OPEN.
 **Run:** 2026-08-27, worktree `ao/my-edotmw-85/playtest-visual-infra`, base `cc2f4c6`.
-**Frames:** `artifacts/models-godot.png`, `cover-godot.png`, `forest-godot.png`,
-`forest-godot-squad.png`, `seam-q.png`, `seam-r.png`, `seam-corner.png`.
+**Frames:** `docs/playtest/p40-models-buildings-clipped.png`, `cover-godot.png`, `forest-godot.png`,
+`forest-godot-squad.png`, `p40-seam-q.png`, `p40-seam-r.png`, `p40-seam-corner.png`.
 All on **Intel Iris Xe**, `forward_plus`, 1400x900 (models/cover/forest at their
 recipes' own sizes).
 
@@ -137,7 +137,7 @@ the criterion is about, and it holds.
 
 ### Criterion 3 — colours
 
-`models-godot.png` shows two player colours (red and blue) side by side on the
+`p40-models-buildings-clipped.png` shows two player colours (red and blue) side by side on the
 same archetype, clearly distinguishable. `PlayerColours` is tested for
 distinctness elsewhere and `ClientState.colour_of` is the single source
 (D-052) read by the 3D view, the minimap (#82's fix) and the scoreboard (D-102).

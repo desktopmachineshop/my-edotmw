@@ -2,9 +2,9 @@
 
 **Ticket:** [#48](https://github.com/desktopmachineshop/my-edotmw/issues/48) — stays OPEN.
 **Run:** 2026-08-27, worktree `ao/my-edotmw-85/playtest-visual-infra`, base `cc2f4c6`.
-**Frames:** `artifacts/terrain-3d.png`, `terrain-preview.png`, `forest-godot.png`,
+**Frames:** `docs/playtest/p40-terrain-cliffs.png`, `terrain-preview.png`, `forest-godot.png`,
 `forest-godot-squad.png`, `cover-godot.png`, and the three
-`seam-{q,r,corner}.png` from #32.
+`p40-seam-{q,r,corner}.png` from #32.
 **Numbers:** `just gen-terrain-preview` and `playtest_observe.gd --topic=terrain`.
 
 ## Checklist, classified
@@ -50,7 +50,7 @@ picks Huge.
 
 ## Criterion 1 — no honeycomb. Passes.
 
-`terrain-3d.png` (framed on the longest run of passability boundary, low angle,
+`p40-terrain-cliffs.png` (framed on the longest run of passability boundary, low angle,
 shipping rig) and all three seam frames show continuous ground: biome colours
 blend across cell boundaries with no stepping, the sand-to-water contour is
 organic rather than running along hex edges, and there is **no ruler-straight
@@ -65,7 +65,7 @@ colour channel.
 This is the one thing in this ticket that a picture argues about and no number
 reports.
 
-In `terrain-3d.png`, along the inlet running down the right of the frame, the
+In `p40-terrain-cliffs.png`, along the inlet running down the right of the frame, the
 rock faces form a **regular sawtooth of near-identical grey wedges** — an
 unmistakable hex staircase. The *colour* shoreline beside it is soft and
 organic. So criterion 2 is half-passed: D-096 feathered the paint and the
@@ -78,12 +78,12 @@ criterion 2 asks a human to judge, and the frame is the evidence.
 
 ## Criterion 3 — cliffs read as walls, and the "shards" are foreshortening
 
-`terrain-3d.png` and `seam-r.png` both show clear vertical rock faces down coasts
+`p40-terrain-cliffs.png` and `p40-seam-r.png` both show clear vertical rock faces down coasts
 and up slopes. They read as **walls, not holes** — D-086's ~27-degree normal tilt
 is doing what it was added for; nothing renders at the near-black that made
 mountain walls look like holes cut in the world.
 
-**A first reading of `seam-corner.png` was wrong and is worth recording as a
+**A first reading of `p40-seam-corner.png` was wrong and is worth recording as a
 correction.** That frame shows dozens of small grey quads apparently lying
 detached on gently rolling green, and the obvious hypothesis was isolated
 one-cell blocked pockets each drawing a lonely skirt. Measured, that is not what
@@ -158,7 +158,7 @@ ticket:
 ## What remains for the owner
 
 1. **Criterion 2's judgement call** — is the sawtoothed cliff line along a
-   coastline acceptable? `artifacts/terrain-3d.png` is the frame. If not, the
+   coastline acceptable? `docs/playtest/p40-terrain-cliffs.png` is the frame. If not, the
    lever is in the mesher, not in the passability rule.
 2. **Criterion 3 at play pitch** — do one-cell ridges read as walls or as shards
    from `RenderCull.PITCH_RUN` (59 degrees) rather than from this shot's shallow
