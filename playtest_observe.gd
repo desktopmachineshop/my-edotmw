@@ -15,7 +15,7 @@ extends SceneTree
 ##
 ##     tools/godot.exe --headless --path . --script playtest_observe.gd -- --topic=hud
 ##
-## Topics: hud (#46), seam (#32), lod (#47), civs (#207).
+## Topics: hud (#46), seam (#32), lod (#47), civs (#207), terrain (#48).
 
 func _init() -> void:
 	var topic := "all"
@@ -31,6 +31,8 @@ func _init() -> void:
 		_lod()
 	if topic == "civs" or topic == "all":
 		_civs()
+	if topic == "terrain" or topic == "all":
+		_terrain()
 	quit(0)
 
 
@@ -296,3 +298,59 @@ func _civs() -> void:
 			% [civ.id, civ.squad_cap_bonus, civ.production_speed,
 				civ.gather_speed, civ.starting_food, civ.starting_wood,
 				",".join(roster)])
+
+
+# ------------------------------------------------------------- #48 terrain
+
+## How the impassable set is SHAPED, which is what decides whether a rock
+## face reads as a wall or as a shard lying on the grass.
+##
+## D-097 draws one face per stepped edge and
+## `D-20260826-passable-means-flat-enough-to-cross` decides which edges
+## those are. A blocked cell in the middle of a ridge contributes to a
+## wall; a blocked cell whose six neighbours are all walkable contributes
+## a six-sided lump with nothing to belong to. Both are the same code and
+## the same truthful drawing — only the SHAPE of the set differs, and the
+## set is what moved when the rule changed.
+func _terrain() -> void:
+	print("=== Terrain shape (#48) ===")
+	var config := load("res://maps/default.tres") as MapConfig
+	if config == null:
+		print("terrain: no default map")
+		return
+	# Every shipped /terrain preset on the shipped map size, through the ONE
+	# place a MapSettings becomes a TerrainGen (`to_terrain`), so this is the
+	# generator the server runs rather than this file's idea of it.
+	for id in TerrainPresetRoster.ids():
+		var settings := MapSettings.new()
+		settings.apply_preset(TerrainPresetRoster.by_id(id))
+		_terrain_shape(String(id), config, settings)
+
+
+func _terrain_shape(name: String, config: MapConfig, settings: MapSettings) -> void:
+	var space := config.to_space()
+	var fields := settings.to_terrain().build_fields(space)
+	var blocked := 0
+	var isolated := 0
+	var thin := 0
+	var stepped_edges := 0
+	for i in range(space.cell_count()):
+		if fields.passable[i] == 1:
+			continue
+		blocked += 1
+		var open := 0
+		for direction in range(6):
+			if fields.passable[space.neighbor_index(i, direction)] == 1:
+				open += 1
+		stepped_edges += open
+		if open == 6:
+			isolated += 1
+		elif open >= 5:
+			thin += 1
+	var cells := space.cell_count()
+	print("terrain: %-10s %dx%d = %d cells" % [name, space.width, space.height, cells])
+	print("terrain:   blocked %d (%.1f%%), of which ISOLATED (all six neighbours walkable) %d (%.1f%% of blocked), near-isolated %d"
+		% [blocked, 100.0 * blocked / maxi(cells, 1), isolated,
+			100.0 * isolated / maxf(blocked, 1.0), thin])
+	print("terrain:   stepped edges (one rock face each) %d — %.2f per blocked cell"
+		% [stepped_edges, float(stepped_edges) / maxf(blocked, 1.0)])

@@ -32,8 +32,8 @@ straddling the seam is drawn exactly where the game would draw it.
 
 | # | criterion | class | status |
 |---|---|---|---|
-| 1 | no visible edge, hairline, texture jump or lighting change on either seam | **human** (picture) | instrument built; frames pending, see below |
-| 2 | armies never vanish, pop or duplicate at the seam | bot-observable | mechanism confirmed; the picture is the check |
+| 1 | no visible edge, hairline, texture jump or lighting change on either seam | **mixed** (picture) | three frames taken, **nothing visible on either seam** |
+| 2 | armies never vanish, pop or duplicate at the seam | bot-observable | mechanism confirmed; a seam squad reports 3-4 copies and is drawn at all of them |
 | 3 | minimap view rect and blips wrap correctly | bot-observable | **confirmed** |
 | 4 | orders across the seam path the SHORT way | bot-observable | **confirmed, both axes** |
 | 5 | selection works on units straddling the seam | bot-observable | mechanism confirmed by code + existing tests |
@@ -112,6 +112,69 @@ gets *picked*. The mechanism is right and the coverage stops one step short. Not
 filed as a defect — it is a coverage gap in a criterion the ticket assigns to a
 human anyway — but worth knowing before trusting a green suite on this point.
 
+## The frames
+
+Three, all at 1400x900, all in the shipping `WorldLook` rig, all on the shipped
+default map. Taken on **Intel Iris Xe** through `forward_plus` — note that
+`LIBGL_ALWAYS_SOFTWARE=1` does not reach the Intel driver on Windows, so these
+are hardware frames rather than llvmpipe ones. That does not matter for a
+correctness picture; it is recorded because the recipe's own comment claims
+software rasterisation.
+
+| file | seam | focus cell | copies reported |
+|---|---|---|---|
+| `artifacts/seam-q.png` | width wrap | (0, 36) | seam squad 3, control 3 |
+| `artifacts/seam-r.png` | height wrap | (22, 0) | seam squad **4**, control 3 |
+| `artifacts/seam-corner.png` | both | (0, 0) | seam squad **4**, control 4 |
+
+### Criterion 1 — nothing is visible on either seam
+
+**The seam cannot be located by eye in any of the three frames.** In each shot
+the wrap line passes through the squads at the centre of the picture, and the
+ground across it shows no hairline, no geometry crack, no colour step, no texture
+jump and no lighting change. Biome blending runs continuously across the join,
+the shoreline is organic rather than scalloped along hex edges, and there is no
+sign of the ruler-straight bright seam that torn UV derivatives produce (the
+defect `shaders/terrain.gdshader` uses explicit gradients to avoid).
+
+That is a real result rather than an absence of evidence, because the framing is
+deliberate: `_seam_focus()` walks the whole wrap line and picks the cell with the
+most biome variety within three cells, so each shot is aimed at the busiest
+stretch of that seam — the place a discontinuity has the most to be discontinuous
+in. A featureless stretch of open water would have proved nothing.
+
+### Criterion 2 — nothing vanished
+
+Every squad placed was drawn. `RenderCull.visible_offsets_of_extent` reported
+**3 or 4 on-screen lattice copies** for each, and `LatticeCopies.draw` drew all
+of them; no frame shows a squad missing, and none shows a second copy standing in
+frame where there should be one. This is the D-20260818 mechanism doing its job
+on the shipped map rather than on a fixture.
+
+What a still cannot show is a **pop** — a squad that vanishes for one frame as it
+crosses. That is motion, and it stays with the owner.
+
+### One thing the frames raise, which belongs to #48 rather than here
+
+`artifacts/seam-corner.png` shows **dozens of small grey quads scattered across
+gently rolling green ground**, most of them detached-looking rather than attached
+to any visible wall. In `artifacts/seam-r.png` the same geometry reads correctly
+— clear vertical rock faces down the coast and up the slopes, walls rather than
+holes, which is D-097 working.
+
+The difference is the ground under them: on a steep coast the skirt has a wall to
+belong to, and on gentle terrain it appears to be a shard lying on the grass.
+Carried into `docs/playtests/48-bot-findings.md` with the terrain shot, since it
+is a terrain-rendering question and not a seam one.
+
+### An instrument caveat, so nobody reads it as a defect
+
+`playtest_seam_shot.gd` places its men by sampling `TerrainChunk.height_at` and
+**does not apply the passability clamp the real client applies**
+(`D-20260818-a-soldier-stands-where-his-squad-could-walk`). In `seam-q.png` and
+`seam-r.png` the focus cell is coastal and some men therefore stand in shallow
+water. That is the preview's simplification, not the game's behaviour.
+
 ## Bugs filed
 
 None from this ticket. The seam arithmetic is correct everywhere it was measured.
@@ -131,10 +194,13 @@ None from this ticket. The seam arithmetic is correct everywhere it was measured
 4. Watch the minimap view rectangle — the arithmetic above covers *blips*, not
    the **view rect**, which is drawn from the camera and was not measured.
 
-## Note on the artifacts
+## Reproducing the frames
 
-The three seam frames are generated by `just gen-seam-shot {q,r,corner}`. If
-`artifacts/seam-*.png` is absent from this branch, the run was cut short by host
-contention — the machine was carrying four to six other agents' gated jobs
-throughout this session and Godot imports were being OOM-killed. The recipe and
-the scene are committed and reproducible; re-run them on a quiet host.
+```
+just gen-seam-shot q        # artifacts/seam-q.png
+just gen-seam-shot r        # artifacts/seam-r.png
+just gen-seam-shot corner   # artifacts/seam-corner.png
+```
+
+`HEIGHT` is the second argument (default 16) if you want the eye lower or higher.
+The PNGs are not committed; the recipe and the scene are.
