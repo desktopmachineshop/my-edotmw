@@ -88,6 +88,16 @@ points rather than a count of players who could take part. Note the old
 rule already short-seated `islands` (17–19 of 20) — this makes the
 shortfall bigger and, for the first time, meaningful.
 
+**And on the map the gate runs on, it is a provable no-op.**
+`maps/default.tres` at seed 1337 has **17 walkable components, of which
+exactly ONE clears `min_spawn_landmass`** — the 24,997-cell mainland. The
+old predicate ("any component past the bar") and the new one ("the
+mainland") therefore accept precisely the same candidates, off the same
+rng stream, so the seating is bit-identical and `just test-load`'s
+numbers stay comparable across this change. It also means the load test
+does not exercise the new rejection at all; the unit tests and the sweep
+are what cover it.
+
 **Wall clock**, `spawn_points` on one host, five calls averaged, 20 slots:
 
 | preset / size | before | after |

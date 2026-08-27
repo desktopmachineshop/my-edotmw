@@ -146,6 +146,15 @@ Four things worth carrying:
   trade entirely" was optimistic — the capped fills only ever ran on
   candidates that had passed two cheaper tests. Both callers are
   once-per-match or key-guarded, and the decision has the table.
+- **On the shipped default map it is a provable no-op**, which is why
+  `test-load`'s numbers stay comparable across it: `maps/default.tres` at
+  seed 1337 has 17 walkable components and exactly ONE clears the bar, so
+  old predicate and new accept the same candidates off the same rng
+  stream. `just test-load 4 120` on this tree: `VERDICT ok`, 0 desyncs
+  over 462 checks, 0 dropped ticks, all three `gate-check.sh` comparisons
+  green, **263.97 µs/squad at 32 squads** (combat 101.77, fields 62.06,
+  vision 39.28) on a host holding 4.1 GB for three other agents — quote
+  it with its squad count and read it as a host figure.
 - **A fixture that looks like it measures isolation can measure
   nothing.** The first version of these tests laid two continents against
   the top and bottom edges of the rectangle — which on a torus is ONE
