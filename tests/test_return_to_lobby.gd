@@ -454,7 +454,7 @@ func test_a_second_match_does_not_end_the_instant_it_starts() -> void:
 	assert_eq(m.winner, -1, "Nor its winner")
 
 
-func test_the_server_drops_its_building_reveal_baseline_with_the_match() -> void:
+func test_the_server_drops_its_reveal_baselines_with_the_match() -> void:
 	# Found in a playtest log: 106 building desyncs over one session that
 	# used the sandbox Regen button. `_return_to_lobby` cleared each
 	# client's `visible` baseline under a comment saying none of them may
@@ -464,14 +464,42 @@ func test_the_server_drops_its_building_reveal_baseline_with_the_match() -> void
 	# match, so the server hashed stale entries against a client that had
 	# torn its world down.
 	#
-	# A source scan, the idiom this project already uses for rules that
-	# live where GUT cannot reach (test_terrain_fog's caller check):
-	# server.gd needs a live ENetConnection to instantiate at all.
-	var source := FileAccess.get_file_as_string("res://server.gd")
-	assert_false(source.is_empty(), "server.gd must be readable")
-	var start := source.find("func _return_to_lobby")
-	assert_gt(start, 0, "there must be a _return_to_lobby to scan")
-	var body := source.substr(start, source.find("\nfunc ", start + 10) - start)
-	assert_true(body.contains("known_buildings"),
-		"_return_to_lobby must drop the building reveal baseline too, "
-		+ "or the next match's hash compares against the last match's set")
+	# This was a source scan for `known_buildings` inside
+	# `_return_to_lobby`'s body, which pins the test to the SHAPE of that
+	# fix rather than to the rule — and it went red the moment the reset
+	# stopped naming keys at all
+	# (D-20260827-a-client-record-forgets-the-match-it-left, #157, which
+	# found two more baselines the named list had missed). It asks the rule
+	# now: a record that has grown a baseline must not still have it
+	# afterwards, however the reset happens to be written.
+	#
+	# Its old comment was wrong too, and correcting that is worth more than
+	# the assertion: "server.gd needs a live ENetConnection to instantiate
+	# at all" is true of `_ready()`, not of the file — exactly the
+	# distinction this decision's own 2026-08-16 amendment had to make for
+	# `client.gd`, and reading it too widely is what kept this rule on a
+	# text scan. `tests/test_client_record.gd` plays two real matches
+	# against the thing.
+	var server = autofree(load("res://server.gd").new())
+	server._match = _running_match()
+	server._settings = server._match.map_settings
+
+	var peer := LoopbackPeer.new()
+	server._clients[peer] = server._fresh_record(1)
+	var before: Dictionary = server._clients[peer]
+	before["known_buildings"][0] = true
+	before["visible"][3] = true
+	before["nodes_known"][17] = true
+	before["nodes_depleted_told"][17] = true
+
+	server._return_to_lobby()
+	var after: Dictionary = server._clients[peer]
+
+	assert_eq(int(after["player"]), 1,
+		"the player id is NOT per-match: the server does not reissue one, and a record "
+		+ "that lost it would have every later order refused as unowned")
+	for baseline in ["known_buildings", "visible", "nodes_known", "nodes_depleted_told"]:
+		assert_true((after[baseline] as Dictionary).is_empty(),
+			("`%s` survived the return to the lobby — the next match remints the ids and "
+			+ "cells it is keyed by, so the server would believe it had already told this "
+			+ "client about a thing that no longer exists") % baseline)
