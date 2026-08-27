@@ -154,14 +154,30 @@ whole 22-troop table were taken with a temporary harness that is
 deliberately not committed — its numbers are above, and re-taking them is
 a fifteen-line copy of `_rush_cost`.
 
-**A note on the runtime**, because it affects how much to trust the
-above: **docker could not be used on this host at all** — `_import` was
-OOM-killed (exit 137) twice with the machine at 400–2,000 MB free (#153),
-so every number here is from `EDOTMW_RUNTIME=native`. Combat is pure
-GDScript over a seeded RNG (D-024) and reads no imported asset, so the
-runtime cannot change these results; the failures reproduced identically
-across four separate native runs, and the original 86 HP figure in #152
-was reproduced by two other sessions under docker.
+**Through the wire** (`just test-load 4 120`, docker, 2026-08-27):
+`VERDICT ok`, **0 desyncs over 476 state-hash checks**, 0 dropped ticks,
+all three `gate-check.sh` comparisons green (`casualties_applied=41
+conceal_events=27 reveal_events=20 raid_orders=45`), and **180.99
+µs/squad at 32 squads** — quoted with its count, and not comparable to
+the 167.7 at 48 or 159.88 at 49 recorded elsewhere without the standing
+caveat that per-tick fixed overhead inflates the figure when squads are
+few. Two `max_health` values cannot move a per-squad cost; the run is
+here to show the change is not felt through the wire, which it is not.
+The same run reported `worst_tick=493.8ms` against D-020's 100 ms with
+zero dropped ticks — **not quoted as a result**, because the host was
+carrying ~3 GB of swap and had been OOM-killing docker all evening
+(#153), which is the condition M6 discarded a session's worst-tick
+figures over.
+
+**A note on the runtime**, because it affects how much to trust the unit
+numbers: **docker `_import` was OOM-killed (exit 137) three times** with
+the machine at 400–2,000 MB free (#153) before it finally admitted the
+load test, so every unit-test and sweep number above is from
+`EDOTMW_RUNTIME=native`. Combat is pure GDScript over a seeded RNG
+(D-024) and reads no imported asset, so the runtime cannot change these
+results; the failures reproduced identically across four separate native
+runs, and the original 86 HP figure in #152 was reproduced by two other
+sessions under docker.
 
 **Revisit trigger:** the next unit that lands outside the measured band
 moves the window again, and the window is now only 1.7x wide on the tower
