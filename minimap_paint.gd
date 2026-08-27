@@ -233,3 +233,69 @@ static func fogged(colour: Color, level: int) -> Color:
 			return colour.lerp(HudTheme.BG_VOID, EXPLORED_DIM)
 		_:
 			return HudTheme.BG_VOID.darkened(UNEXPLORED_DIM)
+
+
+# --- where the crop is looking (#130) ----------------------------------
+#
+# `shaders/circular_crop.gdshader` does not draw the minimap texture
+# one-to-one over its rect: it re-centres it on the camera every frame,
+# so the cell under a given pixel depends on where the player is standing.
+# The click mapping was written before that shader existed, kept the plain
+# proportional mapping over the whole texture, and its own doc comment
+# argued the code was right — "a straight proportional mapping with no
+# camera involved". Clicking the middle of the circle therefore jumped to
+# the middle of the WORLD instead of staying put, and every other point
+# was wrong by the same offset (how far the camera is from the map's
+# centre).
+#
+# The two mappings live here now so they cannot drift apart again — the
+# same reason `slot_world_offset` was extracted rather than written twice
+# beside itself (D-096, and the drag-preview lesson in
+# D-20260823). GLSL cannot call GDScript, so the shader still carries its
+# own copy of the arithmetic; what this buys is that the copy is one line
+# long, is pinned by a test, and has exactly one GDScript counterpart
+# rather than one per caller.
+
+## Where in the minimap texture (0..1) the crop's fixed centre points when
+## the camera is on `cell` — the shader's `focus_uv` uniform.
+##
+## The half-cell is what makes the round trip exact: a cell's own centre,
+## not its top-left corner, so `cell_under` at the crop's centre pixel
+## returns `cell` itself rather than whichever neighbour a rounding error
+## lands on.
+static func focus_uv_of(cell: Vector2i, width: int, height: int) -> Vector2:
+	if width <= 0 or height <= 0:
+		return Vector2(0.5, 0.5)
+	return Vector2(
+		(float(cell.x) + 0.5) / float(width),
+		(float(cell.y) + 0.5) / float(height))
+
+
+## Which cell the crop shader draws at `local_px` — a position inside the
+## minimap rect, measured from that rect's own top-left corner.
+##
+## This is the shader's fragment line, verbatim:
+##
+##     delta_uv = (pixel - centre_px) / rect_size
+##     uv       = fract(focus_uv + delta_uv)
+##
+## `fposmod` rather than a clamp, because `fract` is what the shader does
+## and the map it samples is a TORUS (D-008): a click near the rim of the
+## circle can legitimately land on the far side of the world, and the
+## picture the player is aiming at shows exactly that seam continuing
+## round. Clamping here would refuse to jump to ground the minimap is
+## visibly drawing.
+##
+## At the crop's own centre `delta_uv` is zero, so this returns the
+## camera's cell and a click there is a no-op — which is the single
+## clearest statement of what the old mapping got wrong.
+static func cell_under(local_px: Vector2, centre_px: Vector2, rect_size: Vector2,
+		focus_uv: Vector2, width: int, height: int) -> Vector2i:
+	if rect_size.x <= 0.0 or rect_size.y <= 0.0 or width <= 0 or height <= 0:
+		return Vector2i(-1, -1)
+	var delta_uv := (local_px - centre_px) / rect_size
+	var u := fposmod(focus_uv.x + delta_uv.x, 1.0)
+	var v := fposmod(focus_uv.y + delta_uv.y, 1.0)
+	return Vector2i(
+		clampi(int(u * float(width)), 0, width - 1),
+		clampi(int(v * float(height)), 0, height - 1))
