@@ -355,6 +355,7 @@ func _ready() -> void:
 	_build_debug_panel()
 	_build_defeat_screen()
 	_build_loading_screen()
+	_build_connection_lost_screen()
 
 	_host = ENetConnection.new()
 	var err := _host.create_host(1, CHANNELS)
@@ -365,6 +366,10 @@ func _ready() -> void:
 	if _peer == null:
 		push_error("client: could not reach %s:%d" % [address, port])
 		return
+	# Kept so the connection-lost screen can name what it could not
+	# reach (#162): `address` and `port` are locals of `_ready`, and by
+	# the time that screen is shown there is nothing left to ask.
+	_server_endpoint = "%s:%d" % [address, port]
 	print("client: connecting to %s:%d" % [address, port])
 
 
@@ -646,10 +651,18 @@ func _service_network() -> void:
 		match type:
 			ENetConnection.EVENT_CONNECT:
 				_connected = true
+				_ever_connected = true
 				print("client: connected")
 			ENetConnection.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
+				# #162: `print` goes to stdout and nowhere a player can
+				# see. Until this, a client whose server had shut down
+				# kept its window, kept burning a core and kept drawing a
+				# world that could no longer change — which from the
+				# chair is indistinguishable from a hang, and is how it
+				# was reported.
+				_on_connection_lost()
 			ENetConnection.EVENT_RECEIVE:
 				var from_peer: ENetPacketPeer = event[1]
 				while from_peer.get_available_packet_count() > 0:
@@ -9082,6 +9095,134 @@ func _load_settings() -> void:
 # opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
+## The connection-lost screen (#162). Built once at start-up like every
+## other overlay, because the moment it is needed there is no server to
+## ask for anything.
+var _connection_lost_layer: CanvasLayer = null
+var _connection_lost_headline: Label = null
+var _connection_lost_detail: Label = null
+## Latched: ENet can report a disconnect more than once, and this must
+## not rebuild or re-log on every service() call.
+var _connection_lost := false
+## Whether a connection was ever ESTABLISHED. A never-answered connect
+## attempt also arrives as EVENT_DISCONNECT, and "the server went away"
+## and "there was never a server there" are different things to tell a
+## player.
+var _ever_connected := false
+## "host:port", as `_ready` resolved it.
+var _server_endpoint := ""
+
+
+## The client has no server any more, and the player is told (#162).
+##
+## Deliberately the SMALL version. The right home for this is the
+## pre-lobby main menu (#180) — that ticket names this issue as its
+## sibling and says the disconnect should land on the menu — so this
+## does the part that cannot wait, in a way that ticket can absorb: one
+## overlay, one message, one way out.
+##
+## What it deliberately does NOT do is tear the match down.
+## `_teardown_match()` frees the terrain, the squads and the buildings,
+## and a player who has just lost the server would be shown a black
+## screen instead of the last thing that happened. The world underneath
+## is frozen and stale, and the banner says exactly that.
+##
+## The backdrop DOES take mouse input, though, and that is load-bearing
+## rather than cosmetic: it is what stops a click reaching the world and
+## issuing an order down a dead socket. Guarding each of the twenty-odd
+## `_peer.send` sites individually would be the same rule written twenty
+## times, which is how it comes to be written wrongly once.
+func _on_connection_lost() -> void:
+	if _connection_lost:
+		return
+	_connection_lost = true
+
+	# A capture run's screenshot is an INSTRUMENT (`just test-client`),
+	# and every check it makes is over the pixels. Covering the frame
+	# with a banner would change what those measure, so an unattended
+	# render says it on the console — where its verdict already reads —
+	# and keeps drawing what it was asked to draw.
+	if _run_seconds > 0.0:
+		push_warning("client: lost the server mid-capture")
+		return
+
+	if _connection_lost_layer == null:
+		return
+	if _connection_lost_headline != null:
+		_connection_lost_headline.text = "Connection lost" if _ever_connected \
+			else "Could not reach the server"
+	if _connection_lost_detail != null:
+		_connection_lost_detail.text = ("The server is no longer there. "
+			+ "Nothing on screen can change, and no order will reach anyone.") \
+			if _ever_connected else \
+			("Nothing answered at %s. The server may not be running yet."
+				% _server_endpoint)
+	_connection_lost_layer.visible = true
+
+
+func _build_connection_lost_screen() -> void:
+	_connection_lost_layer = CanvasLayer.new()
+	# Above the lobby (10), which is the only overlay that outranks the
+	# defeat screen. With no server there is no lobby to go back to, so
+	# nothing this client can draw may sit on top of this.
+	_connection_lost_layer.layer = 12
+	_connection_lost_layer.visible = false
+	add_child(_connection_lost_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.color.a = 0.82
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	# STOP, unlike the defeat screen's IGNORE, and see `_on_connection_lost`
+	# for why: this is what keeps a click from ordering a squad that
+	# nothing is listening for.
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_connection_lost_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_connection_lost_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "DISCONNECTED"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	_connection_lost_headline = Label.new()
+	_connection_lost_headline.text = "Connection lost"
+	_connection_lost_headline.add_theme_font_size_override("font_size",
+		HudTheme.DISPLAY_SIZE + 16)
+	_connection_lost_headline.modulate = HudTheme.TEXT_BRIGHT
+	_connection_lost_headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_connection_lost_headline)
+
+	_connection_lost_detail = Label.new()
+	_connection_lost_detail.text = "The server is no longer there."
+	_connection_lost_detail.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_connection_lost_detail.modulate = HudTheme.TEXT_DIM
+	_connection_lost_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connection_lost_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_connection_lost_detail.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_connection_lost_detail)
+
+	var button_row := CenterContainer.new()
+	button_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	var quit := _styled_button("Quit to desktop", HudTheme.DANGER)
+	quit.pressed.connect(_on_quit_pressed)
+	button_row.add_child(quit)
+	column.add_child(button_row)
+
+
 func _build_defeat_screen() -> void:
 	_defeat_layer = CanvasLayer.new()
 	# Above the HUD and the in-game menu, below the lobby (which replaces
