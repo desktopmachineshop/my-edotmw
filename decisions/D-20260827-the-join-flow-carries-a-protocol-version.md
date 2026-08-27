@@ -104,6 +104,27 @@ need to be told what counts. `tests/test_handshake.gd` at least asserts
 that no two opcodes share a number, which is the one collision a wire
 protocol cannot recover from.
 
+**Measured, 2026-08-27, `just test-load 4 120` on the default map** (the
+gate, docker, on a laptop running four other agents' worktrees):
+**VERDICT ok**, 0 desyncs over 476 state-hash checks, 0 dropped ticks,
+871 B/client/s over 4 clients with 0 budget overruns, and
+`server: HANDSHAKE accepted=4 refused=0 protocol=1 build=0.1.0-alpha`
+with all four `gate-check.sh` comparisons green — the new one reading
+*"all 4 client(s) joined through the protocol handshake, none refused"*.
+Per-squad cost **150.79 µs at 33 squads** (fields 33.70, combat 57.36,
+vision 21.41), which is the shape `docs/status/m10-plan.md` already
+records for this map and is not something this change moves: the
+handshake is one packet per connection for the life of a match. Worst
+tick 113.5 ms, **1 of 1201 over D-020's budget and it was tick 11** —
+the opening spike, on a contended host, with nothing dropped.
+
+**That run needed a workaround, and it is somebody's bug rather than a
+caveat on this number.** The docker import is OOM-killed at the `test`
+service's `mem_limit: 1g` — reproducibly, at exactly 1024 MiB — which
+takes every docker recipe with it, so the gate could not be run at all
+until the import was done by hand at 2g. Filed as **#223**; the numbers
+above are from a normal `just test-load` once the import cache existed.
+
 **Deliberately not here:** the **SteamID seat identity** half of D-094
 criterion 3. It lands with reconnection/repossession (D-090), where a
 seat becomes rebindable and an identity starts to mean something; #179
