@@ -3253,9 +3253,37 @@ func _refresh_building_scan() -> void:
 		})
 
 
-## Node-cell discs within a squad's extent (D-20260821, amended): the
+## How far a drawn man's centre must stay from a TRUNK, scaled by that
+## tree's own draw scale: roughly the trunk's radius plus half the widest
+## soldier body. Small on purpose — canopies overlap each other by design
+## (D-108), so men walking under canopy edges is the woods working, and a
+## disc sized for canopies would carve empty moats through every forest.
+const TREE_TRUNK_CLEARANCE := 0.45
+
+## Per-cell trunk clearance discs, cell index -> Array of {offset, radius}
+## with offsets relative to the cell's canonical world centre. Cached
+## because `_nearby_node_discs` runs per squad per frame and the stand
+## layout needs terrain samples; never invalidated, because the lookup is
+## gated on `_state.nodes` (a felled cell simply stops being consulted)
+## and a stand's layout is a pure function of its cell.
+var _node_disc_cache := {}
+
+
+## Per-TRUNK discs within a squad's extent (D-20260821, amended): the
 ## trees its drawn men must not stand inside. `worked_key` skips the
 ## crew's own node.
+##
+## Per TRUNK, not per node cell, and that distinction was reported from a
+## playtest as "models don't adhere to collision avoidance with
+## resources". A node cell draws a STAND of 1-5 trees on jittered ring
+## offsets between MIN_OFFSET 0.34 and MAX_OFFSET 0.78 of a hex (D-108) —
+## so the old single 0.7 disc at the CELL CENTRE guarded the one spot a
+## tree can never stand (inside 0.34) while the outer half of every stand
+## sat past its rim, and a man could be pushed to a legal spot dead
+## inside an offset trunk. The discs now come from the SAME
+## `_node_trees_for` placements the renderer draws, so the clearance and
+## the picture cannot drift (the shared-arithmetic rule previews already
+## follow, D-096).
 func _nearby_node_discs(centre: Vector3, radius: float,
 		worked_key: String) -> Array:
 	var out := []
@@ -3272,18 +3300,34 @@ func _nearby_node_discs(centre: Vector3, radius: float,
 		var at := _state.space.to_world(_state.space.from_index(cell))
 		at += Engagement.aligning_offset(centre, at,
 			_state.space.lattice_offsets())
-		# Radius by KIND (the owner's "all resources"): a stone or gold
-		# pile is squatter and wider than a tree trunk, and a disc sized
-		# for canopies let men wade through the piles.
-		var kind := int(_state.nodes[cell])
-		# FOOD orchards and WOOD forests are both trees (the owner named
-		# the food trees explicitly); the mineral piles are squatter and
-		# wider.
-		var footprint := 0.7
-		if kind == Economy.ResourceKind.GOLD or kind == Economy.ResourceKind.STONE:
-			footprint = 1.0
-		out.append({"centre": at, "radius": footprint})
+		for disc in _node_cell_discs(cell):
+			out.append({"centre": at + disc["offset"],
+				"radius": disc["radius"]})
 	return out
+
+
+## The clearance discs one node cell carries, in cell-relative offsets —
+## `ResourceVisuals.clearance_discs`, fed the same terrain samples the
+## renderer feeds `trees_for`, so the moment either changes the other
+## follows.
+func _node_cell_discs(cell: int) -> Array:
+	var cached = _node_disc_cache.get(cell)
+	if cached != null:
+		return cached
+	var kind := int(_state.nodes[cell])
+	var coord := _state.space.from_index(cell)
+	var biome := TerrainGen.Biome.GRASSLAND
+	var moisture := 0.5
+	var neighbours := []
+	if _terrain_gen != null:
+		biome = _terrain_gen.biome_at(_state.space, coord)
+		moisture = _terrain_gen.moisture_at(_state.space, coord)
+		for neighbour in _state.space.neighbors(coord):
+			neighbours.append(_terrain_gen.biome_at(_state.space, neighbour))
+	var discs := ResourceVisuals.clearance_discs(
+		kind, biome, neighbours, moisture, cell, _state.space.hex_size)
+	_node_disc_cache[cell] = discs
+	return discs
 
 
 ## The cached scan, aligned to `centre`'s lattice frame and filtered to
@@ -8866,6 +8910,11 @@ func _teardown_match() -> void:
 		_free_mirrors(_tree_chunks[key]["mirrors"])
 	_tree_chunks.clear()
 	_node_placed.clear()
+	# The trunk clearance discs go with the stands they were measured
+	# from: a regenerated world reuses cell indices for entirely
+	# different forests, and stale discs would have men dodging trees
+	# from the previous map.
+	_node_disc_cache.clear()
 	_node_queue.clear()
 	for fall in _fallings:
 		(fall["node"] as MeshInstance3D).queue_free()

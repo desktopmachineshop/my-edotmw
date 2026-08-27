@@ -306,6 +306,55 @@ static func yaw_for(cell: int, index: int = 0) -> float:
 	return _roll_at(cell, _SALT_YAW, index) * TAU
 
 
+## How far a drawn man's centre must stay from a TRUNK, scaled by that
+## tree's own draw scale: roughly the trunk's radius plus half the widest
+## soldier body. Small on purpose — canopies overlap each other by design
+## (D-108), so men walking under canopy edges is the woods working, and a
+## disc sized for canopies would carve empty moats through every forest.
+const TRUNK_CLEARANCE := 0.45
+
+## Species whose FOLIAGE reaches near the ground — a conifer's skirt, not
+## a canopy held overhead — so a man standing at trunk clearance is
+## waist-deep in the tree. Looked at, not assumed: the first per-trunk
+## clearance render showed two soldiers inside pine skirts with every
+## trunk correctly clear. These take the wider disc below; broadleaf
+## species keep the trunk disc, because walking under a held-up canopy is
+## the woods working (D-108).
+const SKIRTED_SPECIES: Array[String] = ["pine", "spruce", "swamp_cypress"]
+const SKIRT_CLEARANCE := 0.85
+
+
+## The clearance discs one node cell carries — where a drawn man may NOT
+## stand — as {offset (world units, relative to the cell centre), radius}.
+##
+## Per TRUNK for trees, derived from the SAME `trees_for` placements the
+## renderer draws, so the clearance and the picture cannot drift (D-096's
+## shared-arithmetic rule). This is the fix for a playtest report of
+## "models don't adhere to collision avoidance with resources": a stand's
+## trees jitter between MIN_OFFSET and MAX_OFFSET of a hex (D-108), and
+## the one 0.7 disc the client used to carve at the CELL CENTRE guarded
+## the only spot a tree can never stand while the outer half of every
+## stand sat past its rim. Ore keeps a single wide centred disc: a seam
+## wanders at most ORE_MAX_OFFSET and its pile is wider than any trunk.
+static func clearance_discs(kind: int, biome: int, neighbour_biomes: Array,
+		moisture: float, cell: int, hex_size: float) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if not _is_tree(kind):
+		out.append({"offset": Vector3.ZERO, "radius": 1.0})
+		return out
+	for tree in trees_for(kind, biome, neighbour_biomes, moisture, cell):
+		var clearance := TRUNK_CLEARANCE
+		for species in SKIRTED_SPECIES:
+			if String(tree["model"]).contains(species):
+				clearance = SKIRT_CLEARANCE
+				break
+		out.append({
+			"offset": (tree["offset"] as Vector3) * hex_size,
+			"radius": clearance * float(tree["scale"]),
+		})
+	return out
+
+
 static func scale_for(kind: int, cell: int, index: int = 0) -> float:
 	if not _is_tree(kind):
 		return lerpf(ORE_SCALE_MIN, ORE_SCALE_MAX, _roll_at(cell, _SALT_SCALE, index))
