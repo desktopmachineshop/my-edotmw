@@ -12,6 +12,7 @@ build_time = 22.0
 vision_range = 12.0
 no_build_radius = 3
 is_drop_off = false
+needs_shore = true
 produces = Array[StringName]([&"warship", &"transport", &"warboat"])
 built_by = Array[StringName]([&"gatherers"])
 cost_food = 0
