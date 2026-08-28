@@ -65,6 +65,16 @@ var techs: Array[StringName] = []
 var epoch: int = 1
 var tech_updates: int = 0
 
+## This client's own civ as the SERVER named it, or "" before the first
+## TECH_STATE. Read through `civ_of`, never directly.
+##
+## The lobby is the ordinary source (D-048) and stays so. This is the
+## fallback for a match with no lobby — `--lobby=0`, which is how every
+## `just test-load` run starts — where `civ_of` answered "" for every bot
+## in every run there has ever been (docs/status/load-testing.md). Any
+## client can resolve its own techs now, lobby or not.
+var own_civ: StringName = &""
+
 
 ## Has this player researched `line`? Empty is "no tech needed", which is
 ## every unit and building that shipped before the tree — so a client
@@ -368,6 +378,7 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_TECH_STATE:
 			var state := NetProtocol.decode_tech_state(data)
 			epoch = int(state["epoch"])
+			own_civ = StringName(state.get("civ", &""))
 			techs.assign(state["lines"])
 			tech_updates += 1
 		NetProtocol.S2C_BUILDING_INFO:
@@ -1260,8 +1271,17 @@ func leave_match() -> void:
 func civ_of(who: int) -> StringName:
 	for seat in lobby.get("seats", []):
 		if int(seat["player"]) == who:
-			return StringName(seat.get("civ", ""))
-	return &""
+			var seated := StringName(seat.get("civ", ""))
+			# A seat exists but Random is unresolved until the match
+			# starts (D-048), so an empty seat civ still falls through to
+			# what the server told us about OURSELVES.
+			if seated != &"" or who != player:
+				return seated
+	# One function, two sources, and the fallback is narrower than the
+	# rule: the server names only THIS player's civ, so this can never
+	# answer for anybody else and D-046 criterion 4 still holds
+	# structurally — a client has no way to name another civ's units.
+	return own_civ if who == player else &""
 
 
 ## This client's own seat index, or -1.

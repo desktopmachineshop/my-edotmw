@@ -435,7 +435,60 @@ class VirtualClient:
 	## freeze it — and gating production on a counter that stops moving
 	## exactly when a bot has nothing to move is the same deadlock this
 	## function was just lifted out of, one level down.
+	## Climb the tree, cheapest first
+	## (`D-20260827-the-tree-is-the-ladder`).
+	##
+	## Deliberately simpler than `AiPlayer._research`: a bot is a LOAD
+	## instrument, not an opponent, so there is no bias, no priority and no
+	## retry latch — it buys whatever it can. What it is here for is that
+	## without it `just test-load` would exercise STRICTLY LESS than it did
+	## before the tree existed: every archetype past the levy is gated now,
+	## so four bots would field levies and gatherers for the whole run and
+	## the research path would never be touched under load at all.
+	##
+	## That is this project's own recurring shape — a gate landing and the
+	## harness quietly asserting less afterwards (#123's empty `raid_pool`,
+	## and D-20260818's "the fast loop carries the gate") — so it is fixed
+	## here rather than discovered later.
+	func _issue_research() -> void:
+		if _order_ticks % 4 != 0:
+			return
+		var civ := state.civ_of(state.player)
+		var candidates := state.research_view().available(state.player, civ)
+		if candidates.is_empty():
+			return
+		candidates.sort_custom(func(a: TechDef, b: TechDef) -> bool:
+			if a.resource_points() != b.resource_points():
+				return a.resource_points() < b.resource_points()
+			return a.id < b.id)
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) != state.player or bool(info["destroyed"]):
+				continue
+			if float(info["progress"]) < 1.0 or (info.get("queue", []) as Array).size() > 0:
+				continue
+			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+			if def == null:
+				continue
+			var here := BuildingSim.archetype_of_def(def)
+			for tech in candidates:
+				var t := tech as TechDef
+				if t.research_at != here or not _can_afford_tech(t):
+					continue
+				peer.send(0, NetProtocol.encode_order_research(
+					int(wire_id), String(t.line)), ENetPacketPeer.FLAG_RELIABLE)
+				return
+
+
+	func _can_afford_tech(tech: TechDef) -> bool:
+		if state.wallet.size() < 4:
+			return false
+		return state.wallet[0] >= tech.cost_food and state.wallet[1] >= tech.cost_wood \
+			and state.wallet[2] >= tech.cost_gold and state.wallet[3] >= tech.cost_stone
+
+
 	func _issue_production() -> void:
+		_issue_research()
 		if _order_ticks % 2 != 0:
 			return
 		var crews := _hauling_crew_count()
@@ -453,7 +506,7 @@ class VirtualClient:
 			# never a barracks to find out.
 			var archetype := BotBuildPlan.archetype_for(
 				BuildingSim.def_by_id(StringName(info["def_id"])),
-				state.civ_of(state.player), crews)
+				state.civ_of(state.player), crews, state.techs)
 			if archetype == &"":
 				continue
 			peer.send(0, NetProtocol.encode_order_produce(int(wire_id), String(archetype)),

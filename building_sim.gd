@@ -563,8 +563,8 @@ func archetype_of(building: int) -> StringName:
 ## directly — the AI, the client's build menu, the placement ghost and the
 ## tests. Each of those now has to ask this instead, or a Thornwood player
 ## is offered a Deep Forge.
-static func defs_for_civ(civ: StringName) -> Array:
-	var out := []
+static func defs_for_civ(civ: StringName) -> Array[BuildingDef]:
+	var out: Array[BuildingDef] = []
 	for def in all_defs():
 		if def.civ == civ or def.civ == &"neutral":
 			out.append(def)

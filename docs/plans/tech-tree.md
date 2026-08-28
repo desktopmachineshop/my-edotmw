@@ -1,6 +1,8 @@
 # The Tech Tree — five rungs, six stories (design product)
 
-Status: **DESIGN**. The mechanism and its schema are decided in
+Status: **IMPLEMENTED** as of 2026-08-27 (issue #206) — see
+`docs/status/tech-tree.md` for what shipped and what it means for the
+rest of the estate. The mechanism and its schema are decided in
 `decisions/D-20260827-the-tree-is-the-ladder.md`; the research sites are
 `decisions/D-20260827-a-research-site-is-a-building.md`. This document is
 the CONTENT: every tech, its in-world name for every civ that flavours it,

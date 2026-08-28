@@ -274,10 +274,28 @@ func test_the_research_order_round_trips() -> void:
 
 
 func test_the_tech_state_message_round_trips() -> void:
-	var packet := NetProtocol.encode_tech_state(3, [&"settling", &"hand_tools"])
+	var packet := NetProtocol.encode_tech_state(3, [&"settling", &"hand_tools"], &"emberdeep")
 	var out := NetProtocol.decode_tech_state(packet)
 	assert_eq(int(out["epoch"]), 3)
 	assert_eq(out["lines"], [&"settling", &"hand_tools"])
+	assert_eq(StringName(out["civ"]), &"emberdeep",
+		"a tech set is meaningless without whose version of each line it is")
+
+
+func test_a_client_with_no_lobby_still_learns_its_own_civ() -> void:
+	# The load-test bots run with `--lobby=0` and the lobby is what
+	# broadcasts a civ, so `civ_of` answered "" for every bot in every run
+	# there has ever been (docs/status/load-testing.md). Without this they
+	# resolve no tech at all, research nothing, and `test-load` exercises
+	# strictly less of the roster than it did before the tree.
+	var state := ClientState.new()
+	state.player = 1
+	assert_eq(state.civ_of(1), &"", "nothing known yet")
+	state.handle_packet(NetProtocol.encode_tech_state(1, [], CivRoster.ids()[0]))
+	assert_eq(state.civ_of(1), CivRoster.ids()[0],
+		"the server named this player's civ and the client should hold it")
+	assert_eq(state.civ_of(2), &"",
+		"and it must still be unable to name anybody else's (D-046 criterion 4)")
 
 
 func test_a_client_arrives_at_the_epoch_the_server_says() -> void:
