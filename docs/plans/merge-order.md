@@ -559,14 +559,24 @@ branch.** Settled by the authors on the merits rather than on process:
 MODELS — emberdeep's levy is a shieldwarden with a round shield
 (`shield_wall`), its heavy carries the kite shield (`testudo`).
 
-**Verified by performing it, 2026-08-28.** #243 at `741eb68` ("drop all
-four again — final arbitration") touches NONE of the four unit files, so
-`main` → #324 → #243 merges **clean at both steps, with no conflict at
-all**, and the final granted set is exactly `emberdeep_heavy=testudo`,
-`emberdeep_levy=shield_wall`, `gildedreach_spearmen=shield_wall`.
-`test_fighting_styles` 6/6 on the result. Earlier drafts of this ruling
-predicted "one expected conflict on `emberdeep_heavy`" — that was true of
-the two-deletion form and is NOT true of the shipped four-deletion one.
+**END STATE, and it is what `origin` says.** #243 at tip **`741eb68`**
+("drop all four again — final arbitration"), all four grants dropped,
+**#324 merges BEFORE #243**, and the merge takes **zero conflicts and
+zero operator decisions** — with the four dropped, #243 makes no net
+change on those lines against `origin/main`, so there is nothing for a
+merger to resolve or to choose.
+
+Verified by performing it rather than describing it: `main` → #324 →
+#243 is clean at BOTH steps, and the final granted set is exactly
+`emberdeep_heavy=testudo`, `emberdeep_levy=shield_wall`,
+`gildedreach_spearmen=shield_wall`, with `test_fighting_styles` 6/6.
+
+Earlier drafts of this ruling predicted "one expected conflict on
+`emberdeep_heavy`, resolved #324's way". That was true of a superseded
+TWO-deletion form and is **not** true of what shipped. **Any future
+question about this is answered by diffing `origin`** — during the close,
+a stale local `main` and a stale ruling each nearly wrote a conflict into
+this record that cannot occur.
 
 **Merge #324 BEFORE #243.** That is the whole resolution and it is free:
 #324 supplies the grants first, so #243 lands with nothing to supply and
@@ -691,7 +701,7 @@ it.
 | #260 | `ao/my-edotmw-82/d072-screen` | CLEAN | 3 |
 | #261 | `ao/my-edotmw-82/counters-are-felt` | CLEAN | 3 |
 | #321 | `ao/my-edotmw-82/civ-can-open` | CLEAN | 3 |
-| #324 | `ao/my-edotmw-82/formations-granted` | RULED-#324-FIRST | CLOSED #360: #324 owns the grants and merges BEFORE #243; 86 dropped all four on #243's branch (741eb68), so the two PRs touch no file in common. Verified by performing it: main -> #324 -> #243 is CLEAN at both steps, no conflict, final set emberdeep_heavy=testudo, emberdeep_levy=shield_wall, gildedreach_spearmen=shield_wall, test_fighting_styles 6/6. Old note below described the superseded two-deletion form. |
+| #324 | `ao/my-edotmw-82/formations-granted` | RULED-#324-FIRST | CLOSED #360, end state = origin tip 741eb68: all four grants dropped, #324 merges BEFORE #243, ZERO conflicts and ZERO operator decisions (with four dropped #243 makes no net change on those lines against origin/main). Verified by performing it: main -> #324 -> #243 is CLEAN at both steps, final set emberdeep_heavy=testudo, emberdeep_levy=shield_wall, gildedreach_spearmen=shield_wall, test_fighting_styles 6/6. Old note below described the superseded two-deletion form. |
 | #330 | `ao/my-edotmw-82/gatherers-differ` | CONFLICT-RESOLVED | all six units/*_gatherers.tres: DUPLICATE FIX - #243 also differentiates the gatherers (#269) with different numbers. Took #330's values (the dedicated PR, which carries the decision entry and the guard). Third instance of #243 duplicating a dedicated PR. |
 | #334 | `ao/my-edotmw-82/armour-is-role` | CLEAN | 6 |
 | #347 | `ao/my-edotmw-82/levies-are-sidegrades` | CLEAN | 10 |
