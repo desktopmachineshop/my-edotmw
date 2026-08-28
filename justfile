@@ -2122,6 +2122,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
     : > "$log"
 
     profiles="{{PROFILES}}"
+    died=""
     echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
@@ -2133,20 +2134,37 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         # read as an AI weakness through several rounds of AI work. The
         # "match actually started" assertion after the loop is what makes
         # that unrepeatable; this is only the fix.
+        #
+        # --stop-after-match: a decided match stops rather than simulating
+        # its winner gathering against nobody for the rest of the cap
+        # (#224). One ladder match was decided at 95s of a 600s cap and
+        # then simulated 505 further seconds — 84% of its wall clock —
+        # which is why `ai-ladder 3 600` cost a flat half hour however
+        # fast the matches decided. ONLY this recipe passes it, so every
+        # other harness measures the window it always did.
+        #
+        # And the exit status is KEPT rather than discarded with
+        # `|| true`. It was discarded, so a server killed from outside
+        # (this host OOMs — #153) vanished from the results with nothing
+        # anywhere saying so.
+        status=0
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
+        fi
+        if [ "$status" -ne 0 ]; then
+            died="$died seed=$i(exit $status)"
         fi
         printf '.'
     done
@@ -2182,8 +2200,35 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         exit 1
     fi
 
+    # AND ASSERT IT FINISHED. The mirror of the check above, and the half
+    # D-107 did not write (#224): three matches left the lobby, one of
+    # them died mid-run printing nothing at all, and the ladder reported
+    # "decided: 2 of 2" for a run of THREE — a denominator counted from
+    # the matches that survived, so a vanished match cannot appear in it
+    # by construction.
+    #
+    # None of the existing guards could see it. The started-check passed,
+    # because it did start. The diagnostics grep found nothing, because a
+    # process that is killed prints no ERROR. And `|| true` swallowed the
+    # exit code. This is D-107's own lesson one layer in: that entry made
+    # the ladder assert that matches START, and nothing asserted they END.
+    finished=$(grep -c '^server: MATCH_RESULT' "$log" || true)
+    if [ "$finished" -lt "{{MATCHES}}" ]; then
+        echo "ai-ladder: FAILED — $finished of {{MATCHES}} matches produced a result;" >&2
+        echo "  $(( {{MATCHES}} - finished )) started and then vanished without one." >&2
+        if [ -n "$died" ]; then
+            echo "  servers that exited non-zero:$died" >&2
+            echo "  (137 is SIGKILL — on this project's host that is usually the OOM" >&2
+            echo "   killer rather than a game defect: see #153 and 'just host-status')" >&2
+        else
+            echo "  every server exited 0, so the loss is inside the run, not the process." >&2
+        fi
+        echo "  A missing match is not a drawn match. See $log." >&2
+        exit 1
+    fi
+
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
-    awk '
+    awk -v asked={{MATCHES}} '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
             match($0, /team=(-?[0-9]+)/, wt)
@@ -2228,7 +2273,16 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
                 printf "  FAILED: %d of %d matches ended still in the lobby — nothing was measured\n", unstarted, matches
                 exit 1
             }
-            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
+            # Denominator is what was ASKED for, never what survived.
+            # The self-referential version is what printed "2 of 2" for a
+            # run of three (#224); the bash check above catches this
+            # first, and this is here so the LINE cannot lie even if
+            # somebody reaches the awk another way.
+            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, asked, draws
+            if (asked > 0 && matches != asked) {
+                printf "  FAILED: only %d of %d matches produced a result\n", matches, asked
+                exit 1
+            }
             for (k in n) {
                 printf "  player %-5s civ=%-10s ai=%-11s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
                     k, civ[k], prof[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]
