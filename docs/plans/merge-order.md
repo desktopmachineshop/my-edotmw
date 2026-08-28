@@ -459,7 +459,7 @@ against that branch to see the combined tree.
 | outcome | PRs |
 |---|---|
 | merged clean | **43** |
-| conflicted and resolved | **29** |
+| conflicted and resolved | **28** |
 | already contained in the tree | **2** |
 | could not be merged (rival implementation) | **0** |
 | red on its own branch, not a merge issue | **1** |
@@ -691,7 +691,7 @@ it.
 | #260 | `ao/my-edotmw-82/d072-screen` | CLEAN | 3 |
 | #261 | `ao/my-edotmw-82/counters-are-felt` | CLEAN | 3 |
 | #321 | `ao/my-edotmw-82/civ-can-open` | CLEAN | 3 |
-| #324 | `ao/my-edotmw-82/formations-granted` | CONFLICT-RESOLVED | units/emberdeep_heavy.tres: DUPLICATE FIX with CONTRADICTORY data - #243 grants shield_wall, #324 grants testudo, both fixing #309. Resolved to the UNION; a duplicated key would be invalid .tres so 'keep both' is not available. Needs an author decision - filed. |
+| #324 | `ao/my-edotmw-82/formations-granted` | RULED-#324-FIRST | CLOSED #360: #324 owns the grants and merges BEFORE #243; 86 dropped all four on #243's branch (741eb68), so the two PRs touch no file in common. Verified by performing it: main -> #324 -> #243 is CLEAN at both steps, no conflict, final set emberdeep_heavy=testudo, emberdeep_levy=shield_wall, gildedreach_spearmen=shield_wall, test_fighting_styles 6/6. Old note below described the superseded two-deletion form. |
 | #330 | `ao/my-edotmw-82/gatherers-differ` | CONFLICT-RESOLVED | all six units/*_gatherers.tres: DUPLICATE FIX - #243 also differentiates the gatherers (#269) with different numbers. Took #330's values (the dedicated PR, which carries the decision entry and the guard). Third instance of #243 duplicating a dedicated PR. |
 | #334 | `ao/my-edotmw-82/armour-is-role` | CLEAN | 6 |
 | #347 | `ao/my-edotmw-82/levies-are-sidegrades` | CLEAN | 10 |

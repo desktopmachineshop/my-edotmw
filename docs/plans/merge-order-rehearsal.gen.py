@@ -13,7 +13,7 @@ for line in io.open('rehearsal.tsv', encoding='utf-8', newline=''):
     rows.append(parts[:4])
 
 # One status per PR: a later, more specific row wins.
-RANK = {'RULED-DESIGN-ONLY': 4,
+RANK = {'RULED-DESIGN-ONLY': 4, 'RULED-#324-FIRST': 4,
         'CLEAN': 0, 'ALREADY': 0, 'CONFLICT': 1, 'CONFLICT-RESOLVED': 2,
         'HAND-MERGE-REQUIRED': 3, 'INCOMPATIBLE-NOT-MERGED': 3,
         'SINGLE-PR-RED': 3, 'MISSING': 3}
