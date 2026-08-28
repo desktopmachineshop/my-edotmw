@@ -111,9 +111,20 @@ three of the five defects behind #69/#84 turned out to be. One run of
   used to set a "done" flag the instant the packet left, so a REFUSED
   opening — a forest on the start, which D-087's 1,920 nodes make likely —
   left that bot with no hall, no crews and no scouts for the whole run
-  while its own flag said the opening was handled. It retries against a
-  different site now, until a building it owns actually appears. Two of
-  four bots were failing to found before this was noticed.
+  while its own flag said the opening was handled. **`bot_client.gd`'s
+  `_found_town_hall` retries against a different site now**
+  (`offsets[_build_attempts % offsets.size()]`), until a building it owns
+  actually appears. Two of four bots were failing to found before this
+  was noticed.
+
+  **Read that as a fact about the BOT and not about the AI**, because the
+  unattributed version of this sentence cost two people a wrong
+  conclusion (#291). #217 quoted it as evidence that `ai_player.gd`
+  retried at a different site and did not — and the gap assessment
+  repeated the error. The sentence was true the whole time; it named
+  neither the file nor which of the two actors it described, and both
+  readers supplied the wrong one. `ai_player.gd` gained the same
+  behaviour separately, in #217.
 
 What the bots do now: a share of each one's army (at most one squad in
 two, at most two) is held out of the economy and walks in on a neighbour
