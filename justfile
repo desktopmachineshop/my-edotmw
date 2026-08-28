@@ -234,10 +234,10 @@ doctor:
     #
     # What is printed is the PAIRING, because that is the part a human
     # can get wrong: whether Steam is actually reachable is a runtime
-    # question and `steam_platform.gd` is the one thing allowed to
+    # question and `platform.gd` is the one thing allowed to
     # answer it (a second definition in shell would be free to disagree).
     echo
-    echo "GodotSteam pin: {{godotsteam_version}} (for Godot {{godot_version}}) — steam_platform.gd decides availability at runtime"
+    echo "GodotSteam pin: {{godotsteam_version}} (for Godot {{godot_version}}) — platform.gd decides availability at runtime"
     echo "note: absent Steam costs Steam features (relay, lobbies, invites), never the game (D-093)"
 
     # --- host budget (D-20260818) -------------------------------------
