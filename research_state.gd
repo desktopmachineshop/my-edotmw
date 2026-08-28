@@ -86,6 +86,9 @@ func techs_of(player: int, civ: StringName) -> Array:
 
 ## Which epoch this player is in. 1 until they complete a defining line.
 ##
+## THE advance rule (`D-20260828-the-epoch-ladder`), and the only one:
+## there is no age-up button, and nothing else moves this number.
+##
 ## Consecutive from the bottom on purpose: holding epoch 3's defining
 ## techs while missing epoch 2's does not put you in epoch 4. It cannot
 ## happen through the ordinary gate (`can_research` refuses a tech above

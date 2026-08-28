@@ -1,6 +1,8 @@
 **Buildings research techs, and completing an epoch's defining line IS
-the age-up** (`D-20260827-the-tree-is-the-ladder`,
-`D-20260827-a-research-site-is-a-building`, issue #206, 2026-08-27).
+the age-up** (`D-20260828-the-epoch-ladder` — THE ladder;
+`D-20260827-the-tree-is-the-ladder` — the tech mechanism;
+`D-20260827-a-research-site-is-a-building` — the sites; issues #206,
+#278, #281).
 There is no age-up button. The full tree — 65 techs, five rungs, every
 name — is `docs/plans/tech-tree.md`; this page is what it means for
 anything you are about to touch.
@@ -101,6 +103,47 @@ and 1,056 at the lobby's 24 seats from `CivDef.squad_cap_bonus` alone. A
 tech adding 6 per player moves both, and Windmarch's own line adds a
 further 8. Re-read the ceiling off the current tree rather than quoting
 those numbers.
+
+## The ladder had three descriptions, and now has one
+
+`decisions/` described three different ladders — D-069's five historical
+rungs, D-20260823's four fantasy ones, and #206's defining-line
+transition, the newest of which lived in an ISSUE rather than a file.
+**`D-20260828-the-epoch-ladder` is the single description now** (#278):
+the rung count, the verbs, the per-civ names and the advance-cost table
+live there, and `epoch_def.gd`, `TechRoster.defining_lines`,
+`ResearchState.epoch_of` and `TechDef.epoch`/`defining` all cite it.
+`D-20260827-the-tree-is-the-ladder` keeps the tech MECHANISM — the
+schema, the closed effect vocabulary, per-player def resolution, the fog
+rule. **The two were split because they have different lifetimes**: the
+rung count is an open owner call and the effect vocabulary is
+architecture, and superseding one must not force a re-read of the other.
+
+## The costs are now checkable, and they do not check out
+
+`D-20260828-the-phase-table-has-numbers` (#281) put a measured rate under
+D-068's phase table, which had six minute-ranges and **no rate at all** —
+so every cost in the ladder had been authored against empty cells.
+Measured through the real haul loop with the shipped crew:
+**105 / 90 / 75 units per minute** at 2 / 5 / 10 cells from the drop-off.
+
+Against that, **every rung's defining line costs under two minutes of the
+income of the phase that pays for it**, and D-068 makes those phases 8 to
+20 minutes long. The whole ladder is about seven minutes of banking in a
+match designed to run ninety. D-069 required the gate to "cost enough
+that paying it visibly means not fielding troops for a stretch"; it does
+not. **The implied change is ×3 across the advance table, and it is
+deliberately NOT applied here** — re-pricing is a balance call with a
+playtest attached, it invalidates the `test-load` figures below, and
+doing it in the same change as the measurement would make a later
+regression impossible to attribute.
+
+The same entry finally answers the open question `OPEN-QUESTIONS.md` has
+carried since 2026-08-02: **at 20 players a long match DOES exhaust the
+map, food first.** One civ's whole tree costs 10,200 food against a
+20-start share of 10,180, and 5,060 gold against 5,760 — before a single
+soldier. At four players nothing binds, which is why no load test noticed.
+`tests/test_pacing.gd` is the instrument and prints all of it.
 
 **The rung COUNT is an open owner call, and it was built to stay cheap.**
 Five rungs ship, with D-069's verbs, because the six civs that actually

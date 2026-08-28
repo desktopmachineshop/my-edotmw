@@ -1,4 +1,21 @@
-### D-20260827-the-tree-is-the-ladder · 2026-08-27 · Provisional — buildings research techs, and completing an epoch's defining line IS the age-up
+### D-20260827-the-tree-is-the-ladder · 2026-08-27 · Provisional; its LADDER half moved to D-20260828-the-epoch-ladder — buildings research techs, and completing an epoch's defining line IS the age-up
+
+> **Amended 2026-08-28 (#278).** Three entries described three different
+> ladders and the newest of them was an ISSUE rather than a file, so
+> `decisions/` did not record what was being built.
+> `D-20260828-the-epoch-ladder` is now the one that does: the rung count,
+> the verbs, the per-civ names and the advance-cost table live there.
+>
+> **This entry keeps the tech MECHANISM** — `TechDef`, `TechEffect`, the
+> closed effect vocabulary, per-player def resolution, retroactivity,
+> research sites and the fog rule. Code citing it for those is citing it
+> correctly; code asking *what the ladder is* cites the ladder entry. The
+> two were split because they have different lifetimes: the rung count is an
+> open owner call, and the effect vocabulary is architecture.
+>
+> The advance costs stated below are unchanged and still D-069's. What they
+> are worth in MINUTES of a player's income — the derivation D-068 was
+> supposed to supply and did not — is `D-20260828-the-phase-table-has-numbers`.
 
 **Decision:** The game gets a **civ tech tree**. Buildings research techs;
 a researched tech modifies its owner's units, buildings and civ knobs

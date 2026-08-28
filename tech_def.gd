@@ -54,14 +54,19 @@ extends Resource
 ## `D-20260823-the-opening-is-a-crew-and-a-general`.
 @export var civ: StringName = &"neutral"
 
-## Earliest epoch at which research may START. Epoch gates TECHS; techs
-## gate everything else — one gate per question, so there is nowhere for
+## Earliest epoch at which research may START
+## (`D-20260828-the-epoch-ladder`). Epoch gates TECHS; techs gate
+## everything else — one gate per question, so there is nowhere for
 ## two answers to disagree (which is why `UnitDef.epoch`, proposed by
 ## D-070, is deliberately NOT in the schema).
 @export var epoch: int = 1
 
 ## On this epoch's defining line. Hold every defining LINE of epoch N and
-## you are in epoch N+1.
+## you are in epoch N+1 — that is the whole advance rule
+## (`D-20260828-the-epoch-ladder`).
+##
+## What a rung's line COSTS, in minutes of the income of the phase that
+## pays for it, is `D-20260828-the-phase-table-has-numbers`.
 @export var defining: bool = false
 
 ## The building ARCHETYPE that researches this — `BuildingDef.archetype`,
