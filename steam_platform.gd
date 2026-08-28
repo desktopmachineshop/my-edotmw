@@ -113,3 +113,83 @@ static func describe() -> String:
 	return ("steam: absent — GodotSteam pinned at %s. "
 		+ "Steam features (relay, lobbies, invites) are off; "
 		+ "ENet, LAN, docker and every test recipe are unaffected (D-093).") % pinned
+
+
+# --- the game browser's platform provider (#187) ------------------------
+#
+# The browser in the pre-lobby menu holds an ARRAY of providers and knows
+# nothing about any of them beyond five methods (`lan_discovery.gd`
+# documents the duck type and is the reference implementation). That is
+# what keeps this integration a FILE rather than a branch: with no
+# platform there is one provider in the array instead of two, and there
+# is no platform code path left to be broken by — the same shape D-051
+# used for AI players and D-081 for a missing `model_id`.
+
+
+## The provider that lists this platform's lobbies, or null when there is
+## no platform — which is docker, CI, the bots, every test, and any clone
+## that has installed nothing.
+##
+## Null rather than a provider that returns nothing, deliberately: the
+## menu says which SOURCES it is searching, and a source that can never
+## answer should not be listed as one. "Looking on the network and on a
+## platform that is not here" is a lie a player would read as a fault.
+static func lobby_provider() -> RefCounted:
+	if not available():
+		return null
+	return LobbyProvider.new()
+
+
+## Whether invites can be sent and received. False with no platform, and
+## the caller's job is to draw no invite affordance at all rather than a
+## disabled one — an invite button that cannot invite is D-061's family.
+static func invites_available() -> bool:
+	return available()
+
+
+## The platform half of #187, stubbed at the boundary with the calls it
+## will make written down, because the OWNER'S half of Steam (the app id,
+## the depot, an installed client) is a prerequisite this repo cannot
+## satisfy and must not pretend to.
+##
+## What lands here when that half exists, in the order it will be
+## written:
+##
+## 1. `poll` drives the platform's own message pump and, once a second at
+##    most, asks for the lobby list — filtered on the protocol version
+##    stored as lobby metadata, so an incompatible build never reaches
+##    `GameBrowser.can_join` at all. That metadata is a STRING key/value
+##    map on the lobby, set by the host and updated when seats change,
+##    which is why `lan_beacon.gd` describes freshly per reply rather
+##    than caching: the two sources must be able to say the same thing.
+## 2. `take_seen` converts each lobby into the listing shape
+##    `game_browser.gd` documents. A platform lobby has no address and no
+##    port — it is joined by id, over the platform's own transport
+##    (#184) — so those two fields are empty and `join` below is what a
+##    row's press calls instead. The browser already treats the endpoint
+##    as opaque for exactly this reason.
+## 3. Invites, both directions: an overlay invite dialog from inside the
+##    lobby, and a join-requested callback from outside the game,
+##    including a cold launch carrying a lobby id on the command line.
+##    That last one is the case that always gets forgotten and is the
+##    only one D-094 criterion 4 names by itself.
+##
+## Nothing here fabricates an answer while the platform is absent. It
+## cannot be reached at all in that case — `lobby_provider` returns null
+## — which is what makes "absent costs features, never function" a
+## structural claim rather than a promise.
+class LobbyProvider extends RefCounted:
+	func id() -> String:
+		return "platform"
+
+	func label() -> String:
+		return "Friends and public games"
+
+	func poll(_now: float) -> void:
+		pass
+
+	func take_seen() -> Array:
+		return []
+
+	func status() -> String:
+		return "the platform lobby list is not wired up yet (#187)"
