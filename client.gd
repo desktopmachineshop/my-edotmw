@@ -190,40 +190,42 @@ var _fog_updated_at := -1.0
 ## exactly the maps with the most ground to cross.
 const FOG_INTERVAL := 0.25
 
-## Render LOD tiers (D-045): distance from the camera in world units, and
-## the most soldiers a squad past that distance is drawn with.
-##
-## Tuned against `just bench-render` rather than chosen: at D-018's full
-## scale the client was at 17.8 fps with every visible soldier derived,
-## and per-soldier derivation was ~96% of the frame.
-##
-## Nothing here touches `alive`. A thinned squad keeps its true frontage
-## because `slot_offset` is still asked for the real size, so this reads
-## as a distant formation being sparse rather than as a smaller unit —
-## which matters, because unit size is tactical information a player is
-## entitled to read off the screen correctly.
 ## Below this ground speed a squad is standing still as far as animation is
 ## concerned. Not zero: a curve sampled either side of a keyframe produces a
 ## little numerical drift, and a squad that flickered between idle and walk on
 ## that drift would twitch.
 const MOVING_SPEED_EPSILON := 0.15
 
-const LOD_TIERS := [
-	{"distance": 55.0, "soldiers": 1 << 30},
-	{"distance": 110.0, "soldiers": 12},
-	{"distance": INF, "soldiers": 5},
-]
+## Which LOD tier each squad was drawn at last frame — the MEMORY
+## `RenderCull.detail_tier`'s hysteresis band needs, and the client's only
+## part in the ladder. The tiers, the band and the arithmetic all live in
+## `render_cull.gd`, where they can be tested without a GPU (D-014); this
+## is a dictionary of one int per squad, cleared with the match exactly as
+## `_drawn_cache` is.
+##
+## Legal under D-006 for the same reason that cache is: it decides nothing
+## about where a soldier stands — the same slots come back — and nothing
+## in it reaches the simulation, the wire or the composition hash.
+var _lod_tier := {}
 
 
-## How many soldiers to draw for a squad at `world` (D-045).
-func _detail_for(world: Vector3) -> int:
+## How many soldiers to draw for the squad drawn at `offsets` (D-045).
+##
+## Hysteretic, and it is asked about the NEAREST visible copy rather than
+## about the one `nearest_offset` picked for placement. Both halves are
+## #155: a squad hovering near 55 flipped between forty men and twelve on
+## the smallest movement, and since every copy is drawn
+## (D-20260818-entities-are-drawn-at-every-visible-copy) an argmin between
+## two near-equidistant copies could move the distance a whole map period
+## with the camera perfectly still.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
 	if _camera == null:
-		return 1 << 30
-	var distance := _camera.global_position.distance_to(world)
-	for tier in LOD_TIERS:
-		if distance < float(tier["distance"]):
-			return int(tier["soldiers"])
-	return int(LOD_TIERS[LOD_TIERS.size() - 1]["soldiers"])
+		return RenderCull.lod_soldiers(0)
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 ## Squads derived and drawn this frame, against the number known. Shown in
@@ -1219,7 +1221,7 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var detail := _detail_for(centre + offset)
+		var detail := _detail_for(squad_id, drawn, centre)
 		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
@@ -9095,6 +9097,7 @@ func _teardown_match() -> void:
 	_order_press = Vector2.INF
 	_static_deal.clear()
 	_drawn_cache.clear()
+	_lod_tier.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
