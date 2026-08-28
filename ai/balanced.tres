@@ -13,6 +13,7 @@ gatherer_soldiers_wanted = 110
 train_cooldown = 5.0
 attack_squads_minimum = 2
 attack_regroup_thinks = 8.0
+naval_commitment = 0.5
 food_floor = 180
 wood_floor = 200
 defence_appetite = 0.5

@@ -250,3 +250,167 @@ func test_neither_recipe_reimplements_a_shared_comparison() -> void:
 			"known_squads_max", "nodes_known_max", "HANDSHAKE accepted"]:
 		assert_true(script.contains(marker),
 			"gate-check.sh must be the one place %s is read" % marker)
+
+
+# --- the naval gate's skip is TOPOLOGY, not the AI's answer ------------
+#
+# #351: `wants_navy=0` is reported both by an AI that correctly declined
+# to sail (every enemy walkable) and by an AI that declined to sail on an
+# archipelago, which is the defect. Keying the skip on it lets the thing
+# under test excuse itself from the test. SEAT_LANDMASSES is the map's
+# own answer, and these pin that the gate reads it.
+
+func test_the_naval_gate_skips_when_the_starts_share_one_landmass() -> void:
+	var server := _log("naval-one-island",
+		"SEAT_LANDMASSES seats=8 landmasses=1 sea_components=1
+"
+		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0,
+		"one landmass means no crossing was available, so zero landings is correct")
+	assert_string_contains(got["out"], "one landmass")
+
+
+func test_the_naval_gate_fails_when_a_crossing_was_available_and_declined() -> void:
+	# The #351 run. Byte-identical to the skip above except the topology.
+	var server := _log("naval-archipelago",
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
+"
+		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0,
+		"an AI that cannot walk to its enemy and declines to sail is #351, not a skip")
+	assert_string_contains(got["out"], "#351")
+
+
+func test_the_naval_gate_refuses_to_skip_without_the_topology() -> void:
+	# An older server, or one whose marker regressed, must not buy a free
+	# pass. A skip nobody can justify is the vacuous skip this exists to
+	# prevent — so absence fails rather than defaulting to "land map".
+	var server := _log("naval-no-marker",
+		"AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "no topology means no earned skip")
+	assert_string_contains(got["out"], "SEAT_LANDMASSES")
+
+
+func test_the_naval_gate_still_names_the_first_missing_leg() -> void:
+	# The ordered vacuity ladder survives the topology gate in front of
+	# it: a run that wanted a navy and built no dock must still say so,
+	# rather than being swallowed by the new branch.
+	var server := _log("naval-no-dock",
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
+"
+		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is still a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_the_naval_gate_passes_on_a_landing() -> void:
+	var server := _log("naval-landing",
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
+"
+		+ "AI_STATS wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0, "a landing on an archipelago is the pass")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_the_server_prints_the_topology_the_gate_reads() -> void:
+	# D-106's caller-exists rule. Every test above would pass with
+	# `server.gd` printing no marker at all — and then every real run
+	# would fail on the absent-marker branch, which is safe but useless.
+	# This is the half that says the two ends are joined.
+	#
+	# The KEYS, not the marker's name: `gate-check.sh` greps `landmasses=`
+	# and `sea_components=`, so those are what must exist. Asserting the
+	# banner would pass while the numbers behind it were renamed.
+	var source := _read("res://server.gd")
+	assert_string_contains(source, "landmasses=%d",
+		"server.gd must print the landmass count the naval gate keys on")
+	assert_string_contains(source, "sea_components=%d",
+		"and the sea-component count, which is what makes a crossing "
+		+ "SUFFICIENT rather than merely required")
+
+
+func test_there_is_one_topology_marker_and_not_two() -> void:
+	# Worker 88's SEAT_LANDMASSES superseded a SPAWN_LANDMASSES this file
+	# briefly keyed on. Two markers answering one question is the shape
+	# this project keeps paying for — they agree until they do not, and
+	# the gate reads whichever it was written against.
+	var source := _read("res://server.gd")
+	assert_false(source.contains("SPAWN_LANDMASSES"),
+		"the superseded marker must be gone, not merely unread")
+	var gate := _read("res://gate-check.sh")
+	assert_false(gate.contains("SPAWN_LANDMASSES"),
+		"and the gate must not still be looking for it")
+
+
+func test_the_naval_gate_reads_the_best_seat_not_the_last_one() -> void:
+	# A real isles run reported wants_navy=1 for seat 1000 and 0 for seat
+	# 1001, and the gate declared that NO seat wanted a navy — because
+	# `marker` takes the last occurrence, which is right for a marker
+	# printed once a match and silently wrong for one printed once a
+	# player. It would have masked the dock failure underneath with a
+	# #351 report that was not true, which is a gate lying in the
+	# direction of the defect it exists to find.
+	var server := _log("naval-two-seats",
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
+"
+		+ "AI_STATS player=1000 wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0,
+		"one seat crossing is a landing, whatever the other seat did")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_a_seat_that_wanted_a_navy_is_not_erased_by_a_seat_that_did_not() -> void:
+	# The same defect pointed at the ordered ladder rather than at the
+	# skip: the gate must name the leg the keenest seat stopped at, not
+	# the one the last-printed seat never started.
+	var server := _log("naval-wanted-no-dock",
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
+"
+		+ "AI_STATS player=1000 wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_a_log_with_a_stray_byte_is_still_read_and_never_falsely_passes() -> void:
+	# A FALSE GREEN, found by accident on a real ai-ladder log.
+	#
+	# `grep` prints "Binary file <path> matches" INSTEAD OF THE MATCHES
+	# when its input is not text, and one stray byte — a crash dump, a
+	# truncated write, an engine backtrace — is enough. Every `[ ... -eq
+	# ]` downstream then failed with "integer expected", and because a
+	# failed test is not a failed script, the gate ran on to its success
+	# line and exited 0. It reported "a landing happened" on a match with
+	# no dock in it.
+	#
+	# A gate that reports a pass on a log it cannot read is worse than no
+	# gate at all, which is why this is fixed twice over: `grep -a` keeps
+	# the output text, and `require_number` refuses anything that is not
+	# digits.
+	var path := "user://gate-check-binary.log"
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(handle, "could not write the binary fixture")
+	if handle == null:
+		return
+	handle.store_string(
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
+		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	handle.store_8(0)
+	handle.store_8(1)
+	handle.store_string("engine backtrace\n")
+	handle.close()
+
+	var got := _check(["naval", ProjectSettings.globalize_path(path)])
+	assert_ne(got["code"], 0,
+		"a run with no dock must fail even when the log carries a stray "
+		+ "byte — the gate may not pass because it could not read")
+	assert_string_contains(got["out"], "no dock was ever built",
+		"and it must still name the leg, rather than failing vaguely")

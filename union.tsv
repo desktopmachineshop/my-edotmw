@@ -117,3 +117,5 @@
 343	ao/my-edotmw-88/naval-2-domain	CONFLICT	squad_sim.gd 
 343	ao/my-edotmw-88/naval-2-domain	CONFLICT-RESOLVED	squad_sim.gd: #343 replaces _tier_for_destination with _wanted_domain_for at a line where #273 clears _explore; keep-both would declare wanted_tier twice. Kept the explore clear plus #343's domain call.
 352	ao/my-edotmw-88/naval-9-maps	CONFLICT	justfile 
+352	ao/my-edotmw-88/naval-9-maps	CONFLICT-RESOLVED	justfile ai-ladder: #251 adds died="" tracking, #352 parameterises the map in the echo. Keep-both left two echo lines; kept died= plus the {{MAP}} echo.
+342	ao/my-edotmw-81/naval-7-ai-and-bots	CONFLICT	ai_player.gd ai_profile.gd docs/status/playtests-2026-08.md gate-check.sh 

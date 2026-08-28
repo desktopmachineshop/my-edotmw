@@ -590,7 +590,7 @@ func _build_building_buckets(buildings: BuildingSim) -> Dictionary:
 ## bounds and tiebreak, but takes a cell rather than an attacking squad so
 ## a building can use it.
 ##
-## `attacker_tier`/`attacker_class` (D-076) feed `_can_reach_tier` — see
+## `attacker_tier`/`attacker_class` (D-076) feed `_can_reach_domain` — see
 ## that function. Defaulted to (0, "missile") so every caller that does
 ## not pass them (buildings, both existing shooting passes) treats itself
 ## as ranged and can therefore still hit a tier-1 defender, matching the
@@ -613,7 +613,7 @@ func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
 			# Allies are not targets (D-050).
 			if sim.are_allied(sim.owner_of(other), owner):
 				continue
-			if not _can_reach_tier(attacker_tier, attacker_class, sim.tier_of(other)):
+			if not _can_reach_domain(attacker_tier, attacker_class, sim.tier_of(other)):
 				continue
 			var d := TorusSpace.hex_length(offset)
 			# Deterministic tiebreak (lower id wins), so target choice
@@ -624,17 +624,49 @@ func _find_squad_near(sim: SquadSim, buckets: Dictionary, origin_index: int,
 	return best
 
 
-## Whether an attacker (tier `attacker_tier`, armour class
-## `attacker_class`) may reach a squad standing at `target_tier` (D-076).
-## A tier-1 squad can be reached only by another tier-1 squad, or by a
-## RANGED attacker (`armour_class == "missile"`) — never a tier-0 melee
-## squad. This is what makes climbing the wall a real defensive choice
-## ("you cannot melee someone on top of a wall from the ground") rather
-## than cosmetic — recorded as its own rule in D-076, not left implicit.
-static func _can_reach_tier(attacker_tier: int, attacker_class: String, target_tier: int) -> bool:
-	if target_tier != 1:
+## Whether an attacker in `attacker_domain`, with armour class
+## `attacker_class`, may reach a squad standing in `target_domain`
+## (D-076, generalised for water by
+## D-20260828-melee-does-not-cross-a-shoreline).
+##
+## Two rules, and they are NOT the same rule — which is the substance of
+## naval stage 5 and worth reading before changing either:
+##
+## - **A shoreline stops melee in BOTH directions.** Land melee cannot
+##   reach a ship and a ram cannot reach the shore. That is what makes a
+##   beach mean something: an army caught there by a warship is shot and
+##   cannot shoot back unless it brought archers.
+## - **A wall stops melee in ONE direction.** You cannot melee somebody
+##   on top of a wall from the ground (D-076's own sentence), and a
+##   wall-top squad CAN melee the attackers at its foot. That asymmetry
+##   is what makes climbing a defensive choice rather than a stalemate,
+##   and it shipped.
+##
+## The naval plan describes the new rule as "the same sentence D-076
+## already enforces". It is not, and implementing it as written would
+## have silently taken away a wall-top squad's ability to fight the
+## ground — a shipped behaviour, and one no current test covers, so
+## nothing would have failed. Flagged rather than quietly changed; see
+## the decision entry.
+##
+## RANGED crosses everything, unchanged. A ram is the exception that
+## proves the rule and needs no code: a ship with a short `attack_range`
+## is a ship that can only fight other ships, which is a data
+## consequence.
+static func _can_reach_domain(attacker_domain: int, attacker_class: String,
+		target_domain: int) -> bool:
+	if attacker_domain == target_domain:
 		return true
-	return attacker_tier == 1 or attacker_class == "missile"
+	if attacker_class == "missile":
+		return true
+	# Melee, across a boundary.
+	if target_domain == SquadSim.DOMAIN_WALL_TOP:
+		return false
+	if attacker_domain == SquadSim.DOMAIN_WATER 			or target_domain == SquadSim.DOMAIN_WATER:
+		return false
+	# What is left is melee DOWN from a wall onto the ground: D-076's
+	# asymmetry, preserved deliberately rather than by omission.
+	return true
 
 
 ## A squad's effective attack range in cells, including the height bonus
@@ -823,7 +855,7 @@ func _find_target(sim: SquadSim, buckets: Dictionary, attacker: int, attacker_de
 		for other in buckets[idx]:
 			if other == attacker or sim.are_allied(sim.owner_of(other), owner):
 				continue
-			if not _can_reach_tier(attacker_tier, attacker_def.armour_class, sim.tier_of(other)):
+			if not _can_reach_domain(attacker_tier, attacker_def.armour_class, sim.tier_of(other)):
 				continue
 			# Deterministic tiebreak (lower id wins) so target choice
 			# never depends on bucket iteration order.

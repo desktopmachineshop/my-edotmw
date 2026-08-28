@@ -102,7 +102,7 @@ func update(now: float) -> void:
 	_report_refusals()
 	_forget_dead_assignments()
 	_drop_unreachable_assignments()
-	_scout_for_resources()
+	_scout_for_what_it_lacks()
 	_found_town()
 	_raise_buildings()
 	_research(now)
@@ -111,6 +111,10 @@ func update(now: float) -> void:
 	_train()
 	_put_gatherers_to_work()
 	if not economy_only:
+		# Before `_fight`, deliberately: the raid pool is what sails, and
+		# an AI that spent it marching at an enemy it cannot walk to
+		# would never have a squad free to board.
+		_go_to_sea()
 		_fight(now)
 
 
@@ -220,6 +224,22 @@ func _wanted_buildings() -> Array:
 		if not BuildingSim.can_build(def, &"gatherers"):
 			continue
 		if WallPlan.is_wall_like(def) or def.damage > 0.0:
+		# A shore building is raised by the NAVAL INVESTMENT or not at
+		# all (`_raise_dock`). This list is indiscriminate — every def a
+		# gatherer may build, in cost order — so a dock was going up as
+		# ordinary infrastructure on seats that had never wanted a navy
+		# (#351: `docks=1` beside `wants_navy=0 ships_peak=0`).
+		#
+		# The wasted wood is the small half. §6.2's vacuity ladder gates
+		# FIRST on "no dock was ever built", so a dock nobody meant would
+		# carry the gate past its first leg and make it name the WRONG
+		# one — and a check that lies about which thing broke is worse
+		# than one that only says something did.
+		#
+		# By `needs_shore` rather than by id, so the next shore building
+		# inherits the rule instead of rediscovering it (D-047: no script
+		# names a civ; the same reasoning applies to naming a def).
+		if def.needs_shore:
 			continue
 		if def.produces.size() > 0:
 			military.append(def)
@@ -865,18 +885,36 @@ func _put_gatherers_to_work() -> void:
 const SCOUT_LEG_SECONDS := 25.0
 
 
-func _scout_for_resources() -> void:
+func _scout_for_what_it_lacks() -> void:
 	if state.space == null or not state.welcomed:
 		return
 
-	# Only if something it needs has never been seen. Once a node of that
-	# kind is known, ordinary gathering takes over and this stops.
+	# TWO reasons to walk somewhere new, and the second one is why this
+	# is not called `_scout_for_resources` any more.
+	#
+	# A missing RESOURCE was the original trigger, and it stops the moment
+	# a node of each needed kind has been seen — which is right for the
+	# economy and made `_scout_leg` a measure of HUNGER rather than of
+	# looking. #351's naval question reads that counter to answer "have I
+	# searched", and on a rich island an AI satisfied its economy in two
+	# legs and never scouted again: 3 buildings, 29 squads, `scout_legs=2`
+	# after ten minutes, and so it never concluded it had run out of
+	# world. The predicate was right and the number under it did not mean
+	# what its name said.
+	#
+	# A missing ENEMY is the second, and it makes the counter honest: an
+	# AI that does not know where anybody is has something to look for,
+	# whatever its wallet says. It stops at `SCOUTED_ENOUGH_LEGS` rather
+	# than running forever, because past that point the answer is "I have
+	# looked and there is nobody here" — which is exactly what
+	# `AiNaval.needs_ships` is waiting to hear.
 	var missing := -1
 	for kind in _kinds_below_floor():
 		if _nearest_known_of_kind(kind) < 0:
 			missing = kind
 			break
-	if missing < 0:
+	var unfound_enemy := _known_enemy_cells().is_empty() 		and _scout_leg < SCOUTED_ENOUGH_LEGS
+	if missing < 0 and not unfound_enemy:
 		_resource_scout = -1
 		return
 
@@ -1266,6 +1304,7 @@ var peak_allies_seen: int = 0
 
 
 func _record_stats() -> void:
+	_note_landings()
 	var squads := _own_squads()
 	peak_squads = maxi(peak_squads, squads.size())
 
@@ -1373,7 +1412,7 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d epoch=%d techs=%d techs_ordered=%d defences_ordered=%d defences_standing=%d gate_orders=%d gates_sealed=%d buildings_lost=%d attacks_survived=%d defences_fought=%d" % [
+	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d epoch=%d techs=%d techs_ordered=%d defences_ordered=%d defences_standing=%d gate_orders=%d gates_sealed=%d buildings_lost=%d attacks_survived=%d defences_fought=%d wants_navy=%d docks=%d ships_peak=%d embarks=%d landings=%d naval_step=%s" % [
 		player, civ, profile.id, _own_team(), peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
 		attacks_launched, first_attack_at, first_attack_soldiers,
@@ -1385,7 +1424,8 @@ func stats_line() -> String:
 		# (techs_ordered high, techs 0). Those are different faults with
 		# the same symptom.
 		state.epoch, state.techs.size(), techs_ordered,
-		defences_ordered, defences_standing_peak, gate_orders, gates_sealed,
+		defences_ordered, defences_standing_peak, gate_orders, gates_sealed,,
+		1 if wants_navy else 0, docks, ships_peak, embarks, landings, naval_step]
 
 
 ## The side this seat is on, as the AI itself understands it — read off

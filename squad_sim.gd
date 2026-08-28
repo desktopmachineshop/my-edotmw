@@ -859,6 +859,14 @@ func is_passable_top(cell: Vector2i) -> bool:
 	return index < _passable_top.size() and _passable_top[index] != 0
 
 
+## The domain constants live ONCE, above, with the rest of `_tier`'s
+## definition (naval stage 2). Stage 5 declared an identical block here
+## before stage 2 existed so that `combat.gd` could name the domain it
+## refuses melee across rather than compare against a bare `2`; the merge
+## brought both, and GDScript would happily carry two constants of the
+## same name and value until one of them moved.
+
+
 func tier_of(squad: int) -> int:
 	return _tier[squad]
 
