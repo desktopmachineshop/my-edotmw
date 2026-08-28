@@ -33,3 +33,9 @@
 261	ao/my-edotmw-82/counters-are-felt	CLEAN	3
 321	ao/my-edotmw-82/civ-can-open	CLEAN	3
 330	ao/my-edotmw-82/gatherers-differ	CONFLICT	units/emberdeep_gatherers.tres units/gildedreach_gatherers.tres units/gravesworn_gatherers.tres units/stoneblood_gatherers.tres units/thornwood_gatherers.tres units/windmarch_gatherers.tres 
+330	ao/my-edotmw-82/gatherers-differ	CONFLICT-RESOLVED	all six units/*_gatherers.tres: same duplicate as the rehearsal - #243 also differentiates the gatherers (#269). Took #330's values, the dedicated PR with the decision entry and the guard.
+334	ao/my-edotmw-82/armour-is-role	CLEAN	6
+347	ao/my-edotmw-82/levies-are-sidegrades	CLEAN	10
+355	ao/my-edotmw-82/square-law	CLEAN	4
+328	ao/my-edotmw-82/morale-scales	CLEAN	6
+257	ao/my-edotmw-82/fortifications-frighten	CONFLICT	buildings/tower.tres buildings/town_centre.tres 
