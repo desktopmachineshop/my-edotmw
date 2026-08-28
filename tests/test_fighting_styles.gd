@@ -116,14 +116,48 @@ func _arrival_ticks(shape: String) -> int:
 
 
 func test_granted_formations_exist_and_are_not_globally_offered() -> void:
-	assert_not_null(FormationRoster.by_id(&"shield_wall"),
-		"the special resolves from /formations like any other")
-	assert_false(FormationRoster.offered_ids().has(&"shield_wall"),
-		"and is NOT offered to everyone — it is granted by UnitDef")
-	var grants := 0
-	for def in UnitRoster.load_all():
-		if def.formations.has(&"shield_wall"):
-			grants += 1
-	assert_gt(grants, 0,
-		"somebody's spearmen must actually know the shield wall, or the "
-		+ "special is declared-and-unread (the D-055 family)")
+	# EVERY non-offered formation, not just the one this test used to
+	# name (#309). It asked about `shield_wall` alone, so when the roster
+	# rewrite (af9c3f4, #191) replaced all 43 unit files and carried no
+	# `formations` grant across, `testudo` became unreachable in the
+	# shipped game with nothing going red — and `shield_wall` only went
+	# red because this test happened to name it.
+	#
+	# That is D-106's caveat in its most literal form: a caller-exists
+	# test only covers the caller it names. A formation that is not
+	# offered and not granted is a `.tres` file no player can reach, which
+	# is the D-055 family in its data half.
+	var ungranted := PackedStringArray()
+	var checked := 0
+	for formation in FormationRoster.load_all():
+		if formation.offered:
+			continue
+		checked += 1
+		var grants := 0
+		for def in UnitRoster.load_all():
+			if def.formations.has(formation.id):
+				grants += 1
+		if grants == 0:
+			ungranted.append(String(formation.id))
+	assert_gt(checked, 0,
+		"no shipped formation is granted-only, so this check is vacuous — "
+		+ "either they all became offered or the roster stopped loading")
+	assert_eq(ungranted.size(), 0,
+		"granted-only formation(s) that no shipped unit knows, so no player can ever order them: %s"
+			% ", ".join(ungranted))
+
+
+func test_a_granted_formation_reaches_a_real_squad() -> void:
+	# The other half, and the one a data scan cannot see: a grant is only
+	# worth something if the unit holding it is one a player can field.
+	# Asserted through the ROSTER rather than a list of ids, so a future
+	# regrant is covered.
+	for formation in FormationRoster.load_all():
+		if formation.offered:
+			continue
+		var civs := {}
+		for def in UnitRoster.load_all():
+			if def.formations.has(formation.id):
+				civs[def.civ] = true
+		assert_gt(civs.size(), 0,
+			"%s is granted to nobody" % formation.id)

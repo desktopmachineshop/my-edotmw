@@ -189,6 +189,31 @@ pinned); combat computes each blow's aspect ONCE for both the defence
 and the morale shock; shield_wall and testudo ship as .tres, granted per
 unit through UnitDef.formations — no script names a civ.
 
+**That last sentence was FALSE for a milestone and is true again**
+(`D-20260828-two-formations-that-belonged-to-nobody`, #309). The fantasy
+roster rewrite (af9c3f4, #191) replaced all 43 unit files and carried no
+`formations` grant across, so both formations were unreachable in the
+shipped game: `offered = false` on each, and `grep -l '^formations'
+units/*.tres` matched nothing. Every part of the mechanism stayed correct
+and covered — which is why nothing failed. **The caller exists; it was
+the GRANT that was missing, and a grant is data.**
+
+Two things to carry:
+
+- **The guard now enumerates the class.** It named `shield_wall`, so that
+  one went red and `testudo` vanished in silence beside it. D-106's
+  caveat — a caller-exists test only covers the caller it names — applied
+  to a test that was itself the caller-exists check.
+- **The numbers pick the grantee, not the flavour.** `shield_wall` is
+  `taken_front 0.5 / taken_rear 1.2 / pace 0.6` — hold ground, punished
+  when flanked. `testudo` is `missile_taken 0.35 / pace 0.5` — an
+  advance-under-fire formation before it is a fighting one. Those are
+  emberdeep's two declared verbs (fortification and siege), and its levy
+  is already modelled carrying a round shield, so the art agreed first.
+  `gildedreach_spearmen` share the shield wall on the flexibility axis —
+  and a second grantee is what stops a formation belonging to exactly one
+  unit, which is how these went missing.
+
 **Workstream 11 — tired men, and men fighting uphill — landed**
 (D-20260819-tired-men-fight-uphill). Fatigue (server-only scalar):
 sprint -12/s, fight -2/s, run -6/s, rest +4/s; damage scales
