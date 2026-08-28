@@ -1,7 +1,11 @@
 # Owner decisions — the 48-hour review's landing page
 
 Seven decisions that only the owner can make, gathered off the issues and
-PR bodies they were scattered across. Each page is the same shape: **the
+PR bodies they were scattered across — **plus an eighth page at the end
+that is not a design call at all: the order to land things in.** Round 2
+of the gap assessment (PR #357) found the binding constraint has moved
+from "what is missing" to "nothing has merged", and the landing sequence
+is what that implies for the next two days. Each page is the same shape: **the
 evidence**, **the options**, **a recommendation with its reasoning**, and
 **what unblocks** when it is decided.
 
@@ -80,14 +84,15 @@ the adapter string the harness already prints.
 ### The options
 
 1. **Run it.** A borrowed or owned discrete GPU, `just bench-render`
-   (and `just bench-render … HOST=1` while there — see #339).
+   (and `just bench-render` in host mode, `--host=1`, while there — see
+   #339).
 2. **Ship the integrated number as the floor** and never take a second.
 3. **Defer past M8.**
 
 ### Recommendation — **run it, and run the host mode in the same sitting**
 
 Option 1, and specifically take **four rows**: `bench-render` at
-0/100/200/400 squads, and `bench-render … HOST=1 PRESET=islands` at the
+0/100/200/400 squads, and `bench-render` in host mode (`--host=1`) on `islands` at the
 same counts. The second costs the same afternoon and answers #339's
 "is the hosted breach hardware or architecture" in one shot.
 
@@ -483,14 +488,122 @@ cost.
 
 ---
 
+---
+
+# 8. The landing sequence — and the feature freeze
+
+> **Not a design decision.** Three of these are process calls only the
+> owner can make, and they gate every other page above. Evidence is
+> round 2 of the gap assessment (`docs/plans/gap-assessment-2.md`, PR
+> #357) and the merge order (`docs/plans/merge-order.md`, PR #350).
+
+### The evidence
+
+**Round 1's cycle produced ~80 PRs and 0 merges.** That is not a failure
+of the work — round 2 records that the estate produced sixteen of the
+seventeen things a senior audit asked for, in a day — it is a failure of
+the loop around it: *"eleven workers were each given a good ticket and
+none was given a reason to stop."* The queue is still tractable at 80.
+It will not be at 160, and the current assignment loop produces another
+80 a day.
+
+Three things are now true at once, and each makes the others worse.
+**CI exists, is proven, and is guarding nothing** (#294, gap I2) —
+including four deliberately-red runs recorded as evidence that each gate
+fails when it should. **The decision record is ~70 entries behind
+`main`** (#364, gap I3), which is not bookkeeping: this project *runs* on
+that record, and gap I4 is two workers building the same static-defence
+machinery twice because neither could see the other's design. And
+**#350's ordering surfaced two things an ordering cannot fix** — PR #340
+is not naval stage 8 but a *rebase* of the naval chain carrying 41 of its
+62 files, and the hulls and dock are each **created** by three
+independent chains.
+
+### The options
+
+1. **Land in dependency order from the top** (#350 as written, CI in its
+   computed place).
+2. **CI first, out of order, then decisions, then #350's order.**
+3. **Merge by importance** rather than dependency, taking conflicts as
+   they come.
+4. **Keep assigning features while merging.**
+
+### Recommendation — **option 2, and ratify the freeze that makes it possible**
+
+Three calls, in this order:
+
+**(a) Ratify the feature freeze for cycle 2.** This is the one that has
+to come first, because it is the only one that stops the denominator
+growing while the rest happens. Round 2's assignment rule is the concrete
+form: *a worker's next ticket waits on its own previous PR merging, and
+no chain deeper than 3*. Both are orchestrator-side and cost no
+engineering. **Without it every hour spent merging is matched by an hour
+of new queue.**
+
+**(b) Merge #294 (CI) out of order, first.** It is nearly conflict-free,
+and it makes each of the next ~79 merges verifiable by a machine instead
+of by whoever happens to run a recipe. Note its own honest caveat: it is
+stacked on #243 → #222 **for a green baseline**, because CI added to a
+red `main` is CI that is red on day one — so those two land with it.
+
+**(c) Merge #364 (the ~70 decision entries) second.** Conflict-free by
+construction — one file per decision, which is precisely what
+`decisions/README.md` rule 1 was written to buy — and it is the only
+thing that stops gap I4 recurring in a session started tomorrow. The
+record every worker reads becomes current *while* the merge runs, rather
+than after it.
+
+**Then #350's computed order, re-running its generator between landings
+rather than trusting the first pass** — the document says so of itself,
+and its three input snapshots are deliberately uncommitted because they
+are stale the moment anything merges. **82's rehearsal log belongs
+beside it**: a record of the order actually being walked, so a landing
+that goes wrong is diagnosable against what was rehearsed rather than
+against a plan. *(That log did not exist on any branch at the time of
+writing — it is expected beside #350 rather than missing from it.)*
+
+**Two owner calls sit inside the sequence and cannot be deferred past
+it**, both from #350: whether **#340** is dropped or reduced to a delta
+against the naval chain, and **which of the three chains** creating the
+hulls and the dock is the one that keeps them. Merging both the naval
+chain and #340 double-applies naval; and one decision id currently has
+**two different documents** (`D-20260828-water-is-a-second-movement-domain`
+is byte-identical on #343 and #340, and *different* on #308), which
+`decisions/README.md` rule 1 forbids outright.
+
+### What unblocks — and what cycle 2 opens with
+
+Everything above. **Every recommendation on pages 1–7 assumes a tree
+where the thing being decided about exists**, and today none of them are
+on one.
+
+Two openers, both of which are *impossible today* and neither of which is
+new work:
+
+- **The full-match measurement** (round 2's ticket 5). D-056's 1–2 hour
+  target has been open since M6 and has never been answerable, because
+  the farm, the ladder, surrender and the tech tree are on four different
+  branches. On one tree it is a recipe run.
+- **One external alpha session** with someone who has never seen the
+  repo (D-094 criterion 10). Everything it needs is built. It is the only
+  instrument in this project that can see what none of the others can.
+
+Expect the merged numbers to be **worse than any branch's** — every
+figure in this document, mine included, was taken without the other 79
+PRs present. That is the point of measuring on the merged tree, and it is
+worth saying before the first number lands rather than after.
+
+---
+
 ## Summary table
 
 | # | Decision | Recommendation | Gates |
 |---|---|---|---|
-| **#285** | Discrete-GPU run | **Run it** — plus `HOST=1` in the same sitting | #315, #316, and the client half of #341 |
+| **#285** | Discrete-GPU run | **Run it** — plus host mode (`--host=1`) in the same sitting | #315, #316, and the client half of #341 |
 | **#315** | Derive cadence | **Decline for now** — solves a 1,000-squad problem at a 200-squad scale | — |
 | **#316** | GDExtension hatch | **Keep shut for now**; D-093's shape if ever opened | — |
 | **#289** | Host-quit | **Dedicated-first for long matches**; decide after #339 | D-092's revisit, M8 playtest loop |
 | **#341** | Ratify ~200 squads | **Ratify**, including the seat-derived `squad_cap` | M8's 20-seat criterion, M9's budgets |
 | **#339** | Player-hosted at 100–150 | **Two numbers now, tick off-thread scheduled** | M8's hosted playtest, #289 |
 | **#191** | `model_id` keying | **Per-civ override on archetype default** | The art queue for four civs |
+| **8** | The landing sequence | **Ratify the freeze; CI, then decisions, then #350's order** | Everything above, and cycle 2 |
