@@ -78,6 +78,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/playtests-2026-08.md
 
+@docs/status/naval.md
+
 @docs/status/m8-plan.md
 
 @docs/status/m8-export.md
