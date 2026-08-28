@@ -125,6 +125,30 @@ class_name AiProfileDef
 @export var wood_floor: int = 200
 
 
+## How much of a CASE this opponent needs before it spends on something
+## that cannot chase anybody: walls, gates, a tower (#337).
+##
+## 1.0 fortifies at the first sign of a threat; 0.0 never fortifies at
+## all. `StaticDefence.wants_to_invest` reads it as `pressure >= 1.0 -
+## appetite`, which is monotone in both and statable in one sentence.
+##
+## A genuine difficulty axis, unlike the floors above, and it is safe to
+## be one — which is the test `ai_profile.gd` applies to every candidate
+## knob. It CANNOT starve an opening: `StaticDefence.pressure` returns 0
+## until something that trains is standing, so no appetite buys a wall
+## before the barracks; and `can_afford_with_reserve` holds back a share
+## of the economy's own floors on top of the price. The worst a wrong
+## value can do is an opponent that turtles or one that does not, and both
+## of those are opponents.
+##
+## The DEFAULT is the pre-#337 AI's behaviour in spirit — it built no
+## defences at all — but not in letter: 0.0 would ship a knob no shipped
+## profile exercises, which is how `gather_speed` sat at 1.0 on every civ
+## and could not be tested from the roster (#158). The middle value is a
+## deliberate choice to make the default profile use the feature.
+@export_range(0.0, 1.0) var defence_appetite: float = 0.5
+
+
 ## Returns "" if valid, else the reason. Called at load, so a broken
 ## profile fails loudly rather than producing an opponent that quietly
 ## does nothing — which is exactly what a zero cooldown or a zero think
@@ -132,6 +156,8 @@ class_name AiProfileDef
 func validate() -> String:
 	if id == &"":
 		return "ai profile has no id"
+	if defence_appetite < 0.0 or defence_appetite > 1.0:
+		return "ai profile %s has a defence appetite outside 0..1" % id
 	if think_interval <= 0.0:
 		return "ai profile %s thinks at or below zero seconds" % id
 	if train_cooldown < 0.0:

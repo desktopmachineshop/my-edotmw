@@ -2827,6 +2827,10 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
             matches++
         }
         /AI_STATS/ {
+            match($0, /defences_standing=([0-9]+)/, ds); defences_total += ds[1] + 0
+            match($0, /defences_ordered=([0-9]+)/, do_); defences_ordered_total += do_[1] + 0
+            match($0, /defences_fought=([0-9]+)/, df); defences_fought_total += df[1] + 0
+            match($0, /gate_orders=([0-9]+)/, go); gate_orders_total += go[1] + 0
             match($0, /player=([0-9]+)/, p)
             match($0, /civ=([a-z_]+)/, c)
             match($0, / team=([0-9]+)/, t)
@@ -2880,6 +2884,41 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
                 printf "  FAILED: %d attack objective(s) landed on a friend — see #83/#119\n", ally_obj_total
                 for (k in ally_obj) if (ally_obj[k] > 0) printf "    player %s: %d\n", k, ally_obj[k]
                 exit 1
+            }
+            # #337, and the standing gap D-076 recorded: no AI built or
+            # used a wall, so this harness could not exercise the feature
+            # at all — the shape that left BuildingSim.damage() uncalled
+            # for two milestones (D-055).
+            #
+            # Gated on a defence STANDING rather than on one being
+            # ordered. An order is an intent, and D-107 is the standing
+            # reason not to trust one: the first version of this feature
+            # reported 40 orders and 1 building.
+            #
+            # defences_fought is REPORTED, not gated. A wall is only
+            # fought over if somebody attacks it, which needs a match that
+            # reaches contact — and a gate that fails an honest run is how
+            # "test-load 4 40" came to be the documented recommendation
+            # for a milestone while being unable to pass (D-031). Measured:
+            # 4 seats at a 600s cap reported defences_fought=71 on one
+            # seat, and 2 seats at 420s reported zero. The counter is here
+            # so the gate is one line the day somebody settles which
+            # configuration always reaches it.
+            #
+            # NOTE: no apostrophes anywhere in this awk program. It is a
+            # single-quoted shell string, so one ends the quoting and the
+            # error you get is "awk: cmd. line:N: (END OF FILE)" pointing
+            # at a line that is fine. That cost two ladder runs.
+            if (defences_total <= 0) {
+                print "  FAILED: no AI built any static defence — walls, gates and towers"
+                print "    are shipped (D-076) and #337 exists because nothing exercised them."
+                print "    Check AI_STATS defences_ordered= against defences_standing=: orders"
+                print "    with nothing standing means the sites are being refused."
+                exit 1
+            }
+            printf "  static defence: %d standing across seats, %d ordered, %d fought over, %d gate order(s)\n", defences_total, defences_ordered_total, defences_fought_total, gate_orders_total
+            if (defences_fought_total == 0) {
+                print "  (no wall was attacked this run — reported, not gated; see D-20260828-an-ai-that-fortifies)"
             }
             if (draws == matches) {
                 print "  EVERY match hit the time cap — the AI is not seeking combat, which is a finding, not a pass"

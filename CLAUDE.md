@@ -42,6 +42,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/ai-opponent.md
 
+@docs/status/ai-fortification.md
+
 @docs/status/m7.md
 
 @docs/status/art-pipeline.md
@@ -427,6 +429,29 @@ client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
+static_defence.gd        WHEN an AI spends on something that cannot chase
+                        anybody (D-20260828, #337). All-static, pure, and
+                        it NAMES NO DOMAIN — no wall, gate, dock or ship —
+                        because naval stage 7 answers the same question
+                        about shore defences and #337 asked that the two
+                        share it. A source scan in the tests enforces
+                        that, since "knows nothing about walls" is not
+                        something a behavioural test can see. A missing
+                        threat key is NO evidence, never alarming
+                        evidence, so a caller that has not learned to
+                        report something new cannot start fortifying
+                        because of it.
+wall_plan.gd             WHERE a wall goes, and where its gate goes
+                        (D-20260828). The half that knows what a wall is.
+                        A SCREEN across the approach, not a ring: a ring
+                        at radius 5 is 900 wood and 1,200 stone at the
+                        shipped price, which no match of this length can
+                        afford. Built from the MIDDLE outward, so a
+                        half-built screen is a screen with short ends
+                        rather than a fence with a hole in the road. Walls
+                        and gates are found by their FIELDS, never by id
+                        (D-047), and bearings go through `space.delta` so
+                        a screen faces the short way round the seam.
 bot_patrol.gd            What a load-test bot's scouting detachment does
                         (D-20260817-load-test-bots-must-manoeuvre). All-
                         static and pure, like formation.gd, so the half of
