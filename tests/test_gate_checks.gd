@@ -334,3 +334,39 @@ func test_a_seat_that_wanted_a_navy_is_not_erased_by_a_seat_that_did_not() -> vo
 	var got := _check(["naval", server])
 	assert_ne(got["code"], 0, "a wanted navy with no dock is a failure")
 	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_a_log_with_a_stray_byte_is_still_read_and_never_falsely_passes() -> void:
+	# A FALSE GREEN, found by accident on a real ai-ladder log.
+	#
+	# `grep` prints "Binary file <path> matches" INSTEAD OF THE MATCHES
+	# when its input is not text, and one stray byte — a crash dump, a
+	# truncated write, an engine backtrace — is enough. Every `[ ... -eq
+	# ]` downstream then failed with "integer expected", and because a
+	# failed test is not a failed script, the gate ran on to its success
+	# line and exited 0. It reported "a landing happened" on a match with
+	# no dock in it.
+	#
+	# A gate that reports a pass on a log it cannot read is worse than no
+	# gate at all, which is why this is fixed twice over: `grep -a` keeps
+	# the output text, and `require_number` refuses anything that is not
+	# digits.
+	var path := "user://gate-check-binary.log"
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(handle, "could not write the binary fixture")
+	if handle == null:
+		return
+	handle.store_string(
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
+		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	handle.store_8(0)
+	handle.store_8(1)
+	handle.store_string("engine backtrace\n")
+	handle.close()
+
+	var got := _check(["naval", ProjectSettings.globalize_path(path)])
+	assert_ne(got["code"], 0,
+		"a run with no dock must fail even when the log carries a stray "
+		+ "byte — the gate may not pass because it could not read")
+	assert_string_contains(got["out"], "no dock was ever built",
+		"and it must still name the leg, rather than failing vaguely")

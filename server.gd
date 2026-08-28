@@ -528,6 +528,7 @@ func _build_world() -> void:
 	print("server: world %dx%d, preset %s, seed %d — %d spawn points" % [
 		_settings.width, _settings.height, _settings.preset, _settings.seed,
 		_spawn_points.size()])
+	_print_seat_landmasses(space)
 
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
@@ -603,6 +604,39 @@ func _build_world() -> void:
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % replay_path)
+
+
+## What the MAP says about whether a navy is needed, and whether one would
+## be enough.
+##
+## Originally worker 88's, from their stage 9 branch, and restored here
+## after we each deleted our own copy in favour of the other's — they
+## reverted theirs expecting mine to survive on the same day I deleted
+## mine expecting theirs to. It lives with its CONSUMER now, which was
+## 88's own criterion for which copy should win.
+##
+## `landmasses > 1` says a ship is REQUIRED: somebody cannot be walked
+## to. `sea_components == 1` says one would SUFFICE: a single body of
+## water joins the starts. `gate-check.sh naval` needs both, because a
+## map that maroons every seat on its own island with its own private sea
+## satisfies the first and is uncrossable, and reporting #351 against it
+## would be a false accusation against an honest run.
+##
+## Derived from spawn placement and told to NO AI. D-051 is about what a
+## player may know; a log line is not a player.
+func _print_seat_landmasses(space: TorusSpace) -> void:
+	if _spawn_points.is_empty():
+		return
+	var foot: PackedInt32Array = MapConfig.walkable_components(space, _passable)["labels"]
+	var sea := MapConfig.reachable_components(space, _passable, _navigable)
+	var on_land := {}
+	var on_sea := {}
+	for point in _spawn_points:
+		var index := space.index(point)
+		on_land[foot[index]] = true
+		on_sea[sea[index]] = true
+	print("server: SEAT_LANDMASSES seats=%d landmasses=%d sea_components=%d" % [
+		_spawn_points.size(), on_land.size(), on_sea.size()])
 
 
 func _exit_tree() -> void:

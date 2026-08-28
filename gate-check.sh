@@ -52,8 +52,35 @@ shift
 # The LAST occurrence of `<key>=<number>` in a log. Last, not first:
 # every one of these is a running total reported repeatedly, and the
 # final report is the one describing the whole run.
+# -a because A LOG IS NOT GUARANTEED TO BE TEXT. A single stray byte —
+# from a crash dump, a truncated write, an engine backtrace — makes grep
+# print "Binary file <path> matches" INSTEAD OF THE MATCHES. Every `[`
+# comparison downstream then fails with "integer expected", and because
+# a failed test is not a failed script the gate ran on to its success
+# line and exited 0. Measured: a real ai-ladder log with one such byte
+# reported "a landing happened" on a match with no dock in it.
+#
+# A gate that reports a pass on an unreadable log is worse than no gate,
+# so this is belt AND braces: -a keeps the output text, and
+# `require_number` refuses anything that is not digits.
 marker() {
-    grep -oE "$1=[0-9]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 || true
+    grep -a -oE "$1=[0-9]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 || true
+}
+
+# Fail loudly on anything that is not a plain number.
+#
+# The values here are parsed out of a log, and every consumer compares
+# them arithmetically. `[ "$x" -eq 0 ]` on a non-number writes to stderr
+# and returns non-zero, which inside an `if` is indistinguishable from a
+# legitimate "no" — so an unparseable value silently takes the false
+# branch. Named so the failure says which key was unreadable.
+require_number() {
+    case "$1" in
+        ""|*[!0-9]*)
+            echo "gate-check($3): $2 did not read as a number ('$1') — the log is unreadable here, and a gate that cannot read its input must not report a pass" >&2
+            exit 1
+            ;;
+    esac
 }
 
 # The LARGEST value of a key across the whole log, for keys that are
@@ -71,7 +98,7 @@ marker() {
 # sailed while another never launched is not a failure, it is one AI
 # playing better than the other.
 marker_max() {
-    grep -oE "$1=[0-9]+" "$2" 2>/dev/null | cut -d= -f2         | sort -n | tail -1 || true
+    grep -a -oE "$1=[0-9]+" "$2" 2>/dev/null | cut -d= -f2         | sort -n | tail -1 || true
 }
 
 # Two markers had to be found for a comparison to have happened at all.
@@ -140,6 +167,9 @@ case "$check" in
             echo "gate-check(naval): the server log has no SEAT_LANDMASSES — cannot tell a land map from an archipelago, so a skip here would be unearned" >&2
             exit 1
         fi
+        require_number "$wanted" wants_navy naval
+        require_number "$islands" landmasses naval
+        require_number "$seas" sea_components naval
         if [ "$wanted" -eq 0 ]; then
             if [ "$islands" -le 1 ]; then
                 echo "gate-check(naval): skipped — the starts share one landmass, so no crossing was available and zero landings is correct"
@@ -160,6 +190,7 @@ case "$check" in
                 echo "gate-check(naval): the server log has no $key at all — the AI is not reporting its naval legs" >&2
                 exit 1
             fi
+            require_number "$got" "$key" naval
             if [ "$got" -eq 0 ]; then
                 echo "gate-check(naval): $why ($key=0)" >&2
                 exit 1
