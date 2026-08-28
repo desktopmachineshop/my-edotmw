@@ -1118,8 +1118,14 @@ scenarios: _import
 # the old one is stale" applied to an ASSET getting heavier, and the honest
 # direction is to lengthen the run rather than to weaken the check.
 # didn't complain (D-022's standing rule).
+# RESOLUTION is a parameter for the same reason `lobby-shot` grew one: this
+# recipe was pinned to 1280x720, which is the reference window `hud_layout.gd`
+# is designed against, and therefore the one size at which a scaling or
+# anchoring defect is a deliberate no-op - #90 was invisible here for exactly
+# that reason. The default is unchanged, so every frame taken before this is
+# still comparable.
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3": _import
+test-client SECONDS="90" BOTS="3" RESOLUTION="1280x720": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -1163,7 +1169,7 @@ test-client SECONDS="90" BOTS="3": _import
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
-        --resolution 1280x720 \
+        --resolution {{RESOLUTION}} \
         -- --address=server --run-seconds={{SECONDS}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
@@ -1861,6 +1867,56 @@ gen-terrain-shot HEIGHT="14": _import
     fi
     if [ ! -s "$out" ]; then
         echo "gen-terrain-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
+# A rendered picture of the TORUS SEAM, with armies standing on it.
+#
+# Written for playtest #32, which asks whether the wrapped world reads as
+# seamless. Nothing in the estate could frame that question: `test-client`
+# points at a spawn, `gen-terrain-shot` finds a cliff, `gen-forest-preview`
+# finds the densest wood — three deliberate framings of something else, and
+# a seam is no likelier to appear in any of them than any other cell.
+#
+# SEAM is "q" (the width wrap), "r" (the height wrap) or "corner" (both at
+# once). Squads are drawn through the client's own three-call copy pipeline
+# (RenderCull.visible_offsets_of_extent -> LatticeCopies.draw), so a squad
+# straddling the wrap line is drawn exactly where the game would draw it.
+#
+# Software-rasterised, so it needs no GPU and says nothing about speed.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render the torus seam with armies on it, to artifacts/seam-<seam>.png")]
+gen-seam-shot SEAM="q" HEIGHT="16": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    gate="$(bash host-gate.sh acquire medium 'gen-seam-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-seam-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/seam-{{SEAM}}.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            playtest_seam_shot.tscn -- --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 playtest_seam_shot.tscn -- \
+            --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-seam-shot: no frame was written to $out" >&2
         exit 1
     fi
 
