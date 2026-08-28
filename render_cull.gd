@@ -438,3 +438,127 @@ static func is_on_screen(camera: Camera3D, point: Vector3, margin: float,
 	var screen := camera.unproject_position(point)
 	return (screen.x >= -margin and screen.y >= -margin
 		and screen.x <= size.x + margin and screen.y <= size.y + margin)
+
+
+## --- render LOD (D-045) -----------------------------------------------
+
+## The render LOD ladder: distance from the camera in world units, and the
+## most soldiers a squad past that distance is drawn with.
+##
+## Tuned against `just bench-render` rather than chosen: at D-018's full
+## scale the client was at 17.8 fps with every visible soldier derived,
+## and per-soldier derivation was ~96% of the frame.
+##
+## Nothing here touches `alive`. A thinned squad keeps its true frontage
+## because `slot_offset` is still asked for the real size, so this reads
+## as a distant formation being SPARSE rather than as a smaller unit —
+## D-045's thinner-never-smaller rule, and it holds because unit size is
+## tactical information a player is entitled to read off the screen.
+##
+## The ladder lives here rather than in client.gd for the reason the rest
+## of this file does: the client needs a GPU (D-014), so the half with the
+## interesting failure mode has to be arithmetic to be testable at all —
+## and WHEN a squad changes tier turned out to be exactly that half (see
+## `detail_tier`). `bench_render.gd` carried a hand-copy of these three
+## numbers under a comment reading "if the tiers are retuned, both move";
+## there is one definition now, so they cannot fail to.
+const LOD_TIERS := [
+	{"distance": 55.0, "soldiers": 1 << 30},
+	{"distance": 110.0, "soldiers": 12},
+	{"distance": INF, "soldiers": 5},
+]
+
+
+## How far PAST a boundary a squad must travel before it LOSES detail, as
+## a fraction of that boundary: 55 -> 63.25 and 110 -> 126.5.
+##
+## Detail is regained at the plain boundary, so the band is one-sided and
+## deliberately so — a squad the player has walked TOWARD is drawn in full
+## the moment it is inside 55, and only a squad that has genuinely receded
+## by 15% more than that thins. Erring toward detail is the cheap
+## direction to err: the cost is a little derivation, and the alternative
+## is under-drawing a squad the player is looking straight at.
+const LOD_HYSTERESIS := 0.15
+
+
+## Which LOD tier a squad `distance` from the camera is drawn at, given
+## the tier it was drawn at last frame (`previous`, or a negative for a
+## squad with no history yet).
+##
+## ## Why this is not a lookup
+##
+## It was one, in client.gd, keyed on the current frame's distance with no
+## memory anywhere — and a squad sitting near 55 or 110 flipped tier on
+## the smallest movement of itself OR the camera. The flip is not subtle:
+## crossing 55 takes a forty-man squad to twelve (-70%) and crossing 110
+## takes twelve to five (-58%), so a player watching a force in the MIDDLE
+## of the view saw most of it appear and vanish frame to frame (#155). It
+## does not look like a culling fault because it is not one — the squad
+## never leaves the screen.
+##
+## D-045's rule is that a distant squad is drawn thinner, never smaller,
+## because unit size is tactical information. A representation that
+## FLICKERS between forty and twelve is not information at all, which is
+## why this is a correctness fix and not polish.
+##
+## ## The band, and which side of it applies
+##
+## A boundary has two values: outward (losing detail) at
+## `distance * (1 + LOD_HYSTERESIS)`, inward (regaining it) at the plain
+## boundary. Which one is consulted depends on which side the squad is
+## already on — `previous <= tier` means it is on the fine side of this
+## boundary and has to earn its way out. Both values on both sides is the
+## version that was written first and is no hysteresis at all: the squad
+## leaves at 63.25 and returns at 63.25, exactly the flip this removes.
+##
+## Bounded per-squad render memory (one int) is what makes this possible,
+## and it is legal: D-006's no-stored-state clauses are about the
+## DERIVATION of soldier positions, and this decides nothing about where
+## anybody stands — the same slots come back, and `soldier_transforms_lod`
+## samples a subset of them. Nothing here reaches the simulation, the wire
+## or the composition hash.
+static func detail_tier(distance: float, previous: int) -> int:
+	var last := LOD_TIERS.size() - 1
+	var tier := 0
+	while tier < last:
+		var bound := float(LOD_TIERS[tier]["distance"])
+		if previous >= 0 and previous <= tier:
+			bound *= 1.0 + LOD_HYSTERESIS
+		if distance < bound:
+			break
+		tier += 1
+	return tier
+
+
+## How many soldiers tier `tier` draws. Out-of-range clamps to full
+## detail rather than to the coarsest tier: a caller that has lost track
+## of its own memory should over-draw, not under-draw.
+static func lod_soldiers(tier: int) -> int:
+	if tier < 0 or tier >= LOD_TIERS.size():
+		return int(LOD_TIERS[0]["soldiers"])
+	return int(LOD_TIERS[tier]["soldiers"])
+
+
+## How far a squad drawn at `offsets` is from `eye` — the NEAREST of its
+## visible lattice copies, which is the distance the LOD ladder is asked
+## about.
+##
+## A minimum, not the distance to whichever copy some other rule picked,
+## and that is the whole point. Since D-20260818-entities-are-drawn-at-
+## every-visible-copy a squad is drawn at every copy on screen, and the
+## client picks one of them with `nearest_offset` for the things that need
+## a single position. That is an ARGMIN over a `<` comparison: when two
+## copies are near-equidistant the winner can alternate frame to frame,
+## and the distance handed to the ladder then jumps a whole map period
+## with the camera completely still. A MINIMUM is continuous across
+## exactly that tie — the two candidates are equal where they swap — so
+## the tier cannot move because the argmin did.
+##
+## `INF` for an empty list, which is a squad drawn nowhere; the caller has
+## already culled it.
+static func lod_distance(offsets: Array[Vector3], centre: Vector3,
+		eye: Vector3) -> float:
+	var best := INF
+	for offset in offsets:
+		best = minf(best, (centre + offset).distance_to(eye))
+	return best

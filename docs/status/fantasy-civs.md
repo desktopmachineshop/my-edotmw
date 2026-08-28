@@ -56,13 +56,65 @@ Six things to know before touching any of it:
   (breaker, engine, ram, bombard) are excluded from both the solo and
   the pair rule: cracking a defended building alone is their design
   brief — the Ember Bombard's identity is outranging the tower. The
-  tower's pair-rule carve-out list is `TOWER_EXCEPTIONS` in
-  `tests/test_buildings.gd`, re-measured against the new roster.
+  tower's pair-rule carve-out was `TOWER_EXCEPTIONS` in
+  `tests/test_buildings.gd` — **that list is gone as of 2026-08-27**
+  (`D-20260827-a-buildings-hp-is-one-knob-and-the-rule-needs-two`, #152).
+  It was not re-measured against the new roster after all: the pair rule
+  was left asking all 22 troops, ten of which are cavalry, missile or
+  light infiltrators, and 15 of 22 failed it on `main`. The pair rule is
+  asked of LINE troops now (`levy`, `spearmen`, `heavy`, `sellswords`,
+  derived from `UnitDef.archetype` and asserted against the roster), and
+  the tower and town centre carry re-derived HP. **The lesson is the
+  roster-wide one, not the siege one:** a hand-written list of unit ids
+  survives a roster replacement looking perfectly plausible, and the
+  same day it was written it was already asking horse archers to crack
+  fortifications.
 - **Every ladder and load-test number taken before this is measured
   against civs that no longer exist.** The standing quote-it-with-its-cap
   and quote-it-with-its-squad-count rules apply with a third clause:
   quote which ROSTER. `test-load`'s CIVS_FIELDED gate is roster-agnostic
   (it parses the marker, not names) and unchanged.
+
+**And three of the roster's own rules were shipped absent, found only by
+the suite going red** (`D-20260828-a-guard-is-written-in-a-vocabulary-that-moves`,
+#215 with duplicates #202/#203/#211/#212, 2026-08-28). #191 landed the
+data and did not land the rest; `just test-unit` was red on `main` for a
+week and read as noise:
+
+- **`emberdeep_ram` could not attack anything.** `attack_range` 1.5
+  against a hex width of 1.73 floors to a radius of ZERO cells, so the
+  one unit whose design brief is cracking a building geometrically could
+  not reach one. It is 1.9 now — the roster's own melee reach, and still
+  the shortest in it. `docs/plans/fantasy-civs.md` specifies 1.5 and the
+  PLAN is what is wrong. **The schema default is 1.5 too**, so a new
+  `UnitDef` that does not set the field ships unable to fight; filed, not
+  fixed here.
+- **Nobody knew the shield wall.** #191 dropped every `formations` grant,
+  so D-20260819's two specials shipped reachable by no unit in the game.
+  Granted again by that decision's own rule — spearmen know the wall
+  (`gildedreach_spearmen`, `gravesworn_spearmen`) and the fortification
+  civ's heavy knows it too (`emberdeep_heavy`, the **Shieldwall
+  Vanguard**, whose design text is "the formation IS the silhouette");
+  `stoneblood_heavy` takes the testudo. A grant is opt-in — a client
+  button and a server allowance — so no default shape moved and PR #222's
+  re-derived D-067 numbers are undisturbed.
+- **The six per-civ gatherers were one stat block copied six times.**
+  Naming was done and differentiating was not, which is the shape this
+  project keeps rediscovering wearing a passing test (there IS a test
+  that each crew names its own civ, and it passed throughout). Each crew
+  now sits on its civ's axis — stoneblood few/tough, gravesworn ten
+  cheap diggers, windmarch fast with the biggest load, gildedreach the
+  best rate, emberdeep slow and hard, thornwood the reference — with
+  **steady-state throughput held to -4.6%/+9.5%** of what shipped, so
+  this differentiates six crews without re-balancing six economies. Both
+  shipped bands were respected rather than discovered afterwards: food
+  per head inside (1, 6) and a tree cleared in 45-75 s. The table is in
+  the decision.
+
+**Timings tuned against the old crews are stale**, per the standing rule
+— but only just: the throughput band is narrow on purpose, and squad
+sizes moved (5-10 against a flat 7), so an opening's LOOK changes more
+than its clock.
 
 **Deliberately not done:** epochs (M9's ladder is still design);
 per-civ walls/buildings; any strength ordering between the six — that is

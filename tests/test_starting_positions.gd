@@ -152,8 +152,21 @@ func test_every_seat_mutation_re_derives_the_starting_positions() -> void:
 	var source := FileAccess.get_file_as_string("res://match_state.gd")
 	assert_ne(source, "", "Setup: match_state.gd should be readable")
 
-	var mutations := source.count("seats.append(") + source.count("seats.remove_at(")
+	# CODE lines only. Counting raw occurrences let a COMMENT mentioning
+	# `_seats_changed()` stand in for a call — so a fifth mutation site
+	# added alongside a sentence about the rule would satisfy this guard
+	# while the defect it exists for was live. That is the vacuous pass
+	# D-022's audit block is about, in the guard rather than in the code.
+	var mutations := 0
+	var syncs := 0
+	for raw in source.split("
+"):
+		var line := String(raw).strip_edges()
+		if line.begins_with("#"):
+			continue
+		mutations += line.count("seats.append(") + line.count("seats.remove_at(")
+		syncs += line.count("_seats_changed()")
 	# One of these is the declaration, which is not a call site.
-	var syncs := source.count("_seats_changed()") - 1
+	syncs -= 1
 	assert_eq(syncs, mutations,
 		"every site that adds or removes a seat must re-derive the starting positions")
