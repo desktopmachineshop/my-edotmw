@@ -221,6 +221,13 @@ const C2S_ORDER_EXPLORE := OPCODES["C2S_ORDER_EXPLORE"]
 ## the acting player's civ, so a client structurally cannot name another
 ## civ's version of a tech and D-046 criterion 4 needs no check anyone has
 ## to remember to write.
+## 120 rather than the next free number after the core block: #374 carves
+## the opcode space per workstream (core 1-99, naval 100-119, techs
+## 120-139, ...) so two chains cannot each take "the next free number on
+## main" and both be right. Three PRs took 39 — surrender, explore and
+## this — and the suite could not see it, because a round-trip test is
+## self-consistent even when two messages share an id (#362). Surrender
+## keeps 39, being first in the published merge order.
 const C2S_ORDER_RESEARCH := OPCODES["C2S_ORDER_RESEARCH"]
 
 const C2S_CHEAT_ADD_RESOURCES := OPCODES["C2S_CHEAT_ADD_RESOURCES"]
