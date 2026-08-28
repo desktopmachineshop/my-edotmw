@@ -51,9 +51,21 @@ start, so a run that never starts leaves the PREVIOUS run's log in place
 else in it; it simply belongs to a different run. One worker read a 150 s
 log as a 300 s run and was saved only by the server line reporting
 `time=148.6s`. Another queued a run for 1300 s that never started and was
-one grep from re-reporting an older result as fresh. **The only check
-that catches this is reading the duration the log CLAIMS before believing
-the numbers under it** (#389).
+one grep from re-reporting an older result as fresh.
+
+**Reading the duration the log CLAIMS is necessary and NOT sufficient**,
+and that limit was found by watching this very rule fail an hour after
+it was written. It catches a TRUNCATED run read as a full one — the
+`148.6s`-against-300 case. It does NOT catch a COMPLETE OLDER run read
+as a new one: a monitor reported a result whose log honestly said
+`time=1200.0s` under the right cap, and the file was byte-identical to a
+run banked ninety minutes earlier. A stale log is not merely consistent;
+it can be consistent AND complete AND correct, about the wrong run.
+
+What separates those two cases is not content at all — it is IDENTITY:
+a timestamp, a byte-comparison against the previous copy, or a per-run
+path. That is #389's actual fix, and it is why the duration check is a
+stopgap rather than the answer.
 
 **4. An unresolved value flowing downstream — perturb the INPUT TYPE.**
 Hand it a non-number, a binary byte, an empty string.
