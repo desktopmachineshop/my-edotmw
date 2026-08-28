@@ -450,6 +450,20 @@ class VirtualClient:
 	## harness quietly asserting less afterwards (#123's empty `raid_pool`,
 	## and D-20260818's "the fast loop carries the gate") — so it is fixed
 	## here rather than discovered later.
+	## Lines this bot has already asked for. The server refuses a repeat
+	## (`ResearchState.is_pending`) and the CLIENT cannot see pending —
+	## `research_view()` holds completed lines only — so without this a bot
+	## would re-order the same tech every fourth tick for the whole run and
+	## collect a refusal notice each time.
+	var _research_ordered := {}
+
+	## How many techs this bot ordered, and how many it has been told it
+	## HOLDS. Two counters, not one, because they answer different
+	## questions: "it never asked" and "it asked and was refused" are
+	## different faults with the same symptom — the same split
+	## `AI_STATS` makes, and the reason #123's `raid_orders` became a gate.
+	var techs_ordered: int = 0
+
 	func _issue_research() -> void:
 		if _order_ticks % 4 != 0:
 			return
@@ -465,7 +479,13 @@ class VirtualClient:
 			var info: Dictionary = state.buildings[wire_id]
 			if int(info["owner"]) != state.player or bool(info["destroyed"]):
 				continue
-			if float(info["progress"]) < 1.0 or (info.get("queue", []) as Array).size() > 0:
+			# A SHORT queue is fine to join. Requiring an idle building
+			# looked right and was wrong: a bot enqueues gatherers every
+			# other tick, so its town centre is never idle and research
+			# was never ordered ONCE in a 300 s run. One queue holding
+			# both kinds is the design (D-20260827) — research waiting its
+			# turn behind two units is exactly what should happen.
+			if float(info["progress"]) < 1.0 or (info.get("queue", []) as Array).size() > 2:
 				continue
 			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
 			if def == null:
@@ -473,10 +493,14 @@ class VirtualClient:
 			var here := BuildingSim.archetype_of_def(def)
 			for tech in candidates:
 				var t := tech as TechDef
-				if t.research_at != here or not _can_afford_tech(t):
+				if t.research_at != here or _research_ordered.has(t.line):
+					continue
+				if not _can_afford_tech(t):
 					continue
 				peer.send(0, NetProtocol.encode_order_research(
 					int(wire_id), String(t.line)), ENetPacketPeer.FLAG_RELIABLE)
+				_research_ordered[t.line] = true
+				techs_ordered += 1
 				return
 
 
@@ -1240,7 +1264,7 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d techs_ordered=%d techs_held=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
@@ -1248,7 +1272,7 @@ func _report() -> void:
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
 		_patrol_legs(), _scouts_peak(), _raid_orders(), _military_squads(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
-		_nodes_felled()])
+		_nodes_felled(), _techs_ordered(), _techs_held()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
@@ -1261,12 +1285,13 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
+		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f techs=%d/%d epoch=%d build=%s" % [
 			vc.state.player, vc.state.squads.size(), vc.military_squads(),
 			vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
-			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at, vc.build_block])
+			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at,
+			vc.state.techs.size(), vc.techs_ordered, vc.state.epoch, vc.build_block])
 
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:
@@ -1275,6 +1300,34 @@ func _report() -> void:
 
 ## Minimal `--key=value` CLI parser for user args (after `--`).
 ## Example: godot --headless --script bot_client.gd -- --clients=20 --address=127.0.0.1 --port=4433
+## Techs the bots ORDERED and techs they were told they HOLD
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## A METRIC, not a gate, and deliberately so — for `nodes_felled`'s reason.
+## Research costs a real bank, and how long a bot takes to afford one is a
+## property of the map, the seed and the duration; gating on it would
+## re-set D-031's stale-timing trap the first time the map ladder moved.
+##
+## What it is FOR is that the bots' research is the only thing keeping
+## `test-load` from exercising strictly less of the roster than it did
+## before the tree: every archetype past the levy is gated now. A run
+## reporting `techs_held=0` means that coverage is gone, whatever else is
+## green — which is precisely the shape of #123's empty `raid_pool`, and
+## the reason this is printed rather than assumed.
+func _techs_ordered() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.techs_ordered
+	return total
+
+
+func _techs_held() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.state.techs.size()
+	return total
+
+
 ## The best-informed bot's resource-node count (D-061).
 ##
 ## A MAX rather than a union, for the same reason `_max_known_squads` is:

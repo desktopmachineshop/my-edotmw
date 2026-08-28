@@ -499,10 +499,13 @@ func _research_site(archetype: StringName) -> int:
 			continue
 		if float(info.get("progress", 0.0)) < 0.999:
 			continue
-		# A building already busy is a building that cannot start this —
-		# the server would refuse, and re-offering every think would spend
-		# the retry latch on a refusal that is only ever temporary.
-		if (info.get("queue", []) as Array).size() > 0:
+		# A SHORT queue is fine to join — one queue holds both kinds
+		# (D-20260827), so research waiting behind a unit or two is what
+		# should happen. Requiring an IDLE building looked right and was
+		# measurably wrong: a town centre trains gatherers continuously,
+		# so it is never idle, and the load-test bots with the same guard
+		# ordered research not once in a 300 s run.
+		if (info.get("queue", []) as Array).size() > 2:
 			continue
 		var def := BuildingSim.def_by_id(StringName(info["def_id"]))
 		if def != null and BuildingSim.archetype_of_def(def) == archetype:
