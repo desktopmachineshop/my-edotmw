@@ -111,3 +111,5 @@
 216	ao/my-edotmw-80/map-spawn-fixes	CONFLICT-RESOLVED	two status docs appended by several PRs; kept both.
 313	ao/my-edotmw-81/naval-1-water-graph	CLEAN	7
 323	ao/my-edotmw-88/naval-3-docks	CONFLICT	server.gd 
+323	ao/my-edotmw-88/naval-3-docks	CONFLICT-RESOLVED	server.gd: the same add_building() call extended by two PRs - #336 adds a civ build_time argument, #323 adds a following water-side block. Both kept; taking either side alone drops the other's feature silently.
+333	ao/my-edotmw-88/naval-4-embark	CONFLICT	client_state.gd net_protocol.gd squad_sim.gd 
