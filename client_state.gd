@@ -1194,6 +1194,38 @@ func in_lobby() -> bool:
 ## `terrain_passable` goes with it: it describes the map just left, and the
 ## next match's may be a different size, so keeping it would clamp soldiers
 ## against another world's coastline.
+## Everything a CONNECTION told this client, gone (#180).
+##
+## `leave_match` is the smaller sibling: it drops a MATCH, and everything
+## it leaves standing — the seat list, this client's player number, the
+## chat, the buildings it has ever been shown — is still true of the
+## server it is still connected to. None of that survives a disconnect,
+## because the next server is a different server and its ids start again.
+##
+## `buildings` is the one to be careful about. It is D-030's EVER-REVEALED
+## set, which the server hashes, and `docs/status/sandbox.md` records
+## exactly what carrying it across a teardown costs: 106 building desyncs
+## in 55,239 checks, present since leave-to-lobby existed and reproducible
+## in one click once a button made it easy. `leave_match` already clears
+## it; this exists so the wider reset cannot be written as "leave_match
+## plus a few fields" by somebody who does not know that.
+##
+## The session COUNTERS deliberately survive — desyncs, hash checks,
+## packets. `desync_summary()` is printed once when the process ends
+## (client.gd's `_exit_tree`), and a session that played two matches on
+## two servers should report what the session did, not what its last
+## connection did.
+func disconnected() -> void:
+	leave_match()
+	player = -1
+	squad_cap = 0
+	lobby = {}
+	chat_log = []
+	last_notice = ""
+	refusal = {}
+	_casualty_sites = []
+
+
 func leave_match() -> void:
 	welcomed = false
 	space = null
