@@ -45,6 +45,10 @@ static func _load() -> void:
 			continue
 		# FIRST wins, and the order is sorted, so a duplicate event is
 		# resolved deterministically rather than by directory order.
+		#
+		# A duplicate is a MISTAKE, not an override: nothing here reads a
+		# civ, so the second file is simply never heard. If per-civ audio
+		# is ever wanted, this is the function that grows a civ argument.
 		if not _by_event.has(def.event):
 			_by_event[def.event] = def
 

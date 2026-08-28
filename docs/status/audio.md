@@ -65,5 +65,8 @@ sound:
 oversight: real sound design (these are synth placeholders); stereo
 placement and a listener transform; music, ambience and voice lines; a
 settings SCREEN (the buses and `user://audio.cfg` persistence exist, the
-slider does not); and civ overrides — the schema supports them, no civ
-ships one, so **treat that mechanism as untested until one does**.
+slider does not); and civ overrides, which are **not supported at
+all**: there is no `civ` field and no per-civ lookup, so a duplicate
+`event` is ignored rather than resolved. An earlier draft of the decision
+entry claimed a civ could override a cue; it could not, and the entry
+carries the correction.

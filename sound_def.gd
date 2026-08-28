@@ -4,10 +4,15 @@ class_name SoundDef
 ## One row of the event -> sound table (#344).
 ##
 ## Audio is DATA, in D-047's spirit: `/audio/*.tres` says what a match
-## sounds like, and **no script may name a sound file**. A civ can
-## override an entry later by shipping its own resource with the same
-## `event`; nothing in code has to learn about it, exactly as no script
-## names a civ today (D-046 criterion 3, enforced by a test).
+## sounds like, and **no script may name a sound file** (D-046 criterion
+## 3's rule, enforced by a test).
+##
+## There is NO per-civ resolution: this resource has no `civ` field and
+## `SoundRoster.by_event()` takes no civ, so a second `.tres` with the
+## same `event` is ignored rather than chosen for somebody. Per-civ audio
+## would be a `civ` field and a two-argument lookup, the shape
+## `UnitRoster.for_civ_archetype` already has — it is a plausible
+## extension and it is not implemented.
 ##
 ## Every field here answers a question the PURE resolver
 ## (`audio_cue.gd`) asks. Nothing here is about playback — the director
