@@ -66,18 +66,20 @@ and never a renumber, so this needs the authors to reconcile it, not a merge
 resolution. `D-20260828-the-water-graph-is-the-inverse-of-the-ground.md` is
 likewise in both #313 and #340.
 
-## 2. Recommended first five merges
+## 2. Recommended first six merges
 
 | # | PR | branch | why this one first |
 |---|---|---|---|
 | 1 | #222 | `ao/my-edotmw-82/d067-siege-rule` | the D-067 re-derivation the whole balance cluster sits behind, and #243/#252 are stacked on it |
-| 2 | #243 | `ao/my-edotmw-86/red-main` | makes `test-unit` green and the docker estate runnable; four PRs are stacked on it and nothing else can be tested honestly until it lands |
+| 2 | #324 | `ao/my-edotmw-82/formations-granted` | must land BEFORE #243 (#360): it supplies the formation grants, so #243 never passes through a state where the guard fails |
+| 3 | #243 | `ao/my-edotmw-86/red-main` | makes `test-unit` green and the docker estate runnable; four PRs are stacked on it and nothing else can be tested honestly until it lands |
 | 4 | #265 | `ao/my-edotmw-80/gap-assessment` | one file, docs only — zero conflict surface |
 | 5 | #238 | `ao/my-edotmw-81/issue-153-gate-reconciles-containers` | `justfile` only, no shipped code |
 | 6 | #226 | `ao/my-edotmw-81/issue-157-second-match-state` | six files, `server.gd` only, self-contained |
 
 #222 then #243 is both the orchestrator's directive and what the graph
-requires.
+requires; **#324 goes between them** by the #360 resolution, which is free
+and removes a conflict rather than deferring one.
 
 ## 3. Merge order
 
@@ -87,16 +89,16 @@ merely touch it, so the later ones rebase onto a settled version.
 
 ### Wave 1 — make main green
 
-Blocking, and strictly in this order: #243 is stacked on #222, and #273/#294/#335/#345 are all stacked on #243. Nothing else in the queue can be tested honestly until #243 lands. **#324 is moved here from Wave 3 by
-the #360 arbitration** — it is data plus tests with no dependencies, and
-landing it immediately after #243 keeps the undecided union of formation
-grants out of `main`. Its merge is three actions, not one — see Rulings.
+Blocking, and strictly in this order: #243 is stacked on #222, and #273/#294/#335/#345 are all stacked on #243. Nothing else in the queue can be tested honestly until #243 lands. **#324 is moved here from Wave 3 and merges BEFORE
+#243** (#360). It supplies the formation grants first, so #243 — which
+drops its own four on its branch — never passes through a state where the
+formations guard fails. Free, and it removes the conflict entirely.
 
 | order | PR | base | branch | what it is |
 |---|---|---|---|---|
 | 1 | #222 | main | `ao/my-edotmw-82/d067-siege-rule` | Re-derive D-067's numbers, and ask the pair rule of LINE troops (#152) |
-| 2 | #243 | #222 | `ao/my-edotmw-86/red-main` | Make test-unit green and the docker estate runnable again (#223, #215, #208, #209) |
-| 3 | #324 | main | `ao/my-edotmw-82/formations-granted` | Two formations that belonged to nobody (#309) |
+| 2 | #324 | main | `ao/my-edotmw-82/formations-granted` | Two formations that belonged to nobody (#309) |
+| 3 | #243 | #222 | `ao/my-edotmw-86/red-main` | Make test-unit green and the docker estate runnable again (#223, #215, #208, #209) |
 | 4 | #335 | #243 | `ao/my-edotmw-86/small-fixes` | Small-fix batch: #302 #249 #253 #254 #276 |
 | 5 | #294 | #243 | `ao/my-edotmw-86/ci-pipeline` | CI: run the checks the machine can run (#290) |
 | 6 | #273 | #243 | `ao/my-edotmw-86/explore-command` | Explore: a squad that hunts fog on its own until told to stop (#120) |
@@ -551,43 +553,44 @@ They override the per-PR table below.
 
 ### #243 vs #324 — the formation grants (#309, issue #360)
 
-**ARBITRATED 2026-08-28 (orchestrator): #324 keeps the grants and
-#243's four are superseded.** A make-main-green PR should not carry design;
-the dedicated PR with the decision entry and the art-tied per-unit
-reasoning does. Both authors agreed the verdict; the arbitration settled
-the implementation.
+**CLOSED 2026-08-28. #324 owns the grants; #243 drops its four on its own
+branch.** Settled by the authors on the merits rather than on process:
+#243's grants read the units' DISPLAY NAMES, #324's read the SHIPPED
+MODELS — emberdeep's levy is a shieldwarden with a round shield
+(`shield_wall`), its heavy carries the kite shield (`testudo`).
 
-Implemented as a MERGE-ORDER resolution — **#243's branch is not
-touched** — and **#324 moves to Wave 1, immediately after #243**, so the
-undecided union does not sit in `main` between them.
+**Merge #324 BEFORE #243.** That is the whole resolution and it is free:
+#324 supplies the grants first, so #243 lands with nothing to supply and
+**is never itself red** — the make-main-green PR does not pass through a
+state where the formations guard fails. There is then no conflict, no
+merge-time deletion and no union to resolve, because the two PRs no
+longer touch the same files at all.
 
-**The resolution is TWO EXPLICIT DELETIONS plus one expected conflict —
-not "resolve the conflict #324's way".** That phrasing reaches one file of
-three: git conflicts only where both PRs touch the same line, and two of
-#243's four grants are in files #324 never opens, so they would survive
-silently and the merged result would be the UNION of five granted units
-rather than the considered three. `assert_gt(grants, 0)` passes at both,
-so green cannot tell them apart. (#243's author caught this; it is the
-declared-and-unread shape one level up.)
+**Why this was not a merge-time resolution, which is the part worth
+keeping.** The obvious instruction — "on the conflict, take #324's side"
+— reaches ONE FILE OF THREE. git conflicts only where both PRs touch the
+same line, and two of #243's four grants are in files #324 never opens,
+so they survive silently and the merged result is the UNION of five
+granted units rather than the considered three. `assert_gt(grants, 0)`
+passes at both, so green cannot tell them apart. Doing it on the branch
+removes the hazard rather than documenting around it.
 
-| unit | #324 | #243 | conflicts? |
+The five units, and why only one of them would ever have conflicted:
+
+| unit | #324 | #243 (before the drop) | would git conflict? |
 |---|---|---|---|
-| `emberdeep_heavy` | `testudo` | `shield_wall` | **yes** → take #324 |
+| `emberdeep_heavy` | `testudo` | `shield_wall` | **yes** |
 | `gildedreach_spearmen` | `shield_wall` | `shield_wall` | no (identical) |
 | `emberdeep_levy` | `shield_wall` | — | no |
-| `gravesworn_spearmen` | — | `shield_wall` | no → **delete** |
-| `stoneblood_heavy` | — | `testudo` | no → **delete** |
+| `gravesworn_spearmen` | — | `shield_wall` | **no — the silent pair** |
+| `stoneblood_heavy` | — | `testudo` | **no — the silent pair** |
 
-**So the resolution is three actions, not one: take #324's side on
-`emberdeep_heavy`, AND delete the `formations` line from
-`gravesworn_spearmen` and from `stoneblood_heavy`.** Those two are not a
-conflict and git will not offer them — whoever merges #324 removes them
-deliberately. "Take #324's side" alone leaves the union of five standing.
-
-Verified end to end on a scratch merge: with those two removed, merging
-#324 conflicts on `emberdeep_heavy` alone and the final granted set is
-exactly #324's three. `main` is green across the pair — #243 carries
-grants at its own merge point either way, so there is no red window.
+**Final granted set: #324's three** — `emberdeep_heavy=testudo`,
+`emberdeep_levy=shield_wall`, `gildedreach_spearmen=shield_wall`.
+Verified on a scratch merge before the branch fix was agreed: with the
+two silent grants removed, merging #324 conflicts on `emberdeep_heavy`
+alone and lands on exactly that set. With the drop on #243's branch and
+#324 merging first, even that conflict is gone.
 
 Worth knowing after it lands: the guard counts **`shield_wall` grantees
 only**, and there is no `testudo` grantee guard at all — testudo ends with
