@@ -130,7 +130,7 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 	var before_alive := sim.alive_snapshot()
 	var before_routed := sim.routed_snapshot()
 
-	_recover_morale_and_check_rally(sim, dt)
+	_recover_morale_and_check_rally(sim, tick, dt)
 
 	# The round is SIMULTANEOUS (D-024 amendment). Every attack this tick
 	# reads strength and rout state as they stood at the start of the
@@ -402,7 +402,7 @@ func resolve_buildings(sim: SquadSim, buildings: BuildingSim, tick: int) -> Arra
 			continue
 
 		buildings.set_last_attack_tick(building, tick)
-		_shoot_squad(sim, target, def.damage, buildings.cell_index_of(building))
+		_shoot_squad(sim, target, def.damage, buildings.cell_index_of(building), tick)
 
 	# Same before/after diff the squad pass uses, and for the same reason:
 	# it reports only what actually changed and cannot invent an event.
@@ -656,11 +656,16 @@ static func _attacker_range_cells(sim: SquadSim, attacker: int, attacker_def: Un
 ## Building fire against a squad. Flat damage — BuildingDef carries no
 ## variance, and a fortification that rolls badly is not a mechanic
 ## anybody asked for.
-func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int) -> void:
+func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int,
+		tick: int) -> void:
 	var def := sim.def_of(squad)
 	if def == null:
 		return
 
+	# Recorded on the SHOT, not on the death (#218): a squad being fired
+	# at is not steadying, whether or not this particular shell killed
+	# somebody.
+	sim.mark_hit(squad, tick)
 	var health := maxf(def.health, 0.001)
 	var accum := sim.damage_accum_of(squad) + amount / health
 	var casualties := int(floor(accum))
@@ -699,7 +704,35 @@ func _diff(sim: SquadSim, before_alive: PackedInt32Array, before_routed: PackedB
 	return events
 
 
-func _recover_morale_and_check_rally(sim: SquadSim, dt: float) -> void:
+## How long after being SHOT AT a squad recovers no morale at all (#218).
+##
+## Recovery was unconditional, and that made it a FLOOR on how fast
+## anything could frighten anybody: `morale_recovery_per_second` is 2.0 on
+## every shipped def, so any source of attrition costing less than 2.0
+## morale a second could kill a squad to the last man without its nerve
+## moving. Measured against a town centre: `net +0.588/s` for
+## the sturdiest shipped levy, `+0.235` and `+0.065` for the two next
+## flimsiest — morale RISING while the squad is annihilated. (The units
+## are named in the decision entry and in tests/, which is where a civ id
+## is allowed to appear: D-046 criterion 3.)
+##
+## Two seconds, not the whole engagement: a squad that has broken contact
+## must recover, or a rout can never rally (D-019) and the flee-and-return
+## loop that morale exists to produce stops happening. At the 10 Hz tick
+## that is 20 ticks, and it is comfortably longer than the slowest thing
+## in the roster that shoots — a town centre at 1.4 s — so a squad under
+## continuous fire re-arms it long before it lapses. Keying it on DAMAGE
+## rather than on casualties is what makes that true without the window
+## having to outlast the gap between deaths.
+##
+## Deliberately NOT building-specific, though #218 was reported about a
+## tower. The defect is that recovery ignores whether anything is
+## happening; a rule that only noticed fortifications would leave slow
+## melee attrition reading the same wrong way.
+const MORALE_SUPPRESSED_TICKS := 20
+
+
+func _recover_morale_and_check_rally(sim: SquadSim, tick: int, dt: float) -> void:
 	for i in range(sim.squad_count()):
 		if sim.alive_of(i) <= 0:
 			continue
@@ -709,9 +742,17 @@ func _recover_morale_and_check_rally(sim: SquadSim, dt: float) -> void:
 		# A general's presence steadies (D-20260819-a-general-holds-the-
 		# line): morale returns at double rate inside an allied aura.
 		var steadied := 2.0 if _near_allied_general(sim, i) else 1.0
-		var morale := minf(sim.morale_of(i) \
-			+ def.morale_recovery_per_second * steadied * dt, def.morale)
-		sim.set_morale(i, morale)
+		# Nothing comes back while men are still falling (#218). The rally
+		# check below still runs: a squad pinned and dying stays routed,
+		# which is the honest answer, and it is what lets a fortification
+		# break a squad through the same `_break_squad` its own comment
+		# has always claimed it did.
+		var under_fire := sim.ticks_since_hit(i, tick) < MORALE_SUPPRESSED_TICKS
+		var morale := sim.morale_of(i)
+		if not under_fire:
+			morale = minf(morale + def.morale_recovery_per_second * steadied * dt,
+				def.morale)
+			sim.set_morale(i, morale)
 		if sim.is_routed(i) and morale > def.rout_threshold + def.rout_rally_margin:
 			sim.set_routed(i, false)
 
@@ -890,6 +931,9 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# And the slope has a say.
 	total_damage *= _height_mult(sim, attacker, defender)
 
+	# Recorded on the BLOW, not on the death (#218), exactly as building
+	# fire does: a squad in a melee is not steadying between casualties.
+	sim.mark_hit(defender, tick)
 	# Fractional damage carries in the DEFENDER's accumulator (D-024);
 	# casualties only ever leave it as a whole-number decrement to alive.
 	var defender_health := maxf(defender_def.health, 0.001)
