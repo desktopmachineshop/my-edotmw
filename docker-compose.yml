@@ -22,12 +22,19 @@ services:
     # server keeps the `server` network alias that `compose up` gives it
     # and `compose run` does not: bots resolve `server:4433`, and a
     # scenario run must not quietly change how they reach it.
+    # EDOTMW_PRESET picks the TERRAIN, and exists for the third time for
+    # the same reason: naval integration verification needs the estate
+    # run on a map with water in it, and until this there was no way to
+    # ask for one — `islands` survives in /terrain but every harness
+    # hard-coded a MapConfig whose preset is land. Empty means "whatever
+    # the MapConfig says", so every existing run is unchanged.
+    #
     # EDOTMW_MAP picks the MapConfig, and exists for the same reason:
     # `just test-load` brings the server up through this service, so the
     # only way to load-test a map other than the default is from here.
     # #111 needed it — server memory at 20 players had never been taken
     # on the top rung of the ladder (res://maps/huge.tres).
-    command: ["--path", ".", "server.tscn", "--", "--scenario=${EDOTMW_SCENARIO:-}", "--map=${EDOTMW_MAP:-res://maps/default.tres}"]
+    command: ["--path", ".", "server.tscn", "--", "--scenario=${EDOTMW_SCENARIO:-}", "--map=${EDOTMW_MAP:-res://maps/default.tres}", "--preset=${EDOTMW_PRESET:-}"]
     volumes:
       - .:/work
       - ./.godot-container:/work/.godot
