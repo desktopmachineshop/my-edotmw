@@ -1,0 +1,45 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"squad_cap_bonus"
+mode = "add"
+value = 5.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.2
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"*"
+field = &"move_speed"
+mode = "multiply"
+value = 1.05
+
+[resource]
+script = ExtResource("1")
+id = &"windmarch_breaking"
+display_name = "The Clans Confederate"
+description = "No single clan can take a wall. Every clan, arriving on the same morning, does not have to."
+line = &"breaking"
+civ = &"windmarch"
+epoch = 4
+defining = true
+research_at = &"barracks"
+requires = Array[StringName]([&"masonry"])
+cost_food = 1200
+cost_wood = 800
+cost_gold = 600
+cost_stone = 250
+research_time = 120.0
+unit_effects = Array[Resource]([SubResource("e1"), SubResource("e2")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([SubResource("e0")])

@@ -108,8 +108,19 @@ var _facing := PackedInt32Array()
 # Ids whose replicated state changed and have not been sent yet.
 var _dirty := {}
 
-# building -> Array of { "def_id": StringName, "remaining": float }
+# building -> Array of { "def_id": StringName, "remaining": float,
+#                        "kind": KIND_UNIT | KIND_TECH }
+#
+# One queue, two kinds of entry, so a building either TRAINS or RESEARCHES
+# and never both (`D-20260827-the-tree-is-the-ladder`, and D-069's
+# "occupying it for the duration" — which is what stops the tree being
+# free). A second queue beside this one would need a second definition of
+# "is this building busy", and `CivDef.production_time` would have to be
+# applied in both.
 var _queues := {}
+
+const KIND_UNIT := 0
+const KIND_TECH := 1
 
 # Which squad founded each building, or -1. Parallel to the rest.
 var _builder := PackedInt32Array()
@@ -543,6 +554,65 @@ static func is_building_id(wire: int) -> bool:
 
 ## Can this building make that unit at all? Data again (D-010): the
 ## `produces` list on the BuildingDef, never a match statement here.
+## What TYPE of building this def is, with `id` as the fallback
+## (`D-20260827-a-research-site-is-a-building`).
+##
+## The fallback is what made `BuildingDef.archetype` free to add: every
+## shipped def leaves the field empty and answers with its own id, so
+## `barracks.tres` is archetype `barracks` and nothing had to be edited.
+## Only the per-civ research sites — six civs' stables and forges, which
+## cannot share one id in one directory — set it.
+##
+## One definition of the fallback, here, because a second copy written
+## `def.archetype if def.archetype != &"" else def.id` at a call site is
+## the D-058/D-065 family waiting to happen.
+static func archetype_of_def(def: BuildingDef) -> StringName:
+	if def == null:
+		return &""
+	return def.archetype if def.archetype != &"" else def.id
+
+
+func archetype_of(building: int) -> StringName:
+	return archetype_of_def(def_of(building))
+
+
+## Every BuildingDef `civ` may found, in the roster's stable id order.
+##
+## `UnitRoster._available_to`'s sibling: a def is available to a civ when
+## it names that civ or is neutral. Before the research sites every def
+## was neutral, so `all_defs()` was the answer and four callers used it
+## directly — the AI, the client's build menu, the placement ghost and the
+## tests. Each of those now has to ask this instead, or a Thornwood player
+## is offered a Deep Forge.
+static func defs_for_civ(civ: StringName) -> Array:
+	var out := []
+	for def in all_defs():
+		if def.civ == civ or def.civ == &"neutral":
+			out.append(def)
+	return out
+
+
+## This civ's version of a building archetype, or null if it has none —
+## `UnitRoster.for_civ_archetype`'s exact sibling.
+##
+## An exact civ match WINS over neutral, checked explicitly rather than by
+## id order. There is deliberately no neutral `stables.tres` or
+## `forge.tres` (a test asserts it), because a neutral def SHADOWS every
+## per-civ one under id-order resolution — which is how the per-civ
+## gatherers went quietly absent in
+## `D-20260823-the-opening-is-a-crew-and-a-general`.
+static func for_civ_archetype(civ: StringName, archetype: StringName) -> BuildingDef:
+	var fallback: BuildingDef = null
+	for def in all_defs():
+		if archetype_of_def(def) != archetype:
+			continue
+		if def.civ == civ:
+			return def
+		if def.civ == &"neutral" and fallback == null:
+			fallback = def
+	return fallback
+
+
 ## A building site cannot produce, and neither can rubble.
 ## `produces` lists ARCHETYPES, not unit ids (D-047).
 ##
@@ -556,6 +626,19 @@ func can_produce(building: int, archetype: StringName) -> bool:
 		return false
 	var def := def_of(building)
 	return def != null and def.produces.has(archetype)
+
+
+## Is this the kind of building `tech` is researched at, and is it able to
+## do anything at all right now?
+##
+## Deliberately says nothing about whether the PLAYER may research it —
+## that is `ResearchState.can_research`, and keeping the two apart is what
+## lets the server ask "is this a valid site" and "is this a valid tech
+## for you" as separate refusals with separate messages.
+func can_research(building: int, tech: TechDef) -> bool:
+	if tech == null or is_destroyed(building) or not is_complete(building):
+		return false
+	return archetype_of(building) == tech.research_at
 
 
 ## Queue a unit. The CALLER has already taken the payment and checked the
@@ -581,10 +664,52 @@ func enqueue(building: int, def: UnitDef, instant: bool = false,
 		_queues[building] = []
 	(_queues[building] as Array).append({
 		"def_id": def.id, "remaining": 0.001 if instant else maxf(build_time, 0.001),
+		"kind": KIND_UNIT,
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.
 	_dirty[building] = true
+
+
+## Queue a tech at this building (`D-20260827-the-tree-is-the-ladder`).
+##
+## The caller has already taken the payment and asked `ResearchState`
+## whether this player may — `enqueue`'s rule, for `enqueue`'s reason:
+## one place decides affordability rather than two that can disagree.
+##
+## The entry records the tech's LINE, not its id, because that is what
+## every gate in the game names and what the granting call takes. Resolving
+## an id back to a line on completion would be a second lookup that could
+## return a different civ's tech.
+##
+## `research_time` is the time this player's CIV takes, resolved by the
+## caller through `CivDef.production_time` exactly as a unit's build time
+## is — so a civ that trains fast also researches fast, through the one
+## definition of that knob.
+func enqueue_tech(building: int, tech: TechDef, instant: bool = false,
+		research_time: float = -1.0) -> void:
+	if research_time < 0.0:
+		research_time = tech.research_time
+	if not _queues.has(building):
+		_queues[building] = []
+	(_queues[building] as Array).append({
+		"def_id": tech.line,
+		"remaining": 0.001 if instant else maxf(research_time, 0.001),
+		"kind": KIND_TECH,
+	})
+	_dirty[building] = true
+
+
+## Every tech LINE queued at this building, finished or not — so a razed
+## research site can hand its unfinished lines back to the player
+## (`ResearchState.abandon`) instead of locking them as permanently
+## in progress.
+func queued_tech_lines(building: int) -> Array:
+	var out := []
+	for item in (_queues.get(building, []) as Array):
+		if int(item.get("kind", KIND_UNIT)) == KIND_TECH:
+			out.append(item["def_id"])
+	return out
 
 
 func queue_length(building: int) -> int:
@@ -609,7 +734,8 @@ func advance_production(dt: float) -> Array:
 		head["remaining"] = float(head["remaining"]) - dt
 		if float(head["remaining"]) <= 0.0:
 			queue.pop_front()
-			done.append({"building": building, "def_id": head["def_id"]})
+			done.append({"building": building, "def_id": head["def_id"],
+				"kind": int(head.get("kind", KIND_UNIT))})
 			# Queue shortened — tell clients, or the panel keeps showing a
 			# unit that already walked out of the door.
 			_dirty[building] = true
@@ -646,8 +772,10 @@ func info_entries(ids: Array) -> Array:
 			continue
 		var queue: Array = _queues.get(id, [])
 		var queued_ids := []
+		var queued_kinds := []
 		for item in queue:
 			queued_ids.append(String(item["def_id"]))
+			queued_kinds.append(int(item.get("kind", KIND_UNIT)))
 		out.append({
 			"id": wire_id(id),
 			"def_id": String(_defs[id].id),
@@ -660,6 +788,11 @@ func info_entries(ids: Array) -> Array:
 			"health_fraction": _health[id] / maxf(_defs[id].max_health, 0.001),
 			"head_remaining": float(queue[0]["remaining"]) if not queue.is_empty() else 0.0,
 			"queue": queued_ids,
+			# Parallel to `queue`, because an entry's STRING is an
+			# archetype for a unit and a tech LINE for a research — the
+			# same field meaning two things, which the client has to be
+			# able to tell apart to label the panel.
+			"queue_kinds": queued_kinds,
 			# So the client can draw where troops will muster.
 			"rally": space.index(rally_of(id)),
 			# D-076. Harmless defaults (false/MANUAL) on every non-gate

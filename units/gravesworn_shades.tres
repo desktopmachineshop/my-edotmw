@@ -8,6 +8,7 @@ id = &"gravesworn_shades"
 display_name = "Barrow Shades"
 civ = &"gravesworn"
 archetype = &"shades"
+requires_tech = &"reckoning"
 squad_size = 20
 health = 38.0
 damage = 7.5

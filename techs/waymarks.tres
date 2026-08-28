@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"vision_range"
+mode = "add"
+value = 4.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"move_speed"
+mode = "multiply"
+value = 1.08
+
+[resource]
+script = ExtResource("1")
+id = &"waymarks"
+display_name = "Waymarks"
+description = "Cairns, blazes and a habit of looking up. A crew that can see the next stand of trees does not walk back to the last one."
+line = &"waymarks"
+civ = &"neutral"
+epoch = 1
+defining = false
+research_at = &"town_centre"
+requires = Array[StringName]([&"settling"])
+cost_food = 100
+cost_wood = 60
+cost_gold = 0
+cost_stone = 0
+research_time = 25.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

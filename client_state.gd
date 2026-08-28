@@ -48,6 +48,58 @@ var server_tick_at: float = 0.0
 var wallet := PackedInt32Array()
 var wallet_updates: int = 0
 
+## This player's own researched tech LINES and the epoch they put them in
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## Own and allies' only. There is nowhere to put an enemy's, deliberately,
+## for the reason there is nowhere to put their wallet: the protocol never
+## carries it, so no future caller can leak one. And it must never enter
+## `composition_hash` — the server hashes `visible_to(player)`, and a
+## client that hashed an upgrade it was never told about would desync a
+## perfectly healthy system (D-099's ghost rule, different field).
+##
+## The set arrives WHOLE on every change, so this is an assignment and not
+## a merge; a merge would leave a client that missed a packet permanently
+## one tech behind with nothing able to notice.
+var techs: Array[StringName] = []
+var epoch: int = 1
+var tech_updates: int = 0
+
+
+## Has this player researched `line`? Empty is "no tech needed", which is
+## every unit and building that shipped before the tree — so a client
+## talking to a server with no `/techs` shows exactly the menu it always
+## did.
+func has_tech(line: StringName) -> bool:
+	return line == &"" or techs.has(line)
+
+
+var _research_view: ResearchState = null
+var _research_view_at: int = -1
+
+
+## What this client knows it has, as the SAME object the server reasons
+## with (`D-20260827-the-tree-is-the-ladder`).
+##
+## The point is that the client does not get its own copy of "what may I
+## research next". `ResearchState.can_research` holds the prerequisite,
+## epoch and already-known rules; the research panel and the AI both ask
+## it, and so does the server. Three readers, one definition — which is
+## the D-058/D-065 lesson (a rule written out twice is two rules free to
+## drift) applied before it costs anything rather than after.
+##
+## Rebuilt only when `tech_updates` moves, so the panel asking every frame
+## costs one integer comparison.
+func research_view() -> ResearchState:
+	if _research_view != null and _research_view_at == tech_updates:
+		return _research_view
+	var view := ResearchState.new()
+	for line in techs:
+		view.grant(player, line)
+	_research_view = view
+	_research_view_at = tech_updates
+	return view
+
 ## The most recent thing the server refused, and why (D-002 owns the
 ## rules, so it owns the explanation).
 var last_notice := ""
@@ -366,6 +418,11 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_WALLET:
 			wallet = NetProtocol.decode_wallet(data)
 			wallet_updates += 1
+		NetProtocol.S2C_TECH_STATE:
+			var state := NetProtocol.decode_tech_state(data)
+			epoch = int(state["epoch"])
+			techs.assign(state["lines"])
+			tech_updates += 1
 		NetProtocol.S2C_BUILDING_INFO:
 			_handle_building_info(data)
 		NetProtocol.S2C_BUILDING_STATE_HASH:

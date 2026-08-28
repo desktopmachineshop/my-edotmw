@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"carry_capacity"
+mode = "add"
+value = 4.0
+
+[resource]
+script = ExtResource("1")
+id = &"wide_baskets"
+display_name = "Wide Baskets"
+description = "A crew that walks back less often is a crew that is somewhere else more of the time."
+line = &"wide_baskets"
+civ = &"neutral"
+epoch = 1
+defining = false
+research_at = &"storehouse"
+requires = Array[StringName]([&"settling"])
+cost_food = 120
+cost_wood = 80
+cost_gold = 0
+cost_stone = 0
+research_time = 25.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

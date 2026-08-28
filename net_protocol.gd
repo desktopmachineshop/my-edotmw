@@ -66,11 +66,6 @@ const OPCODE_RANGES := {
 ## Removing one without adding the constant frees a number somebody is
 ## still using, so treat this as a promise rather than a note.
 const OPCODES_RESERVED := {
-	# #225, the tech tree. Was 39/40; moved into the techs RANGE rather
-	# than merely to the next free pair, so a fourth tech message cannot
-	# collide with a fourth core one.
-	"C2S_ORDER_RESEARCH": 120,
-	"S2C_TECH_STATE": 121,
 }
 
 const OPCODES := {
@@ -119,6 +114,12 @@ const OPCODES := {
 	# of these.
 	"C2S_HELLO": 42,
 	"S2C_REFUSED": 43,
+	# #225, the tech tree, graduating out of OPCODES_RESERVED in the same
+	# commit that declares its constants — which is what that table asks
+	# for. These were 39 and 40 until #362; 39 is C2S_SURRENDER above, so
+	# the reservation is why this is a rebase and not a wire collision.
+	"C2S_ORDER_RESEARCH": 120,
+	"S2C_TECH_STATE": 121,
 	"S2C_WALLET": 9,
 	"S2C_NOTICE": 15,
 	"S2C_NODES": 17,
@@ -212,6 +213,16 @@ const C2S_ORDER_STANCE := OPCODES["C2S_ORDER_STANCE"]
 ## which is exactly what the note on it promised would happen.
 const C2S_ORDER_EXPLORE := OPCODES["C2S_ORDER_EXPLORE"]
 
+## Start researching a tech LINE at one of your buildings
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## The wire carries a LINE, never a tech id, for exactly the reason
+## C2S_ORDER_PRODUCE carries an archetype: the server resolves it against
+## the acting player's civ, so a client structurally cannot name another
+## civ's version of a tech and D-046 criterion 4 needs no check anyone has
+## to remember to write.
+const C2S_ORDER_RESEARCH := OPCODES["C2S_ORDER_RESEARCH"]
+
 const C2S_CHEAT_ADD_RESOURCES := OPCODES["C2S_CHEAT_ADD_RESOURCES"]
 const C2S_CHEAT_SPAWN_UNIT := OPCODES["C2S_CHEAT_SPAWN_UNIT"]
 const C2S_CHEAT_SPAWN_BUILDING := OPCODES["C2S_CHEAT_SPAWN_BUILDING"]
@@ -234,6 +245,15 @@ const S2C_WALLET := OPCODES["S2C_WALLET"]
 const S2C_NOTICE := OPCODES["S2C_NOTICE"]
 const S2C_NODES := OPCODES["S2C_NODES"]
 const S2C_NODES_DEPLETED := OPCODES["S2C_NODES_DEPLETED"]
+
+## What THIS PLAYER has researched, and which epoch that puts them in
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## Own lines and allies' (D-050 shares a front), and nobody else's. An
+## enemy's research is exactly the thing a scout is for, and a client that
+## learned it would be able to hash an upgrade the server never told it
+## about — D-099's ghost rule pointed at a different field.
+const S2C_TECH_STATE := OPCODES["S2C_TECH_STATE"]
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -607,11 +627,17 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		buf.put_float(float(entry.get("head_remaining", 0.0)))
 		buf.put_u32(int(entry.get("rally", 0)))
 		var queue: Array = entry.get("queue", [])
+		var queue_kinds: Array = entry.get("queue_kinds", [])
 		buf.put_u16(queue.size())
-		for queued in queue:
-			var queued_id := String(queued).to_utf8_buffer()
+		for i in range(queue.size()):
+			var queued_id := String(queue[i]).to_utf8_buffer()
 			buf.put_u16(queued_id.size())
 			buf.put_data(queued_id)
+			# A queue entry's STRING is an archetype when it is a unit and
+			# a tech LINE when it is a research, so the client cannot tell
+			# them apart without this. Defaults to KIND_UNIT, which is
+			# every entry any build before the tech tree ever queued.
+			buf.put_u8(int(queue_kinds[i]) if i < queue_kinds.size() else 0)
 		# D-076: harmless (false/MANUAL) on every non-gate building — sent
 		# uniformly, same as every other per-building field above.
 		buf.put_u8(1 if bool(entry.get("gate_open", false)) else 0)
@@ -656,11 +682,14 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 			"rally": buf.get_u32(),
 		}
 		var queue := []
+		var queue_kinds := []
 		for _q in range(buf.get_u16()):
 			var queued_length := buf.get_u16()
 			var queued_bytes: PackedByteArray = buf.get_data(queued_length)[1]
 			queue.append(queued_bytes.get_string_from_utf8())
+			queue_kinds.append(buf.get_u8())
 		entry["queue"] = queue
+		entry["queue_kinds"] = queue_kinds
 		entry["gate_open"] = buf.get_u8() == 1
 		entry["gate_mode"] = int(buf.get_u8())
 		entry["facing"] = int(buf.get_u8())
@@ -912,6 +941,70 @@ static func decode_notice(data: PackedByteArray) -> String:
 
 ## ORDER_PRODUCE: a building is told to make a unit (D-028/D-031).
 ## Carries the building's wire id and the unit's def id.
+## ORDER_RESEARCH: start a tech line at a building you own.
+##
+## Deliberately the same shape as ORDER_PRODUCE — a building and a name —
+## because it is the same kind of act: spending a building's time on
+## something the server resolves against your civ. The two are separate
+## opcodes rather than one flag on ORDER_PRODUCE for ORDER_RALLY and
+## ORDER_BUILDING_TARGET's reason: single-purpose building orders, not one
+## overloaded envelope.
+static func encode_order_research(building_wire_id: int, line: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_RESEARCH)
+	buf.put_u32(building_wire_id)
+	var name_bytes := line.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_order_research(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var building := buf.get_u32()
+	var length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"building": building, "line": name_bytes.get_string_from_utf8()}
+
+
+## TECH_STATE: this player's own researched lines and their epoch.
+##
+## Sent on CHANGE, never per tick — a player researches perhaps twenty
+## things in ninety minutes, so this is among the cheapest messages on the
+## wire and D-003's "an idle thing costs nothing" claim is untouched.
+##
+## The whole set every time rather than a delta. It is at most a few
+## dozen short strings, and a delta stream would need a sequence number
+## the curve protocol deliberately does not have (D-042's note that
+## in-order delivery is load-bearing) — a dropped delta would leave a
+## client permanently one tech behind with nothing able to notice.
+static func encode_tech_state(epoch: int, lines: Array) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_TECH_STATE)
+	buf.put_u32(epoch)
+	buf.put_u16(lines.size())
+	for line in lines:
+		var name_bytes := String(line).to_utf8_buffer()
+		buf.put_u16(name_bytes.size())
+		buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_tech_state(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var epoch := buf.get_u32()
+	var lines := []
+	for i in range(buf.get_u16()):
+		var length := buf.get_u16()
+		var name_bytes: PackedByteArray = buf.get_data(length)[1]
+		lines.append(StringName(name_bytes.get_string_from_utf8()))
+	return {"epoch": epoch, "lines": lines}
+
+
 static func encode_order_produce(building_wire_id: int, unit_def_id: String) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_ORDER_PRODUCE)

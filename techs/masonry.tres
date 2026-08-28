@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"max_health"
+mode = "multiply"
+value = 1.2
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"build_time"
+mode = "multiply"
+value = 0.9
+
+[resource]
+script = ExtResource("1")
+id = &"masonry"
+display_name = "Masonry"
+description = "Ground you have decided to keep is ground worth cutting stone for."
+line = &"masonry"
+civ = &"neutral"
+epoch = 3
+defining = true
+research_at = &"town_centre"
+requires = Array[StringName]([&"holding"])
+cost_food = 400
+cost_wood = 300
+cost_gold = 150
+cost_stone = 0
+research_time = 50.0
+unit_effects = Array[Resource]([])
+building_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+civ_effects = Array[Resource]([])

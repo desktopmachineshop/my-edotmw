@@ -9,6 +9,32 @@ class_name BuildingDef
 @export var display_name: String = ""
 @export var civ: StringName = &"neutral"
 
+## The shared idea of a building type, `UnitDef.archetype`'s analogue
+## (`D-20260827-a-research-site-is-a-building`).
+##
+## EMPTY MEANS "my own id", which is what makes this free: every shipped
+## def keeps its exact current meaning without being edited, because
+## `barracks.tres` has id `barracks` and therefore archetype `barracks`.
+## `produces`, `built_by`, `upgrade_from` and the build menu already name
+## ids that are also types, so none of them moved.
+##
+## It exists because two archetypes became PER-CIV — the stables and the
+## forge, which are research SITES — and six civs' versions cannot share
+## one id in one directory. `TechDef.research_at` names this, never an id,
+## so a tech can say "at the forge" for four civs that call it four
+## different things.
+##
+## Read through `BuildingSim.archetype_of`, never directly, so the
+## fallback has one definition.
+@export var archetype: StringName = &""
+
+## The tech LINE that makes this building foundable, or empty for
+## "always" (`D-20260827-the-tree-is-the-ladder`). `UnitDef.requires_tech`'s
+## sibling, with the same safe-empty default: every building that ships
+## today leaves it empty, so the build menu a player already knows is
+## unchanged at epoch 1.
+@export var requires_tech: StringName = &""
+
 @export var max_health: float = 400.0
 
 ## Seconds of construction at full rate. Replicated as a curve rather

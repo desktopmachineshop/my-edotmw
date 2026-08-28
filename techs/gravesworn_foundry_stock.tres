@@ -1,0 +1,80 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"breaker"
+field = &"health"
+mode = "multiply"
+value = 1.25
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"engine"
+field = &"health"
+mode = "multiply"
+value = 1.25
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"ram"
+field = &"health"
+mode = "multiply"
+value = 1.25
+
+[sub_resource type="Resource" id="e3"]
+script = ExtResource("2")
+target = &"bombard"
+field = &"health"
+mode = "multiply"
+value = 1.25
+
+[sub_resource type="Resource" id="e4"]
+script = ExtResource("2")
+target = &"breaker"
+field = &"cost_stone"
+mode = "multiply"
+value = 0.85
+
+[sub_resource type="Resource" id="e5"]
+script = ExtResource("2")
+target = &"engine"
+field = &"cost_stone"
+mode = "multiply"
+value = 0.85
+
+[sub_resource type="Resource" id="e6"]
+script = ExtResource("2")
+target = &"ram"
+field = &"cost_stone"
+mode = "multiply"
+value = 0.85
+
+[sub_resource type="Resource" id="e7"]
+script = ExtResource("2")
+target = &"bombard"
+field = &"cost_stone"
+mode = "multiply"
+value = 0.85
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_foundry_stock"
+display_name = "Kiln-Fired Frames"
+description = "Bone, fired twice, holds better than the timber it replaced."
+line = &"foundry_stock"
+civ = &"gravesworn"
+epoch = 4
+defining = false
+research_at = &"forge"
+requires = Array[StringName]([&"breaking"])
+cost_food = 400
+cost_wood = 350
+cost_gold = 200
+cost_stone = 250
+research_time = 55.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2"), SubResource("e3"), SubResource("e4"), SubResource("e5"), SubResource("e6"), SubResource("e7")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
