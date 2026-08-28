@@ -873,6 +873,10 @@ func _bind_terrain_fields() -> void:
 	var surface := fields.surface
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(space, surface, x, z)
+	# The field itself as well as a sampler over it (#245): with it,
+	# per-man derivation reads height and footing from one cell
+	# derivation rather than two. Same numbers, same mesh, same source.
+	_state.terrain_surface = surface
 	# The other half of the terrain sample (#97): a formation slot that
 	# lands in the sea or up a mountain is pulled back onto ground the
 	# squad could actually walk on, instead of being stamped there and

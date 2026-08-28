@@ -989,6 +989,15 @@ func _sampler_for(squad: int, now: float) -> Callable:
 ## wire (D-049), and both sides derive them from the identical numbers.
 var terrain_passable := PackedByteArray()
 
+## The SURFACE FIELD the ground is drawn from, when this client has it.
+##
+## Held beside the sampler rather than instead of it: with the field in
+## hand, `Formation` reads a man's height and his footing from ONE cell
+## derivation (#245) instead of converting the same position to the same
+## hex twice. Empty is the old path, exactly as before, which is what
+## every preview and every test still takes.
+var terrain_surface := PackedFloat32Array()
+
 
 ## Hash of the composition this client will derive from, in the format
 ## SquadSim produces for the server side. Compared on every STATE_HASH.
@@ -1045,7 +1054,8 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
 		_sampler_for(squad, now), max_soldiers, terrain_passable,
-		files_of(squad), facing_angle_of(squad))
+		files_of(squad), facing_angle_of(squad), terrain_surface,
+		walkway_height_of(squad, now) if tier_of(squad) == 1 else 0.0)
 
 
 ## Total soldiers this client would be drawing — the number that makes
@@ -1174,6 +1184,7 @@ func leave_match() -> void:
 	space = null
 	map_settings = {}
 	terrain_sampler = Callable()
+	terrain_surface = PackedFloat32Array()
 	terrain_passable = PackedByteArray()
 
 	squads = PackedInt32Array()

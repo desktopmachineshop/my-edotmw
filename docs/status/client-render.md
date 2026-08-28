@@ -134,8 +134,17 @@ build measured 130.61 and 220.83 ms while the host filled up: **11.94 ->
 10.23, 12.08 -> 10.20 and 14.44 -> 12.77 µs per man, -12% to -16%** — about
 1.7 µs off every drawn man, ~7 ms of an 80 ms derivation phase.
 
-**Left as decisions rather than patched**: the clamp's per-soldier cost
-(#244 — #97's own entry names the per-squad footprint alternative, and it
-moves where men stand), and the fact that the clamp and the sampler
-derive the same cell twice from the same point (#245 — merging them is an
-interface change to `ClientState.terrain_sampler`).
+**#245 is done**: the clamp and the ground sampler were deriving the same
+hex from the same point one line apart, per drawn man, per frame. One
+derivation now — `TerrainChunk.height_in_cell` is the interpolation split
+out of `height_at`, and `Formation` takes the surface field and finds the
+cell once. Measured over three interleaved pairs at 1,000 squads:
+derivation **81.3 -> 61.9 ms, -24%**, about 3.2 µs off every drawn man.
+Bit-identical, pinned by comparing 21,096 men against the path it
+replaces with the clamp firing on 3,134 of them — and the FIRST version
+was not, because it packed `(height, passable)` into a `Vector2`, which
+is float32. A packed return value is a silent cast.
+
+**Left as a decision rather than patched**: the clamp's own per-soldier
+cost (#244 — #97's entry names the per-squad footprint alternative, and
+it moves where men stand).

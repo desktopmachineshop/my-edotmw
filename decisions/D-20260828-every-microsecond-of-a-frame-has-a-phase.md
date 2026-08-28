@@ -185,7 +185,8 @@ calls rather than optimisations:
   `TorusSpace.disk_offsets`, not a faster per-soldier one"*. That changes
   where men stand near a shoreline, which is a rule a player can see, so
   it is a decision and not a patch. Filed as #244.
-- **The sampler and the clamp compute the same cell twice.**
+- **The sampler and the clamp compute the same cell twice.** *(Taken —
+  see the amendment below.)*
   `TerrainChunk.height_at` derives the containing cell from (x, z), and
   `_stands_on_passable` derives it again from the same point one line
   earlier. Merging them would take roughly the smaller of the two costs
@@ -250,3 +251,54 @@ would make the benchmark's frame the client's frame and move all of these
 numbers up. Or either of #244/#245 being taken, both of which move the
 two largest phases and both of which must re-take this table rather than
 argue from it.
+
+---
+
+**Amendment, 2026-08-28 — #245 is taken, and it is worth 24% of the
+derivation phase.**
+
+A man's footing and his height are answers about the SAME hex, and each
+was finding that hex separately: `Formation._stands_on_passable` and then
+`TerrainChunk.height_at`, from the same world position, one line apart,
+for every drawn man every frame. `world_to_axial` + `round_axial` +
+`index` is the expensive part of both and the part they share.
+
+`TerrainChunk.height_in_cell` is the interpolation split out from
+`height_at`, so a caller that has already found the cell can ask for the
+rest without finding it again; `Formation.soldier_transforms_sampled`
+takes the SURFACE FIELD (and the wall-tier bump) and derives the cell
+once. On open ground — where almost every man is, almost always — that is
+now the only conversion he costs. A man over water or rock still pays for
+his pull-back probes, which is the rare path and the one the loop is
+allowed to be slow in.
+
+Measured at 1,000 squads / 4,385 drawn men, `--decorate=0` to isolate the
+phase, native, Intel Iris Xe, three interleaved pairs seconds apart:
+
+| pass | two derivations | one derivation | |
+|---|---|---|---|
+| 1 | 83.14 ms (18.99 us/man) | 65.88 ms (15.05) | **-20.8%** |
+| 2 | 88.81 ms (20.28) | 58.99 ms (13.48) | **-33.6%** |
+| 3 | 71.88 ms (16.42) | 60.96 ms (13.93) | **-15.2%** |
+
+Mean **81.3 -> 61.9 ms, -24%** of the derivation phase: about 3.2 us off
+every drawn man.
+
+Three things came with it, none of them about arithmetic:
+
+- **The Callable path is kept**, and taken by every caller that has only
+  a sampler — the previews, the tests, anything with a synthetic ground.
+  Nothing had to change to keep working, which is what made this safe to
+  do at all.
+- **A second closure per squad per frame is gone.**
+  `ClientState._sampler_for` wrapped the sampler in a NEW lambda for
+  every tier-1 squad every frame, purely to add the wall-tier bump
+  (D-076). The bump is an argument now.
+- **The first version returned `(height, passable)` in a `Vector2` and
+  was NOT bit-identical**, because `Vector2` holds float32 and
+  `height_at` returns a float64. It made no difference to a drawn man
+  (`Transform3D.origin` is float32 anyway) and the equivalence test
+  caught it regardless — 21,096 men compared over real generated terrain,
+  the clamp firing on 3,134 of them. **A packed return value is a silent
+  cast**; the shipped shape returns the height as a float and lets the
+  caller keep the index it already has.
