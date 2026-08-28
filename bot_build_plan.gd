@@ -175,6 +175,25 @@ static func _resolve(archetype: StringName, civ: StringName) -> UnitDef:
 	var def := UnitRoster.for_civ_archetype(civ, archetype)
 	if def != null:
 		return def
+	# The any-civ fallback is for the CIV-LESS caller and nothing else.
+	#
+	# A load-test bot never learns its civ — `server.gd` broadcasts the
+	# lobby only while there is one and `test-load` starts a match without
+	# one — so it asks with `civ = &""` and needs SOME def to size its
+	# request against. A caller that names a real civ is a different
+	# question, and answering it with another civ's unit produces an order
+	# the server refuses (D-047 resolves per civ), which reads as a bot
+	# that will not train rather than as a bad lookup.
+	#
+	# Latent until the naval roster: this walks `produces` in order and
+	# returns the first archetype that resolves, and every pre-naval
+	# building's list STARTS with one every civ fields (`gatherers`,
+	# `levy`), so the fallback was never reached with a real civ. A dock
+	# offers `warship` first and two civs field a `warboat` instead — so
+	# those two were handed a third civ's hull. (No civ is named here:
+	# `tests/test_civs.gd` scans this file for civ ids, D-046 criterion 3.)
+	if civ != &"":
+		return null
 	for candidate in UnitRoster.load_all():
 		if candidate.archetype == archetype:
 			return candidate

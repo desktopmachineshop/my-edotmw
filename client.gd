@@ -1902,6 +1902,21 @@ var _minimap_rect: TextureRect = null
 ## Its position comes from `_layout_hud` and lands in `_minimap_bounds`.
 var _minimap_size := Vector2(MINIMAP_WIDTH_PX, MINIMAP_WIDTH_PX)
 var _minimap_bounds := Rect2()
+
+## The two crop uniforms a CLICK has to read back, kept beside the rect
+## rather than only pushed into the shader (#130).
+##
+## `_minimap_crop_centre` is where the circle's centre sits inside
+## `_minimap_bounds` (geometry, set on every resize); `_minimap_focus_uv`
+## is which part of the map is drawn there (set every frame from the
+## camera). Between them they are the whole difference between the cell a
+## player is looking at and the cell the old click mapping named — see
+## `MinimapPaint.cell_under`. A shader parameter is write-only from
+## GDScript, so a second copy here is the only way to invert the mapping;
+## both are assigned on the lines that set the uniforms, so there is one
+## place either can go stale.
+var _minimap_crop_centre := Vector2.ZERO
+var _minimap_focus_uv := Vector2(0.5, 0.5)
 var _minimap_base: Image = null
 var _minimap_texture: ImageTexture = null
 var _minimap_updated_at := -1.0
@@ -2369,7 +2384,14 @@ func _build_hud() -> void:
 ## `MOUSE_FILTER_STOP` control covering both would swallow minimap clicks
 ## meant to jump the camera. See `_clicked_ring_rim`. The click hit-test
 ## still uses `_minimap_bounds` (the map's own rect) unchanged — the crop
-## is cosmetic and does not shrink the clickable/jump-to area.
+## does not shrink the clickable/jump-to area.
+##
+## What the crop is NOT is cosmetic, which this comment claimed for a
+## milestone (#130). It re-centres the sampled texture on the camera, so
+## the cell under a pixel is a function of where the player is standing —
+## and `_minimap_cell_at` had to be taught the same arithmetic. The area
+## a click can reach is unchanged; WHICH CELL it names was wrong by how
+## far the camera sat from the middle of the map.
 func _build_nav_ring(layer: CanvasLayer) -> void:
 	_nav_ring_back = Control.new()
 	_nav_ring_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2596,9 +2618,9 @@ func _layout_hud() -> void:
 	if _minimap_crop_material != null:
 		var crop_r := HudLayout.ring_crop_radius(_nav_ring_bounds.size.x)
 		var ring_centre := _nav_ring_bounds.position + _nav_ring_bounds.size * 0.5
+		_minimap_crop_centre = ring_centre - _minimap_bounds.position
 		_minimap_crop_material.set_shader_parameter("rect_size", _minimap_bounds.size)
-		_minimap_crop_material.set_shader_parameter("centre_px",
-			ring_centre - _minimap_bounds.position)
+		_minimap_crop_material.set_shader_parameter("centre_px", _minimap_crop_centre)
 		_minimap_crop_material.set_shader_parameter("radius_px", crop_r)
 
 
@@ -6332,10 +6354,8 @@ func _centre_minimap_crop_on_camera() -> void:
 	if _state.space.width <= 0 or _state.space.height <= 0:
 		return
 	var cell := _state.space.world_to_cell(_camera_target)
-	var focus := Vector2(
-		(float(cell.x) + 0.5) / float(_state.space.width),
-		(float(cell.y) + 0.5) / float(_state.space.height))
-	_minimap_crop_material.set_shader_parameter("focus_uv", focus)
+	_minimap_focus_uv = MinimapPaint.focus_uv_of(cell, _state.space.width, _state.space.height)
+	_minimap_crop_material.set_shader_parameter("focus_uv", _minimap_focus_uv)
 
 
 ## Restamp what this player can see, and push it to the ground (D-106).
@@ -6602,10 +6622,29 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 ## Which cell a screen position corresponds to on the minimap, or
 ## (-1, -1) if the position is not over it.
 ##
-## The minimap is one pixel per cell covering the whole torus, so this is
-## a straight proportional mapping with no camera involved — which is
-## exactly why it can jump anywhere, including ground the player has
-## never seen.
+## Goes through `MinimapPaint.cell_under`, which is
+## `shaders/circular_crop.gdshader`'s own fragment arithmetic — because
+## the minimap is NOT drawn one-to-one over its rect. The crop re-centres
+## it on the camera every frame (`_centre_minimap_crop_on_camera`), so
+## which cell sits under a pixel depends on where the player is standing.
+##
+## This function predates that shader and kept the plain proportional
+## mapping over the whole texture, under a doc comment that argued it was
+## correct — "a straight proportional mapping with no camera involved".
+## It was true when written and stopped being true when the crop landed
+## (#130). The symptom: clicking the CENTRE of the circle should be a
+## no-op, since that is where the camera already is, and it jumped to the
+## middle of the WORLD instead — which from a southern position reads
+## exactly as the reported "it moved much further north than I clicked".
+## Every other point was wrong by the same offset. Same family as the
+## D-058/D-065 and D-097 lessons: a comment asserting an invariant is not
+## evidence the invariant still holds, and this one actively argued for
+## the bug.
+##
+## The hit REGION is unchanged — still `_minimap_bounds`, the map rect,
+## which extends past the circle into corners the shader discards. That is
+## a separate question from which cell a click names, and the answer it
+## used to give there was arbitrary too.
 func _minimap_cell_at(screen_position: Vector2) -> Vector2i:
 	if _minimap_rect == null or _state.space == null:
 		return Vector2i(-1, -1)
@@ -6618,10 +6657,20 @@ func _minimap_cell_at(screen_position: Vector2) -> Vector2i:
 	if _minimap_bounds.size.x <= 0.0 or not _minimap_bounds.has_point(at):
 		return Vector2i(-1, -1)
 
-	var local := (at - _minimap_bounds.position) / _minimap_bounds.size
-	return Vector2i(
-		clampi(int(local.x * float(_state.space.width)), 0, _state.space.width - 1),
-		clampi(int(local.y * float(_state.space.height)), 0, _state.space.height - 1))
+	if _minimap_crop_material == null:
+		# No crop, so the texture IS drawn one-to-one and the old
+		# proportional mapping is the right one. Unreachable while
+		# `_build_nav_ring` always makes the material, and kept so that
+		# removing the ring degrades to a working minimap rather than to
+		# a silently wrong one.
+		var local := (at - _minimap_bounds.position) / _minimap_bounds.size
+		return Vector2i(
+			clampi(int(local.x * float(_state.space.width)), 0, _state.space.width - 1),
+			clampi(int(local.y * float(_state.space.height)), 0, _state.space.height - 1))
+
+	return MinimapPaint.cell_under(at - _minimap_bounds.position, _minimap_crop_centre,
+		_minimap_bounds.size, _minimap_focus_uv,
+		_state.space.width, _state.space.height)
 
 
 ## Centre the view on a cell, leaving the zoom exactly as it was.

@@ -1,0 +1,29 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_transport"
+display_name = "Corpse Barge"
+civ = &"gravesworn"
+archetype = &"transport"
+squad_size = 4
+health = 150.0
+damage = 0.0
+move_speed = 4.2
+attack_range = 0.0
+attack_interval = 1.0
+armour_class = "infantry"
+rout_threshold = 0.0
+morale_loss_per_casualty = 0.0
+movement_domain = "water"
+transport_capacity = 3
+mesh_primitive = "hull"
+mesh_color = Color(0.6, 0.6, 0.5, 1)
+cost_food = 20
+cost_wood = 55
+cost_gold = 0
+cost_stone = 0
+build_time = 12.0
+cost = 75
