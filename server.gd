@@ -596,12 +596,22 @@ func _build_world() -> void:
 	# The match counter keeps a second match on the same server from
 	# overwriting the first one's log (D-075); the first match still writes
 	# the plain per-port name every existing recipe and doc expects.
-	var replay_path := "res://artifacts/replay-%d.edmw" % _port
+	# ArtifactPath, not a `res://` literal: `res://` is read-only inside an
+	# exported build's .pck, and the first ever exported build recorded no
+	# replay at all while playing a complete match (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write).
+	var replay_path := ArtifactPath.of("replay-%d.edmw" % _port)
 	if _matches_played > 0:
-		replay_path = "res://artifacts/replay-%d-match%d.edmw" % [_port, _matches_played + 1]
+		replay_path = ArtifactPath.of("replay-%d-match%d.edmw" % [_port, _matches_played + 1])
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
-		print("server: recording replay to %s" % replay_path)
+		print("server: recording replay to %s" % ArtifactPath.describe(_replay.path))
+	else:
+		# Said out loud, because D-016 makes this the primary
+		# desync-forensics tool and its absence would otherwise only be
+		# discovered by someone who needed it. A `push_error` in a release
+		# build goes nowhere a player can see.
+		print("server: NOT recording a replay — %s" % _replay.open_error)
 
 
 func _exit_tree() -> void:
@@ -616,8 +626,14 @@ func _shutdown() -> void:
 	_print_summary("shutdown")
 
 	if _replay != null and _replay.is_open():
-		print("server: wrote %d replay records" % _replay.records_written)
+		print("server: wrote %d replay records to %s"
+			% [_replay.records_written, ArtifactPath.describe(_replay.path)])
 		_replay.close()
+	elif _replay != null and _replay.open_error != "":
+		# Again at the end, not only at start-up: a run that scrolled past
+		# one line an hour ago is a run whose missing replay is a surprise
+		# (#201).
+		print("server: NOT recording a replay — %s" % _replay.open_error)
 	if _host != null:
 		_host.destroy()
 		_host = null
@@ -3119,8 +3135,14 @@ func _return_to_lobby() -> void:
 	# makes the next one open its own file rather than appending a second
 	# match's curves onto the first's log.
 	if _replay != null and _replay.is_open():
-		print("server: wrote %d replay records" % _replay.records_written)
+		print("server: wrote %d replay records to %s"
+			% [_replay.records_written, ArtifactPath.describe(_replay.path)])
 		_replay.close()
+	elif _replay != null and _replay.open_error != "":
+		# Again at the end, not only at start-up: a run that scrolled past
+		# one line an hour ago is a run whose missing replay is a surprise
+		# (#201).
+		print("server: NOT recording a replay — %s" % _replay.open_error)
 	_replay = null
 	_matches_played += 1
 
