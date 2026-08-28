@@ -170,6 +170,57 @@ id, so the next shore building inherits the rule.
 **Found on the way, filed not fixed:** seven shipped `.tres` files are
 not UTF-8, so every Godot run prints twelve parse warnings (#338).
 
+**And the gate could not fail, which is the same defect one level up
+(#351, 2026-08-28).** `gate-check.sh naval` skipped whenever no seat
+reported `wants_navy=1`. That is right on a land map and is the whole
+argument above — a gate that failed on every ordinary run is a gate
+switched off within a week. It is also the exact thing #351 was: an AI
+that declines to sail on an archipelago reports `wants_navy=0` too, so
+**the gate read the output of the thing it was testing and excused it**.
+Two runs, byte-identical where the gate looked, one correct and one the
+defect.
+
+The skip keys on MAP TOPOLOGY now. `server.gd` prints
+`SPAWN_LANDMASSES=N` — how many distinct walkable components the starts
+actually occupy — and the gate reads that:
+
+| starts span | `wants_navy=0` means |
+|---|---|
+| one landmass | no crossing was available — **SKIP**, honest |
+| more than one | a crossing was there and nobody took it — **FAIL (#351)** |
+| no marker at all | **FAIL** — a skip nobody can justify is not earned |
+
+Four things worth carrying, and only the first is about boats:
+
+- **The AI's own output may never be what excuses the AI from the
+  test.** That is the general form, and it is worth grepping the other
+  gates for: any check whose skip condition is a number the code under
+  test computes has this shape. `gate-check.sh`'s other comparisons key
+  on markers the SIMULATION emits, not on a decision, which is why they
+  do not.
+- **Absence fails rather than defaulting.** An older server, or one
+  whose marker regressed, could otherwise buy a free pass by printing
+  nothing — the vacuous skip arriving through the back door on the same
+  day the front one was shut.
+- **The topology is the harness's knowledge, never the AI's** (D-051).
+  A log line is not a player; nothing about the marker reaches
+  `AiNaval`, which still has to earn its answer by scouting.
+- **The FAIL branch is not reachable on any shipped map today, and that
+  is the finding rather than a caveat.** Measured over
+  `ladder.tres` and `default.tres` at `continents` and `islands`: **every
+  one reports 1 landmass**, because `MapConfig.spawn_points` forces every
+  start onto the mainland (D-20260827). So the gate correctly skips
+  everywhere, and #351's placement half is still open — the predicate was
+  only ever one of its two causes. `tests/test_spawn_landmasses.gd`
+  prints that table rather than pinning a number, since generated terrain
+  moves when the generator does.
+
+Both halves were observed red before being trusted: regressing the skip
+to `wants_navy` alone reds
+`test_the_naval_gate_fails_when_a_crossing_was_available_and_declined`
+with the old message quoted back, and removing the marker from
+`server.gd` reds the caller-exists scan (D-106's rule).
+
 ---
 
 **Superseded note (stage 7 before stage 2 landed):** **Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
