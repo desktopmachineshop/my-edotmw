@@ -121,6 +121,21 @@ class_name AiProfileDef
 ## A floor is where the economy stalls, and moving one without measuring
 ## is how the AI spent a whole session gathering zero wood while its food
 ## pile looked perfectly healthy (D-054's `substituted` counter).
+## How much of its army this difficulty is willing to put on a boat
+## (naval plan §6.1, #301 stage 7). 0.0 means it never sails.
+##
+## A knob, not a bonus. D-20260818-ai-profiles-are-data's first clause:
+## a profile changes what the AI DECIDES, never what it KNOWS or what it
+## is GIVEN — so a harder difficulty commits more of its army to a
+## crossing, and is not handed a better fleet, a cheaper dock or sight of
+## the far shore. An AI that quietly saw more would not look like a bug,
+## it would look like a good AI.
+##
+## Defaulted ABOVE zero so an absent `/ai` costs difficulty and never the
+## behaviour: a profile that forgot this field still sails, which is the
+## same argument `AiProfileDef.new()`'s other schema defaults make.
+@export_range(0.0, 1.0, 0.05) var naval_commitment: float = 0.5
+
 @export var food_floor: int = 180
 @export var wood_floor: int = 200
 

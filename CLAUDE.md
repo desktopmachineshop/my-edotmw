@@ -78,6 +78,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/playtests-2026-08.md
 
+@docs/status/naval.md
+
 @docs/status/m8-plan.md
 
 @docs/status/m8-export.md
@@ -366,6 +368,15 @@ minimap_paint.gd         What the minimap paints over the terrain, and how
                         that is where the owner lives, and it is what
                         makes "a ghost is drawn nowhere" (D-099)
                         structural rather than a remembered check.
+                        And it owns WHERE THE CROP IS LOOKING
+                        (`focus_uv_of`/`cell_under`, #130): the minimap is
+                        re-centred on the camera every frame, so which
+                        cell sits under a pixel is a function of where the
+                        player is standing. client.gd reads both — the
+                        uniform it SETS and the click it RESOLVES — so the
+                        two cannot drift, which is exactly how the click
+                        mapping came to be a milestone behind the shader
+                        under a comment arguing it was right.
 ground_cover.gd          Which decorative props dress a cell (D-100).
                         Same shape as resource_visuals.gd and the exact
                         OPPOSITE of what it dresses: cover is client-
@@ -578,7 +589,16 @@ unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads
                         per player). Height must be even — D-008.
-map_config.gd           MapConfig schema.
+map_config.gd           MapConfig schema. Also WHERE PEOPLE START:
+                        `spawn_points` scatters at a minimum spacing
+                        (D-039) over the ONE walkable component every
+                        start must share
+                        (D-20260827-every-start-shares-one-landmass) —
+                        `min_spawn_landmass` (D-104) is an absolute SIZE
+                        and isolation is a RELATION, so a roomy island
+                        passed it and left a player nobody could reach,
+                        which under D-033 makes the match undecidable and
+                        reads as a draw at the time cap.
 primitive_unit.gd       One MultiMesh per squad (D-009). Wears an
                         authored model when the UnitDef names one, the
                         tier-1 primitive when it does not.

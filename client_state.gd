@@ -587,6 +587,16 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"facing": int(entry.get("facing", -1)),
 			"files": int(entry.get("files", 0)),
 			"stance": int(entry.get("stance", 0)),
+			# What this squad is CARRYING (naval stage 4, §3.1). Like
+			# `owner` and `tier` it is deliberately NOT part of
+			# `composition_hash`, which builds its own entry list from
+			# named fields — but the reason is stronger here: cargo is
+			# excluded from `visible_to` on the SERVER too, so neither
+			# side has it in the hashed set and they agree by
+			# construction rather than by both remembering to skip it.
+			# That is D-099's lesson, which cost a real desync when a
+			# client folded its own ghosts in.
+			"cargo": entry.get("cargo", []),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal

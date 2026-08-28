@@ -166,6 +166,12 @@ var _terrain: TerrainGen = null
 ## is filled in.
 var _spawn_points: Array[Vector2i] = []
 
+## Which cells are water (naval stage 1, §2.1). Filled beside `_passable`
+## in `_build_world`, and read by the shore refusal and by ship spawning.
+## Empty on a server whose world was never built, which is the state the
+## tests that drive handlers directly leave it in — every reader guards.
+var _navigable := PackedByteArray()
+
 ## The scenario this server is playing, or null for a real opening
 ## (D-098). Everything about it is decided at startup: which one, where
 ## each seat's home is, and which cells are already taken.
@@ -551,6 +557,16 @@ func _build_world() -> void:
 	_terrain = terrain
 	_passable = terrain.passability(space)
 	_sim.set_passable(_passable)
+	# The water half of the ground (naval stage 1, §2.1). A SEPARATE array
+	# rather than a third value in `_passable`, for the reason D-076 kept
+	# its field cache separate: every existing caller of `_passable` means
+	# LAND, and a tri-state array would be read by all of them.
+	#
+	# Derived from the same replicated `MapSettings` numbers the client
+	# already holds (D-049), so both sides derive identical arrays and
+	# nothing new crosses the wire.
+	_navigable = terrain.navigability(space)
+	_sim.set_navigable(_navigable)
 	# The slope combat prices (D-20260819-tired-men-fight-uphill) — the
 	# same memoised field the client's renderer samples, so the two
 	# sides cannot disagree about what high ground is.
@@ -2113,6 +2129,13 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# build skips the WAIT, not the economy, so it stays useful for
 	# testing the economy itself.
 	var built := _buildings.add_building(def, owner, cell, _match.instant_build, squad, facing, offset)
+	# A shore building's water side, chosen HERE because this is where the
+	# terrain is (naval §4.1). Nearest-first through `disk_offsets`, which
+	# D-067 sorted for exactly this walk-outward pattern, so two docks on
+	# the same coast get the two different cells nearest each of them and
+	# the choice is deterministic — a replay places them identically.
+	if def.needs_shore:
+		_buildings.set_water_cell(built, _water_cell_beside(cell))
 	_send_wallet(peer, owner)
 	_refresh_passability()
 
@@ -2472,6 +2495,21 @@ func _build_refusal(cell: Vector2i, def: BuildingDef = null, owner: int = -1) ->
 	if _economy != null and _economy.has_node(index):
 		return "Cannot build there — %s is in the way" % _node_description(index)
 
+	# A dock stands with its feet in the water (naval §4.1). Checked here
+	# rather than at order time only, like every other rule in this
+	# function — a builder walks, and while it walks nothing about the
+	# coastline changes, but the symmetry is what keeps the list readable.
+	#
+	# `TerrainGen.is_shore` is the one definition (naval stage 1); this
+	# names no geometry and no neighbour count. Guarded on the arrays
+	# being present at all, because a server whose world was never built
+	# has no coastline to test against and must not refuse everything.
+	if def != null and def.needs_shore:
+		if _navigable.is_empty() or _passable.is_empty():
+			return ""
+		if not TerrainGen.is_shore(_sim.space, _passable, _navigable, index):
+			return "Cannot build there — a %s must stand on the shore" % def.display_name
+
 	var upgrade_target := _upgrade_target_at(cell, def, owner) if def != null else -1
 	for i in range(_buildings.building_count()):
 		if _buildings.cell_index_of(i) != index or _buildings.is_destroyed(i) \
@@ -2494,6 +2532,24 @@ func _build_refusal(cell: Vector2i, def: BuildingDef = null, owner: int = -1) ->
 		return "Cannot build there — a %s already stands there" % \
 			(other_def.display_name if other_def != null else "building")
 	return ""
+
+
+## The navigable cell a shore building puts its ships on: the nearest one
+## to its own cell, or -1 if it has no water beside it at all.
+##
+## -1 is reachable even though `needs_shore` was checked at placement —
+## the sandbox spawns buildings straight in (D-077) and a test may stand
+## one up on a server with no world. Every reader treats -1 as "no ships
+## from here" rather than guessing a cell.
+func _water_cell_beside(cell: Vector2i) -> int:
+	if _navigable.is_empty() or _sim == null:
+		return -1
+	for offset in TorusSpace.disk_offsets(2):
+		var candidate := _sim.space.normalize(cell + offset)
+		var index := _sim.space.index(candidate)
+		if index < _navigable.size() and _navigable[index] != 0:
+			return index
+	return -1
 
 
 ## What the node at `index` is, in the words a player would use for it —
@@ -2769,6 +2825,14 @@ func _replicate() -> void:
 	# separately so a client applies both in one message and the
 	# composition hash that follows is already current.
 	var combat_events := _sim.last_combat_events
+	# A squad that boarded a hull left the world this tick (naval 3.1), and
+	# it leaves it through the SAME casualty path a founder spent on a town
+	# hall does — the events carry `fell = false`, so no corpse is laid and
+	# every client applies them with code it already has. Appended here
+	# rather than given a message of their own, which is D-003's and
+	# D-025's standing rule: extend the path, never duplicate it.
+	if not _sim.last_embarks.is_empty():
+		combat_events = combat_events + _sim.last_embarks
 	if not _pending_events.is_empty():
 		combat_events = combat_events + _pending_events
 

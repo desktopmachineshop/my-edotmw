@@ -617,7 +617,12 @@ const MAX_TEAMS := 4
 ## player have", and this project has been bitten before by two
 ## definitions of the same fact drifting apart.
 func has_squad_capacity(sim: SquadSim, player: int) -> bool:
-	return sim.living_squad_count(player) < squad_cap_for(sim, player)
+	# Cargo counts (naval 3.1). A squad at sea inside a hull is an army
+	# slot you are using, and leaving it out would make a transport a way
+	# to hold more army than the cap allows — which is the shape of
+	# exploit D-031's consume-on-commit rule already had to close once.
+	var fielded := sim.living_squad_count(player) + sim.carried_squad_count(player)
+	return fielded < squad_cap_for(sim, player)
 
 
 ## This player's ceiling: the map's, plus whatever their civ adds
