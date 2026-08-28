@@ -5780,8 +5780,9 @@ func _squad_build_actions(def_id: StringName) -> Array:
 	var by_category := {}
 	# This player's civ's defs, not every def
 	# (`D-20260827-a-research-site-is-a-building`). The research sites are
-	# per-civ, so `all_defs()` would offer a Thornwood player a Deep
-	# Forge — and the server would refuse it, which is the "looking
+	# per-civ, so `all_defs()` would offer a player a research site their
+	# own people do not build — and the server would refuse it, which is
+	# the "looking
 	# available and then being refused" failure `_building_actions`
 	# already records for training.
 	for building in BuildingSim.defs_for_civ(_state.civ_of(_state.player)):

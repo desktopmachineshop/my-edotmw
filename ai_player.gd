@@ -471,8 +471,8 @@ func _research(now: float) -> void:
 ## Can this AI pay for `tech` right now, given its profile's appetite?
 ##
 ## A defining tech only has to be affordable. Anything else has to be
-## affordable `1 / research_bias` times over, so a cautious profile keeps
-## a war chest and a relentless one spends it — a deterministic threshold
+## affordable `1 / research_bias` times over, so a low-bias profile keeps
+## a war chest and a high-bias one spends it — a deterministic threshold
 ## rather than a roll, because a replay has to reproduce (D-016).
 func _can_afford_tech(tech: TechDef) -> bool:
 	if state.wallet.size() < 4:
