@@ -54,7 +54,11 @@ func test_no_letter_is_claimed_twice() -> void:
 	var claims := {}
 	var clashes := []
 
-	for source in ["BUILD_KEYS", "TRAIN_KEYS", "RESERVED_KEYS"]:
+	# In-flight claims are checked WITH the live tables, not after them.
+	# Checking only what exists on this branch is exactly how #302 and
+	# #246 both allocated J: each looked at `main`, saw J free, and could
+	# not see the other (#363).
+	for source in ["BUILD_KEYS", "TRAIN_KEYS", "RESERVED_KEYS", "RESERVED_FOR_IN_FLIGHT"]:
 		assert_true(consts.has(source), "client.gd must declare %s" % source)
 		if not consts.has(source):
 			continue
@@ -129,3 +133,39 @@ func test_the_wall_family_still_has_its_keys() -> void:
 		bound[String(build[key])] = String(key)
 	for piece in ["wall", "gate", "garrison_wall", "garrison_gate", "wall_tower"]:
 		assert_true(bound.has(piece), "D-076's %s must still be on a key" % piece)
+
+
+func test_a_letter_reserved_for_another_branch_is_not_taken_here() -> void:
+	# The specific instance, named rather than left to the general scan:
+	# a reservation that the live tables quietly overrode would be worse
+	# than no reservation at all, because the other branch would trust it.
+	var consts := _constants()
+	var reserved: Dictionary = consts.get("RESERVED_FOR_IN_FLIGHT", {})
+	assert_gt(reserved.size(), 0,
+		"if nothing is in flight this table is empty and this test says so — "
+		+ "delete it with the last entry rather than leaving it vacuous")
+	for letter in reserved:
+		for table in ["BUILD_KEYS", "TRAIN_KEYS", "RESERVED_KEYS"]:
+			assert_false(Dictionary(consts.get(table, {})).has(letter),
+				"%s is reserved for %s on another branch and %s has taken it"
+					% [letter, reserved[letter], table])
+
+
+func test_a_duplicate_inside_one_table_is_impossible_to_write() -> void:
+	# Worth stating because it changes what the guard above is FOR.
+	# GDScript refuses a Dictionary literal with a repeated key — "Key
+	# \"J\" was already used in this dictionary" — so a collision inside
+	# BUILD_KEYS is a PARSE error, not a silent wrong binding. That is
+	# loud, but it is loud at the worst moment: the client does not load
+	# at all, in a merge, for a reason neither branch can see alone.
+	#
+	# So these guards exist to catch it BEFORE the merge, which is why the
+	# reservation table matters more than the duplicate scan.
+	var consts := _constants()
+	var letters := {}
+	for table in ["BUILD_KEYS", "TRAIN_KEYS"]:
+		for letter in Dictionary(consts.get(table, {})):
+			assert_false(letters.has(letter),
+				"%s is in both tables" % letter)
+			letters[String(letter)] = table
+	assert_gt(letters.size(), 10, "the scan must actually be reading the tables")

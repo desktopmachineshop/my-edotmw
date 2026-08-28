@@ -2872,6 +2872,31 @@ const RESERVED_KEYS := {
 	"G": "gather at the cursor's node",
 }
 
+## Letters claimed by work IN FLIGHT on another branch (#363).
+##
+## The half that PREVENTS a collision rather than detecting one, and the
+## gap #302's guard structurally could not close: that test checks
+## BUILD_KEYS against RESERVED_KEYS and TRAIN_KEYS, and cannot check
+## against a letter that does not exist yet on its own branch.
+##
+## It bit immediately. #302 moved `garrison_wall` G -> J on the reasoning
+## that G is what a player reaches for to GATHER; #246 added `farm` on J
+## with the comment "J is free of WASD, Q/E and every other letter in
+## this table and TRAIN_KEYS", which was true when it was written. Both
+## checked J against the tables AS THEY STOOD ON MAIN, and neither could
+## see the other. Merged, `BUILD_KEYS` has a duplicate key and `client.gd`
+## does not even PARSE — a Dictionary literal cannot hold one letter
+## twice, so the collision is not a subtle wrong binding, it is the
+## client failing to load.
+##
+## A claim here is visible to every branch that rebases. An entry leaves
+## this table in the same commit that adds its real binding.
+const RESERVED_FOR_IN_FLIGHT := {
+	# #246, renewable food. `farm` was on J, which `garrison_wall` had
+	# already taken; O is free and is what the merge rehearsal used.
+	"O": &"farm",
+}
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
 	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
