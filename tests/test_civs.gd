@@ -23,7 +23,15 @@ func _first_civ() -> StringName:
 ## data, which sometimes means naming it. Excluding them does not weaken
 ## the check: the check is about the ENGINE, and nothing under tests/
 ## ships.
-const EXEMPT_PREFIXES := ["res://tests/", "res://addons/"]
+##
+## `playtest_obs/` is excluded for the same reason and it is the same
+## sentence: those are observation harnesses that print and assert
+## nothing, they are run by hand and collected by nothing, and a
+## civ-differentiation harness cannot compare civs without naming them.
+## Nothing under it ships either — which is the clause the exclusion
+## actually rests on, so if anything there ever becomes engine code it
+## belongs outside that directory rather than inside this list.
+const EXEMPT_PREFIXES := ["res://tests/", "res://addons/", "res://playtest_obs/"]
 
 
 func _all_scripts(path: String, out: Array) -> void:
