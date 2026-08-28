@@ -9,3 +9,7 @@
 335	ao/my-edotmw-86/small-fixes	CLEAN	19
 294	ao/my-edotmw-86/ci-pipeline	CLEAN	8
 273	ao/my-edotmw-86/explore-command	CONFLICT	net_protocol.gd server.gd squad_sim.gd 
+273	ao/my-edotmw-86/explore-command	CONFLICT-RESOLVED	net_protocol.gd: MOVED C2S_ORDER_EXPLORE from OPCODES_RESERVED into OPCODES per #374's own rule (a reservation ends when the const arrives); const now reads the registry. server.gd + squad_sim.gd: additive dispatcher case and squad state, kept both.
+345	ao/my-edotmw-86/audio-foundations	CLEAN	54
+265	ao/my-edotmw-80/gap-assessment	CLEAN	1
+238	ao/my-edotmw-81/issue-153-gate-reconciles-containers	CONFLICT	justfile tests/test_multi_agent_isolation.gd 
