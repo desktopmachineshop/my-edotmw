@@ -149,6 +149,13 @@ wants checking first even though today there are none.
   it publishes a decomposition (11 native-gap, 11 real) beside the count,
   and only the decomposition can be compared to a set.
 
+  And in your OWN notes, not only in what you publish: **keep the names,
+  not the count.** 88 could establish this at all because their baseline
+  name list survived; the worker whose error it mirrors kept counts and a
+  handful of grepped names, and so could not have proved their own error
+  either way. **A count you cannot decompose later is a claim you cannot
+  audit, including against yourself.**
+
   The companion rule, from the same incident: **a baseline claim states
   its branch, its sha and that the worktree was clean, or it is a claim
   about somebody's laptop.** #212 states all three. Two workers dropped a
