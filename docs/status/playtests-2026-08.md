@@ -167,3 +167,44 @@ share, takes the build column's width whenever the selection cannot build,
 and its overflow chip PAGES rather than merely reporting. **When a layout
 gets tighter, the question is never "what still fits" — it is "what can no
 longer be reached".**
+
+**And a player who quit could stall a match for ever
+(D-20260828-leaving-a-match-leaves-nothing-behind, #292 and #318, which
+turned out to be one defect).** A disconnect wiped the abandoned ARMY and
+left the BUILDINGS standing — and elimination needs both gone — so a
+quitter stayed "active", `_check_victory` never fired, and a 1v1 somebody
+rage-quit ran to the time cap. The remaining player had no opponent and
+no way to win: only a chore, marching across the map to raze an
+undefended base before the game would end.
+
+**Nothing failed, because both halves were correct on their own.** D-033
+said the wipe is the CAUSE of defeat and the ordinary rule notices the
+effect, so "defeated" keeps one definition — and `server.gd`'s comment
+named that rule as "no living squads". It stopped being that when
+`D-20260823-the-opening-is-a-crew-and-a-general` added the buildings
+clause, for the unrelated and correct reason that a crew is consumed by
+the town hall it founds. The wipe simply stopped wiping enough, and the
+comment asserting the guarantee stayed exactly where it was.
+
+Three things worth carrying:
+
+- **A comment that names another file's rule is a claim about that
+  file.** This one was wrong for a whole milestone and is what made the
+  defect survive being read — the D-065 family again. There is a test
+  now that fails if the old wording comes back.
+- **`BuildingSim` had no per-player wipe AT ALL** — no
+  `eliminate_player`, no raze-all, nothing. The sibling of a function is
+  a good place to look when a rule gains a second half.
+- **Observed RED before the fix, all eleven tests**, reporting the
+  issue's own symptom. That is the strongest form of this project's
+  observed-to-fail rule and it was available because the bug arrived
+  with a repro. Each rule was then perturbed individually afterwards,
+  because "everything was red before" does not say which test guards
+  which rule.
+
+**`test-load` and `ai-ladder` were quietly wrong in the same way** — a
+run where a client drops mid-match reported a draw at the cap that was
+not one. Neither harness drops clients deliberately, so no recorded
+figure is known to be affected; worth knowing before trusting an old run
+whose log shows a disconnect.
+
