@@ -500,11 +500,29 @@ static func _mainland_of(sizes: PackedInt32Array, minimum: int) -> int:
 ## Zero when there is no terrain to reason about, for the same reason
 ## every other passability test here degrades open: an empty `passable` is
 ## the absence of an opinion, not a map with no ground on it.
-func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray()) -> int:
+## `navigable` is not optional in spirit, only in signature: REACHABILITY
+## IS THE LAND-AND-WATER GRAPH (naval stage 9), and a caller that omits it
+## is asking the pre-naval question. It defaults to empty so a dry caller
+## and every pre-naval test keep working unchanged.
+##
+## This asked the LAND-ONLY question while `spawn_points` — one screen
+## above, in this same file — had already moved to the water graph. So
+## the sampler correctly seated players across islands and the validator
+## immediately called that stranding, on every naval map:
+##
+##     server: map seats all 8 players but strands 2 of them on ground
+##     the others cannot walk to
+##
+## Two definitions of "reachable" in one file, disagreeing, with my own
+## change having moved one of them — the D-058/D-065 family. It mattered
+## beyond the wording: `ai-ladder` fails on engine diagnostics, so every
+## naval ladder run failed on this warning whatever the AI did.
+func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray(),
+		navigable := PackedByteArray()) -> int:
 	if passable.is_empty() or points.size() < 2:
 		return 0
 	var space := to_space()
-	var labels: PackedInt32Array = walkable_components(space, passable)["labels"]
+	var labels: PackedInt32Array = _reachable_components(space, passable, navigable) 		if not navigable.is_empty() 		else walkable_components(space, passable)["labels"]
 	var home := labels[space.index(points[0])]
 	var stranded := 0
 	for i in range(1, points.size()):
@@ -529,7 +547,7 @@ func validate_spawns(passable := PackedByteArray(),
 	# above cannot produce a disconnected one any more, so this is the
 	# check that turns a future regression into a startup error rather
 	# than into a match that runs to the time cap and reads as a draw.
-	var stranded := disconnected_spawns(points, passable)
+	var stranded := disconnected_spawns(points, passable, navigable)
 	if stranded > 0:
 		return "map seats all %d players but strands %d of them on ground the others cannot walk to — a player who can neither attack nor be attacked leaves the match undecidable (D-033)" % [
 			player_slots, stranded]

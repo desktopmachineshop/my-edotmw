@@ -290,3 +290,100 @@ func test_islands_is_offered_in_the_lobby() -> void:
 	# above prove the same preset seats its full slot count with every
 	# start reachable.
 	assert_gt(offered.size(), 1, "Setup: there are presets to choose between")
+
+
+func test_the_validator_asks_the_same_question_the_sampler_does() -> void:
+	# 81 found this on the first isles probe: `spawn_points` moved to the
+	# land-and-water graph and `disconnected_spawns` — one screen above
+	# it, in the same file — kept asking the LAND-ONLY question. So the
+	# sampler correctly seated players across islands and the validator
+	# immediately called that stranding, on every naval map:
+	#
+	#   server: map seats all 8 players but strands 2 of them on ground
+	#   the others cannot walk to
+	#
+	# Two definitions of "reachable" in one file, disagreeing, with the
+	# naval change having moved one of them. It is not cosmetic:
+	# `ai-ladder` fails on engine diagnostics, so every naval ladder run
+	# failed on this warning whatever the AI did.
+	#
+	# Authored seating rather than a generated map, which is why
+	# `disconnected_spawns` is public — its own doc says so.
+	var space := TorusSpace.new(12, 8, 1.0)
+	var count := space.width * space.height
+	var passable := PackedByteArray()
+	var navigable := PackedByteArray()
+	passable.resize(count)
+	navigable.resize(count)
+	# Two land bands separated by water at both q seams (a torus needs
+	# BOTH, or the "channel" is walkable round the back — the trap this
+	# file already records twice).
+	for r in space.height:
+		for q in space.width:
+			var index := space.index(Vector2i(q, r))
+			var wet := q == 0 or q == 6
+			passable[index] = 0 if wet else 1
+			navigable[index] = 1 if wet else 0
+
+	var west: Array[Vector2i] = [Vector2i(3, 2)]
+	var both: Array[Vector2i] = [Vector2i(3, 2), Vector2i(9, 5)]
+	assert_eq(west.size(), 1, "fixture: one-sided control")
+
+	var cfg := MapConfig.new()
+	cfg.width = space.width
+	cfg.height = space.height
+
+	assert_eq(cfg.disconnected_spawns(both, passable), 1,
+		"fixture: on FOOT the far start is genuinely unreachable, or this "
+		+ "test proves nothing about the water graph")
+	assert_eq(cfg.disconnected_spawns(both, passable, navigable), 0,
+		"with the water graph, a start across a strait is REACHABLE — the "
+		+ "sampler's own rule, and the validator must use it too")
+
+
+func test_validate_spawns_does_not_call_a_water_seating_stranded() -> void:
+	# The CALLER, which is where the defect actually was. The test above
+	# drives `disconnected_spawns` directly and passes whatever
+	# `validate_spawns` does with it — I perturbed the call site and it
+	# stayed green, which is the vacuous-guard shape this repo keeps
+	# paying for. This one goes through `validate_spawns`.
+	var space := TorusSpace.new(16, 10, 1.0)
+	var count := space.width * space.height
+	var passable := PackedByteArray()
+	var navigable := PackedByteArray()
+	passable.resize(count)
+	navigable.resize(count)
+	for r in space.height:
+		for q in space.width:
+			var index := space.index(Vector2i(q, r))
+			# Two land masses, water at BOTH q seams so the torus cannot
+			# join them round the back.
+			var wet := q == 0 or q == 8
+			passable[index] = 0 if wet else 1
+			navigable[index] = 1 if wet else 0
+
+	var cfg := MapConfig.new()
+	cfg.width = space.width
+	cfg.height = space.height
+	cfg.player_slots = 2
+	cfg.min_spawn_spacing = 5
+	cfg.min_spawn_landmass = 8
+	cfg.spawn_seed = 7
+
+	var points := cfg.spawn_points(passable, navigable)
+	assert_eq(points.size(), 2, "fixture: both slots must seat")
+
+	# The fixture is only meaningful if the sampler actually spread them
+	# across the water — otherwise there is no stranding to mis-report.
+	var land: PackedInt32Array = MapConfig.walkable_components(space, passable)["labels"]
+	var masses := {}
+	for p in points:
+		masses[land[space.index(p)]] = true
+	assert_eq(masses.size(), 2,
+		"fixture: the sampler must have seated ACROSS the water, or this "
+		+ "test cannot see the bug it is written for")
+
+	assert_eq(cfg.validate_spawns(passable, navigable), "",
+		"a seating the sampler chose over the water graph must not then be "
+		+ "reported as stranded by the validator — ai-ladder fails on "
+		+ "engine diagnostics, so this warning reds every naval run")
