@@ -1,3 +1,45 @@
+**A squad looks up its buildings; it does not walk the match**
+(`D-20260828-a-squad-looks-up-its-buildings`, #325). The decoration
+phase was attributed the same way derive was, and its `gather` half split
+into: discs 22.22, **boxes 15.57**, jostle 11.53, opponent derivation
+10.75, residual 7.10 ms at 1,000 squads / 630 drawn.
+
+The boxes line looked ordinary until `bench-render` gained a
+`--buildings=` knob and was asked how it SCALES:
+
+| buildings | 12 | 60 | 200 |
+|---|---|---|---|
+| box lookup, before | 12.94 ms | 59.50 ms | **199.19 ms** |
+| after | **6.75** | **9.01** | **17.07** |
+
+**One millisecond per building per frame**, dead linear, while every
+other part of the gather stayed flat — and buildings are the one thing in
+a match that only ever accumulates (D-030 knows one forever, D-076 makes
+a wall one building per cell, nothing is ever removed from the scan).
+Interleaved on the same instrument at 200 buildings: **265.85 → 36.48 and
+250.35 → 40.90 ms, 6-7x**, with `discs` flat as the control.
+
+- **`disk_offsets` was tried FIRST and measured ten times worse** —
+  12.94 → 131.82 ms at twelve buildings, because a fourteen-unit reach on
+  a 1.73-unit cell pitch is a **469-cell disk** scanned to find twelve
+  things. So the standing rule earns a boundary worth writing down:
+  **`disk_offsets` is for avoiding a `distance()` per candidate over a
+  radius of a FEW CELLS, not for finding sparse things over a radius of
+  many.** It is still right for `_nearby_node_discs` (radius 4, dense
+  cells) and wrong for buildings.
+- **Nothing a player sees changes**: same buildings, same preference
+  order, same push-outs. The index narrows; each caller applies exactly
+  the test it always applied, and the test compares against a
+  reimplementation of the walk over 900 probes.
+- **Two bugs the test caught before any measurement did**: entering a
+  thing into every bucket it reaches into returns it several times, and
+  it does not help anyway — the caller's test is about the CENTRE, so the
+  query has to widen by the widest entry's reach regardless.
+- `_building_box_near` — the enemy building a melee squad wraps — walked
+  the same scan per squad and is indexed too.
+
+---
+
 **What the DERIVE phase is made of, and the two levers left in it**
 (`D-20260828-inside-the-derive-phase`). Measured by ablation on the
 shipped function — only its inputs vary — 96 squads of 36 men drawn at

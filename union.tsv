@@ -65,3 +65,7 @@
 274	ao/my-edotmw-87/the-clamp-after-one-cell	CLEAN	3
 298	ao/my-edotmw-87/render-cost-has-a-baseline	CLEAN	11
 307	ao/my-edotmw-87/the-jostle-looks-where-the-men-are	CONFLICT	client.gd 
+307	ao/my-edotmw-87/the-jostle-looks-where-the-men-are	CONFLICT-RESOLVED	client.gd: REFACTOR vs ADDITION - #307 replaces _drawn_cache with a DrawnIndex while #221 adds _lod_tier beside it. Keep-both would call .clear() on a variable #307 deletes; kept _drawn.begin() + _lod_tier.clear().
+310	ao/my-edotmw-87/every-tres-is-utf8	CLEAN	9
+317	ao/my-edotmw-87/inside-the-derive-phase	CLEAN	4
+326	ao/my-edotmw-87/inside-the-decoration-phase	CONFLICT	decisions/D-20260828-a-squad-looks-up-its-buildings.md 
