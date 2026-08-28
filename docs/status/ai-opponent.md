@@ -114,6 +114,21 @@ Four things worth carrying:
   ran the whole match. Worth knowing before reading any AI log as a
   count of anything.
 
+**The A/B, on one tree, from the issue's own repro** (`--map=ladder
+--lobby=0 --players=0 --ai=2 --seed=2 --run-seconds=150`):
+
+| | before | after |
+|---|---|---|
+| seat 1001 founds | never (`a food source is in the way`) | `began town_centre at (24, 36)` |
+| buildings | 1000: 1, **1001: 0** | 1000: 2, **1001: 2** |
+| squads_peak | 12 / **2** | 19 / **18** |
+| CIVS_FIELDED | emberdeep=14, **gildedreach=2** | emberdeep=22, **gildedreach=20** |
+| outcome | `MATCH_ELIMINATED 1001`, `MATCH_OVER winner=1000` | no elimination, one attack at 145.6 s, still playing at the cap |
+
+The `after` run also shows the widening doing the half the node check
+cannot: one `Too close to another building` refusal for seat 1001,
+retried past rather than spun on.
+
 **And it means ladder numbers can contain matches nobody played, again.**
 A seat that never founds is eliminated and the harness reports a decisive
 win with plausible `AI_STATS` for the winner — D-107's own failure
