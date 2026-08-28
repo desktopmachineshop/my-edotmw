@@ -16,6 +16,28 @@ Status is one of:
   has a revisit trigger
 - **Superseded by D-xxx** — kept for history, no longer in force
 
+## Some of these entries describe code that is NOT on `main` yet
+
+**`docs/plans/decision-manifest.md` says which, and which PR each one's
+code is waiting in.** Read it before assuming an entry's code is in the
+game.
+
+Sixty-nine entries were landed ahead of their implementations (#364),
+because after one cycle this directory was **70 entries behind** the open
+PR queue and a session reading it had no way to know. That cost a real
+duplication: two workers were told to share a design, could not see each
+other's branches, and built it twice (gap I4,
+`docs/plans/gap-assessment-2.md`).
+
+The trade is deliberate and it inverts a familiar hazard. This project's
+standing warning is that **a decision entry is not evidence the code does
+what it says** (D-065, D-058, D-106) — and that warning was written for
+entries describing code that had *stopped* being true. These describe
+code that has not *arrived* yet, which is the safer direction only
+because the manifest names them. If the manifest is ever out of date,
+this paragraph is a lie; re-run
+`docs/plans/decisions-ahead.gen.py` rather than trusting either.
+
 ## The rules (each bought with a real merge-train incident)
 
 1. **One decision, one file.** A new decision is a NEW file in this
