@@ -150,9 +150,8 @@ jobs:
       # Runs AFTER test-unit deliberately, because the import is what
       # rewrites the files it owns.
       - name: TEMP dirty the tree to observe the line-ending gate red
-        run: printf '
-# TEMP
-' >> project.godot
+        run: |
+          echo "# TEMP" >> project.godot
 
       - name: The tree is clean after a Godot recipe
         run: |
