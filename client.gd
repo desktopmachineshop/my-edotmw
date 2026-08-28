@@ -9817,6 +9817,30 @@ func _civ_label(civ: String) -> String:
 	return def.display_name if def != null else civ
 
 
+## The civ's own pitch, for the control a player CHOOSES a civ with
+## (D-20260828-a-summary-is-shown-or-it-is-deleted, #214).
+##
+## `CivDef.summary` shipped saying, in its own doc comment, that it was
+## "shown in the lobby so a player choosing a civ knows what they are
+## picking", and the lobby had never shown it — the sixth instance of this
+## project's declared-and-unread defect class, and the reason the cp1252
+## corruption in all six of those strings (#231) went a milestone
+## unnoticed.
+##
+## A tooltip rather than a blurb label, deliberately: a label in the
+## lobby's preview column would move `LobbyLayout.DESIGN_HEIGHT`, which
+## D-20260817-lobby-fits-the-window pins with a test that builds the lobby
+## and measures it — that page has run off the bottom of a window once
+## already, and flavour text is the wrong thing to spend the budget on.
+func _civ_summary(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "A civ is drawn for you when the match starts."
+	var def := CivRoster.by_id(StringName(civ))
+	if def == null or def.summary.strip_edges() == "":
+		return _civ_label(civ)
+	return "%s — %s" % [def.display_name, def.summary]
+
+
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
 ## appears here with no code change (D-046 criterion 3).
 func _civ_choices() -> Array:
@@ -10290,8 +10314,14 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	picker.disabled = not editable
 	var choices := _civ_choices()
 	for c in choices:
+		var at := picker.item_count
 		picker.add_item(_civ_label(String(c)))
+		# Per ITEM as well as on the control, so the pitch is readable
+		# while the list is open — which is the moment a player is
+		# actually choosing (#214).
+		picker.set_item_tooltip(at, _civ_summary(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	picker.tooltip_text = _civ_summary(civ)
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)

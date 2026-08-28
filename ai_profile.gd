@@ -43,10 +43,6 @@ class_name AiProfileDef
 @export var id: StringName
 @export var display_name: String = ""
 
-## Flavour for the lobby, so a player choosing an opponent knows what
-## they are picking. Not mechanics.
-@export_multiline var summary: String = ""
-
 ## Where this sits in a list a player is shown, easiest first. Sorted on,
 ## so the roster's order is the file's business rather than the UI's.
 @export var order: int = 0
