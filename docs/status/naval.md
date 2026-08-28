@@ -240,6 +240,49 @@ to `wants_navy` alone reds
 with the old message quoted back, and removing the marker from
 `server.gd` reds the caller-exists scan (D-106's rule).
 
+**And then the acceptance was RUN, on a map that could fire the gate, and
+found three more.** All three were mine, all three were in code that had
+been reviewed and reasoned about, and not one was reachable without
+playing a match on `maps/isles.tres`:
+
+- **The AI had stopped looking.** "Have I searched" was keyed on
+  `_scout_leg`, and that counter measured HUNGER: scouting ran only while
+  a needed resource kind had never been seen, so an AI whose economy was
+  satisfied stopped walking and the counter froze. Measured at a 600 s
+  cap: 3 buildings, 29 squads, `scout_legs=2` after ten minutes. **I read
+  the field's name and assumed its meaning** — this project's oldest
+  defect family. Scouting is driven by what the AI LACKS now, a resource
+  *or* knowledge of an enemy, and the function is renamed because the old
+  name was half the bug.
+- **The gate read one seat.** `marker` takes the LAST occurrence of a
+  key — right for a marker printed once a match, silently wrong for one
+  printed once a PLAYER. Seat 1000 reported `wants_navy=1` and seat 1001
+  `0`, so the gate announced that nobody wanted a navy: **a gate lying in
+  the direction of the defect it exists to find**, masking a real dock
+  failure with a #351 report that was false. `marker_max` reads the
+  keenest seat, because the legs ask "did ANY seat get this far".
+- **The dock search bounded the possibility, not the search.**
+  `_raise_dock` walked `disk_offsets(6)` around the builder, so an AI
+  more than six cells from water found no shore and reported
+  `naval_step=dock` for a whole match. A builder WALKS to its site
+  (D-031's build reach), so coast distance is a delay and never a
+  refusal. The tell was a seat that built **nine buildings and no dock**.
+  It had no test at all — written in stage 7 and never driven, which is
+  how it came to no-op in silence.
+
+**Two of the tests written for those were wrong first, and both failures
+are worth more than the fixes.** The scouting one was BEHAVIOURAL, drove
+`update()`, and passed identically with the change reverted — the AI
+retires a node its crew never reaches, goes hungry, and scouts again for
+the old reason. It was deleted rather than shipped; only the guard-level
+test with its mirror assertion goes red. And the dock one put water "to
+the east" of a builder on a 48-wide TORUS, where it was five cells to the
+WEST by wrapping — so a six-cell search found a shore and the vacuous
+test passed over a live bug. **The red you do not get is the finding**,
+and this is the same trap `formation.md` records for the wheeling fixture
+and this file records for the landing one. Third occurrence: a fixture
+that means to separate two places on a torus must be checked, not drawn.
+
 ---
 
 **Superseded note (stage 7 before stage 2 landed):** **Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
