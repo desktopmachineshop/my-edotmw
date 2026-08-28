@@ -133,14 +133,23 @@ func test_a_garrisoned_base_is_not_invulnerable() -> void:
 	# stoneblood_heavy and emberdeep_heavy take BOTH buildings through a
 	# screen. Deliberately not asked of every troop — most line pairs do
 	# real damage and still lose, which is the design working.
+	# THREE squads, not two, since #266's morale scaling and #218's
+	# suppression landed (#361). A garrison is now worth exactly one extra
+	# squad: measured against a garrisoned tower, two heavy squads are
+	# ANNIHILATED by 120 s leaving it on 621 of 980, and three raze it in
+	# 27-29 s. That is the clause still holding — defence is rewarded and
+	# the base is emphatically not invulnerable — at a price that moved
+	# because routing finally works. D-067's PAIR rule is unchanged and
+	# still scoped to an UNGARRISONED base, which the companion test below
+	# is about.
 	for building in [&"town_centre", &"tower"]:
 		var took := []
 		for unit_id in [&"stoneblood_heavy", &"emberdeep_heavy", &"stoneblood_levy"]:
-			var result := _siege(building, unit_id, 2, 1, false, 5.0)
+			var result := _siege(building, unit_id, 3, 1, false, 5.0)
 			if bool(result["razed"]):
 				took.append(unit_id)
 		assert_gt(took.size(), 0,
-			"no heavy line pair could take a garrisoned %s even when re-tasked — "
+			"no heavy line trio could take a garrisoned %s even when re-tasked — "
 				% building
 			+ "a single screening squad has made the base invulnerable, not merely defended")
 
