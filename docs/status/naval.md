@@ -322,6 +322,29 @@ Not one of the four was found by reading. Worth stating plainly because
 the estate's testing discipline is otherwise excellent at exactly the one
 it already names.
 
+**And a fifth, about the ESTATE rather than the code: an unmerged sibling
+PR is `decisions/` with the affordance removed.** This chain nearly built
+the same founding-retry twice — the fix for #381's mechanism already
+existed, unmerged, in PR #255, and two workers independently sketched it.
+Worse than the duplicated work: the version both of us sketched (an
+attempt counter indexing `disk_offsets`) is #255's FIRST version, the one
+its author's own comment records as quietly rebuilding #217 after about a
+dozen refusals and catching it only in a real match at 56 s. **We would
+both have shipped the bug we were fixing, on a longer fuse, and neither
+would have suspected it** — a retry that varies its site LOOKS correct and
+fails only on the twelfth attempt.
+
+The rule this project already has is "check `decisions/` before deciding",
+and it is easy to follow because the entries are IN the tree. **A
+sibling's unmerged PR carries the same obligation with none of the
+affordance, and D-095's worktree isolation is precisely what removes it.**
+You cannot grep what is not checked out.
+
+So: before writing a fix for anything with an issue number, look for an
+open PR against that number — `gh pr list --search <issue>` — and read it.
+What you cannot see from the outside is not whether somebody has fixed it,
+but *which version they already tried and why it was wrong*.
+
 ---
 
 **Superseded note (stage 7 before stage 2 landed):** **Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
