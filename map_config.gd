@@ -522,7 +522,13 @@ func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray(),
 	if passable.is_empty() or points.size() < 2:
 		return 0
 	var space := to_space()
-	var labels: PackedInt32Array = _reachable_components(space, passable, navigable) 		if not navigable.is_empty() 		else walkable_components(space, passable)["labels"]
+	# The SAME graph `spawn_points` sampled over, or the validator asks a
+	# different question from the sampler and calls its answer wrong.
+	var labels: PackedInt32Array
+	if navigable.is_empty():
+		labels = walkable_components(space, passable)["labels"]
+	else:
+		labels = _reachable_components(space, passable, navigable)
 	var home := labels[space.index(points[0])]
 	var stranded := 0
 	for i in range(1, points.size()):
