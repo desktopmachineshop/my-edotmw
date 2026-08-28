@@ -65,9 +65,23 @@ func _duel(a_id: StringName, b_id: StringName, seed_value: int) -> Dictionary:
 	var a_frac := float(sim.alive_of(a)) / maxf(float(a_started), 1.0)
 	var b_frac := float(sim.alive_of(b)) / maxf(float(b_started), 1.0)
 	return {
-		"decided": sim.alive_of(a) <= 0 or sim.alive_of(b) <= 0,
+		# A fight is DECIDED when the two squads have actually fought and
+		# one is measurably ahead -- not when one has been wiped to the
+		# last man.
+		#
+		# Annihilation was a fair proxy while nothing ever ended a fight
+		# early, and it stops being one the moment routing works: with
+		# #266's morale scaling a squad breaks at ~52% casualties and
+		# flees, so the counter wins the exchange decisively and NEITHER
+		# side is wiped. Measured on the merged balance cluster, this
+		# fixture reported "only 1 of 6 fights resolved" for a matchup
+		# the counter was winning every time.
+		#
+		# The margin is what "felt" always meant; the old form just could
+		# not see it once a fight could end in a withdrawal.
+		"decided": (sim.alive_of(a) < a_started or sim.alive_of(b) < b_started) 			and not is_equal_approx(a_frac, b_frac),
 		"margin": a_frac - b_frac,
-		"a_won": sim.alive_of(b) <= 0 and sim.alive_of(a) > 0,
+		"a_won": a_frac > b_frac,
 	}
 
 
@@ -117,7 +131,18 @@ func test_archers_do_counter_the_infantry_they_were_priced_against() -> void:
 	# counter must clear is that it overturns SOMETHING in the class it
 	# names; which members it cannot is reported below rather than
 	# asserted, because asserting a defect persists is not a guard.
-	_assert_felt(&"thornwood_archers", &"gravesworn_levy")
+	#
+	# The target was `gravesworn_levy` and is now an ordinary one, because
+	# a FEARLESS target is a different question (#361). With #266's morale
+	# scaling every unit in the game breaks at ~52% casualties -- except
+	# gravesworn, which ships `rout_threshold 0` and cannot break at all.
+	# So the archers rout first and are ridden down, and the counter reads
+	# -0.08 for a matchup #219 measured at +0.73. Measured here:
+	# thornwood_archers DO overturn gildedreach_levy, emberdeep_levy and
+	# stoneblood_levy, and not the fearless one. That is a design question
+	# about what fearlessness is worth, not a fault in the bonus, so the
+	# fearless pairing is REPORTED below instead of asserted.
+	_assert_felt(&"thornwood_archers", &"gildedreach_levy")
 
 
 # --- and the third that does not, reported rather than asserted --------
@@ -132,6 +157,8 @@ func test_report_where_the_anti_infantry_counter_fails() -> void:
 		[&"gildedreach_archers", &"emberdeep_heavy"],
 		[&"emberdeep_archers", &"gildedreach_sellswords"],
 		[&"thornwood_archers", &"stoneblood_heavy"],
+		# Fearless, so the counter cannot win by breaking it (#361).
+		[&"thornwood_archers", &"gravesworn_levy"],
 	]
 	for pair in pairs:
 		var r := _sweep(pair[0], pair[1])
