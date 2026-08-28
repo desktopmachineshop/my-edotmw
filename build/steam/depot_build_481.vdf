@@ -1,0 +1,13 @@
+"DepotBuildConfig"
+{
+	"DepotID" "481"
+	"ContentRoot" "C:\Users\dmaso\AppData\Local\Temp\w81steam2\windows"
+	"FileMapping"
+	{
+		"LocalPath" "*"
+		"DepotPath" "."
+		"recursive" "1"
+	}
+	"FileExclusion" "*.pdb"
+	"FileExclusion" "*.debug"
+}
