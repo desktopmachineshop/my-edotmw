@@ -291,14 +291,14 @@ var _defence_tried := {}
 ## is offered again. Long, because the builder walks: the screen stands
 ## `WallPlan.STANDOFF_CELLS` out and a crew starts wherever it was
 ## hauling. A bound on a FAILURE rather than a difficulty knob, so it is a
-## constant — the same line `StaticDefence.THREAT_CELLS` draws.
+## constant — the same line `AiInvestment.THREAT_CELLS` draws.
 const DEFENCE_RETRY_SECONDS := 45.0
 var defences_standing_peak := 0
 var gate_orders := 0
 var gates_sealed := 0
 
 ## Own buildings destroyed, and own buildings seen taking damage. Both
-## feed `StaticDefence.pressure`, and both are DERIVED from the replicated
+## feed `AiInvestment.pressure`, and both are DERIVED from the replicated
 ## building state this seat already receives rather than from a new wire
 ## field — a client can see its own buildings' `health_fraction` (D-076's
 ## amendment made it actually move), so nothing new crosses the wire.
@@ -757,7 +757,7 @@ func _shortfall_for_next_purchase() -> int:
 	for def in _wanted_buildings():
 		if _owned_building_count(def.id) > 0:
 			continue
-		return StaticDefence.scarcest_shortfall(state.wallet, StaticDefence.cost_of(def))
+		return AiInvestment.scarcest_shortfall(state.wallet, AiInvestment.cost_of(def))
 	# And then whatever DEFENCE it intends to buy, because defences are
 	# deliberately not on `_wanted_buildings` (see that function) and an
 	# economy that did not know about them would never gather the stone
@@ -767,8 +767,8 @@ func _shortfall_for_next_purchase() -> int:
 	# income stopped again.
 	var defence := _next_defence_wanted()
 	if defence != null:
-		return StaticDefence.scarcest_shortfall(state.wallet,
-			StaticDefence.cost_of(defence))
+		return AiInvestment.scarcest_shortfall(state.wallet,
+			AiInvestment.cost_of(defence))
 	return -1
 
 
@@ -776,7 +776,8 @@ func _shortfall_for_next_purchase() -> int:
 ## want one. Asks `_fortify`'s own question, so the economy and the build
 ## step cannot disagree about what is being saved for.
 func _next_defence_wanted() -> BuildingDef:
-	if not StaticDefence.wants_to_invest(_threat_report(), _economy_report(),
+	if not AiInvestment.wants_to_invest(
+			AiInvestment.threat_pressure(_threat_report(), _economy_report()),
 			profile.defence_appetite, _defences_standing(), DEFENCES_CAP):
 		return null
 	var tower := WallPlan.cheapest_defensive_tower(&"gatherers")
@@ -1151,7 +1152,15 @@ func _go_to_sea() -> void:
 	wants_navy = AiNaval.needs_ships(_land_labels, home, enemies)
 	docks = _owned_building_count(&"dock")
 	ships_peak = maxi(ships_peak, _hulls().size())
-	if not AiInvestment.should_invest(wants_navy, profile.naval_commitment):
+	# The SAME decision the walls take, through the same function (#365).
+	# The case is this domain's — an enemy that cannot be walked to, which
+	# is not a threat and could never have been described as one — and
+	# `naval_commitment` is the threshold, so a profile that commits
+	# nothing still never sails. The cap is 0 because this investment is a
+	# PLAN rather than a number of standing things: `next_step` is what
+	# finishes it.
+	if not AiInvestment.wants_to_invest(1.0 if wants_navy else 0.0,
+			profile.naval_commitment, 0, 0):
 		naval_step = "none"
 		return
 
@@ -1584,7 +1593,7 @@ var _look_at := 0
 # the feature at all** — the defect class that left `BuildingSim.damage()`
 # uncalled for two milestones (D-055).
 #
-# The decision half is `static_defence.gd`, which names no wall and is
+# The decision half is `ai_investment.gd`, which names no wall and is
 # shared with naval stage 7 (#301). The geometry half is `wall_plan.gd`.
 # What is here is the seat: reading its own threat, spending, and USING
 # what it built.
@@ -1609,7 +1618,8 @@ func _fortify() -> void:
 	var standing := _defences_standing()
 	var threat := _threat_report()
 	var economy := _economy_report()
-	if not StaticDefence.wants_to_invest(threat, economy,
+	if not AiInvestment.wants_to_invest(
+			AiInvestment.threat_pressure(threat, economy),
 			profile.defence_appetite, standing, DEFENCES_CAP):
 		return
 
@@ -1704,7 +1714,7 @@ func _threat_report() -> Dictionary:
 			var away := state.space.distance(home, cell)
 			if nearest < 0 or away < nearest:
 				nearest = away
-			if away <= StaticDefence.THREAT_CELLS:
+			if away <= AiInvestment.THREAT_CELLS:
 				near += 1
 		for wire_id in state.buildings:
 			var info: Dictionary = state.buildings[wire_id]
@@ -1757,8 +1767,8 @@ func _pay_for(def: BuildingDef) -> bool:
 	floors.resize(Economy.RESOURCE_COUNT)
 	floors[Economy.ResourceKind.FOOD] = profile.food_floor
 	floors[Economy.ResourceKind.WOOD] = profile.wood_floor
-	return StaticDefence.can_afford_with_reserve(state.wallet,
-		StaticDefence.cost_of(def), floors)
+	return AiInvestment.can_afford_with_reserve(state.wallet,
+		AiInvestment.cost_of(def), floors)
 
 
 ## The screen this seat would raise, against whatever it is most afraid
@@ -1976,7 +1986,7 @@ func _hold_the_gates() -> void:
 
 ## How near a hostile has to be to a gate before it is worth shutting.
 ##
-## Smaller than `StaticDefence.THREAT_CELLS`, which is the radius at which
+## Smaller than `AiInvestment.THREAT_CELLS`, which is the radius at which
 ## a threat argues for BUILDING something. Shutting a gate is a reaction
 ## to somebody at the door; fortifying is a response to somebody in the
 ## region, and one number for both would either seal the gates all match

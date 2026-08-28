@@ -3,7 +3,7 @@ class_name WallPlan
 
 ## Where a wall goes, and where its gate goes (#337).
 ##
-## `static_defence.gd` answers WHETHER to fortify and is domain-free so
+## `ai_investment.gd` answers WHETHER to fortify and is domain-free so
 ## naval stage 7 can share it. This file is the other half — the part that
 ## knows what a wall is — and it is walls-only on purpose.
 ##
@@ -138,8 +138,8 @@ static func cost_of_screen(wall: BuildingDef, gate: BuildingDef,
 	total.resize(Economy.RESOURCE_COUNT)
 	if wall == null or segments <= 0:
 		return total
-	var wall_cost := StaticDefence.cost_of(wall)
-	var gate_cost := StaticDefence.cost_of(gate if gate != null else wall)
+	var wall_cost := AiInvestment.cost_of(wall)
+	var gate_cost := AiInvestment.cost_of(gate if gate != null else wall)
 	for i in range(Economy.RESOURCE_COUNT):
 		total[i] = gate_cost[i] + wall_cost[i] * (segments - 1)
 	return total

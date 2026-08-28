@@ -116,3 +116,31 @@ Stage 2 landing. At that point the behaviour, the `AI_STATS` keys, the
 bot's crossing and `beachhead.tres` are writable and runnable, and this
 entry gains an amendment recording the first match in which a landing
 actually happened — which is the criterion, and is not met yet.
+
+---
+
+**Amendment, 2026-08-28 — `should_invest` is gone, subsumed by the shared
+decision** (`D-20260828-one-ai-investment.md`, #365).
+
+This entry's `ai_investment.gd` and #348's `static_defence.gd` were built
+the same day, by two workers who could not see each other's trees, to
+answer the same question. They are one file now, and it keeps this
+entry's name because "an AI invests in a capability" is the general
+question and "static defence" is one instance of it.
+
+What moved:
+
+- `AiInvestment.should_invest(wanted, commitment)` is **deleted**. It is
+  `wants_to_invest(1.0 if wanted else 0.0, commitment, 0, 0)`, and a test
+  pins that equivalence over the whole truth table so the opponent this
+  entry describes decides exactly as it did.
+- `step`, `next_step`, `progress` and `share_of` are unchanged, including
+  the zero-commitment guard this entry records finding.
+- The file gained #348's pressure model, reserve, price and scarcest
+  shortfall. **Naval inherits the last of those for free**, which
+  matters: the AI had never gathered stone or gold in any match ever
+  played, and a dock costs both wood and stone.
+
+The reachability trigger, the landing target, the step list, the bots'
+crossing and this entry's Provisional status pending naval stage 2 are
+all untouched.
