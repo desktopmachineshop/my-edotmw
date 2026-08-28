@@ -154,3 +154,55 @@ func test_the_ladder_map_correctly_needs_no_navy() -> void:
 		var w := _world("res://maps/ladder.tres", seed_value)
 		assert_eq(_islands(w, _foot(w)), 1,
 			"every ladder start must share ONE landmass at seed %d — the AI is right to want no navy there" % seed_value)
+
+
+func test_the_server_prints_whether_the_map_needs_a_navy() -> void:
+	# The half the naval gate consumes, and the one every other check
+	# here is blind to (D-106's caller-exists rule as a test).
+	#
+	# `gate-check.sh naval` SKIPS when no AI wanted ships. On a land map
+	# that is right — a gate that failed on every land run would be turned
+	# off inside a week. On a map whose seats are on different landmasses
+	# it is #351's symptom wearing a green tick, and the harness cannot
+	# tell the two apart from the AI's own answer.
+	#
+	# So the harness keys on the MAP, and the server has to say so.
+	# Nothing printed it, so nothing could. This asserts the marker
+	# exists and is produced from spawn placement — HARNESS knowledge,
+	# never told to an AI, so D-051 is untouched.
+	var source := FileAccess.get_file_as_string("res://server.gd")
+	assert_true(source.contains("SEAT_LANDMASSES"),
+		"the server must print the seat-landmass marker, or gate-check.sh "
+		+ "cannot tell a correct skip from a vacuous one")
+	# A CALL, not merely the name. The first version of this assertion
+	# checked `source.contains("_print_seat_landmasses(")` — which the
+	# function's own DEFINITION satisfies, so deleting the call site left
+	# it green. Caught by perturbing it, which is the only thing that ever
+	# catches this: a caller-exists test that matches its own declaration
+	# is the vacuous check it was written to prevent.
+	var calls := source.count("_print_seat_landmasses(") 		- source.count("func _print_seat_landmasses(")
+	assert_gt(calls, 0,
+		"and something must CALL it — the marker existing in a function "
+		+ "nobody runs is the defect this project keeps finding")
+
+
+func test_the_marker_separates_a_naval_map_from_a_land_one() -> void:
+	# The arithmetic behind the marker, on the shipped maps, so a change
+	# to placement or to the water graph reds here rather than in a
+	# five-minute gate run.
+	#
+	# `landmasses > 1` is "a ship is REQUIRED"; `sea_components == 1` is
+	# "a ship is SUFFICIENT". Both are needed: a map where every start is
+	# marooned on its own island with no shared water would satisfy the
+	# first and be unplayable.
+	for seed_value in SEEDS:
+		var isles := _world("res://maps/isles.tres", seed_value)
+		assert_gt(_islands(isles, _foot(isles)), 1,
+			"isles must REQUIRE a navy at seed %d" % seed_value)
+		assert_eq(_islands(isles, _sea(isles)), 1,
+			"and a navy must SUFFICE at seed %d" % seed_value)
+
+		var ladder := _world("res://maps/ladder.tres", seed_value)
+		assert_eq(_islands(ladder, _foot(ladder)), 1,
+			("ladder must not require a navy at seed %d — a gate that fires "
+			+ "there would be turned off within a week") % seed_value)

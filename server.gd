@@ -528,6 +528,7 @@ func _build_world() -> void:
 	print("server: world %dx%d, preset %s, seed %d — %d spawn points" % [
 		_settings.width, _settings.height, _settings.preset, _settings.seed,
 		_spawn_points.size()])
+	_print_seat_landmasses(space)
 
 	# How many DISTINCT landmasses the starts occupy — map topology, not
 	# anybody's decision about it.
@@ -622,6 +623,43 @@ func _build_world() -> void:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % replay_path)
 
+
+
+## Whether this MAP makes a navy necessary, as a structured marker
+## (naval #301, `gate-check.sh naval`).
+##
+## The naval gate skips when no AI wanted ships, and on a land map that
+## skip is correct — a gate that failed on every land run would be turned
+## off inside a week. On a map whose seats are on DIFFERENT landmasses it
+## is #351's symptom wearing a green tick: the AI answering "no navy" is
+## the failure, and the harness cannot tell those two cases apart from
+## the AI's own answer. Nothing printed this, so nothing could.
+##
+## So the harness keys on the MAP instead. If the seats span more than
+## one walkable component, naval is possible and `wants_navy = 0` is a
+## FAILURE rather than a skip. That is HARNESS knowledge derived from
+## spawn placement, never something an AI is told — D-051 is untouched,
+## and an AI that quietly knew the map's topology would look like a good
+## AI rather than a bug.
+##
+## A structured marker, not prose, per the standing rule that a check
+## scans for markers rather than for scary words. `sea` is the number of
+## components once water is traversable (stage 9's own predicate), so
+## `landmasses > 1 and sea == 1` is exactly "a ship is required and a
+## ship is sufficient".
+func _print_seat_landmasses(space: TorusSpace) -> void:
+	if _spawn_points.is_empty():
+		return
+	var foot: PackedInt32Array = MapConfig.walkable_components(space, _passable)["labels"]
+	var sea := MapConfig.reachable_components(space, _passable, _navigable)
+	var on_land := {}
+	var on_sea := {}
+	for point in _spawn_points:
+		var index := space.index(point)
+		on_land[foot[index]] = true
+		on_sea[sea[index]] = true
+	print("server: SEAT_LANDMASSES seats=%d landmasses=%d sea_components=%d" % [
+		_spawn_points.size(), on_land.size(), on_sea.size()])
 
 func _exit_tree() -> void:
 	_shutdown()
