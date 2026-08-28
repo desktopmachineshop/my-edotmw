@@ -116,6 +116,10 @@ us. Worker 87 supplied the corollary below.
 ## Related
 
 - **D-022**'s audit block — the law this extends.
+- **D-20260828-read-what-a-metric-counts-not-what-it-is-called** —
+  the companion. A check built on a mislabelled metric inherits the lie
+  while doing nothing wrong itself, and that family is NOT perturbable,
+  which is why it is a separate entry rather than a fifth mode here.
 - **#389** (fixed artifact paths), **#390** (a native run outliving its
   slot), **#386** (a renderer-only field read by headless code).
 - **Host load invalidates milliseconds, not strings** (worker 87). A

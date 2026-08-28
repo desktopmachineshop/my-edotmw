@@ -622,3 +622,82 @@ func test_it_looks_for_an_enemy_and_stops_once_it_has_searched() -> void:
 	assert_gt(ai.scout_legs, before,
 		"premise: one leg short of enough, the same call does scout — "
 		+ "otherwise the bound above proves only that nothing happens")
+
+
+## An AI holding the shipped opening, with a resource node standing on the
+## cell its crew is about to found on (#381 / #217, fixed by PR #255).
+func _founding_ai_blocked_at_home() -> Dictionary:
+	var w := _founding_ai(1)
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var builder := ai._founder()
+	assert_gte(builder, 0, "premise: something in the opening may found")
+	var home := ai.state.squad_cell(builder, sim.time)
+	assert_gte(home.x, 0, "premise: the founder has a known cell")
+	ai.state.handle_packet(NetProtocol.encode_nodes([
+		{"cell": ai.state.space.index(home), "kind": Economy.ResourceKind.WOOD},
+	]))
+	w["home"] = home
+	return w
+
+
+func _town_sites(sent: Array) -> Array:
+	var out := []
+	for order in _build_orders(sent):
+		if String(order["def_id"]) == "town_centre":
+			out.append(int(order["cell"]))
+	return out
+
+
+func test_an_ai_blocked_at_its_start_founds_somewhere_else() -> void:
+	# #381's symptom, verified against the merged #255 fix rather than by
+	# reading it. Before that fix `_found_town` ordered at the spawn cell
+	# and never varied, so a node standing there — 20.0% of starts on the
+	# shipped default map, 8.3% on `ladder`, measured by worker 88 — meant
+	# the seat re-asked for the same refused cell for the whole match:
+	# buildings=0, the crew never consumed so squads_peak stayed at the
+	# opening 2, and no scouting, because scouting needs two crews.
+	#
+	# Driven as a FIXTURE rather than looked for in a ladder run on
+	# purpose: with 2 AI seats on `isles` a run has only about a 34%
+	# chance of containing a blocked start, so a green there would have
+	# meant "the case did not arise" — a coin flip dressed as evidence.
+	var w := _founding_ai_blocked_at_home()
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var blocked: Vector2i = w["home"]
+
+	for i in range(6):
+		var t := sim.time + AiPlayer.FOUND_RETRY * float(i + 1)
+		ai.set_time(t)
+		ai.update(t)
+
+	var sites := _town_sites(w["sent"])
+	assert_gt(sites.size(), 0,
+		"premise: a blocked AI must still ASK — a seat that stops asking "
+		+ "is a different defect from one that asks in the wrong place")
+	assert_false(sites.has(ai.state.space.index(blocked)),
+		"an AI whose start holds a resource node must found elsewhere, "
+		+ "not re-ask for the refused cell for the whole match (#381)")
+
+
+func test_an_unblocked_ai_still_founds_on_its_own_start() -> void:
+	# The mirror, and it is what stops the test above passing for the
+	# wrong reason. If the AI simply never chose its own cell, the
+	# assertion would hold with the filter doing nothing — so this pins
+	# that the start IS the preferred site when it is free, and that the
+	# node is what moved it.
+	var w := _founding_ai(1)
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var builder := ai._founder()
+	var home := ai.state.squad_cell(builder, sim.time)
+
+	ai.set_time(sim.time + AiPlayer.FOUND_RETRY)
+	ai.update(sim.time + AiPlayer.FOUND_RETRY)
+
+	var sites := _town_sites(w["sent"])
+	assert_gt(sites.size(), 0, "premise: an unblocked AI founds")
+	assert_true(sites.has(ai.state.space.index(home)),
+		"with nothing in the way the start is the site — so the other "
+		+ "test's result is the node moving it, not indifference")
