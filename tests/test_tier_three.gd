@@ -126,6 +126,13 @@ func test_nothing_simulation_side_reads_the_render_state() -> void:
 		handle.close()
 	for reader in offenders:
 		assert_true(String(reader) == "res://client.gd"
+			# The render pipeline itself (#240): the easing call moved out
+			# of client.gd so the benchmark could run the same one, and
+			# the benchmark keeps its own SoldierMotion for the same
+			# reason the client does — per-soldier render state has ONE
+			# home per drawing surface, never a shared global.
+			or String(reader) == "res://squad_render.gd"
+			or String(reader) == "res://bench_render.gd"
 			or String(reader) == "res://animation_state.gd"
 			or String(reader) == "res://cosmetic_duel.gd"
 			or String(reader) == "res://corpse_ledger.gd",

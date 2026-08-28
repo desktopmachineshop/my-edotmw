@@ -77,8 +77,15 @@ func test_the_breakdown_reports_a_residual() -> void:
 	var text := _source(BENCH)
 	assert_true(text.contains("other=%.2f"),
 		"the phase line prints the unclaimed remainder")
-	assert_true(text.contains("cpu_mean - cull - derive - upload"),
+	assert_true(text.contains("cpu_mean - cull - derive - decorate - upload"),
 		"and computes it rather than assuming the phases are exhaustive")
+	assert_true(text.contains('args.get("decorate", 1)'),
+		"the RTW render passes are ON by default — they are what the "
+		+ "client runs, and a benchmark that skips them measures a client "
+		+ "that does not ship (#240)")
+	assert_true(text.contains("bench: mix squads="),
+		"and the frame carries the activity MIX that produced it: a frame "
+		+ "with nothing fighting prices no duels")
 
 
 func test_the_frame_says_how_many_men_it_actually_derived() -> void:

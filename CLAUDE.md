@@ -574,7 +574,26 @@ scenario_world.gd        A complete headless world for a GUT test, in one
                         second one.
 /scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
-                        needs a real GPU, and prints which one.
+                        needs a real GPU, and prints which one. Runs the
+                        client's OWN render pipeline through
+                        `squad_render.gd` (D-20260828), because for a
+                        milestone it did not and said it did: every frame
+                        time recorded in that window was a floor for a
+                        client nobody was timing. Reports the frame in
+                        PHASES with a residual, and the MIX that produced
+                        it — a frame with nothing fighting prices no
+                        duels.
+squad_render.gd          THE per-squad render pipeline: duels, the
+                        static-target deal, the building and tree
+                        push-outs, the survivor easing, the decoration
+                        and the clip. One definition, called by client.gd
+                        and by the benchmark that claims to measure it
+                        (D-20260828, #240) — a harness cannot drift from
+                        a client whose function it runs. All-static and
+                        pure over its inputs, except the `SoldierMotion`
+                        the caller owns and passes in: D-006's amended
+                        clause 2 puts the eased per-soldier positions
+                        there and nowhere else.
 terrain_preview.gd       Headless terrain preview + chunk profiling. The
                         PNG is a TOP-DOWN biome map, so it can show a
                         palette drifting and cannot show how the ground
