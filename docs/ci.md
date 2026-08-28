@@ -40,6 +40,36 @@ is the last element's status is
 `read-what-a-metric-counts-not-what-it-is-called` with a shell builtin in
 place of a game field.
 
+### `pipefail` is necessary and not sufficient
+
+The obvious lesson from that miss is "set `pipefail`", and it is half a lesson.
+Measured in this shell rather than reasoned about — the four cases are 81's,
+reproduced here before being written down:
+
+```
+set -o pipefail; false | tail        -> 1    pipefail catches the PIPE
+                 false | tail        -> 0    the trap above
+set -o pipefail; false; true | tail  -> 0    pipefail is BLIND to a CHAIN
+set -eo pipefail; false; true | tail -> aborts at `false`
+```
+
+`pipefail` changes a **pipeline's** status to that of its first failing element.
+It does nothing for a `;` **chain**, where `$?` is simply the last command's, so
+an earlier failure is masked whatever `pipefail` says. `set -e`, or an explicit
+check, covers that half. GitHub's `shell: bash` supplies **both** — it runs
+`bash --noprofile --norc -eo pipefail {0}` — which is why this workflow's own
+header says `-eo pipefail` and not `pipefail`.
+
+Worth spelling out because **`set -o pipefail` reads like a complete answer and
+is half of one**: a guard that is correct about the case it covers and silent
+about the neighbouring one, which is the shape of everything else in this
+section.
+
+And the same witness applies again, one level down: the shell commands used to
+investigate the incident above were written as
+`set -o pipefail; git fetch …; …; cmd | tail` — the chain form, half-covered, by
+the author of this paragraph while writing it.
+
 ### And the limit of the argument, which belongs beside it and not after it
 
 **CI could not have caught that one.** It was not a defect in the tree;
