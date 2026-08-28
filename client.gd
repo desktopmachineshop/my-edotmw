@@ -2843,11 +2843,46 @@ func _to_hud(at: Vector2) -> Vector2:
 ## HUD, so the keys a player is told about are by construction the keys
 ## that work. They were previously a `match` statement and a hand-written
 ## hint string listing the same letters twice.
+## Letters claimed by the hand-written `event.keycode == KEY_x` branches
+## in `_handle_key`, declared so something can NOTICE a table taking one
+## (#302).
+##
+## They were only ever written as branches, which is how `G` came to be in
+## BUILD_KEYS *and* handled below it: the build table is consulted first,
+## so pressing G armed a garrison wall and `_gather_selected()` could
+## never be reached from the keyboard at all. The file predicted it twice
+## in prose — "a letter added to BUILD_KEYS or TRAIN_KEYS silently steals
+## it from here", and "L/K/G/F/U avoid ... every existing
+## BUILD_KEYS/TRAIN_KEYS letter" — and the second comment checked the new
+## letters against the two TABLES rather than against these branches, so
+## `G` cleared the check it was measured against.
+##
+## The value is a human-readable name, not a callable: this table exists
+## to be COMPARED against the other two, and `tests/test_hotkeys.gd`
+## fails both if a letter is claimed twice and if a branch here is not
+## declared. A third comment would have been the third prose guard for a
+## thing prose has now got wrong twice.
+##
+## Not exhaustive of every key `_handle_key` reads — ESC and the digits
+## are not LETTERS and cannot collide with a table keyed by
+## `OS.get_keycode_string`.
+const RESERVED_KEYS := {
+	"X": "stop the selection",
+	"V": "rotate the placement ghost (D-076)",
+	"G": "gather at the cursor's node",
+}
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
-	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
-	# existing BUILD_KEYS/TRAIN_KEYS letter.
-	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
+	# together deliberately; F and U continue it.
+	#
+	# `garrison_wall` was on G and has moved to J (#302): G is what a
+	# player reaches for to GATHER, that is the verb they use from the
+	# first minute of a match, and a niche wall piece has the weaker claim
+	# on the letter. Every letter here is checked against RESERVED_KEYS
+	# and TRAIN_KEYS by a test now, rather than by a comment.
+	"L": &"wall", "K": &"gate", "J": &"garrison_wall", "F": &"garrison_gate",
 	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
@@ -7075,6 +7110,8 @@ func _handle_key(event: InputEventKey) -> void:
 	if TRAIN_KEYS.has(key):
 		_train_selected(TRAIN_KEYS[key])
 		return
+	# Reached only because no table above claims G — see RESERVED_KEYS,
+	# which is what makes that a checked fact rather than a hope (#302).
 	if event.keycode == KEY_G:
 		_gather_selected()                   # workers, at the cursor's node
 		return
