@@ -283,6 +283,45 @@ and this is the same trap `formation.md` records for the wheeling fixture
 and this file records for the landing one. Third occurrence: a fixture
 that means to separate two places on a torus must be checked, not drawn.
 
+**And the shape they all share is SILENCE, which the project's own law
+only half covers.** Four failures were hunted across this chain, by four
+workers, for most of a day:
+
+| failure | what it did |
+|---|---|
+| the guard that fails **open** | an unknown landmass size answered YES |
+| the check that **cannot fail** | a caller-exists test matching its own declaration |
+| the artifact that is **not fresh** | a refused run leaving a healthy-looking log |
+| the order **never sent** | so there was no refusal anywhere to find |
+
+**All four fail by saying nothing.** The system is silent, and silence
+reads as fine — which is why the hunt kept looking for a message in a
+system whose failure mode is the absence of one.
+
+The corollary matters more than the list, and it is a real limit on this
+project's most-cited rule. **"Observe every check fail before trusting
+it" catches the second shape and not the other three.** Perturbing the
+CODE finds a check that cannot fail — that is what the rule is for, and
+it works. Finding the other three needs perturbing the **INPUTS**:
+
+- **omit an argument** — `needs_ships` called with three of six, which is
+  a live caller in `bot_naval.gd` one default away from a fleet;
+- **hand it a value production cannot produce** — the dock fixture set
+  `state.terrain_passable`, an array only the renderer fills, so the test
+  passed 36/36 while every AI in every match failed;
+- **delete the file, or refuse the run** — a stale artifact is internally
+  consistent, everything in it agreeing with everything else in it; it
+  simply belongs to a different run. The only check that catches it is
+  reading the duration the log CLAIMS (`time=1200.0s` under a `1200s cap`
+  banner) before believing the numbers under it;
+- **hand it an unresolved value** — `grep` printing `Binary file matches`
+  instead of a number, which every arithmetic comparison downstream then
+  takes as the false branch, silently.
+
+Not one of the four was found by reading. Worth stating plainly because
+the estate's testing discipline is otherwise excellent at exactly the one
+it already names.
+
 ---
 
 **Superseded note (stage 7 before stage 2 landed):** **Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
