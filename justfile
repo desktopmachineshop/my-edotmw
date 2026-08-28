@@ -3224,7 +3224,7 @@ lobby-shot SECONDS="8" AI="2" PRESET="0" RESOLUTION="1280x720": _import
 # lengthens matches and a truncated match reads as a draw, so "2 of 3
 # decided" means nothing without the seconds beside it.
 [doc("AI ladder: N headless AI-vs-AI matches, win rates and economy curves")]
-ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
+ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="" MAP="res://maps/ladder.tres": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int MATCHES "{{MATCHES}}"
@@ -3244,7 +3244,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
 
     profiles="{{PROFILES}}"
     died=""
-    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder, profiles=${profiles:-<default>}"
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map={{MAP}}, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
@@ -3272,14 +3272,14 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --map={{MAP}} --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --map={{MAP}} --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?

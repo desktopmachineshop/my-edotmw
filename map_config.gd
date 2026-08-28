@@ -24,6 +24,25 @@ class_name MapConfig
 @export var height: int = 64
 @export var hex_size: float = 1.0
 
+## Which `/terrain` preset this map's ground is generated from. EMPTY —
+## every map that shipped before this one — means "whatever the settings
+## default to", so nothing about `default`, `huge` or `ladder` moves.
+##
+## The file header above says terrain generation is out of scope and that
+## its parameters "join this resource when they land". This is the
+## smallest form of that: not the parameters, just WHICH preset, because
+## a map's identity and its terrain cannot be separated and the naval gate
+## is what proved it. `maps/isles.tres` exists to make the AI want a navy;
+## selected by dimensions alone it generated a CONTINENTS world at isles
+## dimensions — one landmass, `wants_navy = 0` correctly, and a gate that
+## passes green having tested nothing. That is D-076's lesson exactly: a
+## gate that cannot fire is a gate that lies.
+##
+## `--preset=` still overrides this, because `server.gd` applies the
+## override first and then resolves whatever `_settings.preset` ends up
+## as — so a dev can still point any map at any ground.
+@export var preset: StringName = &""
+
 # How many squads each connecting player is given at spawn. M3's cut line
 # is ~12-15 per player (D-015); full scale is ~50 (D-018).
 @export var squads_per_player: int = 12
@@ -176,7 +195,8 @@ func player_capacity() -> int:
 ##
 ## Deterministic: same `spawn_seed` and same terrain give the same
 ## points, every run. Replays (D-016) depend on that.
-func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
+func spawn_points(passable := PackedByteArray(),
+		navigable := PackedByteArray()) -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
 	if player_slots <= 0:
 		return out
@@ -202,6 +222,32 @@ func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 		if mainland < 0:
 			return out
 
+	# REACHABILITY IS THE LAND-AND-WATER GRAPH NOW (naval stage 9, #301).
+	#
+	# #128 required every start to share ONE walkable component, because an
+	# army that cannot walk to its enemy is a match nobody can finish, and
+	# that is what retired `islands` — 12 to 268 components, and as little
+	# as 7.8% of the map on the mainland.
+	#
+	# Ships change what "reachable" means, not whether it is required. Two
+	# starts on different islands are mutually reachable if a hull can sail
+	# between them, so the rule becomes: every start in the same component
+	# of the graph where a cell is traversable if it is passable OR
+	# navigable. On a dry map that graph is the walkable one and this is
+	# exactly #128's rule; on a wet one it is the whole world.
+	#
+	# `reach` is a SECOND labelling rather than a widened first one,
+	# because the two answer different questions and both are needed:
+	# `labels`/`mainland` still enforce D-104's "a start needs ground
+	# enough to build on", which water can never satisfy however well
+	# connected it is.
+	var reach := PackedInt32Array()
+	var reach_home := -1
+	if not navigable.is_empty() and not passable.is_empty():
+		reach = _reachable_components(space, passable, navigable)
+		if mainland >= 0:
+			reach_home = _first_reach_label_on(labels, reach, mainland)
+
 	# Rejection sampling. The attempt ceiling is what stops an
 	# over-constrained map (too many slots, too much spacing, too little
 	# dry land) from spinning forever — it returns fewer points instead,
@@ -225,9 +271,18 @@ func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 			# candidate costs and never whether it is accepted — and the
 			# rng is drawn once at the top of the loop, so the point
 			# sequence for a given seed is untouched by the reordering.
-			if mainland >= 0 and (index < 0 or index >= labels.size()
-					or labels[index] != mainland):
+			# A start still needs ground enough to build on (D-104), and
+			# that is its OWN landmass rather than the mainland once water
+			# connects them: an island of `min_spawn_landmass` cells is a
+			# home if a ship can reach it.
+			if mainland >= 0 and reach_home < 0 and (index < 0
+					or index >= labels.size() or labels[index] != mainland):
 				continue
+			if reach_home >= 0:
+				if index < 0 or index >= reach.size() or reach[index] != reach_home:
+					continue
+				if not _landmass_is_big_enough(labels, index):
+					continue
 
 		var far_enough := true
 		for existing in out:
@@ -247,6 +302,63 @@ func spawn_points(passable := PackedByteArray()) -> Array[Vector2i]:
 
 ## Every walkable component of `passable`, wrap-aware (#128).
 ##
+## Components of the graph an ARMY WITH SHIPS can move through: a cell is
+## traversable if it is passable OR navigable (naval stage 9).
+##
+## One flood fill over the union, not two fills stitched together — a
+## shore cell is in both arrays and is what joins an island to the sea, so
+## the union is connected exactly where a landing is possible and nowhere
+## else. That is the whole rule, and expressing it as one graph is what
+## keeps it from needing a second "and can they meet" pass afterwards.
+##
+## Reuses `walkable_components`' own walk by handing it the union array,
+## so there is ONE definition of a component on this map and the naval
+## question cannot drift from the land one.
+static func reachable_components(space: TorusSpace, passable: PackedByteArray,
+		navigable: PackedByteArray) -> PackedInt32Array:
+	return _reachable_components(space, passable, navigable)
+
+
+static func _reachable_components(space: TorusSpace, passable: PackedByteArray,
+		navigable: PackedByteArray) -> PackedInt32Array:
+	var union := PackedByteArray()
+	union.resize(space.cell_count())
+	for index in range(space.cell_count()):
+		var wet := index < navigable.size() and navigable[index] != 0
+		var dry := index < passable.size() and passable[index] != 0
+		union[index] = 1 if (wet or dry) else 0
+	return walkable_components(space, union)["labels"]
+
+
+## Which reach-component the mainland sits in — the one every start must
+## share. Taken from the mainland rather than from the first start, so the
+## answer does not depend on which candidate the rng drew first.
+static func _first_reach_label_on(labels: PackedInt32Array,
+		reach: PackedInt32Array, mainland: int) -> int:
+	for index in range(mini(labels.size(), reach.size())):
+		if labels[index] == mainland:
+			return reach[index]
+	return -1
+
+
+## Does the landmass under `index` clear `min_spawn_landmass`? D-104's
+## size bar, asked of the start's OWN island now that the mainland is no
+## longer the only legal home.
+func _landmass_is_big_enough(labels: PackedInt32Array, index: int) -> bool:
+	if labels.is_empty() or index < 0 or index >= labels.size():
+		return false
+	var want := labels[index]
+	if want < 0:
+		return false
+	var n := 0
+	for other in range(labels.size()):
+		if labels[other] == want:
+			n += 1
+			if n >= min_spawn_landmass:
+				return true
+	return false
+
+
 ## Returns `{"labels": PackedInt32Array, "sizes": PackedInt32Array}`:
 ## one label per cell, -1 where the ground is not walkable, and the exact
 ## cell count of each component. This REPLACES D-104's per-candidate
@@ -388,11 +500,35 @@ static func _mainland_of(sizes: PackedInt32Array, minimum: int) -> int:
 ## Zero when there is no terrain to reason about, for the same reason
 ## every other passability test here degrades open: an empty `passable` is
 ## the absence of an opinion, not a map with no ground on it.
-func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray()) -> int:
+## `navigable` is not optional in spirit, only in signature: REACHABILITY
+## IS THE LAND-AND-WATER GRAPH (naval stage 9), and a caller that omits it
+## is asking the pre-naval question. It defaults to empty so a dry caller
+## and every pre-naval test keep working unchanged.
+##
+## This asked the LAND-ONLY question while `spawn_points` — one screen
+## above, in this same file — had already moved to the water graph. So
+## the sampler correctly seated players across islands and the validator
+## immediately called that stranding, on every naval map:
+##
+##     server: map seats all 8 players but strands 2 of them on ground
+##     the others cannot walk to
+##
+## Two definitions of "reachable" in one file, disagreeing, with my own
+## change having moved one of them — the D-058/D-065 family. It mattered
+## beyond the wording: `ai-ladder` fails on engine diagnostics, so every
+## naval ladder run failed on this warning whatever the AI did.
+func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray(),
+		navigable := PackedByteArray()) -> int:
 	if passable.is_empty() or points.size() < 2:
 		return 0
 	var space := to_space()
-	var labels: PackedInt32Array = walkable_components(space, passable)["labels"]
+	# The SAME graph `spawn_points` sampled over, or the validator asks a
+	# different question from the sampler and calls its answer wrong.
+	var labels: PackedInt32Array
+	if navigable.is_empty():
+		labels = walkable_components(space, passable)["labels"]
+	else:
+		labels = _reachable_components(space, passable, navigable)
 	var home := labels[space.index(points[0])]
 	var stranded := 0
 	for i in range(1, points.size()):
@@ -406,8 +542,9 @@ func disconnected_spawns(points: Array[Vector2i], passable := PackedByteArray())
 ## Separate from validate() because it needs terrain, which the resource
 ## alone does not have. Kept explicit so a short seating is reported at
 ## startup rather than discovered as players quietly sharing a cell.
-func validate_spawns(passable := PackedByteArray()) -> String:
-	var points := spawn_points(passable)
+func validate_spawns(passable := PackedByteArray(),
+		navigable := PackedByteArray()) -> String:
+	var points := spawn_points(passable, navigable)
 	if points.size() < player_slots:
 		return "map seats %d of %d players at spacing %d — lower min_spawn_spacing, lower player_slots, or enlarge the map" % [
 			points.size(), player_slots, min_spawn_spacing]
@@ -416,7 +553,7 @@ func validate_spawns(passable := PackedByteArray()) -> String:
 	# above cannot produce a disconnected one any more, so this is the
 	# check that turns a future regression into a startup error rather
 	# than into a match that runs to the time cap and reads as a draw.
-	var stranded := disconnected_spawns(points, passable)
+	var stranded := disconnected_spawns(points, passable, navigable)
 	if stranded > 0:
 		return "map seats all %d players but strands %d of them on ground the others cannot walk to — a player who can neither attack nor be attacked leaves the match undecidable (D-033)" % [
 			player_slots, stranded]

@@ -371,6 +371,12 @@ static func from_map(config: MapConfig) -> MapSettings:
 	out.spawn_seed = config.spawn_seed
 	out.min_spawn_spacing = config.min_spawn_spacing
 	out.min_spawn_landmass = config.min_spawn_landmass
+	# A map may name its own ground. Empty means "leave the default
+	# alone", which is every map that predates `isles` — so this cannot
+	# move an existing map, and a test asserts that rather than trusting
+	# it. The caller still applies the preset; this only chooses WHICH.
+	if config.preset != &"":
+		out.preset = config.preset
 	return out
 
 

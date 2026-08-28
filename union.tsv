@@ -115,3 +115,5 @@
 333	ao/my-edotmw-88/naval-4-embark	CONFLICT	client_state.gd net_protocol.gd squad_sim.gd 
 333	ao/my-edotmw-88/naval-4-embark	CONFLICT-RESOLVED	SQUAD_INFO extended by two PRs at once: #273 adds an 'exploring' byte, #333 adds a variable-length 'cargo' block. Keep-both duplicated the decoder's files/stance keys AND left the decoder reading cargo BEFORE exploring while the encoder writes exploring BEFORE cargo - a real wire desync of every field after it. Hand-merged to files->stance->exploring->cargo on both sides.
 343	ao/my-edotmw-88/naval-2-domain	CONFLICT	squad_sim.gd 
+343	ao/my-edotmw-88/naval-2-domain	CONFLICT-RESOLVED	squad_sim.gd: #343 replaces _tier_for_destination with _wanted_domain_for at a line where #273 clears _explore; keep-both would declare wanted_tier twice. Kept the explore clear plus #343's domain call.
+352	ao/my-edotmw-88/naval-9-maps	CONFLICT	justfile 
