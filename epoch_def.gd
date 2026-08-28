@@ -1,8 +1,12 @@
 class_name EpochDef
 extends Resource
 
-## One rung of the ladder, as data (D-069's `/epochs/*.tres`, delivered by
-## `D-20260827-the-tree-is-the-ladder`).
+## One rung of the ladder, as data.
+##
+## `D-20260828-the-epoch-ladder` is THE description of the ladder — what
+## the rungs are, what advances you, and what that costs. This file is
+## D-069's `/epochs/*.tres`, delivered by
+## `D-20260827-the-tree-is-the-ladder`.
 ##
 ## ## What is NOT here, and it is the whole point
 ##

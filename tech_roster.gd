@@ -123,6 +123,9 @@ static func for_civ(civ: StringName) -> Array[TechDef]:
 
 ## The LINES on epoch `epoch`'s defining line. Empty for the top rung,
 ## which defines nothing because nothing is above it.
+##
+## Completing every line this returns IS the advance to `epoch + 1`
+## (`D-20260828-the-epoch-ladder`). There is no separate gate to pay.
 static func defining_lines(epoch: int) -> Array[StringName]:
 	load_all()
 	var out: Array[StringName] = []
