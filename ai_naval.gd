@@ -113,7 +113,13 @@ static func _worthwhile_land_elsewhere(land_labels: PackedInt32Array,
 		if label < 0 or label == mine or seen.has(label):
 			continue
 		seen[label] = true
-		if label >= land_sizes.size() or land_sizes[label] >= min_landmass:
+		# A component whose size we were not told is NOT counted. The
+		# permissive reading — unknown means qualifying — turns a caller
+		# that forgets `land_sizes` into one that funds a fleet for every
+		# rock on the map, which is the same 'ignorance decides nothing'
+		# rule this function already applies to `has_scouted`, and
+		# `bot_naval.gd` calls needs_ships with three arguments today.
+		if label < land_sizes.size() and land_sizes[label] >= min_landmass:
 			return true
 	return false
 

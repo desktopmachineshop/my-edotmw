@@ -159,6 +159,25 @@ it cannot walk to, is not ignorance; it is having run out of world.
 because generated maps are full of islets and every one of them would
 otherwise be a reason to build a dock.
 
+**And "substantial" has to be checked, not assumed — an unknown size may
+not read as a qualifying one.** The size filter answered "yes" for any
+component whose size the caller had not supplied, so a caller that
+forgot `land_sizes` would fund a fleet for every rock on the map. That
+is the same "ignorance decides nothing" rule the clause above already
+applies to `has_scouted`, and it was pointed the wrong way one line
+down. `bot_naval.gd` calls `needs_ships` with three arguments today and
+is saved only by `has_scouted` defaulting false — a live caller one
+default away from it.
+
+Measured, because the concern was raised against the clause AS
+DESCRIBED and the code already filtered: on `default.tres` at
+`continents`, seed 1337, there are **0 components of >= 96 cells besides
+home**, so a scouted AI that has found nobody correctly wants no navy.
+The shipped map has 8-16 landmasses a squad cannot walk to and not one
+of them could hold a start; without the filter every AI on the map
+people actually play would have bought transports to reach
+uninhabitable rocks.
+
 **And a dock was being built with no naval intent at all.**
 `_wanted_buildings()` returns every def a gatherer may build, so seats
 with `wants_navy=0 ships_peak=0` reported `docks=1`. The wasted wood is

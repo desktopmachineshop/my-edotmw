@@ -78,3 +78,67 @@ func test_the_same_ai_before_scouting_still_wants_nothing() -> void:
 	assert_false(AiNaval.needs_ships(w["labels"], home, [], false,
 			w["sizes"], settings.min_spawn_landmass),
 		"before it has looked, an AI concludes nothing from its ignorance")
+
+
+func test_the_shipped_default_map_offers_nothing_worth_sailing_to() -> void:
+	# 88's measurement, turned into a check: `continents` has 8-16
+	# landmasses a squad cannot walk to, and NOT ONE of them can hold a
+	# start. If "there is land I cannot reach on foot" were the whole
+	# clause, every AI on the map people actually play would fund a dock
+	# and a transport to reach an uninhabitable rock — the "no navy on
+	# ignorance" guard defeated through the new door instead of the old.
+	#
+	# What stops it is the size filter, which reuses D-104's own
+	# min_spawn_landmass rather than inventing a threshold.
+	var settings := MapSettings.new()
+	var cfg: MapConfig = load("res://maps/default.tres")
+	settings.width = cfg.width
+	settings.height = cfg.height
+	settings.seed = 1337
+	settings.player_slots = 20
+	settings.apply_preset(TerrainPresetRoster.by_id(&"continents"))
+	var space := TorusSpace.new(settings.width, settings.height)
+	var fields: TerrainFields = settings.to_terrain().build_fields(space)
+	var passable: PackedByteArray = fields.passable
+	var config := settings.to_spawn_config()
+	var points := config.spawn_points(passable)
+	assert_gt(points.size(), 0, "premise: the shipped map seats somebody")
+
+	var comps := MapConfig.walkable_components(space, passable)
+	var labels: PackedInt32Array = comps["labels"]
+	var sizes: PackedInt32Array = comps["sizes"]
+	var home := space.index(points[0])
+
+	var elsewhere := 0
+	var mine := AiNaval.component_of(labels, home)
+	for label in range(sizes.size()):
+		if label != mine and sizes[label] >= config.min_spawn_landmass:
+			elsewhere += 1
+	gut.p("default continents %dx%d: %d component(s) >= %d cells besides home" % [
+		settings.width, settings.height, elsewhere, config.min_spawn_landmass])
+
+	# Scouted, nobody found — the one state that can reach the new clause.
+	assert_false(AiNaval.needs_ships(labels, home, [], true, sizes,
+		config.min_spawn_landmass),
+		"no AI may fund a navy to reach rocks nobody could start on")
+
+
+func test_a_caller_that_forgets_the_sizes_gets_no_navy_rather_than_always() -> void:
+	# The trap under the clause. `land_sizes` and `min_landmass` are
+	# optional, and an empty sizes array must not read as "every
+	# component qualifies" — that turns a forgotten argument into a
+	# fleet, which is the D-055 family with an outbound invoice.
+	# `bot_naval.gd` calls needs_ships with three arguments today.
+	var space := TorusSpace.new(24, 12)
+	var passable := PackedByteArray()
+	passable.resize(space.cell_count())
+	passable.fill(1)
+	for r in range(space.height):
+		passable[space.index(Vector2i(6, r))] = 0
+		passable[space.index(Vector2i(18, r))] = 0
+	var comps := MapConfig.walkable_components(space, passable)
+	var labels: PackedInt32Array = comps["labels"]
+	var home := space.index(Vector2i(2, 4))
+
+	assert_false(AiNaval.needs_ships(labels, home, [], true),
+		"unknown sizes must decide nothing, the same way ignorance does")
