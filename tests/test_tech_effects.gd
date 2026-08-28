@@ -370,6 +370,23 @@ func _server_for(civ: StringName) -> Dictionary:
 	return {"server": server, "peer": peer, "sites": sites}
 
 
+## The first thing this civ can actually START at `site`, in the tree's
+## own priority order.
+##
+## Named rather than hard-coded because a fixture that names one tech is
+## pinned to the tree's SHAPE, not to the mechanism it is testing — and
+## that shape moved once already: epoch 1's cheap trunk tech and its
+## expensive arc tech swapped prerequisites when `just test-load` showed
+## nobody could afford the first research in the game. Five fixtures broke
+## on exactly this pattern in D-20260823, and the lesson was the same.
+func _first_at(w: Dictionary, civ: StringName, site: StringName) -> TechDef:
+	var server = w["server"]
+	for tech in server._research.available(1, civ):
+		if (tech as TechDef).research_at == site:
+			return tech
+	return null
+
+
 func _order_research(w: Dictionary, site: StringName, line: StringName) -> void:
 	w["server"]._handle_order_research(w["peer"], NetProtocol.encode_order_research(
 		BuildingSim.wire_id(int((w["sites"] as Dictionary)[site])), String(line)))
@@ -379,17 +396,23 @@ func test_the_server_refuses_a_tech_at_the_wrong_building() -> void:
 	# Two separate refusals on purpose: "wrong building" and "not yet" are
 	# different mistakes, and a player told the wrong one goes looking in
 	# the wrong place.
-	var w := _server_for(CivRoster.ids()[0])
-	_order_research(w, &"barracks", &"settling")
+	var civ := CivRoster.ids()[0]
+	var w := _server_for(civ)
+	var first := _first_at(w, civ, &"town_centre")
+	assert_not_null(first)
+	_order_research(w, &"barracks", first.line)
 	assert_eq(w["server"]._buildings.queue_length(int((w["sites"] as Dictionary)[&"barracks"])), 0,
 		"the settlement tech is not studied at a barracks")
 
 
 func test_the_server_takes_the_order_and_the_payment() -> void:
-	var w := _server_for(CivRoster.ids()[0])
+	var civ := CivRoster.ids()[0]
+	var w := _server_for(civ)
 	var server = w["server"]
+	var first := _first_at(w, civ, &"town_centre")
+	assert_not_null(first, "%s can start nothing at all at its town centre" % civ)
 	var before: int = server._economy.wallet_of(1)[0]
-	_order_research(w, &"town_centre", &"settling")
+	_order_research(w, &"town_centre", first.line)
 	assert_eq(server._buildings.queue_length(int((w["sites"] as Dictionary)[&"town_centre"])), 1,
 		"the order should have been queued")
 	assert_lt(server._economy.wallet_of(1)[0], before, "research is not free")
@@ -397,10 +420,13 @@ func test_the_server_takes_the_order_and_the_payment() -> void:
 
 func test_the_server_refuses_a_second_start_of_the_same_line() -> void:
 	# A tech is researched once per PLAYER, not once per building.
-	var w := _server_for(CivRoster.ids()[0])
-	_order_research(w, &"town_centre", &"settling")
+	var civ := CivRoster.ids()[0]
+	var w := _server_for(civ)
+	var first := _first_at(w, civ, &"town_centre")
+	assert_not_null(first)
+	_order_research(w, &"town_centre", first.line)
 	var spent: int = w["server"]._economy.wallet_of(1)[0]
-	_order_research(w, &"town_centre", &"settling")
+	_order_research(w, &"town_centre", first.line)
 	assert_eq(w["server"]._economy.wallet_of(1)[0], spent,
 		"a line already in progress must not be paid for twice")
 
@@ -421,24 +447,24 @@ func test_a_finished_research_changes_an_army_that_already_exists() -> void:
 	var w := _server_for(civ)
 	var server = w["server"]
 
-	var settling := TechRoster.for_civ_line(civ, &"settling")
-	assert_not_null(settling, "%s has no settlement tech" % civ)
+	var first := _first_at(w, civ, &"town_centre")
+	assert_not_null(first, "%s can start nothing at its town centre" % civ)
 	var crew := UnitRoster.for_civ_archetype(civ, &"gatherers")
 	assert_not_null(crew)
 	var squad: int = server._sim.add_squad(crew, 1, Vector2i(6, 6))
 	var before: float = server._sim.def_of(squad).gather_rate
 
-	_order_research(w, &"town_centre", &"settling")
+	_order_research(w, &"town_centre", first.line)
 	# Long enough for the shipped research time, whatever it is tuned to.
-	for _i in range(int(settling.research_time * SquadSim.TICK_HZ) + 4):
+	for _i in range(int(first.research_time * SquadSim.TICK_HZ) + 4):
 		server._sim.tick()
 
-	assert_true(server._research.has(1, &"settling"),
+	assert_true(server._research.has(1, first.line),
 		"the tech should have completed")
-	# Every shipped settlement tech raises its civ's gathering — that is
-	# what epoch 1 IS (D-068: the opening is genuinely economic). If a
-	# tuning pass ever removes that, this assert is the right place to
-	# find out.
+	# The first thing researchable at a town centre raises this civ's
+	# gathering — that is what epoch 1 IS (D-068: the opening is genuinely
+	# economic). If a tuning pass ever removes that, this assert is the
+	# right place to find out.
 	assert_gt(server._sim.def_of(squad).gather_rate, before,
 		"a crew standing there already must feel the finished research")
 

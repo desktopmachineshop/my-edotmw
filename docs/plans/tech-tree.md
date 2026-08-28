@@ -66,11 +66,24 @@ prerequisites:**
         optional depth bought instead of troops.
 ```
 
-**The arc tech comes first on purpose.** It is what unlocks the rung's new
-troops, so a player gets the toy in the *first half* of the rung and plays
-with it, rather than receiving it as a parting gift on the way out. The
-trunk tech is the consolidation you do afterward, and completing it is the
-age-up — there is no button.
+**The arc tech comes first on purpose — from epoch 2 up.** It is what
+unlocks the rung's new troops, so a player gets the toy in the *first
+half* of the rung and plays with it, rather than receiving it as a parting
+gift on the way out. The trunk tech is the consolidation you do afterward,
+and completing it is the age-up — there is no button.
+
+**Epoch 1 is deliberately the other way round, and that was found by
+running the gate rather than by arguing.** E1's arc tech unlocks no unit
+(the levy, the crew and the general are all free), so arc-first buys
+nothing there and costs the whole opening its accessibility: with
+`hand_tools` behind `settling`, the FIRST researchable thing in the game
+was a 550-RP commitment, and a `just test-load 4 300` run came back with
+every gate green and **not one tech researched by anybody**. D-068 wants
+the opening to be economic and the *expansion* row to carry the first
+real fork — an opening in which nothing is affordable is not economic, it
+is empty. So in epoch 1 `hand_tools` has no prerequisite and `settling`
+requires it. **The line's total is unchanged** (500f 300w, 90 s), which is
+what keeps D-069's advance table intact and the sum test green.
 
 **The defining line is two techs and both are on universal sites or the
 civ's own.** A defining tech is never gated behind a building some civ
@@ -157,9 +170,14 @@ player. The four **▣** techs are the trunk half of each defining line.
 
 | line | name | site | requires | cost | time | effect |
 |---|---|---|---|---|---|---|
-| ▣ `hand_tools` | **Hand Tools** | town centre | `settling` | 150f 100w | 30 s | `gatherers` `gather_rate` ×1.10 · all `build_time` ×0.92 |
-| `wide_baskets` | **Wide Baskets** | storehouse | `settling` | 120f 80w | 25 s | `gatherers` `carry_capacity` +4 |
-| `waymarks` | **Waymarks** | town centre | `settling` | 100f 60w | 25 s | `gatherers` `vision_range` +4, `move_speed` ×1.08 |
+| ▣ `hand_tools` | **Hand Tools** | town centre | — | 150f 100w | 30 s | `gatherers` `gather_rate` ×1.10, `build_time` ×0.92 |
+| `wide_baskets` | **Wide Baskets** | storehouse | `hand_tools` | 120f 80w | 25 s | `gatherers` `carry_capacity` +4 |
+| `waymarks` | **Waymarks** | town centre | `hand_tools` | 100f 60w | 25 s | `gatherers` `vision_range` +4, `move_speed` ×1.08 |
+
+*`hand_tools` is the only tech in the tree with no prerequisite at all —
+it is where every civ's game starts, and at 150f 100w it is affordable in
+the first couple of minutes. Everything else in epoch 1, the civ's own
+settlement tech included, hangs off it.*
 
 *Waymarks is the cheapest tech in the game and it is quietly one of the
 best: D-087 put 3,413 wood nodes on the shipped map and a crew that can
