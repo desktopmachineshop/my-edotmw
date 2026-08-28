@@ -47,24 +47,42 @@ enum Kind { CURVE = 0, SQUAD_INFO = 1, COMBAT = 2, BUILDING_INFO = 3, SEATS = 4 
 
 var _file: FileAccess = null
 var records_written: int = 0
+## Where this log was actually opened, after `ArtifactPath` resolved it.
+## Empty until `open_for_write` succeeds — so a caller can say WHERE the
+## replay is, or that there is not one, rather than assuming (#201).
+var path: String = ""
+## Why there is no replay, when there is none. Reported by the server at
+## start-up and again in its shutdown summary: an exported build's
+## `push_error` goes nowhere a player can see, which is the actual
+## complaint in #201 (the failure was loud in a checkout and silent in
+## the thing being shipped).
+var open_error: String = ""
 
 
 ## Begin recording. Returns OK, or an error code — a replay that cannot
 ## be opened must not silently do nothing, since its absence would only
 ## be discovered when someone needs it to debug a desync.
-func open_for_write(path: String, tick_hz: float, space: TorusSpace) -> Error:
-	var dir := path.get_base_dir()
-	if dir != "" and not DirAccess.dir_exists_absolute(dir):
-		var err := DirAccess.make_dir_recursive_absolute(dir)
-		if err != OK:
-			push_error("ReplayLog: could not create %s (error %d)" % [dir, err])
-			return err
+func open_for_write(want_path: String, tick_hz: float, space: TorusSpace) -> Error:
+	# `res://` is a read-only virtual filesystem inside an exported
+	# build's .pck, so the path a recipe or the server composed has to be
+	# rebased before anything tries to create a directory in it (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write). In a
+	# checkout this is the identity.
+	path = ArtifactPath.resolve(want_path)
+	open_error = ""
+
+	var err := ArtifactPath.ensure_dir_for(path)
+	if err != OK:
+		open_error = "could not create %s (error %d)" % [path.get_base_dir(), err]
+		push_error("ReplayLog: %s" % open_error)
+		return err
 
 	_file = FileAccess.open(path, FileAccess.WRITE)
 	if _file == null:
-		var err := FileAccess.get_open_error()
-		push_error("ReplayLog: could not open %s for writing (error %d)" % [path, err])
-		return err
+		var open_err := FileAccess.get_open_error()
+		open_error = "could not open %s for writing (error %d)" % [path, open_err]
+		push_error("ReplayLog: %s" % open_error)
+		return open_err
 
 	_file.store_buffer(MAGIC.to_utf8_buffer())
 	_file.store_float(tick_hz)

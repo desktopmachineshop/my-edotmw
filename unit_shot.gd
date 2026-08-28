@@ -131,7 +131,7 @@ func _shoot() -> void:
 		# with no ground in frame is simply the model in place — is exactly
 		# what a player perceives of the animation itself. A single still
 		# cannot answer "does this read as walking"; a strip of them can.
-		var base := out_path.trim_suffix(".png")
+		var base := ArtifactPath.resolve(out_path).trim_suffix(".png")
 		for i in range(burst):
 			await get_tree().process_frame
 			await RenderingServer.frame_post_draw
@@ -144,6 +144,11 @@ func _shoot() -> void:
 		return
 
 	var image: Image = get_viewport().get_texture().get_image()
+	# `res://` cannot be written in an exported build (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write); the
+	# identity in a checkout, so the recipe's own --out= still lands
+	# exactly where the justfile looks for it.
+	out_path = ArtifactPath.resolve(out_path)
 	var absolute := ProjectSettings.globalize_path(out_path)
 	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
 	image.save_png(absolute)

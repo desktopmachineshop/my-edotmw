@@ -45,3 +45,45 @@ Steamworks anything exists in the repo. The shape:
   number Q15 has been waiting on. Criterion 10 is a human playing
   end-to-end through the Steam build — the D-085-criterion-14 lesson,
   applied from day one.
+
+**Host-quit was revisited and left standing
+(`D-20260828-host-quit-is-priced-against-a-match-length-nobody-has-measured`,
+#289, 2026-08-28).** D-088 accepts host-quit-kills-the-match and D-092
+accepts no-saves; #289 argued D-056's 1–2 hour target changes the loss.
+It does not, on its own — **D-056, D-088 and D-092 were all taken on
+2026-08-14, against the same target**, so the length was never the new
+information.
+
+What IS new, and neither entry could have anticipated it, is **who is in
+the room**: #183's alpha loop puts a stranger hosting for strangers, and
+the same PR stack notes a tester has no way to send a log back — so a
+match killed by a host quitting and one killed by a bug produce the same
+report, which is none.
+
+Three things worth carrying:
+
+- **Match length is now UNMEASURED, which is worse than either answer.**
+  D-056 records matches deciding at ~200–230 s; measured 2026-08-28,
+  **four of five all-AI matches did not decide at 200–300 s**, and none
+  was run to a natural conclusion. The RTW programme, the map ladder and
+  D-067 have each lengthened matches and nothing re-measured. The
+  decision names the one number that settles this: an UNCAPPED match,
+  after #159 and #206 land.
+- **Migration is expensive, not dangerous, and D-088's wording implied
+  the opposite.** Its "whoever inherits the server inherits omniscience"
+  ground is weaker than it reads — the host already has omniscience
+  (D-088 says so, D-091 accepts it for unranked), so migration widens the
+  set of people who could abuse it rather than creating the surface. Its
+  other ground — that authoritative-state handoff is a milestone of its
+  own — stands. That reordering moves the question from "never, on
+  principle" to "not yet, on cost".
+- **D-092 is not an argument against migration**, and reading the two
+  entries together invites treating it as one. D-092 rejected saves for
+  the CEREMONY — all N agree to stop, all N return. Migration has no
+  ceremony: everyone is already connected and already wants to continue.
+
+Also rejected, and recorded because it is the idea a reader has next: a
+**rejoinable replay checkpoint** is not free. The curve log is what was
+SENT, not what the simulation IS — morale, fatigue, wallets, build
+queues, node stocks and no-build claims are in none of it, so resuming
+from a replay means adding the state snapshot D-092 already rejected.

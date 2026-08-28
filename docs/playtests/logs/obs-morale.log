@@ -1,0 +1,45 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS-MORALE: begin
+
+MORALE ARITHMETIC - morale lost per second under building fire
+  vs morale recovered per second. Recovery is unconditional
+  (Combat._recover_morale_and_check_rally), so a negative net
+  means the squad can never be broken by that building at all.
+  building       unit                      kills/s   loss/s  recov/s    net/s   canrout
+  town_centre    emberdeep_levy              0.353    1.412    2.000   +0.588        NO
+  town_centre    gildedreach_levy            0.441    1.765    2.000   +0.235        NO
+  town_centre    stoneblood_heavy            0.079    0.316    2.000   +1.684        NO
+  town_centre    windmarch_skirmishers       0.625    2.500    2.000   -0.500       yes
+  town_centre    thornwood_levy              0.484    1.935    2.000   +0.065        NO
+  town_centre    gravesworn_levy             0.750    0.000    2.000   +2.000        NO
+  tower          emberdeep_levy              0.667    2.668    2.000   -0.668       yes
+  tower          gildedreach_levy            0.834    3.335    2.000   -1.335       yes
+  tower          stoneblood_heavy            0.149    0.597    2.000   +1.403        NO
+  tower          windmarch_skirmishers       1.181    4.725    2.000   -2.725       yes
+  tower          thornwood_levy              0.915    3.658    2.000   -1.658       yes
+  tower          gravesworn_levy             1.418    0.000    2.000   +2.000        NO
+
+MORALE TRACE - a squad parked in a building's reach, morale each 10s.
+  (rout_threshold is 25.0 by default; a squad that dies at morale
+  100 died without its men ever wavering.)
+  town_centre  vs emberdeep_levy         10s:23/26 men m=99 | 20s:19/26 men m=97 | 30s:16/26 men m=100 | 40s:12/26 men m=97 | 50s:9/26 men m=100 | 60s:5/26 men m=98 | 70s:2/26 men m=100
+      -> died at 72.9s, lowest morale seen 96.0 (threshold 25), ever routed: false
+  town_centre  vs gildedreach_levy       10s:26/30 men m=99 | 20s:21/30 men m=97 | 30s:17/30 men m=97 | 40s:13/30 men m=100 | 50s:8/30 men m=97 | 60s:4/30 men m=98
+      -> died at 67.3s, lowest morale seen 94.8 (threshold 25), ever routed: false
+  town_centre  vs thornwood_levy         10s:23/28 men m=96 | 20s:18/28 men m=95 | 30s:14/28 men m=99 | 40s:9/28 men m=97 | 50s:4/28 men m=97
+      -> died at 57.5s, lowest morale seen 93.6 (threshold 25), ever routed: false
+  tower        vs emberdeep_levy         10s:20/26 men m=94 | 20s:13/26 men m=86 | 30s:6/26 men m=78
+      -> died at 38.1s, lowest morale seen 70.0 (threshold 25), ever routed: false
+  tower        vs gildedreach_levy       10s:22/30 men m=86 | 20s:14/30 men m=74 | 30s:5/30 men m=58
+      -> died at 35.1s, lowest morale seen 48.0 (threshold 25), ever routed: false
+  tower        vs thornwood_levy         10s:19/28 men m=82 | 20s:10/28 men m=66 | 30s:1/28 men m=50
+      -> died at 30.1s, lowest morale seen 46.0 (threshold 25), ever routed: false
+
+MELEE CONTROL - the same squads beaten by another SQUAD instead.
+  This is the comparison that shows the mechanism works and only
+  the building path cannot reach it.
+  emberdeep_levy         beaten by stoneblood_heavy: routed at 3.9s, lowest morale 0.0
+  gildedreach_levy       beaten by stoneblood_heavy: routed at 2.7s, lowest morale 0.0
+  thornwood_levy         beaten by stoneblood_heavy: routed at 2.7s, lowest morale 0.0
+OBS-MORALE: end

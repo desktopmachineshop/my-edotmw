@@ -191,7 +191,14 @@ func resolve(sim: SquadSim, tick: int, dt: float) -> Array:
 		# D-20260819-a-charge-is-spent-on-its-impact exists to close.
 		var charging := sim.is_charging(attacker)
 		if sim.is_attack_moving(attacker) and not charging:
-			sim.stop(attacker)
+			# PAUSE, not cancel (#249). `stop()` clears the attack-move
+			# flag and nothing ever set it again, so this halt used to be
+			# permanent: a squad that stopped short of its objective,
+			# killed the screen in front of it and went idle stood there
+			# for the rest of the match. D-034's halt is right and
+			# unchanged — what is new is that the errand is remembered and
+			# `resume_attack_moves` carries it on once the fight is over.
+			sim.pause_attack_move(attacker)
 
 		if _should_attack(sim, attacker, tick, attacker_def):
 			# Tier 2 (D-20260819-only-men-in-contact-fight): the damage
@@ -277,6 +284,31 @@ func is_engaged(squad: int) -> bool:
 ## Reuses this tick's bucket map and `_engaged` (from `resolve()`, called
 ## first every tick): a squad that already found a target standing where
 ## it is has nothing to chase.
+## Carry on with an errand a contact halt interrupted (#249).
+##
+## The other half of D-034's halt. Runs AFTER `resolve`, deliberately and
+## for the same reason `_separate_arrivals` does: the condition is "has
+## this squad still got something in reach", and combat is what knows.
+## Run before it, the answer is a tick stale, and a squad would be pulled
+## off a fight it is still in.
+##
+## Runs BEFORE `assign_idle_engagements` so a remembered PLAYER order
+## beats an opportunistic chase — and once resumed the squad is
+## attack-moving again, which that pass already skips.
+func resume_attack_moves(sim: SquadSim) -> void:
+	for squad in range(sim.squad_count()):
+		if not sim.has_paused_attack_move(squad):
+			continue
+		if sim.alive_of(squad) <= 0 or sim.is_routed(squad):
+			sim.resume_attack_move(squad)   # clears the errand; refuses to act
+			continue
+		# Still in contact, or still walking: leave it be. `_engaged` is
+		# this tick's, set by `resolve` a moment ago.
+		if _engaged.has(squad) or not sim.is_idle(squad):
+			continue
+		sim.resume_attack_move(squad)
+
+
 func assign_idle_engagements(sim: SquadSim, tick: int) -> void:
 	var buckets: Dictionary = _buckets if _buckets_tick == tick else _build_buckets(sim)
 	for squad in range(sim.squad_count()):
@@ -637,7 +669,7 @@ func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int
 		return
 
 	sim.set_alive(squad, maxi(0, sim.alive_of(squad) - casualties))
-	var morale := sim.morale_of(squad) - float(casualties) * def.morale_loss_per_casualty
+	var morale := sim.morale_of(squad) - def.morale_loss_for(casualties)
 	sim.set_morale(squad, maxf(morale, 0.0))
 
 	# Being shelled by a fortification breaks a squad the same way being
@@ -874,8 +906,7 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# SAME aspect the formation's defence already priced above, so the
 	# terror and the shield agree about where the blow landed.
 	var morale := sim.morale_of(defender) \
-		- float(casualties) * defender_def.morale_loss_per_casualty \
-			* _morale_mult_for(aspect)
+		- defender_def.morale_loss_for(casualties) * _morale_mult_for(aspect)
 	sim.set_morale(defender, maxf(morale, 0.0))
 	# A general's death shocks (D-20260819-a-general-holds-the-line):
 	# twice a chain rout, through the same machinery, cascading like one.
