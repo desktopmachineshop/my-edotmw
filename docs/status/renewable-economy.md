@@ -125,3 +125,74 @@ producing barracks, and one crew per farm the natural ratio. When upkeep
 lands, re-derive `grow_per_second` and `grow_capacity` *from the upkeep
 rate* rather than tuning either alone — that is D-056's own recorded
 failure.
+
+---
+
+**And the metals: a vein runs deep, it does not run out**
+(`D-20260828-a-vein-runs-deep-it-does-not-run-out`, #277, 2026-08-28).
+The farm answered food. A worked-out **gold or stone** node now regrows
+toward a small tail capacity at a slow permanent rate instead of dying, so
+the map's metal budget stops being fixed at generation.
+
+**The measurement is the part to carry**, because it changes what the
+issue was about. Generated from `maps/default.tres` at seed 1337 —
+168x194, 32,592 cells, 20 seats:
+
+| kind | nodes | total stock | per seat | cells per node |
+|---|---|---|---|---|
+| food | 1,939 | 203,595 | 10,179 | 16 |
+| wood | 3,435 | 360,675 | 18,033 | 9 |
+| stone | 137 | 328,800 | 16,440 | 237 |
+| **gold** | **48** | 115,200 | **5,760** | **679** |
+
+- **Wood is not the blocker.** One node every nine cells and about 120
+  barracks per seat. #277 lists wood beside the metals and the map does
+  not agree, so **no wood mechanism was built** — and the one that was
+  considered (regrowth on D-087's per-cell stock) is the only change here
+  that would have strained a player-visible promise, because a regrown
+  tree has to *appear*. The cheapest way to keep the felling animation
+  truthful was not to make a change that strains it.
+- **Gold is.** 48 nodes on the whole map, on the mountain perimeter
+  (D-087) — the contested ground. Per-seat totals flatter it badly: a
+  player reaches one or two veins, and one vein at a crew's ~1.96/s is
+  gone in roughly **twenty minutes**, a wall inside the first third of a
+  1–2 hour match.
+
+**Why the SITE and not a building, which is the design call.** A farm is
+right for food because food comes from worked land and land is
+everywhere; that is exactly why it is the wrong shape for metal. A mine a
+player could raise anywhere would delete map control from the late game in
+the same stroke that D-039's scattered spawns and D-087's ore placement
+exist to create it. The renewable metal has to be *the place*.
+
+Four things worth knowing before touching it:
+
+- **It costs nothing new anywhere.** No building, no schema, no wire
+  message, no client change, no animation. A vein never reaches zero, so
+  it never enters `_depleted` and no felling is sent — and node stock is
+  not replicated at all (`net_protocol.gd`: *"Their remaining STOCK is not
+  sent"*), so a regrowing vein is invisible on the wire and the outcrop
+  simply stays drawn, which is truthful.
+- **The tail is a FLOOR, not a refill.** Only a vein already below its
+  tail capacity regrows, so a fresh 2,400 seam is untouched and the
+  opening is still a race for rich ground. Rates are far below a live
+  seam by construction: gold 0.25/s and stone 0.4/s against a crew's
+  ~1.96/s.
+- **Capacity buffers; the rate is the income.** Ten minutes of regrowth
+  each, so a vein left alone covers a raid or a rebuild and no more —
+  the same job `BuildingDef.grow_capacity` does for a field.
+- **The fractional carry is load-bearing.** 0.25/s at a 10 Hz tick is
+  0.025 a tick, and an integer-only version adds `floor(0.025) = 0`
+  forever: the mechanism correct and the shipped numbers doing nothing,
+  which is D-055/D-066's family. A test drives one tick and forty.
+
+**A market is deferred, named, and waiting on the tech tree.** A flat
+exchange between a renewable resource and a finite one puts an unbounded
+ceiling straight back, so trade wants to arrive *with* the tech that
+improves its rate (#206 / PR #225). The deep mine is the floor; trade is
+the strategic layer on top of it.
+
+**Every ladder and load-test number taken before this** was measured
+against an economy with a hard metal ceiling, and holding the mountain
+perimeter now pays indefinitely — expect longer matches before anything
+else.
