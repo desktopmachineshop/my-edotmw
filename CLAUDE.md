@@ -107,7 +107,17 @@ TOTAL, not a per-player allowance**, so `squad_cap` should be derived
 from the seat count; at 40 per seat the lobby's own 24-seat ceiling is
 arithmetically impossible. The 13x reduction from D-018 is the bill for
 the trade `D-20260818-battle-quality-outranks-player-count` already
-made. **Nothing may quietly re-quote 20 players.** Built in Godot specifically because its plain-text asset
+made. **Nothing may quietly re-quote 20 players.**
+
+**That 200 is a DEDICATED server's number and NOT a host's**
+(`D-20260828-the-host-pays-both-budgets`, #339). D-088 runs the sim
+in-process inside a player's client, so a host pays both budgets out of
+one second: measured, it holds **100-150 squads**, and at 200 it runs at
+19.9-35.6 fps. The cause is structural rather than contention — **the
+authoritative tick runs inside the render frame**, and a 46 ms tick
+cannot fit a 33 ms budget by any scheduling. `just bench-render ... HOST=1`
+is the instrument; the three possible responses are #349 and the choice
+is D-088's. Built in Godot specifically because its plain-text asset
 formats (`.tscn`/`.tres`) make the project directly editable by Claude
 Code — that's a design constraint, not an afterthought.
 

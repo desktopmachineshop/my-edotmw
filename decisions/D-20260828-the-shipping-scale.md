@@ -155,6 +155,26 @@ safe assumption.
 unknown.** That is the next measurement, and it is **filed as #339**
 rather than guessed at here.
 
+**MEASURED 2026-08-28, and this trigger has fired**
+(`D-20260828-the-host-pays-both-budgets`, #339). The host's ceiling is
+**100-150 squads**, not 200: at 200 it runs at **19.9 / 35.6 fps** across
+two passes, straddling the 30 fps this entry sets. The cause is not the
+gradual contention the arithmetic above predicted — **the authoritative
+tick runs inside the render frame**, and a 46 ms tick cannot fit a 33 ms
+budget by any scheduling, so one frame in two is blown outright.
+
+**The 200-squad number above therefore stands for a DEDICATED server and
+does not stand for a host.** D-088's "player-hosted first, dedicated
+later" is now a measured trade rather than a preference. The three
+possible responses are #349 and the choice is D-088's, not a
+measurement's.
+
+Worth recording that the arithmetic above was wrong in an instructive
+way: 366 + 882 = 1,248 ms/s predicted a hard breach, and the measured
+totals are 734-908 — because **the frame rate collapses to make room**,
+which an addition cannot show. A sum of two isolated measurements is not
+a measurement of the combination.
+
 ---
 
 #### Amended 2026-08-28 — the tick at this scale WITH the water layer, and what it does to #105

@@ -1889,11 +1889,18 @@ profile ONLY="" COUNTS="": _import
 # import, global class_names do not resolve and it dies with parse errors
 # naming unrelated lines.
 [doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
-bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESET="" HULLS="0":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
     bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    # HOST and HULLS are numeric and therefore go through the checker
+    # (D-20260817-recipe-args-are-positional): GDScript's `int()` STRIPS
+    # non-digits rather than failing, so `HOST=islands` would silently be
+    # host mode OFF and the run would measure a client while claiming to
+    # measure a host. PRESET is a name and is passed through as one.
+    bash recipe-arg.sh int HOST "{{HOST}}"
+    bash recipe-arg.sh int HULLS "{{HULLS}}"
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
     # Waits for room on the machine every other agent is also using. $$ is
     # THIS recipe's shell and the lock is stamped with it — a lock stamped
@@ -1908,7 +1915,7 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
         exit 1
     fi
     "$godot" --headless --path . --import
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} --host={{HOST}} --preset="{{PRESET}}" --hulls={{HULLS}}
 
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #
