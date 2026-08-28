@@ -82,3 +82,6 @@
 256	ao/my-edotmw-79/host-in-process	CONFLICT	server.gd 
 256	ao/my-edotmw-79/host-in-process	CONFLICT-RESOLVED	server.gd 4 hunks: #256's _local_clients handling vs #226's _fresh_record/_recipients refactor and #336's _civ_effects_for. Took HEAD throughout - _recipients() already merges _local_clients and _fresh_record generalises #256's key-by-key clearing, so the newer refactors subsume it.
 354	ao/my-edotmw-87/game-browser	CONFLICT	CLAUDE.md server.gd 
+354	ao/my-edotmw-87/game-browser	CONFLICT-RESOLVED	server.gd: two PRs extend the same CmdArgs validation lists - unioned so BOTH --discovery (#354) and --stop-after-match (#251) are accepted; dropping either would silently refuse a flag its own PR ships. CLAUDE.md status-doc imports additive.
+258	ao/my-edotmw-79/alpha-loop	CLEAN	7
+264	ao/my-edotmw-79/steam-transport	CONFLICT	CLAUDE.md client.gd platform.gd server.gd 

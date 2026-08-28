@@ -31,7 +31,10 @@ const MAX_CATCHUP_TICKS := 10
 ## enough that a desync is caught within a second.
 const STATE_HASH_EVERY_TICKS := 10
 
-var _host: ENetConnection
+## How remote players reach this server (#184). ENet today; D-088's
+## Steam relay is the second implementation, and the point of the seam is
+## that nothing below this line has to know which it got.
+var _transport: NetTransport = null
 # ENetPacketPeer -> { "player": int,
 # "visible": Dictionary[int, bool] }. "visible" is this client's
 # reveal/conceal baseline — the squad ids it was visible to as of the
@@ -274,6 +277,12 @@ func _sample_transport_stats() -> void:
 	# question is whether ANY client ever saw loss worth reengineering the
 	# transport for, and an average across twenty healthy links would bury
 	# exactly that.
+	# ENet peers only, and the null cast is the filter rather than an
+	# accident (#184). These are statistics of ONE transport: RTT, packet
+	# loss and throttle as ENet measures them. Steam's equivalents are
+	# different quantities with different meanings, so mixing them into
+	# one peak would produce a table whose columns do not compare — a
+	# Steam run reports its own numbers beside these, never into them.
 	for peer in _clients:
 		var p := peer as ENetPacketPeer
 		if p == null:
@@ -520,14 +529,17 @@ func _ready() -> void:
 			for p in range(1, human_players + 1):
 				_civs[p] = CivRoster.resolve(CivRoster.RANDOM, _match.civ_rng)
 
-	_host = ENetConnection.new()
-	var err := _host.create_host_bound("0.0.0.0", _port, MAX_CLIENTS, CHANNELS)
-	if err != OK:
-		push_error("server: could not bind UDP %d (error %d)" % [_port, err])
-		get_tree().quit(1)
+	_transport = EnetTransport.listen(_port, MAX_CLIENTS, CHANNELS)
+	if not _transport.is_open():
+		push_error("server: %s" % _transport.describe())
+		# An embedded server (#182) must not take its client's process
+		# down over a port it could not have: the host is told, and gets
+		# to try again or go back to the menu.
+		if not _embedded:
+			get_tree().quit(1)
 		return
 
-	print("server: listening on 0.0.0.0:%d — map %s, tick %d Hz%s" % [
+	print("server: listening on 0.0.0.0:%d — map %s, tick %d Hz%s [%s]" % [
 		_port, _config.id, int(SquadSim.TICK_HZ),
 		" (lobby)" if _match.require_admin_start else ""])
 
@@ -550,6 +562,8 @@ func _ready() -> void:
 		else:
 			print("server: %s; this game will not appear in LAN browsers"
 				% _beacon.status())
+		" (lobby)" if _match.require_admin_start else "",
+		_transport.describe()])
 	if _run_seconds > 0.0:
 		print("server: will stop after %.1f simulated seconds" % _run_seconds)
 
@@ -764,6 +778,9 @@ func _shutdown() -> void:
 	if _host != null:
 		_host.destroy()
 		_host = null
+	if _transport != null:
+		_transport.close()
+		_transport = null
 
 
 func _process(delta: float) -> void:
@@ -1090,29 +1107,30 @@ func _phase_breakdown() -> String:
 
 
 func _service_network() -> void:
-	if _host == null:
+	if _transport == null:
 		return
 	while true:
 		# Re-checked every iteration, not just on entry. Handling an event
 		# can end the server from inside this loop: since D-075 the last
-		# client disconnecting calls `_shutdown()`, which destroys the host
-		# and nulls it — and the next `service()` was then made on nothing.
-		if _shutting_down or _host == null:
+		# client disconnecting calls `_shutdown()`, which closes the
+		# transport and nulls it — and the next poll was then made on
+		# nothing.
+		if _shutting_down or _transport == null:
 			return
-		var event := _host.service(0)
+		var event := _transport.poll()
 		var type: int = event[0]
-		if type == ENetConnection.EVENT_NONE:
+		if type == NetTransport.EVENT_NONE:
 			return
-		var peer: ENetPacketPeer = event[1]
+		var peer = event[1]
 		match type:
-			ENetConnection.EVENT_CONNECT:
+			NetTransport.EVENT_CONNECT:
 				_on_connect(peer)
-			ENetConnection.EVENT_DISCONNECT:
+			NetTransport.EVENT_DISCONNECT:
 				_on_disconnect(peer)
-			ENetConnection.EVENT_RECEIVE:
+			NetTransport.EVENT_RECEIVE:
 				_on_receive(peer)
-			ENetConnection.EVENT_ERROR:
-				push_error("server: ENet reported a host error")
+			NetTransport.EVENT_ERROR:
+				push_error("server: %s reported a host error" % _transport.describe())
 				return
 
 

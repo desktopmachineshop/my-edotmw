@@ -90,6 +90,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/alpha-loop.md
 
+@docs/status/transport-seam.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md
@@ -416,6 +418,20 @@ artifact_path.gd         WHERE this project writes what it produces
                         All-static.
 
 --- networking ---
+net_transport.gd         What the server and client need of a TRANSPORT
+                        and nothing more (D-20260828, #184). ENet today
+                        (`enet_transport.gd`), D-088's Steam relay
+                        second. Its event constants are ENet's value for
+                        value, so the seam was an addition beside the
+                        netcode rather than a rewrite of it; peers stay
+                        duck-typed to `ENetPacketPeer.send`, the shape
+                        LoopbackPeer and HostLink already share. The
+                        contract is RELIABLE-ORDERED (D-042: curves carry
+                        no sequence number), and
+                        tests/test_transport_ordering.gd drives a
+                        deliberately reordering fake through it and FAILS
+                        if the client does not diverge — the first time
+                        that dependency has been falsifiable.
 net_protocol.gd          The one definition of the wire protocol, shared
                         by server, client and bots so they can't drift.
                         Owns PROTOCOL_VERSION and the JOIN HANDSHAKE
@@ -469,7 +485,7 @@ bot_patrol.gd            What a load-test bot's scouting detachment does
                         where two starts are 13 cells apart against 11
                         cells of town-centre sight, "am I home yet" is not
                         the same question.
-steam_platform.gd        THE one script allowed to name Steam (D-093,
+platform.gd              THE one script allowed to name Steam (D-093,
                         #181). A test fails if any other .gd names the
                         API — the D-046-criterion-3 pattern, and what
                         keeps D-021's one-category amendment from being a
@@ -502,6 +518,14 @@ game_browser.gd          What the pre-lobby's game list SAYS: merge,
                         All-static and pure, like hud_layout.gd, because
                         a row that offers a join it cannot complete looks
                         exactly like a list that works.
+                        Called `Platform`, not `SteamPlatform`: the rule
+                        is that no other .gd names Steam, so a boundary
+                        whose own class name contains the word cannot be
+                        CALLED from anywhere (#184 found this the moment
+                        it tried). Note D-093's GDExtension premise is
+                        measured FALSE (D-20260828) — GodotSteam ships a
+                        modified engine — and the replacement is the
+                        owner's call.
 cmd_args.gd              The one parse of `--key=value`, and the one check
                         that a value about to be read as a NUMBER is one
                         (D-20260817-recipe-args-are-positional). All three
