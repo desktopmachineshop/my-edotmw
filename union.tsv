@@ -130,3 +130,5 @@
 375	ao/my-edotmw-79/manual-naval	CLEAN	3
 340	ao/my-edotmw-87/naval-8-presentation	ALREADY	
 380	ao/my-edotmw-88/bot-civ-instrument	CONFLICT	bot_client.gd 
+380	ao/my-edotmw-88/bot-civ-instrument	CONFLICT-RESOLVED	bot_client.gd: TOP-UP after the head moved mid-build. Fixed a defect an earlier keep-both of mine had left - the BOT line had TWO print statements. Rebuilt as ONE print with the union of every key (squads_peak, techs/epoch, farms/fields). #380's instrumentation kept.
+385	ao/my-edotmw-87/bot-squads-peak	CONFLICT	bot_client.gd 
