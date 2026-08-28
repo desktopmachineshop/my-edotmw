@@ -52,30 +52,47 @@ func _hall() -> BuildingDef:
 
 # --- what to build -----------------------------------------------------
 
-func test_a_bot_only_ever_wants_a_building_that_trains() -> void:
+func test_a_bot_only_ever_wants_a_building_that_trains_or_grows() -> void:
 	# Walked to EXHAUSTION rather than asked once, and that is the whole
 	# point of it. The first version of this test asserted only the first
 	# answer, and stayed green with the `produces` filter deleted — because
 	# `all_defs()` is alphabetical and "barracks" happens to sort first.
 	# A test that passes by accident of filename order guards nothing; this
-	# one keeps asking until there is nothing left to want, so a non-training
-	# building anywhere in the roster is caught.
+	# one keeps asking until there is nothing left to want, so a wall or a
+	# storehouse anywhere in the roster is caught.
+	#
+	# The rule GAINED one clause on 2026-08-28
+	# (D-20260828-food-is-grown-not-only-found) and did not lose any: a
+	# building that GROWS something is the one support structure a bot
+	# raises, because a renewable economy only a human ever builds is a
+	# renewable economy nothing tests — the "one configuration nothing
+	# runs" gap #119 and #123 were both about. Everything else this test
+	# was written to catch is still caught, including the filename-order
+	# accident: a field is asked for by `Economy.grows_kind`, not by id.
 	var owned := ["town_centre"]
 	var wanted := 0
-	for _round in range(BuildingSim.all_defs().size() + 1):
+	var fields := 0
+	for _round in range(BuildingSim.all_defs().size() + BotBuildPlan.FIELDS_WANTED + 1):
 		var def := BotBuildPlan.wanted_building(owned, &"gatherers")
 		if def == null:
 			break
-		assert_false(def.produces.is_empty(),
-			"a bot was told to raise %s, which trains nothing" % def.id)
+		var grows := BotBuildPlan.grows_something(def)
+		assert_true(not def.produces.is_empty() or grows,
+			"a bot was told to raise %s, which neither trains nor grows" % def.id)
 		assert_true(BuildingSim.can_build(def, &"gatherers"),
 			"and %s is not something its crews can raise" % def.id)
-		assert_false(owned.has(String(def.id)),
-			"a bot must not ask twice for %s" % def.id)
+		if grows:
+			fields += 1
+		else:
+			assert_false(owned.has(String(def.id)),
+				"a bot must not ask twice for %s" % def.id)
 		owned.append(String(def.id))
 		wanted += 1
 	assert_true(wanted > 0,
 		"a bot holding only a town centre must want something more")
+	# A field is the one thing it wants SEVERAL of, and it must still stop.
+	assert_eq(fields, BotBuildPlan.FIELDS_WANTED,
+		"a bot raises exactly FIELDS_WANTED fields — no more, and not zero")
 
 
 func test_nothing_here_names_a_building() -> void:

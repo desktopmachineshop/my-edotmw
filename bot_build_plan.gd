@@ -39,23 +39,53 @@ extends RefCounted
 const MAX_HAULING_CREWS := 8
 
 
-## The building this bot most wants and does not have, or null.
+## How many FIELDS a load-test bot raises
+## (D-20260828-food-is-grown-not-only-found).
+##
+## A constant rather than a knob, unlike `AiProfileDef.farms_wanted`: a
+## load test has no difficulty setting, and the number here answers "is
+## the renewable economy exercised at all" rather than "how well does this
+## opponent play". Three, because one would leave a single crew's whole
+## behaviour resting on one building surviving, and the bots build slowly
+## enough on the shipped map that more would rarely be reached.
+const FIELDS_WANTED := 3
+
+
+## The building this bot most wants and does not have enough of, or null.
 ##
 ## Anything its crews can raise that TRAINS something comes first, because
 ## that is what turns an economy into a player. Support buildings are not
-## considered at all: a load test has no use for a storehouse, and every
-## wall in the roster is `built_by` gatherers too — a bot that started
-## raising walls would spend its wood on scenery.
+## considered — a load test has no use for a storehouse, and every wall in
+## the roster is `built_by` gatherers too, so a bot that started raising
+## walls would spend its wood on scenery — with ONE exception: a building
+## that GROWS something. That is the only support structure whose absence
+## would leave a whole mechanism unexercised by the load test, which is
+## this project's most-repeated defect (D-055 and its four siblings).
+##
+## Named through `Economy.grows_kind` rather than by id, so a civ's own
+## field or a later woodlot is covered without this file learning a name.
 static func wanted_building(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
 	for def in BuildingSim.all_defs():
-		if def.produces.is_empty():
+		if def.produces.is_empty() and not grows_something(def):
 			continue
 		if not BuildingSim.can_build(def, builder_archetype):
 			continue
-		if owned_def_ids.has(String(def.id)):
+		if owned_def_ids.count(String(def.id)) >= wanted_count(def):
 			continue
 		return def
 	return null
+
+
+## Does this building grow a resource — is it a field?
+static func grows_something(def: BuildingDef) -> bool:
+	return def != null and Economy.grows_kind(def) >= 0 and def.grow_per_second > 0.0
+
+
+## How many of `def` a bot wants standing. One of anything that trains, and
+## `FIELDS_WANTED` fields — a field is the one building whose whole point
+## is that there are several of them, because its output is a rate.
+static func wanted_count(def: BuildingDef) -> int:
+	return FIELDS_WANTED if grows_something(def) else 1
 
 
 ## Whether `wallet` covers `def`, in the order `Economy.ResourceKind`
