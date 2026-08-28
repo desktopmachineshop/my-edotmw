@@ -44,3 +44,10 @@
 297	ao/my-edotmw-82/surrender	CONFLICT-RESOLVED	building_sim.gd: #322 and #297 both add BuildingSim.eliminate_player, semantically identical; kept the one already in the tree.
 336	ao/my-edotmw-82/civ-knobs	CLEAN	13
 233	ao/my-edotmw-84/playtest-bot-findings	CONFLICT	docs/playtests/README.md 
+233	ao/my-edotmw-84/playtest-bot-findings	CONFLICT-RESOLVED	docs/playtests/README.md index append; kept both. INCLUDED rather than excluded - the directive allowed dropping #233/#234 if they conflicted, but this is a one-line index and dropping a PR to avoid it would be worse.
+293	ao/my-edotmw-88/playtest-207	CLEAN	6
+299	ao/my-edotmw-80/three-decisions	CLEAN	15
+350	ao/my-edotmw-82/merge-order	CLEAN	4
+357	ao/my-edotmw-79/gap-assessment-2	CONFLICT	bot_client.gd client.gd justfile server.gd 
+357	ao/my-edotmw-79/gap-assessment-2	REORDERED	declares base=main but is stacked on #348 IN CONTENT: 116 files / 13545 insertions vs main, of which its OWN contribution is one file (docs/plans/gap-assessment-2.md). Moved from wave 4 to wave 7, after #348, where its ancestors are already in.
+369	ao/my-edotmw-79/decisions-ahead	CONFLICT	decisions/D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross.md decisions/D-20260828-a-sound-is-a-cosmetic-you-must-be-able-to-see.md decisions/D-20260828-artifacts-are-written-where-the-build-can-write.md decisions/D-20260828-two-formations-that-belonged-to-nobody.md 
