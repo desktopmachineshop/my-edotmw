@@ -4,10 +4,10 @@
 
 [resource]
 script = ExtResource("1")
-id = &"windmarch_skirmishers"
+id = &"windmarch_harriers"
 display_name = "Harriers"
 civ = &"windmarch"
-archetype = &"skirmishers"
+archetype = &"harriers"
 squad_size = 24
 health = 48.0
 damage = 6.0
