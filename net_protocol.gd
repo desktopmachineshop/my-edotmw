@@ -77,7 +77,14 @@ const C2S_ORDER_STANCE := 37
 ## the acting player's civ, so a client structurally cannot name another
 ## civ's version of a tech and D-046 criterion 4 needs no check anyone has
 ## to remember to write.
-const C2S_ORDER_RESEARCH := 39
+## 120 rather than the next free number after the core block: #374 carves
+## the opcode space per workstream (core 1-99, naval 100-119, techs
+## 120-139, ...) so two chains cannot each take "the next free number on
+## main" and both be right. Three PRs took 39 — surrender, explore and
+## this — and the suite could not see it, because a round-trip test is
+## self-consistent even when two messages share an id (#362). Surrender
+## keeps 39, being first in the published merge order.
+const C2S_ORDER_RESEARCH := 120
 
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
@@ -99,7 +106,7 @@ const S2C_NODES_DEPLETED := 33
 ## enemy's research is exactly the thing a scout is for, and a client that
 ## learned it would be able to hash an upgrade the server never told it
 ## about — D-099's ghost rule pointed at a different field.
-const S2C_TECH_STATE := 40
+const S2C_TECH_STATE := 121
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
