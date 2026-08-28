@@ -530,7 +530,6 @@ func _build_world() -> void:
 		_spawn_points.size()])
 	_print_seat_landmasses(space)
 
-
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
 	_buildings = BuildingSim.new(space)
@@ -606,24 +605,29 @@ func _build_world() -> void:
 		print("server: recording replay to %s" % replay_path)
 
 
-## What the MAP says about whether a navy is needed, and whether one would
-## be enough.
+
+## Whether this MAP makes a navy necessary, as a structured marker
+## (naval #301, `gate-check.sh naval`).
 ##
-## Originally worker 88's, from their stage 9 branch, and restored here
-## after we each deleted our own copy in favour of the other's — they
-## reverted theirs expecting mine to survive on the same day I deleted
-## mine expecting theirs to. It lives with its CONSUMER now, which was
-## 88's own criterion for which copy should win.
+## The naval gate skips when no AI wanted ships, and on a land map that
+## skip is correct — a gate that failed on every land run would be turned
+## off inside a week. On a map whose seats are on DIFFERENT landmasses it
+## is #351's symptom wearing a green tick: the AI answering "no navy" is
+## the failure, and the harness cannot tell those two cases apart from
+## the AI's own answer. Nothing printed this, so nothing could.
 ##
-## `landmasses > 1` says a ship is REQUIRED: somebody cannot be walked
-## to. `sea_components == 1` says one would SUFFICE: a single body of
-## water joins the starts. `gate-check.sh naval` needs both, because a
-## map that maroons every seat on its own island with its own private sea
-## satisfies the first and is uncrossable, and reporting #351 against it
-## would be a false accusation against an honest run.
+## So the harness keys on the MAP instead. If the seats span more than
+## one walkable component, naval is possible and `wants_navy = 0` is a
+## FAILURE rather than a skip. That is HARNESS knowledge derived from
+## spawn placement, never something an AI is told — D-051 is untouched,
+## and an AI that quietly knew the map's topology would look like a good
+## AI rather than a bug.
 ##
-## Derived from spawn placement and told to NO AI. D-051 is about what a
-## player may know; a log line is not a player.
+## A structured marker, not prose, per the standing rule that a check
+## scans for markers rather than for scary words. `sea` is the number of
+## components once water is traversable (stage 9's own predicate), so
+## `landmasses > 1 and sea == 1` is exactly "a ship is required and a
+## ship is sufficient".
 func _print_seat_landmasses(space: TorusSpace) -> void:
 	if _spawn_points.is_empty():
 		return
@@ -637,7 +641,6 @@ func _print_seat_landmasses(space: TorusSpace) -> void:
 		on_sea[sea[index]] = true
 	print("server: SEAT_LANDMASSES seats=%d landmasses=%d sea_components=%d" % [
 		_spawn_points.size(), on_land.size(), on_sea.size()])
-
 
 func _exit_tree() -> void:
 	_shutdown()
