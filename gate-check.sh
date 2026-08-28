@@ -32,6 +32,7 @@
 #   bash gate-check.sh fog-squads BOTS_LOG SERVER_LOG
 #   bash gate-check.sh fog-nodes  BOTS_LOG SERVER_LOG
 #   bash gate-check.sh civs       SERVER_LOG
+#   bash gate-check.sh naval      SERVER_LOG
 #
 # Exit 0 and print what it proved; exit 1 naming what it could not; exit
 # 2 on a misuse of this script itself.
@@ -40,6 +41,7 @@ set -euo pipefail
 usage() {
     echo "usage: gate-check.sh fog-squads|fog-nodes BOTS_LOG SERVER_LOG" >&2
     echo "       gate-check.sh civs SERVER_LOG" >&2
+    echo "       gate-check.sh naval SERVER_LOG" >&2
     exit 2
 }
 
@@ -69,6 +71,50 @@ require_both() {
 }
 
 case "$check" in
+    # Naval cut-list stage 7's gate (#301, naval plan section 6.2): a run
+    # on a map with water must contain a LANDING, or the whole feature is
+    # shipped and unexercised — which is D-076's gap, which is why
+    # section 6 exists, and which is why this is a gate rather than a
+    # metric.
+    #
+    # ORDERED VACUITY GUARDS, and they are the point. `landings=0` is
+    # what a land map, an unplayed match, a missing dock, an untrained
+    # transport and a broken disembark ALL report. So the failure is
+    # reported at the FIRST leg that is missing, and a zero says WHICH
+    # rather than that something did.
+    #
+    # Skipped entirely when no AI ever wanted a navy: on a map where
+    # every enemy is walkable the correct number of landings is zero, and
+    # a gate that failed there would fail every ordinary run. `wants_navy`
+    # is that distinction, which is why the AI reports it.
+    naval)
+        [ "$#" -eq 1 ] || usage
+        wanted="$(marker wants_navy "$1")"
+        if [ -z "$wanted" ]; then
+            echo "gate-check(naval): no AI reported wants_navy — no seat ran the naval question at all" >&2
+            exit 1
+        fi
+        if [ "$wanted" -eq 0 ]; then
+            echo "gate-check(naval): no AI wanted a navy on this map — every known enemy was walkable, so zero landings is correct"
+            exit 0
+        fi
+        for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
+            key="${leg%%:*}"
+            why="${leg#*:}"
+            got="$(marker "$key" "$1")"
+            if [ -z "$got" ]; then
+                echo "gate-check(naval): the server log has no $key at all — the AI is not reporting its naval legs" >&2
+                exit 1
+            fi
+            if [ "$got" -eq 0 ]; then
+                echo "gate-check(naval): $why ($key=0)" >&2
+                exit 1
+            fi
+        done
+        echo "gate-check(naval): a landing happened — docks=$(marker docks "$1") ships_peak=$(marker ships_peak "$1") embarks=$(marker embarks "$1") landings=$(marker landings "$1")"
+        exit 0
+        ;;
+
     # D-026 criterion 6's load half: fog must be shown gating a REAL
     # multi-client run, not a test fixture — even the single
     # MOST-INFORMED client must know FEWER squads than the server

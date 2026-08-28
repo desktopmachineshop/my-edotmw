@@ -98,7 +98,51 @@ Two smaller things:
 
 ---
 
-**Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
+**Stage 7 — the AI's naval consumers — is built, and A LANDING HAPPENS
+(D-20260828-an-ai-invests-in-what-it-cannot-walk-to, §6.1/§6.2/§6.3).**
+Stage 2 landing (#343) unblocked it; `tests/test_naval_landing.gd` plays
+the whole crossing against the real simulation — dock, board, sail, land
+— with no test double and no direct call to `disembark`.
+
+```
+just test-unit naval_landing     # the crossing, ticked
+bash gate-check.sh naval SERVER_LOG
+```
+
+Five things to know:
+
+- **The trigger is REACHABILITY, not a map flag**: does my landmass hold
+  a known enemy building? On `continents` that is almost always yes, so
+  the behaviour costs nothing where it is not wanted. **Knowing of no
+  enemy is not a reason to build a navy** — an AI that has scouted
+  nothing says no, or it talks itself into a fleet before it has looked.
+- **The gate's vacuity guards are ORDERED, and that is the point.**
+  `landings=0` is what a land map, an unplayed match, a missing dock, an
+  untrained transport and a broken disembark ALL report. `gate-check.sh
+  naval` fails at the FIRST missing leg and names it, and skips entirely
+  when no AI wanted a navy — a gate that failed on every land run would
+  be turned off within a week.
+- **`AiInvestment` is the reusable half and #337 (walls-AI) is its second
+  customer.** An investment is a named, ordered list of steps; nothing in
+  it names water.
+- **Stage 4's order path is why stage 7 is small**: embark and landing
+  ride the ORDINARY move order — a squad ordered onto a hull's cell
+  boards it, a laden hull ordered at land records a landing — so the AI
+  sends moves and knows nothing about boarding.
+- **A single channel does not separate anything on a torus.** The
+  landing fixture's first version had one, and the levy walked round the
+  seam and arrived without touching water; only
+  `test_a_land_squad_cannot_simply_walk_across` caught it. Same trap
+  `formation.md` records for the wheeling fixture. **Stage 9 inherits
+  this**: a naval map needs its water to close, or `islands` will seat
+  starts that are reachable on foot.
+
+**Found on the way, filed not fixed:** seven shipped `.tres` files are
+not UTF-8, so every Godot run prints twelve parse warnings (#338).
+
+---
+
+**Superseded note (stage 7 before stage 2 landed):** **Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
 blocked on stage 2 (D-20260828-an-ai-invests-in-what-it-cannot-walk-to,
 §6.1/§6.3).** `ai_investment.gd`, `ai_naval.gd` and `bot_naval.gd` are
 static, pure and tested; `AiProfileDef.naval_commitment` ships on all
