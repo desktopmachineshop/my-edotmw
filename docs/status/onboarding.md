@@ -94,3 +94,51 @@ Five things to know:
   interiors (a spawn is open ground) and the fog edge. The frame reads
   *"Select your Hill Thralls and build a Town Centre. Your general
   cannot."*
+
+---
+
+## The controls are written down (#282)
+
+`D-20260828-the-controls-are-written-down-once`, 2026-08-28. **D-094
+criterion 10's blocker.** A stranger who installed the alpha met a lobby,
+then a map, with nothing anywhere telling them that WASD pans, that Q/E
+turn the view, or that right-click orders.
+
+There is a **Controls screen** now, reachable from **both** menus and
+built from one list — `controls_reference.gd`.
+
+```
+just menu-shot 4 1280x720 1     # -> artifacts/controls.png
+```
+
+Five things to know:
+
+- **One list, two entry points.** The main menu for a player who has not
+  connected; the in-game menu for one mid-match who will not go back to
+  look up a build key. Two hand-written lists of the same bindings is a
+  pair that comes to disagree.
+- **The build and train rows are DERIVED** from `client.gd`'s own
+  `BUILD_KEYS` and `TRAIN_KEYS`. Nine buildings and five units, edited
+  whenever the roster moves, is exactly where a hand-written list goes
+  stale — and a stale controls screen is worse than none, because a
+  player trusts it.
+- **It documents BEHAVIOUR, and writing it found a bug (#302).**
+  Enumerating every binding is how it came out: `G` is in `BUILD_KEYS`
+  *and* has a hand-written gather branch below the table, so the build
+  wins and **the gather shortcut is unreachable**. The screen says `G`
+  builds a garrison wall. A screen documenting the intent would turn that
+  bug into the player's fault.
+- **Train rows name an ARCHETYPE**, never one civ's units — six civs
+  share the screen (D-047), and a test forbids the civ names.
+- **The picture found two defects, then the tests were taught to find
+  them.** The first frame showed the main menu bleeding legibly through a
+  0.94 backdrop, and the right column running off a 720-high window with
+  the **Close button off-screen**. The split took two attempts, both
+  caught by looking. The fit test builds the real screen in a real tree
+  (theme fonts do not resolve off-tree — `test_lobby_layout.gd`'s lesson)
+  and reported **1162 px against 720** on the broken split, **644** now.
+
+**The in-match first-objective hint — #282's other half — landed in
+#284**, immediately beneath this in the stack. Deliberately not
+duplicated: two sources of truth for "what should I do first" is the pair
+the one-list rule exists to prevent.

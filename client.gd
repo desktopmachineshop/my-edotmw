@@ -174,6 +174,12 @@ var _browser_rows: VBoxContainer = null
 var _browser_status: Label = null
 
 var _menu_layer: CanvasLayer = null
+## The controls screen (#282). One panel, reachable from BOTH menus —
+## the main menu for a player who has not connected yet, and the in-game
+## menu for one mid-match who will not go back to the main menu to read
+## them. Built once and shown/hidden, so the two entry points cannot
+## drift into two screens.
+var _controls_layer: CanvasLayer = null
 var _menu_address: LineEdit = null
 var _menu_status: Label = null
 ## Where this client last pointed itself, remembered across launches, so
@@ -414,7 +420,7 @@ func _ready() -> void:
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
 		["port", "lobby-ai", "lobby-preset-steps", "menu", "host", "host-ai",
-		"host-port", "hold-opening"])
+		"host-port", "hold-opening", "controls"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
@@ -480,7 +486,15 @@ func _ready() -> void:
 	_build_loading_screen()
 	_build_connection_lost_screen()
 
+	_build_controls_screen()
 	_build_main_menu()
+	# `--controls=1` opens the controls screen at startup, for the one
+	# caller that has to photograph it (`just menu-shot CONTROLS=1`).
+	# Same reasoning as `--menu=1`: every screen somebody looks at gets an
+	# instrument aimed at it deliberately, because this project has now
+	# been unable to photograph something four times over.
+	if int(args.get("controls", 0)) == 1:
+		_toggle_controls()
 	# `--host=1` starts the in-process server and joins it, exactly as the
 	# menu's Host button does (#182). It exists so hosting can be driven
 	# headlessly — by `just test-host`, which points real bots at a real
@@ -9019,6 +9033,14 @@ func _build_game_menu() -> void:
 	players.pressed.connect(_toggle_scoreboard)
 	column.add_child(players)
 
+	# Mid-match, because a player who has forgotten which key builds a
+	# barracks will not go back to the main menu to look (#282). Same
+	# screen, same list.
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.tooltip_text = "Camera, selection, orders, and every build and train key."
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -9595,6 +9617,140 @@ func _load_settings() -> void:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 
+# --- the controls screen (#282) -----------------------------------------
+#
+# `decisions/D-20260828-the-controls-are-written-down-once.md`. A stranger
+# who installed the alpha met a lobby, then a map, with nothing anywhere
+# telling them that WASD pans or that right-click orders. D-094 criterion
+# 10 — a human playing end to end through an installed build — cannot be
+# discharged honestly against a game whose controls are undocumented.
+#
+# The LIST is `controls_reference.gd`, all-static and pure, and its build
+# and train rows are derived from this file's own `BUILD_KEYS` and
+# `TRAIN_KEYS`, so a letter that moves cannot leave the screen behind.
+
+
+func _build_controls_screen() -> void:
+	_controls_layer = CanvasLayer.new()
+	# Above the in-game menu (5) and the main menu (20) alike, because it
+	# is opened FROM both and must sit on top of whichever asked.
+	_controls_layer.layer = 24
+	_controls_layer.visible = false
+	add_child(_controls_layer)
+
+	# OPAQUE. At 0.94 the main menu behind it bled through hard enough to
+	# read — "eDotMW", "Join", "Host a match" all legible under the key
+	# list — which the rendered picture showed and no number could. A
+	# reference screen a player is reading is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_controls_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_controls_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	centre.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Controls"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	# Two columns of groups, because the four groups stacked are taller
+	# than a 720-high window — the same fit question `lobby_layout.gd`
+	# exists for, answered here by splitting rather than by scaling, since
+	# this screen has no other content to trade against.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 40)
+	column.add_child(columns)
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 10)
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 10)
+	columns.add_child(left)
+	columns.add_child(right)
+
+	# Split at the point that leaves the TALLER column shortest, keeping
+	# the groups in reading order.
+	#
+	# Two groups each was the obvious split and it put "Building and
+	# training" — sixteen rows, nine buildings and five units — in a
+	# column that had already spent five on Orders, so the last rows and
+	# the Close button ran off the bottom of a 720-high window. A greedy
+	# "fill the left until it has half" was the next attempt and was
+	# worse: it put ALL of them left, because fourteen of thirty is still
+	# under half until the sixteen-row group has been added.
+	#
+	# Both were caught by looking, and the fit test in
+	# `tests/test_controls_reference.gd` is what makes looking optional
+	# next time.
+	var groups := ControlsReference.groups()
+	var total_rows := 0
+	for group in groups:
+		total_rows += (group["rows"] as Array).size()
+	var split := groups.size()
+	var best := total_rows
+	var running := 0
+	for i in range(groups.size()):
+		running += (groups[i]["rows"] as Array).size()
+		var taller: int = maxi(running, total_rows - running)
+		if taller < best:
+			best = taller
+			split = i + 1
+	for i in range(groups.size()):
+		var group: Dictionary = groups[i]
+		var into: VBoxContainer = left if i < split else right
+
+		var title := Label.new()
+		title.text = String(group["title"]).to_upper()
+		title.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		title.modulate = HudTheme.ACCENT
+		into.add_child(title)
+
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 18)
+		grid.add_theme_constant_override("v_separation", 4)
+		into.add_child(grid)
+
+		for row in group["rows"]:
+			var keys := Label.new()
+			keys.text = String(row[0])
+			keys.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			keys.modulate = HudTheme.TEXT_BRIGHT
+			keys.custom_minimum_size = Vector2(130.0, 0.0)
+			grid.add_child(keys)
+
+			var what := Label.new()
+			what.text = String(row[1])
+			what.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			what.modulate = HudTheme.TEXT_DIM
+			what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			what.custom_minimum_size = Vector2(330.0, 0.0)
+			grid.add_child(what)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_controls)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+
+func _toggle_controls() -> void:
+	if _controls_layer == null:
+		return
+	_controls_layer.visible = not _controls_layer.visible
+
+
 # --- the pre-connection menu (#180) --------------------------------------
 #
 # `decisions/D-20260827-a-client-starts-before-it-connects.md`. Until this
@@ -9723,6 +9879,12 @@ func _build_main_menu() -> void:
 	host_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	host_note.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	column.add_child(host_note)
+
+	# Before Quit, because a player who does not know how to play is more
+	# likely to leave than to ask (#282).
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
 
 	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
 	quit.pressed.connect(_on_quit_pressed)

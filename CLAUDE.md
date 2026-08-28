@@ -552,6 +552,14 @@ unit_def.gd             UnitDef schema — extend fields here when a new
                         knobs EVERY civ has — never a per-civ branch, and
                         a test fails if any .gd file names a civ at all.
 civ_def.gd              CivDef schema; civ_roster.gd loads them.
+controls_reference.gd    THE list of what the controls do (D-20260828,
+                        #282). One list, shown by BOTH the main menu and
+                        the in-game menu, so they cannot drift. Its build
+                        and train rows are DERIVED from client.gd's own
+                        BUILD_KEYS/TRAIN_KEYS, and it documents BEHAVIOUR
+                        rather than intent — writing it is how #302 was
+                        found (G is a build key AND has a dead gather
+                        branch, so the gather shortcut is unreachable).
 opening_brief.gd         What a squad is FOR in the opening, and what to
                         do first (D-20260828, #284). All-static and pure,
                         and it names NO archetype and NO building: "can
@@ -1112,7 +1120,7 @@ Dev loop and tests:
   camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
   compass snaps back to north, right-click orders, ESC opens the game
   menu (D-063).
-- `just menu-shot [SECONDS] [RESOLUTION]` — a picture of the
+- `just menu-shot [SECONDS] [RESOLUTION] [CONTROLS]` — a picture of the
   PRE-CONNECTION menu (#180), through the docker software-GL image with
   NO server running. Every other rendered check here is aimed at a
   connected client, so nothing could look at this screen; its first two
