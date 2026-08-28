@@ -1207,15 +1207,15 @@ func _sampler_for(squad: int, now: float) -> Callable:
 
 ## The movement domain a squad occupies, as `tier_of` reports it.
 ##
-## PINNED by `docs/plans/naval.md` §7.1: `SquadSim` owns these values and
-## `tier_of` keeps its name, so nothing on this side is churned when the
-## water domain lands. Named here rather than reached for across the wire
-## because the client only ever needs to ask "is this a ship" — and until
-## stage 2 exists there is no `SquadSim.DOMAIN_WATER` to import.
-## `test_naval_presentation.gd` compares the two the moment there is one.
-const DOMAIN_GROUND := 0
-const DOMAIN_WALL_TOP := 1
-const DOMAIN_WATER := 2
+## ALIASES of the simulation's own constants, not copies of their values.
+## `SquadSim` owns them (`docs/plans/naval.md` §7.1) and the number rides
+## SQUAD_INFO's tier byte, so the two sides agreeing is a wire obligation
+## — and two literals free to drift is the defect family this project
+## keeps finding. `client.gd` already reads `SquadSim.STANCE_*` the same
+## way, for the same reason.
+const DOMAIN_GROUND := SquadSim.DOMAIN_GROUND
+const DOMAIN_WALL_TOP := SquadSim.DOMAIN_WALL_TOP
+const DOMAIN_WATER := SquadSim.DOMAIN_WATER
 
 
 ## Where the sea is drawn, in world units, or NAN when this client has no

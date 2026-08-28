@@ -252,22 +252,33 @@ func test_only_a_water_squad_floats() -> void:
 
 
 func test_the_domain_values_match_the_pinned_contract() -> void:
-	# `docs/plans/naval.md` §7.1 pins these on `SquadSim`, which stage 2
-	# owns. Until it lands there is nothing to import, so they are named
-	# here and compared the moment the real ones exist — a deliberately
-	# temporary half-check, and the assertion below is what turns live.
+	# `docs/plans/naval.md` §7.1 pins these on `SquadSim`, and the number
+	# rides SQUAD_INFO's tier byte, so the two sides agreeing is a wire
+	# obligation. `ClientState` ALIASES the simulation's constants rather
+	# than repeating their values — this asserts both halves: that the
+	# alias holds, and that the value is still what the contract pinned.
+	var constants: Dictionary = (SquadSim as Script).get_script_constant_map()
+	assert_true(constants.has("DOMAIN_WATER"),
+		"SquadSim owns the domain values (naval stage 2)")
+	assert_eq(int(constants["DOMAIN_GROUND"]), ClientState.DOMAIN_GROUND)
+	assert_eq(int(constants["DOMAIN_WALL_TOP"]), ClientState.DOMAIN_WALL_TOP)
+	assert_eq(int(constants["DOMAIN_WATER"]), ClientState.DOMAIN_WATER)
+	# The contract's own numbers, so a rename that moved both together
+	# still has to be a deliberate re-pin rather than a silent one.
 	assert_eq(ClientState.DOMAIN_GROUND, 0)
 	assert_eq(ClientState.DOMAIN_WALL_TOP, 1)
 	assert_eq(ClientState.DOMAIN_WATER, 2)
-	var constants: Dictionary = (SquadSim as Script).get_script_constant_map()
-	if constants.has("DOMAIN_WATER"):
-		assert_eq(int(constants["DOMAIN_WATER"]), ClientState.DOMAIN_WATER,
-			"stage 2 has landed and the two definitions must agree")
-		assert_eq(int(constants["DOMAIN_GROUND"]), ClientState.DOMAIN_GROUND)
-		assert_eq(int(constants["DOMAIN_WALL_TOP"]), ClientState.DOMAIN_WALL_TOP)
-	else:
-		gut.p("SquadSim.DOMAIN_* not present yet — stage 2 in flight; this "
-			+ "assertion goes live on rebase")
+
+
+func test_the_client_reads_the_simulations_domain_constants() -> void:
+	# The alias is the whole point, and an alias is invisible to a value
+	# comparison: `const DOMAIN_WATER := 2` would pass every assertion
+	# above and go on drifting. This is D-106's caller-exists rule applied
+	# to a constant — assert the SOURCE, not the number.
+	var text := FileAccess.get_file_as_string("res://client_state.gd")
+	assert_ne(text, "", "client_state.gd is readable")
+	assert_true(text.contains("const DOMAIN_WATER := SquadSim.DOMAIN_WATER"),
+		"the client takes the domain from the simulation, not a copy")
 
 
 # --- minimap and selection ----------------------------------------------
