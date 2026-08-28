@@ -28,6 +28,7 @@ plausible and completely false bug reports.
 | [#36](36-bot-findings.md) | economy: gathering, hauling, depletion, storehouse | none — all clean |
 | [#35](35-bot-findings.md) | formations, and the RTW gap analysis re-rated | none |
 | [#42](42-bot-findings.md) | match lifecycle: victory, elimination, lobby | none |
+| [#207](207-bot-findings.md) | civ differentiation across the six fantasy civs | #266, #267, #268, #269, #270, #275, #276 |
 
 ## The harnesses
 
@@ -48,6 +49,7 @@ tools/godot.exe --headless --path . -s res://playtest_obs/obs_combat.gd
 | `obs_economy.gd` | #36 | node census, haul cycles, tree timing, retargeting, storehouse |
 | `obs_formations.gd` | #35 | `SQUAD_INFO` wire round-trip, shape survival, RTW row survey |
 | `obs_lifecycle.gd` | #42 | the elimination rule in all four states, lobby round trip |
+| `obs_civs.gd` | #207 | roster leakage, the shared archetypes' spread and their duels, both live `CivDef` knobs against the real economy, rout reachability, the opening's affordability, seats against starting positions |
 
 They are **observation harnesses, not tests**: they print, they do not
 assert, and they deliberately live outside `res://tests` so GUT does not
@@ -89,6 +91,14 @@ these passes was checked green individually: `test_squad_turning.gd` 9/9,
 which looks exactly like the declared-and-unread family — the cause was
 that it never called the equivalent of `server._hand_civs_to_sim()`.
 Set `sim.civs[player]`.
+
+**A control run is what separates a finding from the harness.** #207's
+six-way ladder run showed three of six civs never founding a base, which
+reads as a civ result and is not one: the map had four starting
+positions for six seats (#276), and a four-seat control then showed
+seats failing there *too*, for a third reason already fixed in review
+(#217 / PR #255). One of the three civs was a real defect (#275) and it
+took two runs to say which.
 
 **Order squads at each other, not past each other.** Ordering two sides
 to points beyond one another lets them cross, separate and walk away; the
