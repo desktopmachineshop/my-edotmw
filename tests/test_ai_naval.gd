@@ -225,13 +225,18 @@ func test_progress_says_how_far_it_got() -> void:
 
 
 func test_investing_needs_both_a_reason_and_a_willingness() -> void:
-	# Two arguments rather than one because they fail differently and a
-	# gate needs to tell them apart: `wanted == false` is "this map does
-	# not call for it", `commitment == 0` is "this difficulty does not do
-	# it".
-	assert_true(AiInvestment.should_invest(true, 1.0))
-	assert_false(AiInvestment.should_invest(false, 1.0), "no reason")
-	assert_false(AiInvestment.should_invest(true, 0.0), "no willingness")
+	# Still two things, and they still fail differently — a gate needs to
+	# tell them apart: no case is "this map does not call for it", no
+	# appetite is "this difficulty does not do it".
+	#
+	# Through the SHARED decision since #365: `should_invest(wanted,
+	# commitment)` was this call with the case pinned at 1.0, and the
+	# walls' own `wants_to_invest` was the same question with the case
+	# computed from a threat. One function now, and this test asserts the
+	# naval reading of it rather than a naval copy of it.
+	assert_true(AiInvestment.wants_to_invest(1.0, 1.0, 0, 0))
+	assert_false(AiInvestment.wants_to_invest(0.0, 1.0, 0, 0), "no reason")
+	assert_false(AiInvestment.wants_to_invest(1.0, 0.0, 0, 0), "no willingness")
 
 
 func test_the_naval_steps_are_in_the_order_the_plan_names() -> void:

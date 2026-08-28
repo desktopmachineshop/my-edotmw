@@ -487,18 +487,19 @@ client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
-static_defence.gd        WHEN an AI spends on something that cannot chase
-                        anybody (D-20260828, #337). All-static, pure, and
-                        it NAMES NO DOMAIN — no wall, gate, dock or ship —
-                        because naval stage 7 answers the same question
-                        about shore defences and #337 asked that the two
-                        share it. A source scan in the tests enforces
-                        that, since "knows nothing about walls" is not
-                        something a behavioural test can see. A missing
-                        threat key is NO evidence, never alarming
-                        evidence, so a caller that has not learned to
-                        report something new cannot start fortifying
-                        because of it.
+ai_investment.gd         WHEN an AI spends on a capability it has not
+                        got, what it costs, and which step of getting it
+                        is next (#365). ONE mechanism for the walls
+                        (#337) and the navy (#301 stage 7), which were
+                        built twice on the same day by two workers who
+                        could not see each other's trees — gap I4 of the
+                        round-2 assessment. Names no wall, gate, tower,
+                        dock, ship or shore, and a source scan enforces
+                        it. The split that made one file possible: the
+                        CASE is the domain's (threat pressure here,
+                        reachability for the sea) and the THRESHOLD is
+                        shared, so `wants_to_invest` takes a number
+                        rather than computing one.
 wall_plan.gd             WHERE a wall goes, and where its gate goes
                         (D-20260828). The half that knows what a wall is.
                         A SCREEN across the approach, not a ring: a ring

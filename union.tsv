@@ -124,3 +124,5 @@
 353	ao/my-edotmw-81/naval-integration	CONFLICT-RESOLVED	justfile: 7 hunks interleaving TWO whole recipes (gen-seam-shot from #234 and gen-naval-shot from #353) - keep-both produced a single broken body and just refused the file. Took ours throughout, then lifted gen-naval-shot out whole and appended it. CLAUDE.md additive.
 327	ao/my-edotmw-81/naval-5-shoreline-combat	ALREADY	
 314	ao/my-edotmw-88/naval-6-content	CLEAN	2
+308	ao/my-edotmw-80/naval-design	RULED-DESIGN-ONLY	Applied the orchestrator ruling: #343 wins stage 2. RIVALS reverted wholesale (squad_sim.gd, terrain_knowledge.gd, unit_def.gd's 47 naval fields, the water-domain and dock decision files) - note resolve-as-ours only covers CONFLICTING hunks, so the non-conflicting additions had to be reverted by file. ORPHANS deleted (tests/test_water_domain.gd + .uid), which no merge would have raised. Contributes 5 files: naval.md, naval-plan.md, the map-crossing decision, D-010 and CLAUDE.md.
+371	ao/my-edotmw-87/ai-investment	CONFLICT	ai_player.gd 

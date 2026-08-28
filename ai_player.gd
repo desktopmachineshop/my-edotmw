@@ -335,14 +335,14 @@ var _defence_tried := {}
 ## is offered again. Long, because the builder walks: the screen stands
 ## `WallPlan.STANDOFF_CELLS` out and a crew starts wherever it was
 ## hauling. A bound on a FAILURE rather than a difficulty knob, so it is a
-## constant — the same line `StaticDefence.THREAT_CELLS` draws.
+## constant — the same line `AiInvestment.THREAT_CELLS` draws.
 const DEFENCE_RETRY_SECONDS := 45.0
 var defences_standing_peak := 0
 var gate_orders := 0
 var gates_sealed := 0
 
 ## Own buildings destroyed, and own buildings seen taking damage. Both
-## feed `StaticDefence.pressure`, and both are DERIVED from the replicated
+## feed `AiInvestment.pressure`, and both are DERIVED from the replicated
 ## building state this seat already receives rather than from a new wire
 ## field — a client can see its own buildings' `health_fraction` (D-076's
 ## amendment made it actually move), so nothing new crosses the wire.
@@ -1057,7 +1057,7 @@ func _shortfall_for_next_purchase() -> int:
 	for def in _wanted_buildings():
 		if _owned_building_count(def.id) > 0:
 			continue
-		return StaticDefence.scarcest_shortfall(state.wallet, StaticDefence.cost_of(def))
+		return AiInvestment.scarcest_shortfall(state.wallet, AiInvestment.cost_of(def))
 	# And then whatever DEFENCE it intends to buy, because defences are
 	# deliberately not on `_wanted_buildings` (see that function) and an
 	# economy that did not know about them would never gather the stone
@@ -1067,8 +1067,8 @@ func _shortfall_for_next_purchase() -> int:
 	# income stopped again.
 	var defence := _next_defence_wanted()
 	if defence != null:
-		return StaticDefence.scarcest_shortfall(state.wallet,
-			StaticDefence.cost_of(defence))
+		return AiInvestment.scarcest_shortfall(state.wallet,
+			AiInvestment.cost_of(defence))
 	return -1
 
 
@@ -1076,7 +1076,8 @@ func _shortfall_for_next_purchase() -> int:
 ## want one. Asks `_fortify`'s own question, so the economy and the build
 ## step cannot disagree about what is being saved for.
 func _next_defence_wanted() -> BuildingDef:
-	if not StaticDefence.wants_to_invest(_threat_report(), _economy_report(),
+	if not AiInvestment.wants_to_invest(
+			AiInvestment.threat_pressure(_threat_report(), _economy_report()),
 			profile.defence_appetite, _defences_standing(), DEFENCES_CAP):
 		return null
 	var tower := WallPlan.cheapest_defensive_tower(&"gatherers")
@@ -1417,15 +1418,260 @@ func stats_line() -> String:
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
 		attacks_launched, first_attack_at, first_attack_soldiers,
 		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals,
-		# The ladder half (D-20260827). `techs` is read off this AI's own
-		# ClientState rather than counted here, so it reports what the AI
-		# can SEE it holds — the D-107 rule, and it is what separates "it
-		# never asked" (techs_ordered 0) from "it asked and was refused"
-		# (techs_ordered high, techs 0). Those are different faults with
-		# the same symptom.
+		# The ladder half (D-20260827): techs read off this AI's own
+		# ClientState, so it reports what the AI can SEE it holds.
 		state.epoch, state.techs.size(), techs_ordered,
-		defences_ordered, defences_standing_peak, gate_orders, gates_sealed,,
+		defences_ordered, defences_standing_peak, gate_orders, gates_sealed,
+		buildings_lost, attacks_survived, defences_fought,
 		1 if wants_navy else 0, docks, ships_peak, embarks, landings, naval_step]
+
+
+# --- the sea (naval plan section 6.1, #301 stage 7) -------------------
+#
+# D-076 shipped a whole feature the AI never heard of, and its own entry
+# said so; sixteen days later that was still true and #210 sat
+# undetected. Section 6 makes the consumer part of the feature, so this
+# is written beside the naval simulation rather than after it.
+#
+# Every DECISION lives in `ai_naval.gd` / `ai_investment.gd`, which are
+# static, pure and tested without a server. What is here is the plumbing:
+# reading what this client KNOWS, and sending orders it could have sent
+# by hand.
+
+## Whether this AI has concluded it needs a navy. In AI_STATS so that
+## "the AI did nothing" and "the AI decided it had no reason to" can be
+## told apart — the distinction D-076's gap hid for sixteen days.
+var wants_navy := false
+var docks: int = 0
+var ships_peak: int = 0
+var embarks: int = 0
+var landings: int = 0
+## Which leg of the investment it is on, by name. `landings = 0` is what
+## a land map, an unplayed match and a broken transport all report; this
+## is how a zero says WHICH.
+var naval_step := "none"
+
+var _land_labels := PackedInt32Array()
+var _navigable := PackedByteArray()
+var _terrain_key := ""
+## Squads already ordered aboard, so the AI does not re-order them every
+## think while they walk to the quay. Dropped when they stop existing,
+## which for an embarked squad is immediate — boarding sets `alive` to 0.
+var _sailing := {}
+
+
+## The naval investment, once per think.
+##
+## Every step reuses a mechanism that already exists: a build order with a
+## site rule, `encode_order_produce`, and an ordinary MOVE. That last one
+## is stage 4's doing and worth knowing — a squad ordered onto a hull's
+## cell boards it, and a laden hull ordered at land records a landing —
+## so nothing here needs an opcode that did not already exist.
+func _go_to_sea() -> void:
+	if state.space == null or not state.has_map():
+		return
+	_refresh_naval_terrain()
+
+	var home := state.space.index(state.spawn_cell_of(player))
+	var enemies := _known_enemy_cells()
+	wants_navy = AiNaval.needs_ships(_land_labels, home, enemies)
+	docks = _owned_building_count(&"dock")
+	ships_peak = maxi(ships_peak, _hulls().size())
+	# The SAME decision the walls take, through the same function (#365).
+	# The case is this domain's — an enemy that cannot be walked to, which
+	# is not a threat and could never have been described as one — and
+	# `naval_commitment` is the threshold, so a profile that commits
+	# nothing still never sails. The cap is 0 because this investment is a
+	# PLAN rather than a number of standing things: `next_step` is what
+	# finishes it.
+	if not AiInvestment.wants_to_invest(1.0 if wants_navy else 0.0,
+			profile.naval_commitment, 0, 0):
+		naval_step = "none"
+		return
+
+	var target := AiNaval.landing_target(state.space, _land_labels, home, enemies)
+	var steps := AiNaval.steps(
+		func(): return docks > 0,
+		func(): _raise_dock(),
+		func(): return not _hulls().is_empty(),
+		func(): _train_hull(),
+		func(): return _laden_hull() >= 0 or not _sailing.is_empty(),
+		func(): _send_party_aboard(),
+		func(): return landings > 0,
+		func(): _put_ashore(target))
+
+	var next := AiInvestment.next_step(steps)
+	if next.is_empty():
+		naval_step = "done"
+		return
+	naval_step = String(next["label"])
+	(next["act"] as Callable).call()
+
+
+## The land components and the water field this AI believes in, derived
+## from the replicated `MapSettings` (D-049) exactly as the client's own
+## terrain is — never asked for, so there is no wire change and no way
+## for an AI to learn more than a human in its seat.
+##
+## Recomputed only when the map changes, which in practice is once per
+## match. The walk is O(cells) and a think runs every `think_interval`;
+## this project has paid four times for a per-call re-derivation.
+func _refresh_naval_terrain() -> void:
+	var key := "%d-%d-%d-%s" % [state.space.width, state.space.height,
+		int(state.map_settings.get("seed", 0)),
+		String(state.map_settings.get("preset", ""))]
+	if key == _terrain_key:
+		return
+	var terrain := MapSettings.from_dict(state.map_settings).to_terrain()
+	var passable := terrain.passability(state.space)
+	_navigable = terrain.navigability(state.space)
+	_land_labels = MapConfig.walkable_components(state.space, passable)["labels"]
+	_terrain_key = key
+
+
+## Cells of every enemy thing this AI has been TOLD about.
+##
+## Buildings only, deliberately: a squad moves, so an enemy squad seen on
+## a beach says nothing about which landmass its owner lives on, and a
+## navy built on a passing scout would be a navy built on noise.
+func _known_enemy_cells() -> Array:
+	var out := []
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if not _hostile(int(info["owner"])) or bool(info["destroyed"]):
+			continue
+		out.append(int(info["cell"]))
+	return out
+
+
+func _hulls() -> Array:
+	return _squads_matching(func(def: UnitDef): return def.movement_domain == "water")
+
+
+## A hull with something aboard, or -1.
+func _laden_hull() -> int:
+	for squad in _hulls():
+		if (state.composition[squad].get("cargo", []) as Array).size() > 0:
+			return squad
+	return -1
+
+
+## Put a dock on a shore near an idle builder.
+##
+## The ordinary build path with ONE extra rule — the site must be a shore
+## — which is section 4.1's placement rule asked before the order rather
+## than discovered by a refusal. `_site_beside` picks deterministically
+## from a disk and knows nothing about water, so an AI using it would
+## have spent its whole match having dock orders refused.
+func _raise_dock() -> void:
+	var def := BuildingSim.def_by_id(&"dock")
+	if def == null or not _can_afford(def):
+		return
+	var builder := _idle_builder()
+	if builder < 0:
+		return
+	var from := state.squad_cell(builder, state_time())
+	if from.x < 0:
+		return
+	# Nearest-first, so the dock lands as close to the builder as the
+	# coast allows — `disk_offsets` is sorted by distance (D-067) and this
+	# is exactly the "walk outward until you find one" that sorting made
+	# legal.
+	for offset in TorusSpace.disk_offsets(6):
+		var cell := state.space.normalize(from + offset)
+		if not TerrainGen.is_shore(state.space, state.terrain_passable,
+				_navigable, state.space.index(cell)):
+			continue
+		var order := state.encode_build(builder, "dock", cell)
+		if not order.is_empty():
+			send.call(order)
+		return
+
+
+## Ask a dock for a transport.
+##
+## By ARCHETYPE, never by def id: the server resolves an archetype against
+## the asking player's civ (D-047), which is what lets one line of AI
+## serve six rosters. `_producible_archetypes` is the same list the rest
+## of `_train` uses.
+func _train_hull() -> void:
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		if String(info["def_id"]) != "dock":
+			continue
+		send.call(NetProtocol.encode_order_produce(int(wire_id), "transport"))
+		return
+
+
+## Order a share of the army onto the hull.
+##
+## An ordinary MOVE at the hull's own cell — stage 4 made that the embark
+## order, so there is no new opcode and nothing here knows what boarding
+## is. The squads are remembered in `_sailing` so they are not re-ordered
+## every think while they walk to the quay.
+func _send_party_aboard() -> void:
+	var owned := _hulls()
+	var hull: int = int(owned[0]) if not owned.is_empty() else -1
+	if hull < 0:
+		return
+	var hull_cell := state.squad_cell(hull, state_time())
+	if hull_cell.x < 0:
+		return
+	var def := UnitRoster.by_id(StringName(state.composition[hull]["def_id"]))
+	var capacity := def.transport_capacity if def != null else 0
+
+	var army := []
+	for squad in _own_squads():
+		if _sailing.has(squad):
+			continue
+		var squad_def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if squad_def == null or squad_def.movement_domain == "water":
+			continue
+		if squad_def.damage <= 1.0 or squad_def.carry_capacity > 0:
+			continue
+		army.append(squad)
+
+	var wanted := AiNaval.sailing_party(army.size(), capacity, profile.naval_commitment)
+	for i in range(wanted):
+		var order := state.encode_order(army[i], hull_cell)
+		if not order.is_empty():
+			send.call(order)
+			_sailing[army[i]] = true
+			embarks += 1
+
+
+## Send the laden hull at the far shore. The landing is recorded the
+## moment the hull is beside it (section 3.3); nothing here waits.
+func _put_ashore(target: int) -> void:
+	if target < 0:
+		return
+	var hull := _laden_hull()
+	if hull < 0:
+		return
+	var order := state.encode_order(hull, state.space.from_index(target))
+	if not order.is_empty():
+		send.call(order)
+
+
+## Count a landing when squads this AI did not have appear ashore after a
+## crossing. Called from `_record_stats`, so it is measured off the
+## client's own state rather than trusted from the order having been sent
+## — D-107's rule, and the reason `_founded` latching on the SEND cost
+## this project every AI match it had ever run.
+func _note_landings() -> void:
+	if _sailing.is_empty():
+		return
+	var still_sailing := {}
+	for squad in _sailing:
+		if state.composition.has(squad) and state.alive_of(squad) > 0:
+			still_sailing[squad] = true
+	# A squad that was ordered aboard and no longer exists has boarded;
+	# once the hull has none left aboard, they are ashore.
+	if still_sailing.is_empty() and _laden_hull() < 0 and not _sailing.is_empty():
+		landings += 1
+	_sailing = still_sailing
 
 
 ## The side this seat is on, as the AI itself understands it — read off
@@ -1672,7 +1918,7 @@ var _look_at := 0
 # the feature at all** — the defect class that left `BuildingSim.damage()`
 # uncalled for two milestones (D-055).
 #
-# The decision half is `static_defence.gd`, which names no wall and is
+# The decision half is `ai_investment.gd`, which names no wall and is
 # shared with naval stage 7 (#301). The geometry half is `wall_plan.gd`.
 # What is here is the seat: reading its own threat, spending, and USING
 # what it built.
@@ -1697,7 +1943,8 @@ func _fortify() -> void:
 	var standing := _defences_standing()
 	var threat := _threat_report()
 	var economy := _economy_report()
-	if not StaticDefence.wants_to_invest(threat, economy,
+	if not AiInvestment.wants_to_invest(
+			AiInvestment.threat_pressure(threat, economy),
 			profile.defence_appetite, standing, DEFENCES_CAP):
 		return
 
@@ -1792,7 +2039,7 @@ func _threat_report() -> Dictionary:
 			var away := state.space.distance(home, cell)
 			if nearest < 0 or away < nearest:
 				nearest = away
-			if away <= StaticDefence.THREAT_CELLS:
+			if away <= AiInvestment.THREAT_CELLS:
 				near += 1
 		for wire_id in state.buildings:
 			var info: Dictionary = state.buildings[wire_id]
@@ -1845,8 +2092,8 @@ func _pay_for(def: BuildingDef) -> bool:
 	floors.resize(Economy.RESOURCE_COUNT)
 	floors[Economy.ResourceKind.FOOD] = profile.food_floor
 	floors[Economy.ResourceKind.WOOD] = profile.wood_floor
-	return StaticDefence.can_afford_with_reserve(state.wallet,
-		StaticDefence.cost_of(def), floors)
+	return AiInvestment.can_afford_with_reserve(state.wallet,
+		AiInvestment.cost_of(def), floors)
 
 
 ## The screen this seat would raise, against whatever it is most afraid
@@ -2064,7 +2311,7 @@ func _hold_the_gates() -> void:
 
 ## How near a hostile has to be to a gate before it is worth shutting.
 ##
-## Smaller than `StaticDefence.THREAT_CELLS`, which is the radius at which
+## Smaller than `AiInvestment.THREAT_CELLS`, which is the radius at which
 ## a threat argues for BUILDING something. Shutting a gate is a reaction
 ## to somebody at the door; fortifying is a response to somebody in the
 ## region, and one number for both would either seal the gates all match
