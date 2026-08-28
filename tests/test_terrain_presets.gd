@@ -153,3 +153,28 @@ func _same_component(space: TorusSpace, passable: PackedByteArray,
 			seen[index] = true
 			frontier.append(index)
 	return false
+
+
+## A retired preset must still be COVERED by the data-invariant tests,
+## even though the lobby no longer offers it. `test_map_slider_ranges.gd`
+## asserts things about every shipped `.tres` — the beach band, the
+## slider ordering, that it generates at every size — and those stay true
+## of a preset a player cannot pick.
+##
+## This is a caller-exists scan (D-106's rule): retiring `islands` dropped
+## it out of two of those tests silently, because they iterated the
+## PLAYABLE list. Nothing failed; the coverage just shrank.
+func test_the_data_invariant_tests_cover_retired_presets_too() -> void:
+	var source := FileAccess.get_file_as_string("res://tests/test_map_slider_ranges.gd")
+	assert_true(source.contains("TerrainPresetRoster.all_ids()"),
+		"the shipped-data invariants must iterate every preset, not only the playable ones")
+	assert_eq(source.count("TerrainPresetRoster.ids()"), 1,
+		"exactly one use of the playable list belongs there — the lobby's own index; "
+		+ "any other is a data invariant that stops covering a retired preset")
+
+
+## And the two lists must actually differ while anything is retired, or
+## `all_ids()` is a synonym and the distinction above is decoration.
+func test_the_playable_list_is_genuinely_shorter() -> void:
+	assert_lt(TerrainPresetRoster.ids().size(), TerrainPresetRoster.all_ids().size(),
+		"nothing is retired, so every all_ids() call in the estate is untested")
