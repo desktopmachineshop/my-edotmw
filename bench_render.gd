@@ -62,6 +62,10 @@ var _camera: Camera3D
 var _terrain_root: Node3D
 var _squad_root: Node3D
 var _squad_nodes := {}
+## The one-int-per-squad LOD memory the client keeps (#155). Cleared with
+## the squads in `_setup_count`, because a rung of the sweep re-uses squad
+## ids for a different number of squads at a different spread.
+var _lod_tier := {}
 var _visible_squads := 0
 var _camera_target := Vector3.ZERO
 
@@ -204,6 +208,7 @@ func _setup_count(count: int) -> void:
 	for node in _squad_nodes.values():
 		node.queue_free()
 	_squad_nodes.clear()
+	_lod_tier.clear()
 
 	_sim = SquadSim.new(_space, CurveReplicator.new())
 	_sim.set_passable(TerrainGen.new().passability(_space))
@@ -255,7 +260,6 @@ func _refresh_squads() -> void:
 	_visible_squads = 0
 	var offsets := _space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
-	var target := _camera_target
 
 	for squad_id in _state.live_squad_ids():
 		var entry: Dictionary = _state.composition.get(squad_id, {})
@@ -285,22 +289,23 @@ func _refresh_squads() -> void:
 		if drawn.is_empty():
 			continue
 		_visible_squads += 1
-		var offset := RenderCull.nearest_offset(drawn, centre, target)
 		unit.set_slot_transforms(_state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset)))
+			squad_id, _now, _detail_for(squad_id, drawn, centre)))
 
 
-## Mirrors client.gd's `_detail_for` and its LOD_TIERS. Duplicated
-## knowingly and narrowly: the benchmark exists to measure the client, and
-## a benchmark that skipped the client's LOD would report a cost the
-## client does not pay. If the tiers are retuned, both move.
-func _detail_for(world: Vector3) -> int:
-	var distance := _camera.global_position.distance_to(world)
-	if distance < 55.0:
-		return 1 << 30
-	if distance < 110.0:
-		return 12
-	return 5
+## The client's own LOD, through the client's own arithmetic. This used to
+## be a hand-copy of the three tier numbers under a comment reading "if the
+## tiers are retuned, both move"; they live in `RenderCull` now, so it
+## cannot fail to. What is still duplicated is the one-int-per-squad memory
+## the hysteresis band needs (#155) — the benchmark exists to measure the
+## client, and a benchmark that ran a MEMORYLESS ladder would re-derive on
+## tier flips the shipping client no longer has.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 func _process(delta: float) -> void:

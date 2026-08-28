@@ -73,3 +73,54 @@ word and nothing else; neither reads the other.
 **The off switch is `EDOTMW_NO_GATE=1`**, and `just doctor` says when it
 is set. A wrong gate stops all work, so it has to be escapable and the
 escape has to be visible.
+
+**The gate charges WORK now, not launchers
+(D-20260827-the-gate-charges-work-not-launchers, #153).** Its accounting
+unit was a pid; the thing that occupies this host is a container; the two
+part company when a launcher exits and its container carries on. Found by
+observation an hour after the gate landed — `edotmw-ao-my-edotmw-10-root-quick-test`
+Up 2 hours against `host-gate: 0 holder(s), 0 MB charged`, on a machine
+with 733 MB free and 2.9 GB of swap in use.
+
+**That failure INVERTS the feature rather than weakening it.** Before the
+gate an overloaded host was obvious; now a stale container makes the
+ledger read empty, so `pool = free + charged` is reconstructed with a
+`charged` that has silently gone to zero while the memory is still
+resident. Everything crawls instead of queueing, which reads as "the
+agents are stalled" — and on the day it was found two live sessions were
+misread as dead and one was killed mid-rebase.
+
+Four things worth carrying:
+
+- **A slot is released when the WORK is gone, not when the launcher is.**
+  The reaper asks docker before dropping a dead-pid holder; if that
+  instance still has a container up, the slot is kept and reported. The
+  `EDOTMW_GATE_MAX_HOLD` backstop still fires — a slot held for ever is a
+  machine nothing can use — but it now names what it is dropping and what
+  is still running, because a silent backstop is the same under-count
+  arriving two hours later.
+- **`docker ps` is the only docker verb in `host-gate.sh`, and that is
+  now an ALLOWLIST rather than a denylist of four.** Reconciling requires
+  seeing EVERY instance's containers, which makes read-only the whole
+  D-095 safety argument rather than a nicety. `reap-orphans` already
+  reads the same list; nothing here removes, stops or restarts anything,
+  this instance's own containers included. It also **fails open** — no
+  docker, a dead daemon, a slow query all answer "nothing is running", so
+  the gate degrades to exactly what it did before.
+- **`just doctor` and `just host-status` reconcile now.** `status` prints
+  every running container beside the holders and says plainly when one is
+  charged to nobody. `just up` leaves a server on purpose, so it is a
+  REPORT and not a refusal — but it is said where people already look.
+- **Two guards that had been red on `main` are fixed with it**, both the
+  same family: `gen-formation-icons` launched Godot without declaring a
+  host class (the under-count through the other door), and
+  `test_multi_agent_isolation`'s `--name` scan was matching
+  `art/attach_kit.py --name "{{TARGET}}"`. **A guard that cries wolf is a
+  guard somebody eventually relaxes rather than reads**, which is also
+  why `test_host_budget`'s scans now read code lines rather than the
+  prose explaining what the gate does not do.
+
+Measured while deciding, on the reporting host: `docker ps` **0.44 s**,
+`docker stats` **2.9 s** — which is why the ledger charges declared class
+costs and not measured memory, on a five-second poll.
+

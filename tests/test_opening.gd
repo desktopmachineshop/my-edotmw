@@ -111,6 +111,61 @@ func test_every_civ_can_actually_open() -> void:
 			"civ %s has no general, so its opening has no escort" % civ)
 
 
+## Every civ must be able to AFFORD the building its opening requires
+## (#247, #275).
+##
+## Gravesworn shipped `starting_wood = 140` against a 150-wood town
+## centre, so it began ten wood short of the only building it is allowed
+## to raise -- and with no base there is no drop-off, so
+## `Economy._try_unload` credits nothing and the wallet cannot rise by
+## gathering either. Its wood was pinned at 140 forever. Measured over
+## three 600 s ladder matches: `buildings=0 first_attack=-1.0
+## peak_wood=140`, three times out of three. **A shipped civ that cannot
+## open.**
+##
+## Resolved through the DEFS, never against a literal 150 or a literal
+## `town_centre`: the opening building is the one that spends its builder
+## (`consumes_builder`, which `test_exactly_one_shipped_building_costs_
+## its_builder` below pins at exactly one), and the costs come off that
+## def. So a change to the hall's price, or a second civ, is covered the
+## day it is written rather than the day somebody remembers this file.
+##
+## Worth naming why nothing caught it: the test directly above is called
+## `test_every_civ_can_actually_open`, and it checks that a civ HAS a
+## settler and a general. The name reads as covering this and does not --
+## a cross-check between `CivDef.starting_*` and `BuildingDef.cost_*` that
+## no single file owns, which is this project's most-repeated defect shape
+## wearing a reassuring label.
+func test_every_civ_can_afford_the_building_its_opening_requires() -> void:
+	var opening: BuildingDef = null
+	for def in BuildingSim.all_defs():
+		if def.consumes_builder:
+			opening = def
+			break
+	assert_not_null(opening,
+		"no shipped building spends its builder, so there is no opening to afford")
+	if opening == null:
+		return
+
+	for civ_id in CivRoster.ids():
+		var civ: CivDef = CivRoster.by_id(civ_id)
+		assert_not_null(civ, "civ %s does not load" % civ_id)
+		if civ == null:
+			continue
+		var short := PackedStringArray()
+		if civ.starting_food < opening.cost_food:
+			short.append("food %d < %d" % [civ.starting_food, opening.cost_food])
+		if civ.starting_wood < opening.cost_wood:
+			short.append("wood %d < %d" % [civ.starting_wood, opening.cost_wood])
+		if civ.starting_gold < opening.cost_gold:
+			short.append("gold %d < %d" % [civ.starting_gold, opening.cost_gold])
+		if civ.starting_stone < opening.cost_stone:
+			short.append("stone %d < %d" % [civ.starting_stone, opening.cost_stone])
+		assert_eq(short.size(), 0,
+			"%s cannot afford its own %s and so cannot open at all: %s"
+				% [civ_id, opening.id, ", ".join(short)])
+
+
 func test_the_civs_gatherers_are_actually_different_troops() -> void:
 	# The point of per-civ gatherers (D-047's rule, applied to the unit
 	# every player fields most of). Two identical `.tres` files would pass

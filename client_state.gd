@@ -117,6 +117,43 @@ func take_casualty_sites() -> Array:
 	_casualty_sites = []
 	return out
 
+
+## World events worth HEARING, not yet sounded (#344).
+##
+## The exact shape and contract of `_casualty_sites` above, and for the
+## same reason: this class is run by the load-test bots and the AI seats
+## as well as the GUI client, and an unread queue would grow for the
+## length of a run. Only something that DRAINS it sets `record_audio`,
+## which is the GUI client and nothing else — bots and AI leave it off
+## and the list stays empty.
+##
+## Entries are {"event": StringName, "cell": int, "magnitude": float}.
+## A CELL, never a world position: the fog query this is gated through is
+## per cell (`TerrainFog.level_at`), and handing audio a position would
+## be inventing a second notion of where something happened.
+##
+## Nothing here crosses the wire, and nothing reads it back — audio is a
+## one-way client cosmetic (D-006 clause 2) and the simulation has no
+## concept of it.
+var record_audio := false
+var _audio_events := []
+
+
+func take_audio_events() -> Array:
+	var out := _audio_events
+	_audio_events = []
+	return out
+
+
+## Note something worth hearing. Squad-level by construction: the caller
+## passes a cell and a weight, and there is nowhere in the entry for a
+## per-soldier anything to live — a volley is one event, not thirty-six
+## (D-024).
+func note_audio(event: StringName, cell: int, magnitude: float = 1.0) -> void:
+	if not record_audio:
+		return
+	_audio_events.append({"event": event, "cell": cell, "magnitude": magnitude})
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -608,6 +645,16 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 				_casualty_sites.append({
 					"id": id, "before": previous_alive, "after": new_alive,
 				})
+			# The volley (#344). ONE event for the whole exchange, not one
+			# per man: D-024 resolves combat as aggregate arithmetic over
+			# a squad, and `fell` here is already a COUNT. Gated on the
+			# same `fell` byte the corpses are, so men spent founding a
+			# town or wiped by a disconnect make no battle noise.
+			if record_audio and bool(event.get("fell", false)):
+				var lost := previous_alive - new_alive
+				var size := int(composition.get(id, {}).get("size", previous_alive))
+				note_audio(&"combat_volley", space.index(squad_cell(id, 0.0)) if space != null else -1,
+					AudioCue.volley_magnitude(lost, maxi(size, 1)))
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
@@ -736,6 +783,26 @@ func _handle_building_info(data: PackedByteArray) -> void:
 		var id := int(entry["id"])
 		if not buildings.has(id):
 			buildings_revealed += 1
+		# Worth HEARING (#344), decided from what changed rather than
+		# from a new message: the wire already says everything audio
+		# needs, and inventing a packet for it would be the second
+		# channel #344 forbids and D-004 forbids generally.
+		#
+		# Fog is not consulted HERE — `AudioCue` does that, from the one
+		# vision query, and doing it in two places is how the two come to
+		# disagree. This only records that something happened.
+		if record_audio:
+			var was: Dictionary = buildings.get(id, {})
+			var had := not was.is_empty()
+			var was_done := float(was.get("progress", 0.0)) >= 1.0
+			var now_done := float(entry["progress"]) >= 1.0
+			var cell := int(entry["cell"])
+			if bool(entry["destroyed"]) and not bool(was.get("destroyed", false)):
+				note_audio(&"building_destroyed", cell)
+			elif had and now_done and not was_done:
+				note_audio(&"building_complete", cell)
+			elif not had and not now_done:
+				note_audio(&"building_placed", cell)
 		buildings[id] = {
 			"def_id": String(entry["def_id"]),
 			"owner": int(entry["owner"]),

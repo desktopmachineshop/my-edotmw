@@ -443,7 +443,11 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_destination.append(cell)
 	_alive.append(def.squad_size)
 	_owner.append(owner)
-	_speed.append(_cells_per_second(def))
+	# The owner's civ marches at its own pace (`CivDef.march_speed`,
+	# D-047, #270). Applied HERE because SquadSim already latches a
+	# squad's cells-per-second at creation, so an army-wide multiplier
+	# costs nothing per tick.
+	_speed.append(civ_effects(owner).march_rate(_cells_per_second(def)))
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
 	_facing.append(-1)
@@ -1172,6 +1176,9 @@ func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
+	# The squad goes where it was LAST told, not where it was told
+	# before a halt (#249).
+	_attack_move_goal.erase(squad)
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
@@ -1235,6 +1242,8 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 	else:
 		_begin_tier_crossing(squad, destination, wanted_tier)
 	_attack_move[squad] = 1
+	# A fresh order replaces any errand a halt was holding (#249).
+	_attack_move_goal.erase(squad)
 
 
 ## Which tier `destination` belongs to (D-076): 1 if it is a cell on the
@@ -1299,6 +1308,62 @@ func is_attack_moving(squad: int) -> bool:
 	return _attack_move[squad] == 1
 
 
+# --- an attack-move survives the fight it stops for (#249) --------------
+
+## Where an attack-move was headed when contact halted it — squad -> cell
+## index. Squad-level, which is exactly what D-024 permits a squad to
+## have, and there is nowhere in it for anything per-soldier to live.
+##
+## D-034's halt is right and stays: an army ordered onto a town should
+## stop and fight what it meets rather than walking through. What was
+## wrong is that the halt was PERMANENT — `stop()` clears the attack-move
+## flag and nothing ever set it again, so a squad that halted three cells
+## short of its objective, killed the screen, and went idle stood there
+## for the rest of the match. Measured over 22 line-troop/building pairs:
+## one order razed 0 of 22; the identical order re-issued every 5 s razed
+## 6 (#249).
+var _attack_move_goal := {}
+
+
+## Halt for the fight, and REMEMBER the errand.
+##
+## Called from `Combat.resolve`, which is the one place that knows contact
+## has happened. Deliberately not folded into `stop()`: `stop()` is also
+## what the player's Stop button calls, and a remembered objective that
+## survived an explicit halt would mean a player could not park a squad in
+## front of an enemy at all.
+func pause_attack_move(squad: int) -> void:
+	var goal := _destination[squad]
+	stop(squad)
+	# AFTER stop(), which clears the goal like every other order does.
+	_attack_move_goal[squad] = goal
+
+
+## Carry on, if there is an errand left and the squad is free to resume.
+## Returns true if an order was re-issued.
+func resume_attack_move(squad: int) -> bool:
+	if not _attack_move_goal.has(squad):
+		return false
+	var goal: int = _attack_move_goal[squad]
+	_attack_move_goal.erase(squad)
+	if _alive[squad] <= 0 or is_routed(squad) or goal == _cell[squad]:
+		return false
+	attack_moves_resumed += 1
+	order_attack_move(squad, space.from_index(goal))
+	return true
+
+
+func has_paused_attack_move(squad: int) -> bool:
+	return _attack_move_goal.has(squad)
+
+
+## How many halted attack-moves have been carried on. Instrumentation in
+## `field_waits`' style: a match with fighting in it that reports ZERO
+## resumes has a dead mechanism, which is the failure this project keeps
+## finding wearing a green verdict.
+var attack_moves_resumed: int = 0
+
+
 ## Halt where the squad actually is (D-034).
 ##
 ## "Here" is resolved from the authoritative cell rather than from
@@ -1313,6 +1378,10 @@ func stop(squad: int) -> void:
 	# has already landed (D-20260819-a-charge-is-spent-on-its-impact).
 	_charge_until.erase(squad)
 	_attack_move[squad] = 0
+	# Stop means stop (#249). `pause_attack_move` re-records the errand
+	# AFTER calling this, which is what keeps a contact halt and a
+	# player's halt telling the squad different things.
+	_attack_move_goal.erase(squad)
 	# A squad mid-approach to a tower's door is stopping short of climbing
 	# it (D-076) — the same "an order in progress is spent" rule a move
 	# order already applies to server.gd's _pending_builds.
@@ -1345,6 +1414,10 @@ func flee_move(squad: int, destination: Vector2i) -> void:
 	# A broken squad is not charging anything (D-20260819) — without this
 	# a routed ex-charger would flee at sprint speed until the deadline.
 	_charge_until.erase(squad)
+	# Nor an errand (#249): a broken squad arriving at its rout
+	# destination is idle, and resuming would send it straight back at
+	# the enemy it just broke against.
+	_attack_move_goal.erase(squad)
 	var previous := destination_quantum
 	destination_quantum = rout_quantum
 	_apply_move_order(squad, destination, true)
@@ -2415,6 +2488,10 @@ func tick() -> void:
 	# can see this tick's _engaged set and skip anyone already fighting
 	# where they stand, and reuses resolve()'s bucket map rather than
 	# rebuilding one.
+	# An errand interrupted by D-034's halt is carried on now that the
+	# fight is resolved (#249) — before the opportunistic chase below, so a
+	# remembered player order wins over a passing target.
+	combat.resume_attack_moves(self)
 	combat.assign_idle_engagements(self, tick_count)
 	combat.apply_skirmish(self, tick_count)
 	# Both halves of the combat phase, not just resolve(): the assignment
