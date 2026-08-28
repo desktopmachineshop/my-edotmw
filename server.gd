@@ -928,7 +928,7 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 	# opening stockpile until the admin starts (D-048). Spawning first and
 	# correcting later would mean an opening crew existing before the
 	# civilisation that raised it.
-	_clients[peer] = {"player": player, "visible": {}}
+	_clients[peer] = _fresh_record(player)
 	var started := _match.add_player(player)
 	if _match.phase == MatchState.Phase.LOBBY:
 		_broadcast_lobby()
@@ -2892,18 +2892,14 @@ func _return_to_lobby() -> void:
 	_ai_clients.clear()
 
 	# Every client is about to be told the match is over; none of them may
-	# keep a reveal baseline from it. Leaving these populated would make
-	# the next match's first reveal diff find "nothing new" for everything
-	# the player could already see — the same defect `_recipients` records.
+	# keep ANY baseline from it. Scrubbed back to the birth shape
+	# `_fresh_record` defines rather than key by key: three of the four
+	# per-match keys were about a WORLD that no longer exists, and naming
+	# them here is a list somebody has to remember to extend — which is
+	# exactly how two of them came to be missing
+	# (D-20260827-a-client-record-forgets-the-match-it-left).
 	for peer in _clients:
-		_clients[peer]["visible"] = {}
-		# And the BUILDING baseline beside it (D-030's ever-revealed set,
-		# which the server hashes). It was missed here for as long as
-		# leaving to the lobby has existed, and the sandbox Regen button
-		# made it easy to hit: building ids restart at 0 in the next
-		# match, so a stale set hashed old ids against a client that had
-		# torn its world down — 106 building desyncs in one playtest.
-		_clients[peer]["known_buildings"] = {}
+		_clients[peer] = _fresh_record(int(_clients[peer]["player"]))
 
 	# `return_to_lobby` rolls the next match's map unless the seed is
 	# pinned (D-100), so the seed is worth naming here: it is the one
@@ -3007,7 +3003,7 @@ func _seat_ai(player: int, civ: StringName, team: int = 0) -> void:
 	# can ever start a second match from
 	# (D-20260817-an-ai-never-holds-the-lobby).
 	var started := _match.add_ai_player(player, civ, team)
-	_ai_clients[peer] = {"player": player, "visible": {}}
+	_ai_clients[peer] = _fresh_record(player)
 	_ai_players.append(brain)
 	_admit_player(peer, player)
 	print("server: AI seated as player %d (%s, %s)" % [player, civ, brain.profile.id])
@@ -3120,6 +3116,29 @@ func _recipients() -> Dictionary:
 	var out := _clients.duplicate()
 	out.merge(_ai_clients)
 	return out
+
+
+## A client record as it is born: a player id, and nothing about a match.
+##
+## THE one definition of that shape
+## (D-20260827-a-client-record-forgets-the-match-it-left). Every other key
+## a record ever acquires — `visible`, `known_buildings`, `nodes_known`,
+## `nodes_depleted_told` — is a per-MATCH baseline: a set of things this
+## client has already been told about, keyed by an id or a cell index that
+## the NEXT match mints again from zero. Carrying one across a return to
+## the lobby means the server believes it has already told this client
+## about a building or a forest that no longer exists, and so never tells
+## it about the one now standing there.
+##
+## Written as a birth shape rather than as a list of keys to clear because
+## the list is the defect: `_return_to_lobby` named `visible` for a
+## milestone and missed `known_buildings` (106 building desyncs in one
+## playtest), then named both and missed the two node sets. A key added
+## here is cleared there for free; a key added ANYWHERE ELSE is not, which
+## is what `test_client_record.gd` fails on.
+func _fresh_record(player: int) -> Dictionary:
+	return {"player": player, "visible": {}, "known_buildings": {},
+		"nodes_known": {}, "nodes_depleted_told": {}}
 
 
 ## A client record, whether the sender is a socket or an AI seat in this
