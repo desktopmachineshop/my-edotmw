@@ -207,3 +207,45 @@ defect, the blocking terrain build, is already fixed** by
 `D-20260818-terrain-builds-a-slice-at-a-time` (#106) and is not
 re-addressed here.
 
+**And a gate did not know its owner had allies
+(#210, 2026-08-28).** An auto-mode gate opened for its OWNER's squads and
+for nobody else, so a teammate stood at a closed gate and walked round
+the wall — or could not get through at all if the wall was closed.
+`server._update_auto_gates` compared owner ids where `SquadSim.are_allied`
+is what the rest of the simulation asks: `combat.gd` calls it in five
+places, and `client.gd` and `ai_player.gd` call it too.
+
+Third of the same family recorded on this page, and the tell is identical
+every time — **a raw owner comparison sitting beside a codebase that
+compares teams everywhere else, with nothing failing**:
+
+- **#83** — `ai_player.gd` held zero references to alliance, so its
+  targeting read "not mine" as "hostile" and marched an army onto a
+  teammate's town centre.
+- **#82** — the minimap painted squads cyan-if-mine and red-otherwise, a
+  rule that was correct when written and never re-read after D-052.
+- **#210** — a gate rule written *after* teams existed that still asks the
+  pre-teams question.
+
+Two things worth carrying:
+
+- **It is an omission, not a rejected alternative.** D-076 specifies
+  *"auto-open when the owner's own squads are near"* and mentions teams
+  nowhere; D-050 predates it. The question was never asked, which is why
+  no decision entry records an answer to it.
+- **Nothing could have gone red either way.** `test_wall_top.gd` and
+  `test_wall_run.gd` are thorough about the tier rules, the climb, the
+  run geometry and the seam — 29 tests — and **neither contains the word
+  `gate`**; `test_buildings.gd` round-trips `set_gate_open` mechanically
+  and never touches `_update_auto_gates`. `tests/test_auto_gate.gd` is
+  the file that did not exist, and it carries the two controls that keep
+  the fix honest: an enemy must still be shut out, and team 0 is not a
+  team (D-050) — which is the configuration every AI fixture in the
+  estate sits in (#119), so getting it wrong would be invisible to `just
+  ai-ladder`.
+
+Deliberately unchanged, both named in the issue as considered positions
+rather than oversights: climbing a wall tower is not ownership-gated
+(D-076 argues for it — *"a wall's tier-1 top is a contestable
+objective"*), and an OPEN gate is open to everyone standing in it, so an
+enemy can follow a friendly squad through.

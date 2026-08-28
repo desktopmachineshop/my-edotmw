@@ -13,3 +13,13 @@
 345	ao/my-edotmw-86/audio-foundations	CLEAN	54
 265	ao/my-edotmw-80/gap-assessment	CLEAN	1
 238	ao/my-edotmw-81/issue-153-gate-reconciles-containers	CONFLICT	justfile tests/test_multi_agent_isolation.gd 
+238	ao/my-edotmw-81/issue-153-gate-reconciles-containers	CONFLICT-RESOLVED	justfile + tests/test_multi_agent_isolation.gd: SAME DUPLICATE FIX as the rehearsal found - #335 and #238 both fix #209 (the --name scan matching art/attach_kit.py) with different implementations. Kept #335's per-line scan.
+226	ao/my-edotmw-81/issue-157-second-match-state	CLEAN	6
+232	ao/my-edotmw-81/issue-162-disconnect-notice	CLEAN	5
+235	ao/my-edotmw-87/model-preview-framing	CLEAN	5
+237	ao/my-edotmw-87/artifacts-are-writable	CLEAN	18
+234	ao/my-edotmw-85/playtest-visual-infra	CLEAN	26
+373	ao/my-edotmw-87/seam-shot-conforms	CLEAN	1
+251	ao/my-edotmw-82/ladder-instrument	CLEAN	6
+248	ao/my-edotmw-82/clash-reports-its-army	CLEAN	9
+255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT	docs/status/ai-opponent.md docs/status/playtests-2026-08.md 
