@@ -68,12 +68,42 @@ build and the server's do not match, the game will now refuse the join
 and tell you so rather than letting you play a subtly different game —
 if that happens, you need a newer zip.
 
-## Where the log is
+## Report a problem — one button, one file
 
-If something goes wrong, the log is the most useful thing you can send.
+**Menu → Report a problem.** It is on the first screen you see and in the
+in-game menu (Esc). It writes **one file** holding your recent logs, your
+recent replays and your system details, tells you where it is, and you
+attach that to your report.
+
+**Nothing is sent.** The button makes a file on your disk and stops. This
+game has no telemetry and no account (see Privacy below), so whether any
+of it reaches us is entirely your decision — which is why the bundle
+carries a `MANIFEST.txt` listing every file in it and what each one
+holds. Open it before you send it if you like; it is written to be read.
+
+Two things in there worth knowing about, and they are in the manifest
+too:
+
+- the **logs** contain the address of the server you joined, and on
+  Windows your user name, because it appears inside the file paths the
+  game prints;
+- the **replay** is the match itself — positions and orders — and nothing
+  about you.
+
+**Please still say what happened.** What you were doing and what you
+expected is worth more than any file in the bundle.
+
+### If you cannot reach the button
+
+If the game will not start far enough to show a menu, send the log on its
+own:
 
 - Windows: `%APPDATA%\Godot\app_userdata\my-edotmw\logs\`
 - Or run `my-edotmw.exe` from a terminal and copy what it prints.
+
+The bundle, when you can make one, lands in
+`%APPDATA%\Godot\app_userdata\my-edotmw\artifacts\` — but the game tells
+you the full path on screen, so you should not need this.
 
 ---
 
@@ -102,3 +132,7 @@ If something goes wrong, the log is the most useful thing you can send.
 The game sends your orders to whoever is hosting and nothing else. There
 is no telemetry, no account, and no analytics. Whoever hosts sees the
 address you connect from, exactly as any server does.
+
+**"Report a problem" does not change that.** It writes a file and stops;
+nothing is transmitted, and the file lists its own contents so you can
+see what you would be sending before you send it.

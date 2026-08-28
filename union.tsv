@@ -100,3 +100,6 @@
 371	ao/my-edotmw-87/ai-investment	REORDERED	declares base #348 but has the NAVAL CHAIN as ancestors (naval-1/3/4) and carries the cargo wire field; 81 files vs #348. Moved to wave 9, after naval, so it does not pre-empt the chain's own SQUAD_INFO extension. Same shape as #340 and #357.
 375	ao/my-edotmw-79/manual-naval	REORDERED	stacked on #371; moved with it to wave 9.
 271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT	CLAUDE.md justfile 
+271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT-RESOLVED	CLAUDE.md import list + justfile doctor block, both additive; kept both.
+303	ao/my-edotmw-81/issue-288-report-a-problem	CONFLICT	client.gd 
+246	ao/my-edotmw-88/renewable-food	CONFLICT	client.gd 
