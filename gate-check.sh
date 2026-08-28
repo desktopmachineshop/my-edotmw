@@ -95,9 +95,29 @@ case "$check" in
             echo "gate-check(naval): no AI reported wants_navy — no seat ran the naval question at all" >&2
             exit 1
         fi
+        # WHY THE SKIP KEYS ON THE MAP AND NOT ON `wants_navy`.
+        #
+        # Two runs report `wants_navy=0`: one where every enemy was
+        # walkable, which is correct, and one on an archipelago, which is
+        # #351 — the defect this gate exists to catch. Skipping on the
+        # AI's own answer lets the thing under test excuse itself, and a
+        # gate that cannot fail is not a gate.
+        #
+        # So the map decides. SPAWN_LANDMASSES is topology: one means no
+        # crossing was ever available and a skip is honest; more than one
+        # means the crossing was there and declining it is a finding.
+        islands="$(marker SPAWN_LANDMASSES "$1")"
+        if [ -z "$islands" ]; then
+            echo "gate-check(naval): the server log has no SPAWN_LANDMASSES — cannot tell a land map from an archipelago, so a skip here would be unearned" >&2
+            exit 1
+        fi
         if [ "$wanted" -eq 0 ]; then
-            echo "gate-check(naval): no AI wanted a navy on this map — every known enemy was walkable, so zero landings is correct"
-            exit 0
+            if [ "$islands" -le 1 ]; then
+                echo "gate-check(naval): skipped — the starts share one landmass, so no crossing was available and zero landings is correct"
+                exit 0
+            fi
+            echo "gate-check(naval): the starts span $islands landmasses and NO seat wanted a navy — an AI that cannot walk to its enemy declined to sail (#351)" >&2
+            exit 1
         fi
         for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
             key="${leg%%:*}"

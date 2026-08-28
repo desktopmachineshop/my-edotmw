@@ -250,3 +250,74 @@ func test_neither_recipe_reimplements_a_shared_comparison() -> void:
 			"known_squads_max", "nodes_known_max", "HANDSHAKE accepted"]:
 		assert_true(script.contains(marker),
 			"gate-check.sh must be the one place %s is read" % marker)
+
+
+# --- the naval gate's skip is TOPOLOGY, not the AI's answer ------------
+#
+# #351: `wants_navy=0` is reported both by an AI that correctly declined
+# to sail (every enemy walkable) and by an AI that declined to sail on an
+# archipelago, which is the defect. Keying the skip on it lets the thing
+# under test excuse itself from the test. SPAWN_LANDMASSES is the map's
+# own answer, and these pin that the gate reads it.
+
+func test_the_naval_gate_skips_when_the_starts_share_one_landmass() -> void:
+	var server := _log("naval-one-island",
+		"SPAWN_LANDMASSES=1 — 4 start(s)\n"
+		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0,
+		"one landmass means no crossing was available, so zero landings is correct")
+	assert_string_contains(got["out"], "one landmass")
+
+
+func test_the_naval_gate_fails_when_a_crossing_was_available_and_declined() -> void:
+	# The #351 run. Byte-identical to the skip above except the topology.
+	var server := _log("naval-archipelago",
+		"SPAWN_LANDMASSES=3 — 4 start(s)\n"
+		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0,
+		"an AI that cannot walk to its enemy and declines to sail is #351, not a skip")
+	assert_string_contains(got["out"], "#351")
+
+
+func test_the_naval_gate_refuses_to_skip_without_the_topology() -> void:
+	# An older server, or one whose marker regressed, must not buy a free
+	# pass. A skip nobody can justify is the vacuous skip this exists to
+	# prevent — so absence fails rather than defaulting to "land map".
+	var server := _log("naval-no-marker",
+		"AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "no topology means no earned skip")
+	assert_string_contains(got["out"], "SPAWN_LANDMASSES")
+
+
+func test_the_naval_gate_still_names_the_first_missing_leg() -> void:
+	# The ordered vacuity ladder survives the topology gate in front of
+	# it: a run that wanted a navy and built no dock must still say so,
+	# rather than being swallowed by the new branch.
+	var server := _log("naval-no-dock",
+		"SPAWN_LANDMASSES=3 — 4 start(s)\n"
+		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is still a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_the_naval_gate_passes_on_a_landing() -> void:
+	var server := _log("naval-landing",
+		"SPAWN_LANDMASSES=3 — 4 start(s)\n"
+		+ "AI_STATS wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0, "a landing on an archipelago is the pass")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_the_server_prints_the_topology_the_gate_reads() -> void:
+	# D-106's caller-exists rule. Every test above would pass with
+	# `server.gd` printing no marker at all — and then every real run
+	# would fail on the absent-marker branch, which is safe but useless.
+	# This is the half that says the two ends are joined.
+	var source := _read("res://server.gd")
+	assert_string_contains(source, "SPAWN_LANDMASSES=%d",
+		"server.gd must print the marker gate-check.sh naval keys its skip on")
