@@ -406,23 +406,61 @@ func test_a_load_test_bot_wants_several_fields_and_one_of_everything_else() -> v
 		"a field's output is a rate — one of them is not an economy")
 	assert_eq(BotBuildPlan.wanted_count(barracks), 1)
 
-	# With nothing owned, a producer comes first: an economy that never
-	# fields an army is not what the load test is for.
-	var first := BotBuildPlan.wanted_building([], &"gatherers")
+	# ONE field first — measured, not preferred: a bot saves for what it
+	# wants rather than falling through to something cheaper, and a
+	# barracks at 150 wood against a 140-200 `wood_peak` meant a
+	# producers-first order reached a field in zero runs.
+	var first := BotBuildPlan.wanted_building(["town_centre"], &"gatherers")
 	assert_not_null(first)
-	assert_false(first.produces.is_empty(),
-		"anything that trains soldiers still comes first")
+	assert_eq(String(first.id), "farm",
+		"the first field must come before the saving-up starts, or it never happens")
 
-	# With the producers up, a field is next — and stays wanted until
-	# there are FIELDS_WANTED of them.
-	var owned := ["town_centre", "barracks"]
-	var next := BotBuildPlan.wanted_building(owned, &"gatherers")
-	assert_not_null(next)
-	assert_eq(String(next.id), "farm", "a field is the one support building a bot raises")
+	# Then producers — an economy that never fields an army is not what
+	# the load test is for.
+	var owned := ["town_centre", "farm"]
+	var second := BotBuildPlan.wanted_building(owned, &"gatherers")
+	assert_not_null(second)
+	assert_false(second.produces.is_empty(),
+		"anything that trains soldiers comes before the SECOND field")
+
+	# Then the rest of the fields, stopping at FIELDS_WANTED.
+	owned.append(String(second.id))
+	var third := BotBuildPlan.wanted_building(owned, &"gatherers")
+	assert_not_null(third)
+	assert_eq(String(third.id), "farm", "a field is the one support building a bot raises")
 	for i in range(BotBuildPlan.FIELDS_WANTED):
 		owned.append("farm")
 	assert_null(BotBuildPlan.wanted_building(owned, &"gatherers"),
 		"and it stops at FIELDS_WANTED rather than paving the map")
+
+
+func test_an_ai_wants_several_fields_and_only_after_something_that_trains() -> void:
+	# `_wanted_count` is the AI's half of the same rule, and it is asked of
+	# the DEF rather than of an id so a civ's own field is covered without
+	# `ai_player.gd` learning a name (D-046 criterion 3).
+	#
+	# The AI keeps producers-first, unlike the bots: it saves for what it
+	# wants and its matches are long enough to reach a barracks, where a
+	# load run is not. That asymmetry is deliberate and is why the two
+	# have separate rules rather than one shared one.
+	var ai = load("res://ai_player.gd").new()
+	ai.profile = AiProfileRoster.default()
+	assert_not_null(ai.profile)
+	assert_eq(ai._wanted_count(BuildingSim.def_by_id(&"barracks")), 1)
+	assert_eq(ai._wanted_count(BuildingSim.def_by_id(&"storehouse")), 1)
+	assert_eq(ai._wanted_count(BuildingSim.def_by_id(&"farm")), ai.profile.farms_wanted,
+		"an AI wants as many fields as its difficulty says, not one")
+	assert_gt(ai.profile.farms_wanted, 1)
+
+	# And the farm has to actually be in the list it walks, or the count
+	# above is arithmetic nothing consults.
+	var wanted: Array = ai._wanted_buildings()
+	var ids := []
+	for def in wanted:
+		ids.append(String(def.id))
+	assert_true(ids.has("farm"), "a field must be something the AI considers at all")
+	assert_true(ids.find("barracks") < ids.find("farm"),
+		"and it considers what trains soldiers first")
 
 
 func test_no_shipped_ai_profile_wants_a_negative_number_of_fields() -> void:

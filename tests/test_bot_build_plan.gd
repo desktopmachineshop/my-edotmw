@@ -72,6 +72,13 @@ func test_a_bot_only_ever_wants_a_building_that_trains_or_grows() -> void:
 	var owned := ["town_centre"]
 	var wanted := 0
 	var fields := 0
+	# The FIRST thing a bot with only a hall wants is a field, and that is
+	# not a preference — see `wanted_building`'s header for the two runs
+	# that measured the alternative reaching zero of them, ever.
+	var first := BotBuildPlan.wanted_building(owned, &"gatherers")
+	assert_not_null(first)
+	assert_true(BotBuildPlan.grows_something(first),
+		"a bot must raise one field before it starts saving for a barracks it may never afford")
 	for _round in range(BuildingSim.all_defs().size() + BotBuildPlan.FIELDS_WANTED + 1):
 		var def := BotBuildPlan.wanted_building(owned, &"gatherers")
 		if def == null:
@@ -164,8 +171,15 @@ func test_a_bot_stops_asking_for_crews_once_it_has_enough() -> void:
 		"a bot at the crew cap asks its hall for nothing")
 
 	# And the cap must not silence a building that trains soldiers.
-	var barracks := BotBuildPlan.wanted_building(["town_centre"], &"gatherers")
+	#
+	# `["town_centre", "farm"]`, not `["town_centre"]`: a bot's FIRST want
+	# is a field now (D-20260828-food-is-grown-not-only-found), and a
+	# fixture that takes "whatever it wants next" is pinned to an ORDERING
+	# rather than to the building it means — the same trap five fixtures
+	# fell into when `founders.tres` was deleted.
+	var barracks := BotBuildPlan.wanted_building(["town_centre", "farm"], &"gatherers")
 	assert_not_null(barracks, "Setup: there is a military building")
+	assert_false(barracks.produces.is_empty(), "Setup: and it is the one that TRAINS")
 	assert_ne(BotBuildPlan.archetype_for(barracks, civ, BotBuildPlan.MAX_HAULING_CREWS), &"",
 		"the crew cap must not stop a bot training soldiers")
 
@@ -231,8 +245,11 @@ func test_a_bot_that_does_not_know_its_civ_still_asks_for_soldiers() -> void:
 	# two bots raised a barracks at 137 s and 193 s and trained not one
 	# soldier from either, `military_peak=0`, while the town centre went on
 	# making crews.
-	var barracks := BotBuildPlan.wanted_building(["town_centre"], &"gatherers")
+	# See the ordering note in `..._stops_asking_for_crews...` for why the
+	# farm is in the owned list.
+	var barracks := BotBuildPlan.wanted_building(["town_centre", "farm"], &"gatherers")
 	assert_not_null(barracks, "Setup: there is a military building")
+	assert_false(barracks.produces.is_empty(), "Setup: and it is the one that TRAINS")
 	var archetype := BotBuildPlan.archetype_for(barracks, &"", 0)
 	assert_ne(archetype, &"",
 		"a bot with no civ must still ask a barracks for something")
