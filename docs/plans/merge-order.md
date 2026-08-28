@@ -72,9 +72,9 @@ likewise in both #313 and #340.
 |---|---|---|---|
 | 1 | #222 | `ao/my-edotmw-82/d067-siege-rule` | the D-067 re-derivation the whole balance cluster sits behind, and #243/#252 are stacked on it |
 | 2 | #243 | `ao/my-edotmw-86/red-main` | makes `test-unit` green and the docker estate runnable; four PRs are stacked on it and nothing else can be tested honestly until it lands |
-| 3 | #265 | `ao/my-edotmw-80/gap-assessment` | one file, docs only — zero conflict surface |
-| 4 | #238 | `ao/my-edotmw-81/issue-153-gate-reconciles-containers` | `justfile` only, no shipped code |
-| 5 | #226 | `ao/my-edotmw-81/issue-157-second-match-state` | six files, `server.gd` only, self-contained |
+| 4 | #265 | `ao/my-edotmw-80/gap-assessment` | one file, docs only — zero conflict surface |
+| 5 | #238 | `ao/my-edotmw-81/issue-153-gate-reconciles-containers` | `justfile` only, no shipped code |
+| 6 | #226 | `ao/my-edotmw-81/issue-157-second-match-state` | six files, `server.gd` only, self-contained |
 
 #222 then #243 is both the orchestrator's directive and what the graph
 requires.
@@ -87,16 +87,20 @@ merely touch it, so the later ones rebase onto a settled version.
 
 ### Wave 1 — make main green
 
-Blocking, and strictly in this order: #243 is stacked on #222, and #273/#294/#335/#345 are all stacked on #243. Nothing else in the queue can be tested honestly until #243 lands.
+Blocking, and strictly in this order: #243 is stacked on #222, and #273/#294/#335/#345 are all stacked on #243. Nothing else in the queue can be tested honestly until #243 lands. **#324 is moved here from Wave 3 by
+the #360 arbitration** — it is data plus tests with no dependencies, and
+landing it immediately after #243 keeps the undecided union of formation
+grants out of `main`. Its merge is three actions, not one — see Rulings.
 
 | order | PR | base | branch | what it is |
 |---|---|---|---|---|
 | 1 | #222 | main | `ao/my-edotmw-82/d067-siege-rule` | Re-derive D-067's numbers, and ask the pair rule of LINE troops (#152) |
 | 2 | #243 | #222 | `ao/my-edotmw-86/red-main` | Make test-unit green and the docker estate runnable again (#223, #215, #208, #209) |
-| 3 | #335 | #243 | `ao/my-edotmw-86/small-fixes` | Small-fix batch: #302 #249 #253 #254 #276 |
-| 4 | #294 | #243 | `ao/my-edotmw-86/ci-pipeline` | CI: run the checks the machine can run (#290) |
-| 5 | #273 | #243 | `ao/my-edotmw-86/explore-command` | Explore: a squad that hunts fog on its own until told to stop (#120) |
-| 6 | #345 | #243 | `ao/my-edotmw-86/audio-foundations` | Audio foundations: a sound is a cosmetic, and you must be able to SEE its cause (#344) |
+| 3 | #324 | main | `ao/my-edotmw-82/formations-granted` | Two formations that belonged to nobody (#309) |
+| 4 | #335 | #243 | `ao/my-edotmw-86/small-fixes` | Small-fix batch: #302 #249 #253 #254 #276 |
+| 5 | #294 | #243 | `ao/my-edotmw-86/ci-pipeline` | CI: run the checks the machine can run (#290) |
+| 6 | #273 | #243 | `ao/my-edotmw-86/explore-command` | Explore: a squad that hunts fog on its own until told to stop (#120) |
+| 7 | #345 | #243 | `ao/my-edotmw-86/audio-foundations` | Audio foundations: a sound is a cosmetic, and you must be able to SEE its cause (#344) |
 
 ### Wave 2 — low-conflict singles
 
@@ -155,14 +159,13 @@ Mostly roster `.tres` and tests. #334 must precede #347 (stacked) and #222 must 
 | 3 | #260 | main | `ao/my-edotmw-82/d072-screen` | D-072's screen is runnable, and every violation is in its blind spot (#220) |
 | 4 | #261 | main | `ao/my-edotmw-82/counters-are-felt` | The counter triangle is measured, and one armour class is doing all the work (#219) |
 | 5 | #321 | main | `ao/my-edotmw-82/civ-can-open` | A civ must be able to afford its own opening (#247, #275) |
-| 6 | #324 | main | `ao/my-edotmw-82/formations-granted` | Two formations that belonged to nobody (#309) |
-| 7 | #330 | main | `ao/my-edotmw-82/gatherers-differ` | The crew is a civ's unit too (#269) |
-| 8 | #334 | main | `ao/my-edotmw-82/armour-is-role` | Armour class is a role, not a flavour (#268) |
-| 9 | #347 | #334 | `ao/my-edotmw-82/levies-are-sidegrades` | fix(roster): a levy is a sidegrade, and a duel is not the test (#267) |
-| 10 | #328 | main | `ao/my-edotmw-82/morale-scales` | Morale is a fraction of the squad, not a count of men (#266) |
-| 11 | #257 | main | `ao/my-edotmw-82/fortifications-frighten` | A fortification frightens men: no morale recovery under fire (#218) |
-| 12 | #297 | main | `ao/my-edotmw-82/surrender` | A player may concede (#279) |
-| 13 | #336 | main | `ao/my-edotmw-82/civ-knobs` | Four more knobs, and every one has a caller (#270) |
+| 6 | #330 | main | `ao/my-edotmw-82/gatherers-differ` | The crew is a civ's unit too (#269) |
+| 7 | #334 | main | `ao/my-edotmw-82/armour-is-role` | Armour class is a role, not a flavour (#268) |
+| 8 | #347 | #334 | `ao/my-edotmw-82/levies-are-sidegrades` | fix(roster): a levy is a sidegrade, and a duel is not the test (#267) |
+| 9 | #328 | main | `ao/my-edotmw-82/morale-scales` | Morale is a fraction of the squad, not a count of men (#266) |
+| 10 | #257 | main | `ao/my-edotmw-82/fortifications-frighten` | A fortification frightens men: no morale recovery under fire (#218) |
+| 11 | #297 | main | `ao/my-edotmw-82/surrender` | A player may concede (#279) |
+| 12 | #336 | main | `ao/my-edotmw-82/civ-knobs` | Four more knobs, and every one has a caller (#270) |
 
 Cross-chain file collisions *inside* this wave, so the second of each
 pair rebases:
@@ -548,9 +551,15 @@ They override the per-PR table below.
 
 ### #243 vs #324 — the formation grants (#309, issue #360)
 
-**#324 owns the set.** A make-main-green PR should not carry design; the
-dedicated PR with the decision entry and the art-tied per-unit reasoning
-does. Agreed by both authors 2026-08-28.
+**ARBITRATED 2026-08-28 (orchestrator): #324 keeps the grants and
+#243's four are superseded.** A make-main-green PR should not carry design;
+the dedicated PR with the decision entry and the art-tied per-unit
+reasoning does. Both authors agreed the verdict; the arbitration settled
+the implementation.
+
+Implemented as a MERGE-ORDER resolution — **#243's branch is not
+touched** — and **#324 moves to Wave 1, immediately after #243**, so the
+undecided union does not sit in `main` between them.
 
 **The resolution is TWO EXPLICIT DELETIONS plus one expected conflict —
 not "resolve the conflict #324's way".** That phrasing reaches one file of
@@ -569,11 +578,16 @@ declared-and-unread shape one level up.)
 | `gravesworn_spearmen` | — | `shield_wall` | no → **delete** |
 | `stoneblood_heavy` | — | `testudo` | no → **delete** |
 
-#243 drops **only** the last two, so it keeps two `shield_wall` grantees
-and stays green at its own merge point — no red window, and #324 need not
-move wave. Verified end to end: #243 with the two dropped is 5/5 on
-`test_fighting_styles`; merging #324 after conflicts on `emberdeep_heavy`
-alone; the final set is exactly #324's three.
+**So the resolution is three actions, not one: take #324's side on
+`emberdeep_heavy`, AND delete the `formations` line from
+`gravesworn_spearmen` and from `stoneblood_heavy`.** Those two are not a
+conflict and git will not offer them — whoever merges #324 removes them
+deliberately. "Take #324's side" alone leaves the union of five standing.
+
+Verified end to end on a scratch merge: with those two removed, merging
+#324 conflicts on `emberdeep_heavy` alone and the final granted set is
+exactly #324's three. `main` is green across the pair — #243 carries
+grants at its own merge point either way, so there is no red window.
 
 Worth knowing after it lands: the guard counts **`shield_wall` grantees
 only**, and there is no `testudo` grantee guard at all — testudo ends with

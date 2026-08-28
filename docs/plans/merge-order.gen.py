@@ -65,16 +65,20 @@ DASH = u'—'
 ARROW = u'→'
 
 WAVES = [
-    (u"Wave 1 %s make main green" % DASH, [222, 243, 335, 294, 273, 345],
+    (u"Wave 1 %s make main green" % DASH, [222, 243, 324, 335, 294, 273, 345],
      "Blocking, and strictly in this order: #243 is stacked on #222, and "
      "#273/#294/#335/#345 are all stacked on #243. Nothing else in the queue can "
-     "be tested honestly until #243 lands."),
+     "be tested honestly until #243 lands. **#324 is moved here from Wave 3 by "
+     "the #360 arbitration** -- it is data plus tests with no dependencies, and "
+     "landing it immediately after #243 keeps the undecided union of formation "
+     "grants out of `main`. See the Rulings section: its merge is three actions, "
+     "not one."),
     (u"Wave 2 %s low-conflict singles" % DASH,
      [265, 238, 226, 232, 235, 237, 234, 251, 248, 255, 322],
      "Independent chains of one, each touching at most one hot file. Merge in any "
      "order; they exist to bank reviews and shrink the queue."),
     (u"Wave 3 %s the balance / civ cluster (my-edotmw-82)" % DASH,
-     [221, 252, 260, 261, 321, 324, 330, 334, 347, 328, 257, 297, 336],
+     [221, 252, 260, 261, 321, 330, 334, 347, 328, 257, 297, 336],
      u"Mostly roster `.tres` and tests. #334 must precede #347 (stacked) and #222 "
      u"must already be in (#252 is stacked on it)."),
     (u"Wave 4 %s playtest and assessment docs" % DASH, [233, 293, 299],
