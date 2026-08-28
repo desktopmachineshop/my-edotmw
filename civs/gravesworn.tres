@@ -6,7 +6,8 @@
 script = ExtResource("1_civ")
 id = &"gravesworn"
 display_name = "Gravesworn"
-summary = "The cheapest army in the game and the only one that never runs. Brittle, slow, fearless hordes that fight to the last — and one horror engine."
+summary = "The cheapest army in the game and the only one that never runs. Brittle, slow, fearless hordes that fight to the last â€” and one horror engine."
+signature_unit = &"shades"
 colour = Color(0.72, 0.74, 0.62, 1)
 starting_food = 280
 starting_wood = 140
