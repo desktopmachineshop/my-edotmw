@@ -1,3 +1,50 @@
+**The quadratic in the client's frame is gone**
+(`D-20260828-the-jostle-looks-where-the-men-are`, #262). The cross-squad
+jostle walked every squad the match had ever drawn, for every STANDING
+squad — so the frame got worse exactly when the armies arrived.
+`DrawnIndex` is a uniform grid over the men each squad was drawn at;
+same predicate, same men, pruned every frame.
+
+Shipped map, native, **Intel Iris Xe**, 90 frames per row:
+
+| squads | drawn squads | jostle before | after | frame cpu before | after |
+|---|---|---|---|---|---|
+| 100 | 63 | 1.75 ms | **0.29 ms** | 27.98 | 12.26 |
+| 250 | 155 | 8.99 ms | **0.91 ms** | 65.92 | 29.75 |
+| 500 | 321 | 30.22 ms | **2.33 ms** | 126.72 | 62.65 |
+| 1000 | 630 | 152.43 ms | **6.10 ms** | 387.51 | 118.65 |
+
+**25x at 630 drawn squads; 2.3 fps to 8.3.**
+
+- **Read the ratio, not the absolutes.** Those ladders are hours apart on
+  a shared host and `derive` — which this did not touch — fell 71.3 to
+  30.3 ms on its own. Against that phase the jostle went **2.14 → 0.201
+  (10.6x)**, and the SHAPE is the result: before, jostle/derive *doubled*
+  every rung (0.21 → 0.51 → 1.00 → 2.14); after it is nearly flat (0.088
+  → 0.201), drifting up only because a fixed camera holding more squads
+  genuinely puts more men near each other.
+- **Same men, proved by the mechanism from the PR before it**:
+  `just bench-check` reports `STALE render_path` and **no COUNT lines**.
+  Every gated count is identical; only how neighbours are found changed.
+- **Not `disk_offsets`, and that is deliberate.** These are DRAWN
+  positions, which since D-20260818 are lattice copies: normalising them
+  onto the torus would merge what the renderer keeps separate. The grid
+  indexes the space the predicate is written in.
+- **Not `combat.gd`'s bucket map either** — checked first. That is
+  `cell -> squad ids` over a `SquadSim`, server-only (D-024). Same shape,
+  no shared data, no shared coordinate system.
+- **Two deliberate behaviour changes**: stale squads are dropped (the old
+  dictionary was never pruned, so a culled squad went on shoving its
+  neighbours), and neighbour order is now ascending squad id rather than
+  whatever order squads were first drawn in — one fewer way for two
+  clients to differ.
+- **The mistake in the middle is the interesting one.** Sizing buckets
+  lazily at first query re-bucketed every record on every query — the
+  quadratic rebuilt inside its own fix, measured at 152 → **188** ms
+  before the flag came out. The ladder is what caught it.
+
+---
+
 **Render cost has a recorded baseline now, and nothing has to remember to
 re-measure** (`D-20260828-render-cost-has-a-recorded-baseline`, #286).
 #229 was a 3x regression found months late by a human playing; #240 then

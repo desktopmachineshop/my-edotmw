@@ -1132,6 +1132,10 @@ func _refresh_squads() -> void:
 	var offsets := _state.space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
 
+	# Last frame's drawn men are gone: what is not re-`put` below is not
+	# on screen, and D-20260821's jostle is about men who ARE (#262).
+	_drawn.begin()
+
 	# The fallen, before the living: casualty events recorded this frame
 	# become corpses at the slots the restamp is about to vacate
 	# (D-20260819-a-casualty-is-visible), and the falls still playing get
@@ -1267,19 +1271,13 @@ func _refresh_squads() -> void:
 		var speed := _state.squad_speed(squad_id, _now)
 		var neighbours := PackedVector3Array()
 		if speed <= MOVING_SPEED_EPSILON:
-			var own_at := centre + offset
-			for other_id in _drawn_cache:
-				if other_id == squad_id:
-					continue
-				var record: Dictionary = _drawn_cache[other_id]
-				if (record["centre"] as Vector3).distance_to(own_at) \
-						> world_radius + float(record["radius"]) + 1.0:
-					continue
-				var men: PackedVector3Array = record["men"]
-				for k in range(men.size()):
-					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() \
-							<= world_radius + 1.0:
-						neighbours.append(men[k])
+			# Through the index, not by walking every squad ever drawn
+			# (#262): that walk was quadratic in drawn squads and 39% of
+			# the frame at 1,000 of them, and it fired for squads that are
+			# STANDING — which is when the battle has started. Same men,
+			# same predicate; only how they are found changed.
+			neighbours = _drawn.neighbours_of(
+				squad_id, centre + offset, world_radius)
 
 		# Everything from here to the MultiMesh is `SquadRender.frame`
 		# (#240) — the duel pass, the static-target deal, the building and
@@ -1322,8 +1320,8 @@ func _refresh_squads() -> void:
 		})
 		var decorated: Array[Transform3D] = drawn_render["transforms"]
 		_static_deal[squad_id] = drawn_render["deal"]
-		_drawn_cache[squad_id] = {"men": drawn_render["drawn_men"],
-			"centre": centre + offset, "radius": world_radius}
+		_drawn.put(squad_id, centre + offset, world_radius,
+			drawn_render["drawn_men"])
 		unit.set_slot_transforms(decorated)
 
 		# Per-man cadence from the motion layer's own measurements
@@ -3275,9 +3273,11 @@ const ORDER_MARK_LIFT := 0.08
 # of hopping along the wall as his slot drifts. Per-soldier render
 # memory — the amendment's territory. squad -> {"key", "paired"}
 var _static_deal := {}
-# Last frame's drawn men per squad, for the cross-squad jostle:
-# squad -> {"men": PackedVector3Array, "centre": Vector3, "radius": float}
-var _drawn_cache := {}
+# Last frame's drawn men, indexed for the cross-squad jostle (#262).
+# Bounded to the squads DRAWN — the dictionary this replaces was never
+# pruned, so the jostle walked every squad the match had ever drawn
+# rather than the ones on screen.
+var _drawn := DrawnIndex.new()
 
 ## Every known building's box, resolved ONCE per frame — canonical
 ## position, half extents, yaw, owner. The first version resolved defs
@@ -9172,7 +9172,7 @@ func _teardown_match() -> void:
 		_order_drag_marks = null
 	_order_press = Vector2.INF
 	_static_deal.clear()
-	_drawn_cache.clear()
+	_drawn.begin()
 	_lod_tier.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
