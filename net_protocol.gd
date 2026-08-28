@@ -73,7 +73,15 @@ const C2S_ORDER_STANCE := 37
 ## NOTHING else — the destination is the server's to choose, repeatedly,
 ## which is the whole point of the order. Shaped like ORDER_STOP for that
 ## reason rather than like ORDER_MOVE.
-const C2S_ORDER_EXPLORE := 39
+## 41, not 39. Three PRs each took 39 off `main` — surrender (#297),
+## this, and research (#225) — because each saw 39 free and none could
+## see the others (#362). Surrender keeps it (first in the published
+## merge order); this moved.
+##
+## When #362's registry lands this becomes `OPCODES["C2S_ORDER_EXPLORE"]`
+## and the literal goes away entirely; the reservation is already
+## recorded there so nothing can take 41 in the meantime.
+const C2S_ORDER_EXPLORE := 41
 
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
