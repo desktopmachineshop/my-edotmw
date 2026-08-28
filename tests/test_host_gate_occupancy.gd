@@ -40,33 +40,54 @@ func _repo() -> String:
 	return ProjectSettings.globalize_path("res://").rstrip("/")
 
 
+## Write a file, contents exactly as given.
+##
+## `FileAccess`, not `echo` through the shell, and that is the whole
+## reason this helper exists. A fixture built by echoing into a file
+## crosses GDScript, `OS.execute` and bash, and the quoting does not
+## survive: the stub below came out as `[ $1 = ps ]` — an unquoted `$1`
+## that errors with no argument and prints nothing, which looks exactly
+## like a gate that never asked docker anything. Godot writes bytes.
+func _write(path: String, text: String) -> void:
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(handle, "could not write the fixture %s" % path)
+	if handle != null:
+		handle.store_string(text)
+		handle.close()
+
+
 ## A throwaway gate directory with a stubbed `docker` in front of it.
 ##
 ## `running` is the fixture the stub prints for `docker ps`, so a test
 ## changes what is running on this machine by writing one file.
-##
-## Everything here is built with `echo >>` rather than a heredoc: these
-## strings cross GDScript, `OS.execute` and bash, and a multi-line
-## literal is three chances to lose an escape in a fixture whose
-## wrongness would look exactly like the bug under test.
 func _sandbox(tag: String) -> String:
 	var dir := ProjectSettings.globalize_path("user://gate-%s" % tag)
-	var made := _bash("rm -rf '%s' && mkdir -p '%s/bin' '%s/gate' && : > '%s/running'"
-		% [dir, dir, dir, dir])
+	var made := _bash("rm -rf '%s' && mkdir -p '%s/bin' '%s/gate'" % [dir, dir, dir])
 	assert_eq(int(made["code"]), 0, "could not make the sandbox: %s" % made["out"])
+	_running(dir, "")
 
+	# The stub does not test its argument, because it does not need to:
+	# the gate's only docker verb is `ps`, and `test_host_budget.gd`'s
+	# allowlist is what keeps that true. `${X:-/dev/null}` is what stops
+	# `cat` reading stdin and hanging if the variable is ever unset.
 	var stub := dir + "/bin/docker"
-	var lines := [
-		"#!/usr/bin/env bash",
-		"[ \"$1\" = ps ] || exit 0",
-		"cat \"$FAKE_PS\" 2>/dev/null || true",
-	]
-	var script := "rm -f '%s'" % stub
-	for line in lines:
-		script += " && echo '%s' >> '%s'" % [line, stub]
-	script += " && chmod +x '%s'" % stub
-	var wrote := _bash(script)
-	assert_eq(int(wrote["code"]), 0, "could not write the docker stub: %s" % wrote["out"])
+	_write(stub, "#!/bin/sh\ncat ${FAKE_PS:-/dev/null} 2>/dev/null\nexit 0\n")
+	var wrote := _bash("chmod +x '%s'" % stub)
+	assert_eq(int(wrote["code"]), 0, "could not make the stub executable: %s" % wrote["out"])
+
+	# Prove the stub answers BEFORE anything relies on it. A fixture that
+	# silently reports nothing looks exactly like the gate failing to ask,
+	# and three of the seven tests below expect an empty answer — so
+	# without this, a broken stub reads as "mostly passing" instead of
+	# "the harness is not running". Same rule as the gate's own vacuity
+	# guards.
+	_running(dir, "edotmw-probe")
+	var probe := _bash(("PATH=\"%s/bin:$PATH\" FAKE_PS='%s/running' "
+		+ "docker ps --filter 'name=^edotmw-' --format '{{.Names}}' 2>&1") % [dir, dir])
+	assert_true(String(probe["out"]).contains("edotmw-probe"),
+		("the docker stub does not answer in this environment — dir '%s', "
+		+ "exit %d, output '%s'") % [dir, int(probe["code"]), probe["out"]])
+	_running(dir, "")
 	return dir
 
 
@@ -76,25 +97,14 @@ func _sandbox(tag: String) -> String:
 ## `kill -0`, and a pid just killed could be recycled between writing the
 ## lock and reading it.
 func _dead_holder(dir: String, instance: String) -> void:
-	var path := "%s/gate/medium.999999.%s.lock" % [dir, instance]
-	var fields := [
-		"pid=999999", "class=medium", "cost_mb=1300",
-		"instance=" + instance, "label=quick-test", "started=1",
-	]
-	var script := "rm -f '%s'" % path
-	for f in fields:
-		script += " && echo '%s' >> '%s'" % [f, path]
-	var wrote := _bash(script)
-	assert_eq(int(wrote["code"]), 0, "could not write the holder: %s" % wrote["out"])
+	_write("%s/gate/medium.999999.%s.lock" % [dir, instance],
+		"pid=999999\nclass=medium\ncost_mb=1300\ninstance=%s\nlabel=quick-test\nstarted=1\n"
+		% instance)
 
 
 ## What `docker ps` will report. One name, or "" for a quiet machine.
 func _running(dir: String, name: String) -> void:
-	var script := ": > '%s/running'" % dir
-	if name != "":
-		script += " && echo '%s' >> '%s/running'" % [name, dir]
-	var wrote := _bash(script)
-	assert_eq(int(wrote["code"]), 0, "could not write the container fixture")
+	_write(dir + "/running", "" if name == "" else name + "\n")
 
 
 func _gate(dir: String, args: String) -> Dictionary:
