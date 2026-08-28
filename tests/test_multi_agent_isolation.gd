@@ -53,12 +53,24 @@ func test_every_compose_invocation_is_scoped_to_this_instance() -> void:
 
 	# Explicit container names collide across worktrees unless prefixed
 	# with the per-instance project.
+	#
+	# Scanned PER LINE, and only on lines that actually invoke docker.
+	# `--name` is not a docker-only token: `art/attach_kit.py --name
+	# "{{TARGET}}"` hands a .blend id to a Python script, and the
+	# whole-file scan matched THAT — leaving this guard red on `main` for
+	# something that is not an isolation hole at all (#209). The claim
+	# here is about CONTAINERS, so it has to ask about containers: a
+	# guard that cries wolf gets muted, and the next person to genuinely
+	# hardcode a container name would read the red as the known noise.
 	var name_re := RegEx.new()
 	name_re.compile("--name (?!\\{\\{compose_project\\}\\})\\S+")
-	offence = name_re.search(justfile)
-	assert_null(offence,
-		"a named container is not prefixed with {{compose_project}}: %s"
-		% (offence.get_string() if offence != null else ""))
+	for line in justfile.split("\n"):
+		if not line.contains("docker"):
+			continue
+		offence = name_re.search(line)
+		assert_null(offence,
+			"a named container is not prefixed with {{compose_project}}: %s"
+			% (offence.get_string() if offence != null else ""))
 
 	# The stray-container sweep in `down` must be scoped the same way, or
 	# it force-removes other agents' one-off containers.

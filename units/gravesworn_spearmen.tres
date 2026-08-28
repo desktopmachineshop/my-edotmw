@@ -17,6 +17,7 @@ attack_interval = 1.1
 rout_threshold = 0.0
 morale_loss_per_casualty = 0.0
 armour_class = "infantry"
+formations = Array[StringName]([&"shield_wall"])
 bonus_vs = {
 "cavalry": 1.6
 }
