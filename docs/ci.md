@@ -89,6 +89,39 @@ believes they know what it says.** Two of the day's five misreadings were
 of guard text that was not unclear and was not being read — it was being
 confirmed against what the reader already thought it said.
 
+### "Is this failure mine?" — compare the FIGURES, not the test name
+
+A PR's checks run on the **merge commit**, so a red base makes every open PR red
+and hands each author a failure that is not theirs, carrying an instruction to
+fix and push. That is not hypothetical: it happened to #273 and to this PR, and
+in one case a documentation-only change was told to fix a combat regression.
+
+There is a one-comparison answer, and it is free (88's, from the same day's
+cluster):
+
+> A failure inherited from your base reproduces its **numbers exactly** — the
+> same data and the same seed produce the same arithmetic. A failure your change
+> caused, or interacts with, will not.
+
+#273's margins were **−0.67 and −0.68**, byte-identical to the run on `main`
+fifteen minutes earlier. That settled the question before any bisect.
+
+Three conditions, because the rule is sharp only inside them:
+
+- **the base must itself be red on the same test.** If the base is green there
+  are no base figures to match, and identical-to-nothing proves nothing;
+- **the measurement must be deterministic.** Here it is by construction —
+  `test_counters_are_felt.gd` sets `sim.combat_seed` and sweeps fixed seeds
+  (`1000 + s * 7919`). Against a fixture that is timing- or host-dependent the
+  comparison says nothing in either direction;
+- **strength scales with how many independent figures match.** One margin
+  agreeing to two decimals could be luck; two, from different pairings, is not.
+
+And its limit, which its author states rather than leaving to be found: **it
+works only where a failure carries a measurement.** A bare assertion — a missing
+key, a vacuous-table guard — has no figures to compare, and there the question
+falls back to reading the log and checking the base's own history.
+
 ## The workflows
 
 | workflow | when | runtime | what it is for |
