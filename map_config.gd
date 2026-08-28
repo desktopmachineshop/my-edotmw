@@ -24,6 +24,25 @@ class_name MapConfig
 @export var height: int = 64
 @export var hex_size: float = 1.0
 
+## Which `/terrain` preset this map's ground is generated from. EMPTY —
+## every map that shipped before this one — means "whatever the settings
+## default to", so nothing about `default`, `huge` or `ladder` moves.
+##
+## The file header above says terrain generation is out of scope and that
+## its parameters "join this resource when they land". This is the
+## smallest form of that: not the parameters, just WHICH preset, because
+## a map's identity and its terrain cannot be separated and the naval gate
+## is what proved it. `maps/isles.tres` exists to make the AI want a navy;
+## selected by dimensions alone it generated a CONTINENTS world at isles
+## dimensions — one landmass, `wants_navy = 0` correctly, and a gate that
+## passes green having tested nothing. That is D-076's lesson exactly: a
+## gate that cannot fire is a gate that lies.
+##
+## `--preset=` still overrides this, because `server.gd` applies the
+## override first and then resolves whatever `_settings.preset` ends up
+## as — so a dev can still point any map at any ground.
+@export var preset: StringName = &""
+
 # How many squads each connecting player is given at spawn. M3's cut line
 # is ~12-15 per player (D-015); full scale is ~50 (D-018).
 @export var squads_per_player: int = 12
