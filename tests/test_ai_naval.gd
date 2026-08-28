@@ -514,7 +514,16 @@ func _ai_on_a_coast(builder_at: Vector2i, sea_columns: Array) -> Dictionary:
 		var wet := sea_columns.has(space.from_index(i).x)
 		passable[i] = 0 if wet else 1
 		navigable[i] = 1 if wet else 0
-	ai.state.terrain_passable = passable
+	# THE AI'S OWN ARRAYS, not `state.terrain_passable`.
+	#
+	# The first version of this fixture set `ai.state.terrain_passable`,
+	# which is filled by `client.gd` and `bench_render.gd` and by NOTHING
+	# an AI runs — so the test handed the code under test an input it
+	# never has in a real match, and passed while every AI in every match
+	# asked `is_shore` about a map with no land in it. A test that
+	# constructs its own input is testing the constructor; here it was
+	# constructing an input production cannot produce.
+	ai._terrain_passable = passable
 	ai._navigable = navigable
 
 	var sent := []
@@ -563,7 +572,41 @@ func test_the_dock_still_goes_on_the_shore() -> void:
 		found = true
 		# The wire carries a cell INDEX, not a coordinate.
 		var order := NetProtocol.decode_order_build(packet)
-		assert_true(TerrainGen.is_shore(space, ai.state.terrain_passable,
+		assert_true(TerrainGen.is_shore(space, ai._terrain_passable,
 			ai._navigable, int(order["cell"])),
 			"the dock site must be a shore cell, not merely a reachable one")
 	assert_true(found, "premise: an order was issued to inspect")
+
+
+func test_the_ai_derives_its_own_ground_rather_than_the_renderers() -> void:
+	# THE DEFECT THIS CATCHES, and it is the one the other dock tests
+	# could not: `state.terrain_passable` is assigned by `client.gd` and
+	# `bench_render.gd` and by nothing an AI runs, so it is EMPTY for
+	# every AI in every match. `_raise_dock` read it, asked `is_shore`
+	# about a map with no land in it, found no coast anywhere and never
+	# built a dock — with the site search, the affordability, the builder
+	# and the investment all correct.
+	#
+	# Measured before the fix, at a 1200 s cap on maps/isles.tres: seat
+	# 1000 reached 40 squads and 9 buildings with wants_navy=1 and
+	# naval_step=dock, and docks=0.
+	#
+	# So this asserts the AI fills its OWN array from the replicated
+	# settings, and does not read the renderer's.
+	var source := _read_file("res://ai_player.gd")
+	assert_false(source.contains("state.terrain_passable,"),
+		"ai_player must not ask is_shore about the renderer's passability "
+		+ "array — an AI never fills it, so the answer is always 'no land'")
+	assert_true(source.contains("_terrain_passable = terrain.passability("),
+		"the AI derives its own ground beside _navigable, from the "
+		+ "replicated MapSettings both already come from")
+
+
+func _read_file(path: String) -> String:
+	var handle := FileAccess.open(path, FileAccess.READ)
+	assert_not_null(handle, "%s must be readable" % path)
+	if handle == null:
+		return ""
+	var text := handle.get_as_text()
+	handle.close()
+	return text
