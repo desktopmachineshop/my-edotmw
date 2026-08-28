@@ -105,9 +105,22 @@ run.
 ## Audio is data
 
 `/audio/*.tres`, in D-047's spirit, and a test fails if any `.gd` names a
-`.wav`. A civ may override an entry later by shipping a resource with the
-same `event`; nothing in code has to learn about it, exactly as no script
-names a civ today.
+`.wav`.
+
+**A civ cannot override a cue, and an earlier draft of this entry said it
+could.** Correcting it here rather than leaving it: `SoundDef` has no
+`civ` field and `SoundRoster.by_event()` takes no civ, so there is no
+per-civ resolution of any kind — unlike `UnitRoster.for_civ_archetype`,
+which is what that claim was pattern-matching against. A second `.tres`
+with the same `event` is not selected for anybody; it is silently
+IGNORED, first-in-sorted-order winning.
+
+What the table actually buys today is the thing that matters for #344:
+sound is DATA and no script names a file. Per-civ audio is a real
+extension and a small one — a `civ` field and a two-argument lookup — but
+it is not here, and a decision entry asserting an invariant is not
+evidence the invariant holds (D-058/D-065, which this entry had just
+managed to repeat).
 
 ## The generator lives in `audio/`, not under `art/`, and that cost a run
 
@@ -186,9 +199,10 @@ Named so nobody reads their absence as an oversight:
 - **A settings SCREEN.** The buses and persistence exist
   (`AudioDirector.save_settings` / `load_settings`, `user://audio.cfg`);
   a slider in the menu is UI work and wants the HUD layout rules.
-- **Civ overrides.** The schema supports them (`event` is the key); no
-  civ ships one yet, so the mechanism is unexercised and should be
-  treated as untested until one does.
+- **Civ overrides. Not supported at all** — see the correction above.
+  There is no `civ` field and no per-civ lookup; a duplicate `event` is
+  ignored rather than resolved. Adding it is a field plus a
+  two-argument lookup, and nothing shipped depends on its absence.
 
 ## Revisit trigger
 

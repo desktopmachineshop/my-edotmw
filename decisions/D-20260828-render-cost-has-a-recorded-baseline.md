@@ -136,3 +136,60 @@ A count that is deterministic today becoming host-dependent — the
 viewport size is the one to watch, since the cull reads it and CI
 runners will not share this machine's window. If that happens the fix is
 to pin the viewport in the benchmark, not to widen the gate.
+
+---
+
+**Amendment, 2026-08-28 — one slot per ADAPTER, because a single file made
+recording on a second machine destructive** (#285).
+
+`bench/baseline.json` was one file. A frame time is a statement about
+hardware — this entry's own first rule — so recording on different
+hardware would have **overwritten the numbers every figure in
+`docs/status/client-render.md` is quoted against**, silently, in a commit
+whose message says "recorded". #285 books scarce hardware time on a
+discrete GPU against exactly that file, so the trap was live rather than
+hypothetical.
+
+Baselines are now `bench/baseline-<adapter slug>.json`, and the existing
+file **moved** into the Intel Iris Xe slot rather than being re-recorded:
+a pure rename, 0 insertions, 0 deletions, so the history those figures
+are compared against is the same bytes.
+
+- **`bench-record` no longer names the file.** It passes `--record=1` and
+  the RUN derives the slot from the adapter it just measured on, because
+  that is the only thing that knows. A recipe naming the file would be
+  naming hardware it has not asked about.
+- **`bench-check` compares a run against ITS OWN slot**, chosen from the
+  adapter the run reports. Where no slot matches — every first run on new
+  hardware, #285 included — **the counts still gate**, against whichever
+  slot exists, because a count is a property of the map, the roster and
+  the render path and has nothing to do with the GPU. The milliseconds
+  are not compared and the report says so, twice: once for the missing
+  slot and once from `compare`'s existing cross-hardware note.
+- **`bench-stale` reads every slot**, since staleness is a question about
+  the TREE: one machine's numbers can predate a roster change while
+  another's do not, and reading a single file would call the tree fresh
+  on the strength of whichever it happened to open.
+- **The slug is ugly and injective on purpose.** "Intel(R) Iris(R) Xe
+  Graphics" becomes `intel-r-iris-r-xe-graphics`; stripping `(R)` would
+  be a rule about one vendor's punctuation, and two adapters differing
+  only in what it stripped would then share a slot — the failure this
+  exists to prevent, arriving through the fix. A test enumerates six real
+  adapter names and asserts no two collide.
+
+**This closes the trap structurally rather than by a flag somebody has to
+remember** — a different adapter physically cannot write another's file —
+which is the same argument #359 settled for the artifact-writer rule.
+
+Observed to fail before being trusted, all three:
+
+| perturbation | what happened |
+|---|---|
+| a slot whose FILENAME disagrees with its own `adapter` field | red: *"must be the slot its own adapter name resolves to"* |
+| a run from hardware with no slot | counts compared and gated, milliseconds refused, both said out loud |
+| the same run with one COUNT moved | **exit 1** — foreign hardware does not weaken the gate |
+
+And the end-to-end one: `just bench-record 100 30` wrote
+`bench/baseline-intel-r-iris-r-xe-graphics.json` and touched nothing
+else. (That temporary recording was restored to the committed bytes
+afterwards — a 100-squad, 30-frame run is not a baseline.)

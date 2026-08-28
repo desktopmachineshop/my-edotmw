@@ -25,9 +25,29 @@ to be loaded.
 the same determinism argument, over `_navigable` instead of `_passable`.
 
 **One `dock` def serves all six civs.** It `produces` the ARCHETYPES
-`transport` and `warship`; the server resolves each against the acting
-player's civ (D-047), which is how one `barracks` already fields six
-civs' troops.
+`transport`, `warship` **and `warboat`**; the server resolves each
+against the acting player's civ (D-047), which is how one `barracks`
+already fields six civs' troops.
+
+**Amended 2026-08-28 to describe what shipped (#323/#314).** This said
+`transport` and `warship`, two archetypes, and that D-047's resolution
+"does the rest". It does not, and the roster is why: **stoneblood and
+windmarch field a `warboat` and neither a warship nor a transport** — a
+combined attack-transport (`transport_capacity = 2`), which is exactly
+the alternative #301's own title allows. With two archetypes listed,
+those two civs resolve NOTHING from a dock.
+
+Worth recording rather than quietly widening the list, because this fact
+has already cost a defect chain. It is why `BotBuildPlan._resolve` was
+narrowed in #314 so a caller naming a real civ is never handed another
+civ's hull — the old unconditional fallback offered a warboat civ a
+third civ's warship. That narrowing then treated `CivRoster.RANDOM` as a
+real civ, and mid-match seats say "random", so every load-test bot
+silently stopped asking to produce anything at all (#376).
+
+**A dock's `produces` list is per-ARCHETYPE and the roster is not
+uniform.** Anything that assumes every civ fields the first entry is
+wrong here, and was.
 
 ## Rationale
 
