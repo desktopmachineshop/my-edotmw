@@ -91,3 +91,34 @@ player is meant to FIND (a saved game — D-092 says there are none; a log
 bundle for a bug report; a screenshot key). That is a different question
 — where a user's files live and how they are surfaced in-game — and it
 should be decided as one rather than by extending this mapping.
+
+---
+
+**Amendment, 2026-08-28 — the rule met its first outside arrival, and the
+guard is why anybody knows** (#359).
+
+`playtest_seam_shot.gd` (#234) was written on another branch, at the same
+time as this rule, by somebody who could not see it — and this rule was
+written by somebody who could not see that writer. **Both PRs are green
+alone; the union is red**, in either merge order, and **git reports no
+conflict at all** because the rule and its violation are in different
+files added by different workers.
+
+That is the shape this rule was built to survive, and it did: the scan
+named the file, the fix was the same one line every other writer took,
+and it went into the writer's own PR
+(`ao/my-edotmw-87/seam-shot-conforms`, merging this branch in so the
+class exists where the writer lives).
+
+Two things worth keeping from it:
+
+- **The failure message now names the fix, not just the rule.** Whoever
+  meets this guard is by construction somebody who has never read the
+  file that defines it, and "you must go through ArtifactPath" is a
+  sentence you can obey only if you already know how.
+- **A dev-only instrument conforms too, and that is deliberate.** A seam
+  shot never runs in an exported build, so the rule buys it nothing
+  directly; making it universal is what stops the next reader having to
+  decide whether their writer is one of the exempt ones. An exemption
+  list is a thing to remember, and this project's whole argument against
+  those is D-046 criterion 3's.
