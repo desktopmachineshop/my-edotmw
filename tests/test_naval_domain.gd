@@ -406,3 +406,49 @@ func test_the_default_movement_domain_is_inside_its_own_enum() -> void:
 	var id := sim.add_squad(def, 1, Vector2i(1, 1))
 	assert_eq(sim.tier_of(id), SquadSim.DOMAIN_GROUND,
 		"a default unit must start on the ground, whatever the string is spelled")
+
+
+func test_every_enum_member_maps_to_a_distinct_domain_constant() -> void:
+	# The other half of #367, and the one that also covers the duplicate
+	# `DOMAIN_*` block the integration merge produced.
+	#
+	# The domain vocabulary necessarily lives in two places — a string in
+	# the schema so a .tres reads as words, an integer in the sim so
+	# `_tier` stays a packed array. Nothing tied them together, so two
+	# chains declared the enum with different values and the schema log
+	# recorded both.
+	#
+	# This walks the EXPORTED ENUM'S OWN hint string, so it cannot go out
+	# of date with the schema, and asserts three things a divergence
+	# breaks: every member maps to a KNOWN constant, no two members map to
+	# the SAME one, and every constant the sim uses is reachable from some
+	# member. A chain that adds a domain to one side and not the other
+	# fails here, from inside itself.
+	var def := UnitDef.new()
+	var hint := ""
+	for property in def.get_property_list():
+		if String(property.get("name", "")) == "movement_domain":
+			hint = String(property.get("hint_string", ""))
+			break
+	assert_ne(hint, "", "movement_domain must be an exported enum")
+
+	var known := [SquadSim.DOMAIN_GROUND, SquadSim.DOMAIN_WATER]
+	var seen := {}
+	for member in hint.split(","):
+		var domain := SquadSim.domain_from_name(member)
+		assert_true(known.has(domain),
+			"enum member %s maps to %d, which is not a domain a unit can be in" % [
+				member, domain])
+		assert_false(seen.has(domain),
+			"%s and %s both map to domain %d" % [
+				member, seen.get(domain, ""), domain])
+		seen[domain] = member
+
+	assert_eq(seen.size(), known.size(),
+		"every unit domain must be reachable from the enum: %s covers %s" % [
+			hint, seen.values()])
+	# The wall-top domain is deliberately NOT in that list: it is a place a
+	# squad CLIMBS to (D-076), never a property of its def, so no enum
+	# member should reach it.
+	assert_false(seen.has(SquadSim.DOMAIN_WALL_TOP),
+		"no unit is BORN on a wall — the wall-top domain is climbed to")

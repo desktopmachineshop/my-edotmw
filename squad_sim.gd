@@ -368,6 +368,43 @@ const DOMAIN_GROUND := 0
 const DOMAIN_WALL_TOP := 1
 const DOMAIN_WATER := 2
 
+## THE map from `UnitDef.movement_domain`'s string to the constant above,
+## and the reason it is a function rather than an inline comparison.
+##
+## The domain vocabulary lives in two places by necessity — a string in
+## the schema so a `.tres` reads as words, an integer in the sim so
+## `_tier` stays a packed array — and #367 is what happens when nothing
+## ties them together: two chains declared the enum with DIFFERENT VALUES
+## ("ground" here, "land" in the design PR) and the schema log recorded
+## both, because each appended without seeing the other. A `.tres`
+## authored against the losing spelling loads, is not in the enum, and
+## reads as not-water: the hull walks.
+##
+## The integration merge then produced the same failure one level up — a
+## DUPLICATED `DOMAIN_*` block, because two chains each defined it.
+##
+## So: one mapping, in one place, with `tests/test_naval_domain.gd`
+## walking the exported enum's own hint string and asserting every member
+## maps to a distinct known constant. A spelling that is not in the enum,
+## an enum member with no constant, and two members colliding on one
+## constant are all caught from inside whichever chain introduced them,
+## without that chain having to know about any other.
+##
+## Anything that needs a squad's domain from a def calls THIS. Two callers
+## did the comparison inline before, and two is how a third gets written.
+static func domain_from_name(name: String) -> int:
+	match name:
+		"water":
+			return DOMAIN_WATER
+		_:
+			# Ground is the default for every unit that predates ships, and
+			# for any value this function does not recognise: an unknown
+			# domain must beach a unit rather than float it, because a land
+			# squad drawn at sea is a bug somebody sees and a hull walking
+			# is one nobody does.
+			return DOMAIN_GROUND
+
+
 ## How far a mis-domained order is corrected before it simply lapses
 ## (naval 2.4). A shoreline is by definition within a cell or two of the
 ## other domain, so this only has to cover a genuine misclick — not a
@@ -889,7 +926,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	# decides its domain and the cell decides only whether an order is
 	# legal. Everything that predates ships is `ground`, which is 0 and
 	# exactly what this appended before.
-	_tier.append(DOMAIN_WATER if def.movement_domain == "water" else DOMAIN_GROUND)
+	_tier.append(domain_from_name(def.movement_domain))
 	_pending_tier_target.append(-1)
 	_pending_tier_tower.append(-1)
 	_pending_tier_destination.append(-1)
@@ -1632,7 +1669,7 @@ func _spawn_cell_near(buildings: BuildingSim, building: int,
 	# over `_navigable` is naval stage 2. Stage 3's claim is only that a
 	# hull APPEARS in water, which is what makes stage 2 something that can
 	# be looked at rather than inferred.
-	if produced != null and produced.movement_domain == "water":
+	if produced != null and domain_from_name(produced.movement_domain) == DOMAIN_WATER:
 		var launched := _launch_cell_near(buildings, building)
 		if launched.x >= 0:
 			return launched
