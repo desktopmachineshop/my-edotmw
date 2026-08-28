@@ -443,7 +443,11 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_destination.append(cell)
 	_alive.append(def.squad_size)
 	_owner.append(owner)
-	_speed.append(_cells_per_second(def))
+	# The owner's civ marches at its own pace (`CivDef.march_speed`,
+	# D-047, #270). Applied HERE because SquadSim already latches a
+	# squad's cells-per-second at creation, so an army-wide multiplier
+	# costs nothing per tick.
+	_speed.append(civ_effects(owner).march_rate(_cells_per_second(def)))
 	_shape.append(def.formation_shape)
 	_spacing.append(def.formation_spacing)
 	_facing.append(-1)

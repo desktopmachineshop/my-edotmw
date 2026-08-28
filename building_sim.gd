@@ -48,6 +48,10 @@ var _defs: Array[BuildingDef] = []
 var _health := PackedFloat32Array()
 var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
 var _destroyed := PackedByteArray()
+## Seconds this building takes to raise, for ITS owner's civ (#270).
+## Banked at placement rather than read off the def per tick, so the
+## progress a client draws and the progress the server keeps agree.
+var _build_time := PackedFloat32Array()
 var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 
 ## Player-assigned focus-fire target (a squad id), or -1 for "automatic —
@@ -208,9 +212,18 @@ func building_count() -> int:
 ## `offset` is the sub-cell displacement in WORLD units (D-096) — where
 ## inside `at` this structure actually stands. Zero means dead centre,
 ## which is what every non-wall building and every existing caller gets.
+## `build_time` is how long the OWNER'S CIV takes to raise this, resolved
+## by the caller (`CivDef.construction_time`, D-047) exactly as `enqueue`
+## already takes its production time -- and stored as REAL SECONDS for
+## the same reason: construction progress is replicated, and a multiplier
+## applied per tick would make the bar a client draws disagree with the
+## server. Negative means "the def's own time", which is every caller
+## that has no civ to ask.
 func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
-		builder: int = -1, facing: int = 0, offset: Vector2 = Vector2.ZERO) -> int:
+		builder: int = -1, facing: int = 0, offset: Vector2 = Vector2.ZERO,
+		build_time: float = -1.0) -> int:
 	var id := _cell.size()
+	_build_time.append(maxf(build_time if build_time >= 0.0 else def.build_time, 0.001))
 	_builder.append(builder)
 	_rally.append(-1)
 	_cell.append(space.index(at))
@@ -736,7 +749,8 @@ func advance_construction(dt: float) -> Array:
 	for i in range(_cell.size()):
 		if _destroyed[i] == 1 or _progress[i] >= 1.0:
 			continue
-		var build_time: float = maxf(_defs[i].build_time, 0.001)
+		# The OWNER'S civ's time, banked when the site was placed (D-047).
+		var build_time: float = _build_time[i]
 		_progress[i] = minf(_progress[i] + dt / build_time, 1.0)
 		if _progress[i] >= 1.0:
 			completed.append(i)
