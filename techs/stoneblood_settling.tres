@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"gather_rate"
+mode = "multiply"
+value = 1.12
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"carry_capacity"
+mode = "add"
+value = 3.0
+
+[resource]
+script = ExtResource("1")
+id = &"stoneblood_settling"
+display_name = "Scattered Hill-Clans"
+description = "The giants do not gather. The hill tribes gather for them, and the tribes must first be persuaded there is a hill worth holding."
+line = &"settling"
+civ = &"stoneblood"
+epoch = 1
+defining = true
+research_at = &"town_centre"
+requires = Array[StringName]([])
+cost_food = 350
+cost_wood = 200
+cost_gold = 0
+cost_stone = 0
+research_time = 60.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

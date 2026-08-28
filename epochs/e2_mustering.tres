@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="EpochDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://epoch_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+index = 2
+display_name = "The Mustering"
+verb = "field"
+summary = "A standing army becomes possible, and the counter triangle arrives whole."

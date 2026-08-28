@@ -27,6 +27,23 @@ class_name UnitDef
 ## more archetypes than armour classes.
 @export var archetype: StringName = &"militia"
 
+## The tech LINE that makes this unit producible, or empty for "always"
+## (`D-20260827-the-tree-is-the-ladder`). Names a LINE, never a tech id,
+## so one entry covers every civ's version of the tech exactly as
+## `built_by` covers every civ's version of a builder.
+##
+## Empty is the default and every `gatherers`, `general` and `levy` def
+## leaves it so: the opening does not change, and a build with no /techs
+## at all plays exactly as it did before the tree existed. That is D-070's
+## own safe-default reasoning ("an unaware .tres is free to keep"),
+## applied to a gate rather than to an epoch number.
+##
+## Deliberately the ONLY availability gate. D-070 also proposed
+## `UnitDef.epoch`; two gates on one question is one too many and the pair
+## would be free to disagree — the D-058/D-065 family, which this project
+## has now paid for four times. Epoch gates TECHS; techs gate this.
+@export var requires_tech: StringName = &""
+
 # Squad composition (D-005: squads are the atomic sim unit; D-018: full
 # scale target is ~40 soldiers/squad, ~50 squads/player).
 @export var squad_size: int = 40

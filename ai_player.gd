@@ -105,6 +105,7 @@ func update(now: float) -> void:
 	_scout_for_resources()
 	_found_town()
 	_raise_buildings()
+	_research(now)
 	_train()
 	_put_gatherers_to_work()
 	if not economy_only:
@@ -177,10 +178,18 @@ func _raise_buildings() -> void:
 func _wanted_buildings() -> Array:
 	var military := []
 	var support := []
-	for def in BuildingSim.all_defs():
+	# This civ's defs, not every def
+	# (`D-20260827-a-research-site-is-a-building`). The research sites are
+	# per-civ, so `all_defs()` would have this AI trying to raise five
+	# other civs' forges — and the server refusing each one, silently, on
+	# every think.
+	for def in BuildingSim.defs_for_civ(civ):
 		if def.id == &"town_centre":
 			continue
 		if not BuildingSim.can_build(def, &"gatherers"):
+			continue
+		# A building behind a tech is not a building it can want yet.
+		if not state.has_tech(def.requires_tech):
 			continue
 		if def.produces.size() > 0:
 			military.append(def)
@@ -397,6 +406,110 @@ func _train() -> void:
 
 ## Some archetype this civ actually fields, chosen from the roster rather
 ## than named here. A civ without cavalry trains whatever it does have.
+## How long the AI waits before re-offering a tech the server refused.
+##
+## A constant rather than a profile knob, for `FOUND_RETRY`'s reason: it
+## bounds a FAILURE, and a difficulty setting able to make an AI spam or
+## stop researching is a way to ship a broken opponent by data entry.
+const RESEARCH_RETRY := 12.0
+
+## line -> the time this AI may next offer it. Latched on the REFUSAL, not
+## on the send: a granted tech turns up in `state.techs` and drops out of
+## `available()` by itself, so success needs no flag at all. D-107's rule
+## — "latch on the effect, not the send" — with the effect being a tech
+## the AI can SEE it holds.
+var _research_retry := {}
+
+## Techs this AI has ordered and seen land. A metric, read off its own
+## ClientState rather than counted here, for the same reason.
+var techs_ordered: int = 0
+
+
+## Climb the tree (`D-20260827-the-tree-is-the-ladder`).
+##
+## Without this the AI is permanently in epoch 1: `requires_tech` gates
+## most of the roster, so an AI that never researched would field levies
+## and gatherers for ninety minutes against an opponent fielding its
+## signature. Every ladder number would then measure the AI not knowing
+## the tree existed — the shape of D-107, where ten minutes of nothing was
+## read as an AI weakness for a whole milestone.
+##
+## Priority is DEFINING first, then cheapest. Defining first is what makes
+## the AI a ladder opponent at all; cheapest-among-the-rest keeps it from
+## banking indefinitely toward one expensive branch while a cheap one sits
+## affordable.
+func _research(now: float) -> void:
+	if not state.welcomed or civ == &"":
+		return
+	var view := state.research_view()
+	var candidates := view.available(player, civ)
+	if candidates.is_empty():
+		return
+	candidates.sort_custom(func(a: TechDef, b: TechDef) -> bool:
+		if a.defining != b.defining:
+			return a.defining
+		if a.resource_points() != b.resource_points():
+			return a.resource_points() < b.resource_points()
+		# Ids, so two techs of equal price are considered in an order that
+		# reproduces — a replay of an AI match has to be that match.
+		return a.id < b.id)
+
+	for tech in candidates:
+		if float(_research_retry.get(tech.line, 0.0)) > now:
+			continue
+		if not _can_afford_tech(tech):
+			continue
+		var at := _research_site(tech.research_at)
+		if at < 0:
+			continue
+		send.call(NetProtocol.encode_order_research(at, String(tech.line)))
+		_research_retry[tech.line] = now + RESEARCH_RETRY
+		techs_ordered += 1
+		return
+
+
+## Can this AI pay for `tech` right now, given its profile's appetite?
+##
+## A defining tech only has to be affordable. Anything else has to be
+## affordable `1 / research_bias` times over, so a cautious profile keeps
+## a war chest and a relentless one spends it — a deterministic threshold
+## rather than a roll, because a replay has to reproduce (D-016).
+func _can_afford_tech(tech: TechDef) -> bool:
+	if state.wallet.size() < 4:
+		return false
+	var margin := 1.0
+	if not tech.defining:
+		margin = 1.0 / maxf(profile.research_bias, 0.05)
+	return float(state.wallet[0]) >= float(tech.cost_food) * margin \
+		and float(state.wallet[1]) >= float(tech.cost_wood) * margin \
+		and float(state.wallet[2]) >= float(tech.cost_gold) * margin \
+		and float(state.wallet[3]) >= float(tech.cost_stone) * margin
+
+
+## A finished building of `archetype` this AI owns, as a WIRE id, or -1.
+##
+## Reads the client's own building list, like everything else here does —
+## an AI knows what a client in its seat knows (D-051). `progress` at 1.0
+## is the client's own signal that a building is complete; asking the
+## server would be reaching for a fact a human player could not have.
+func _research_site(archetype: StringName) -> int:
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		if float(info.get("progress", 0.0)) < 0.999:
+			continue
+		# A building already busy is a building that cannot start this —
+		# the server would refuse, and re-offering every think would spend
+		# the retry latch on a refusal that is only ever temporary.
+		if (info.get("queue", []) as Array).size() > 0:
+			continue
+		var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+		if def != null and BuildingSim.archetype_of_def(def) == archetype:
+			return int(wire_id)
+	return -1
+
+
 func _military_archetype() -> StringName:
 	# Only something a building it OWNS can actually make.
 	#
@@ -912,11 +1025,18 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d" % [
+	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d epoch=%d techs=%d techs_ordered=%d" % [
 		player, civ, profile.id, _own_team(), peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
 		attacks_launched, first_attack_at, first_attack_soldiers,
-		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals]
+		peak_stockpile, peak_food, peak_wood, substituted_kind, unreachable_nodes, scout_legs, afford_refusals, cap_refusals,
+		# The ladder half (D-20260827). `techs` is read off this AI's own
+		# ClientState rather than counted here, so it reports what the AI
+		# can SEE it holds — the D-107 rule, and it is what separates "it
+		# never asked" (techs_ordered 0) from "it asked and was refused"
+		# (techs_ordered high, techs 0). Those are different faults with
+		# the same symptom.
+		state.epoch, state.techs.size(), techs_ordered]
 
 
 ## The side this seat is on, as the AI itself understands it — read off

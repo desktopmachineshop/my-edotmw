@@ -436,6 +436,10 @@ func tier_of(squad: int) -> int:
 
 ## Add a squad and return its id (also its index in every packed array).
 func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
+	# The one place any path creates a squad, and therefore the one place
+	# a player's researched techs are applied to it
+	# (`D-20260827-the-tree-is-the-ladder`).
+	def = resolved_def(def, owner)
 	var id := _cell.size()
 	var cell := space.index(at)
 
@@ -2437,7 +2441,19 @@ func tick() -> void:
 		# lives here rather than in BuildingSim — that class has no
 		# SquadSim to put a squad into.
 		var production_started := Time.get_ticks_usec()
+		completed_research = []
 		for finished in buildings.advance_production(1.0 / TICK_HZ):
+			# One queue, two kinds of entry (D-20260827): a research
+			# finishing is a tech LINE granted to the building's owner,
+			# not a squad walking out of the door.
+			if int(finished.get("kind", BuildingSim.KIND_UNIT)) == BuildingSim.KIND_TECH:
+				var who := buildings.owner_of(int(finished["building"]))
+				var line := StringName(finished["def_id"])
+				if research != null:
+					research.grant(who, line)
+					reapply_research(who)
+				completed_research.append({"player": who, "line": line})
+				continue
 			var produced := UnitRoster.by_id(StringName(finished["def_id"]))
 			if produced == null:
 				push_error("SquadSim: building produced unknown unit '%s'" % finished["def_id"])
@@ -2730,6 +2746,64 @@ var civs := {}
 
 ## The knobs in force for `player`. Never null, so a caller reads a
 ## multiplier rather than branching on whether a civ is known.
+##
+## The CivDef handed in is already resolved against that player's techs
+## (`server._hand_civs_to_sim`), so `squad_cap_for`, `production_time` and
+## `gather_rate` pick up a research bonus with no call site knowing there
+## is such a thing — the same trick `_defs` plays for units.
 func civ_effects(player: int) -> CivDef:
 	var def = civs.get(player, null)
 	return def if def is CivDef else CivRoster.effects_of(&"")
+
+
+## What each player has researched (`D-20260827-the-tree-is-the-ladder`).
+##
+## Null in every fixture and every run with no `/techs` — every call site
+## below guards for that, so a build with no tech tree simulates exactly
+## as it did before one existed.
+var research: ResearchState = null
+
+## Tech LINES completed this tick, as [{player, line}]. Published for the
+## server to put on the wire, the same shape as `destroyed_buildings`:
+## the SIMULATION owns the rule (a tech completes, the army changes), the
+## SERVER owns telling anybody about it.
+var completed_research: Array = []
+
+
+## This player's version of `def`, with their techs applied.
+##
+## Called from `add_squad`, which is the ONE place a squad is created by
+## any path — production, the opening, a scenario, the sandbox spawner.
+## That is the whole design: resolve at the choke point and the forty
+## sites reading `def.damage` off `_defs` are already correct, with no
+## forty-first that could be added having forgotten.
+func resolved_def(def: UnitDef, owner: int) -> UnitDef:
+	if research == null or def == null:
+		return def
+	return research.unit_def(owner, civ_effects(owner).id, def)
+
+
+## Re-point every squad this player owns at freshly resolved defs.
+##
+## What makes research RETROACTIVE — a tech finishing mid-battle is felt
+## in that battle. Safe because of the fence in `tech_effect.gd`: a tech
+## cannot touch `squad_size`, `formation_spacing` or `formation_shape`, so
+## nothing a client derives geometry from moves, `alive` is untouched, and
+## `health` is read per damage application rather than stored.
+##
+## `_speed` IS cached per squad, so it is recomputed here — a movement
+## tech that changed `move_speed` and not this would be the
+## declared-and-unread defect in its purest form: the def would say the
+## squad is faster and the squad would walk at the old speed.
+func reapply_research(player: int) -> void:
+	if research == null:
+		return
+	for i in range(_owner.size()):
+		if _owner[i] != player:
+			continue
+		var base := UnitRoster.by_id(_def_id[i])
+		if base == null:
+			continue
+		var resolved := resolved_def(base, player)
+		_defs[i] = resolved
+		_speed[i] = _cells_per_second(resolved)

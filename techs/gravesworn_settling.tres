@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"gatherers"
+field = &"gather_rate"
+mode = "multiply"
+value = 1.12
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"production_speed"
+mode = "multiply"
+value = 1.05
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_settling"
+display_name = "A Barrow Court"
+description = "A hall is dug, not built. The court prefers a roof of earth."
+line = &"settling"
+civ = &"gravesworn"
+epoch = 1
+defining = true
+research_at = &"town_centre"
+requires = Array[StringName]([])
+cost_food = 350
+cost_wood = 200
+cost_gold = 0
+cost_stone = 0
+research_time = 60.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([SubResource("e1")])

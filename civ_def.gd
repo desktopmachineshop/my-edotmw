@@ -68,6 +68,17 @@ class_name CivDef
 ## is expansion rather than either army model.
 @export var gather_speed: float = 1.0
 
+## What this civ calls each rung of the ladder, one string per epoch
+## (D-070 proposed this; `D-20260827-the-tree-is-the-ladder` lands it).
+##
+## FLAVOUR ONLY — nothing mechanical reads it, and a civ that names none
+## falls back to the `EpochDef`'s own display name, so this can be empty
+## or short without anything breaking. It is here rather than on the
+## EpochDef because the five names are a civ's development arc in its own
+## words ("scattered hill-clans -> thrall levies -> giants walk to war"),
+## which is per civ by construction.
+@export var epoch_names: Array[String] = []
+
 
 # --- the knobs, APPLIED ------------------------------------------------
 #
