@@ -23,3 +23,5 @@
 251	ao/my-edotmw-82/ladder-instrument	CLEAN	6
 248	ao/my-edotmw-82/clash-reports-its-army	CLEAN	9
 255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT	docs/status/ai-opponent.md docs/status/playtests-2026-08.md 
+255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT-RESOLVED	two status docs appended by several PRs; kept both.
+322	ao/my-edotmw-81/issue-292-disconnect-eliminates	CONFLICT	docs/status/playtests-2026-08.md server.gd 

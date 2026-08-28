@@ -792,6 +792,45 @@ func _health_step(health: float, full: float) -> int:
 	return int(floor(clampf(health / full, 0.0, 1.0) * HEALTH_REPLICATION_STEPS))
 
 
+## Raze everything `player` owns, returning the building ids razed.
+##
+## `SquadSim.eliminate_player`'s sibling, and it exists because that one
+## on its own stopped being enough (#292, #318). D-033's rule is that a
+## disconnect wipes the abandoned army and the ORDINARY defeat rule
+## notices, so "defeated" keeps exactly one definition — and that rule
+## became "no living squads AND no living buildings" when
+## D-20260823-the-opening-is-a-crew-and-a-general added the buildings
+## clause, for the unrelated and correct reason that a crew is consumed
+## by the town hall it founds.
+##
+## Nothing failed. Both halves were right on their own; the wipe simply
+## stopped wiping enough, and a quitter's undefended base kept them
+## "standing" so the match could not be won. The same shape as D-065: a
+## consequence that stopped being true when something underneath it
+## moved.
+##
+## Razed through `damage()` rather than by setting `_destroyed`, so a
+## client applies this exactly as it applies any other destruction —
+## dirty flag, then `S2C_BUILDING_INFO`. A second message for "the owner
+## left" would be a second thing to keep in step with the first, and
+## D-030's ever-revealed set means every client that has ever SEEN the
+## base needs telling, including ones that cannot see it now.
+##
+## Unfinished buildings go too: the elimination rule counts what is not
+## destroyed, not what is complete, so a half-built hall left standing
+## would keep its absent owner in the match just as a finished one does.
+func eliminate_player(player: int) -> Array:
+	var razed := []
+	for i in range(_cell.size()):
+		if _owner[i] == player and _destroyed[i] == 0:
+			# INF rather than the current health: `damage` clamps at zero
+			# and this must not depend on `_health` being read correctly
+			# for a building that may never have finished construction.
+			if damage(i, INF):
+				razed.append(i)
+	return razed
+
+
 func living_building_count(player: int) -> int:
 	var n := 0
 	for i in range(_cell.size()):
