@@ -230,6 +230,41 @@ var _last_attack_tick := PackedInt32Array()  # -1 = never attacked
 # walks on through a fight. Per-squad, like everything else here.
 var _attack_move := PackedByteArray()
 
+## Explore (#120). 1 means the squad is hunting fog on its own and should
+## be given a fresh destination whenever it runs out of one; 0 means it is
+## doing what it was told. A standing ORDER, like attack-move above and
+## for the same reason it is a byte here rather than a dictionary: it is
+## squad-level state, which is exactly what D-024 permits a squad to have,
+## and there is nowhere in it for anything per-soldier to live (D-006).
+var _explore := PackedByteArray()
+
+## How coarsely an explore destination is snapped, in cells.
+##
+## The same lever as `rout_quantum` and for the same reason (D-038/D-007):
+## nobody chose the exact cell, so precision buys nothing and sharing a
+## flow field between every scout heading for the same fog buys a lot —
+## #120 names N-scouts-N-fields as the pathological case for D-007.
+##
+## 4 rather than the rout's 8 because a scout must be able to SEE what it
+## was aimed at: the worst snap error is `quantum - 1` = 3 cells, well
+## inside the vision radius of every unit in the roster.
+var explore_quantum: int = 4
+
+
+## How many times a squad has been given a fresh place to explore.
+##
+## Instrumentation, in the style of `field_waits` and
+## `TerrainKnowledge.discoveries`: a match with exploring squads in it
+## that reports ZERO repicks has a dead mechanism, which is the failure
+## this project keeps finding wearing a green verdict.
+var explore_repicks: int = 0
+
+## How many times an explore order found nothing left to look at.
+## Separated from `explore_repicks` because "the map is uncovered" and
+## "the picker is broken" both produce a squad that stops moving, and
+## they are different facts.
+var explore_exhausted: int = 0
+
 ## Casualty/rout events produced by the most recent tick's combat
 ## resolution — empty whenever nothing changed (D-026 criterion 3).
 ## server.gd reads this once per tick, right after calling tick(), and
@@ -462,6 +497,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_damage_accum.append(0.0)
 	_last_attack_tick.append(-1)
 	_attack_move.append(0)
+	_explore.append(0)
 
 	_tier.append(0)
 	_pending_tier_target.append(-1)
@@ -765,6 +801,11 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			# server's exact values.
 			"facing": _facing[id], "files": _files[id],
 			"stance": _stance[id],
+			# Whether it is hunting fog (#120) — a display fact like
+			# stance, deliberately NOT in composition_hash below: it
+			# changes nothing a client derives, and hashing it would make
+			# an ordinary mode change look like a desync.
+			"exploring": _explore[id] == 1,
 		})
 	return out
 
@@ -1179,6 +1220,10 @@ func order_move(squad: int, destination: Vector2i) -> void:
 	# The squad goes where it was LAST told, not where it was told
 	# before a halt (#249).
 	_attack_move_goal.erase(squad)
+	# Any other order ends exploring (#120), exactly as it ends a charge.
+	# A mode a player cannot turn off by giving a normal order is a mode
+	# that has taken the squad away from them.
+	_explore[squad] = 0
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
@@ -1235,6 +1280,7 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 	# would otherwise be gated on is spent by D-034's halt one exchange in.
 	if has_stance(squad, STANCE_HOLD_FIRE):
 		set_stance(squad, _stance[squad] & ~STANCE_HOLD_FIRE)
+	_explore[squad] = 0
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
@@ -1362,6 +1408,114 @@ func has_paused_attack_move(squad: int) -> bool:
 ## resumes has a dead mechanism, which is the failure this project keeps
 ## finding wearing a green verdict.
 var attack_moves_resumed: int = 0
+# --- explore (#120) ----------------------------------------------------
+
+## Hunt fog until told to stop.
+##
+## A MODE, not a one-shot move: the order sets the flag and picks a first
+## destination, and `_advance_explore` gives the squad another one every
+## time it runs out. Cancelled by move, attack-move, stop and rout — see
+## those functions; there is no `stop_exploring`, because "give it another
+## order" is how a player already cancels everything else and a second way
+## to do it is a second rule.
+##
+## Refused to a routed squad, exactly as `order_move` is: a broken squad
+## takes no orders until it rallies.
+func order_explore(squad: int) -> void:
+	if is_routed(squad):
+		return
+	_charge_until.erase(squad)
+	_attack_move[squad] = 0
+	_explore[squad] = 1
+	_pick_explore_destination(squad)
+
+
+func is_exploring(squad: int) -> bool:
+	return _explore[squad] == 1
+
+
+## Give every exploring squad that has run out of journey a new one.
+##
+## "Run out" is `is_idle`, which covers BOTH the cases that matter and is
+## why it is the condition rather than an arrival test: a squad that
+## arrived, and a squad whose destination was given up on as unreachable
+## (`_rebuild_curve` resets the destination to the current cell for
+## exactly that — see `_deferred_destination`). A scout that walked at a
+## sealed pocket and stopped forever would be the more embarrassing of the
+## two failures.
+##
+## Runs on VISION's cadence rather than every tick. The input is the
+## explored set, which only changes when vision is restamped, so repicking
+## in between would re-read an identical map and re-answer identically —
+## the scan would cost a tick's worth of work to change nothing. This also
+## keeps the phase's cost proportional to the thing that feeds it.
+func _advance_explore() -> void:
+	if knowledge == null:
+		return
+	# Which regions this side's other scouts are already walking to, so two
+	# of them do not uncover the same fog. Gathered per SIDE, because that
+	# is the granularity the knowledge is keyed at (allies share sight,
+	# D-050) — and gathered fresh rather than remembered, for the same
+	# reason `Vision` restamps: the sim already holds every destination and
+	# a cached copy is the D-038 ownership cache waiting to happen.
+	var claimed := {}
+	var repick := []
+	for squad in range(_explore.size()):
+		if _explore[squad] != 1 or _alive[squad] <= 0:
+			continue
+		var knower := knowledge_group_of(squad)
+		if is_idle(squad):
+			if not is_routed(squad):
+				repick.append(squad)
+			continue
+		# Still walking somewhere: that region is taken.
+		var taken: Dictionary = claimed.get(knower, {})
+		taken[_destination[squad]] = true
+		claimed[knower] = taken
+
+	for squad in repick:
+		var knower := knowledge_group_of(squad)
+		var taken: Dictionary = claimed.get(knower, {})
+		_pick_explore_destination(squad, taken)
+		# Claim it immediately, so the next scout repicking in this same
+		# pass does not choose the region this one was just given. Without
+		# it, a squad ordered to explore alongside another in the same
+		# tick walks the same route it does.
+		if not is_idle(squad):
+			taken[_destination[squad]] = true
+			claimed[knower] = taken
+
+
+## Send one squad at the nearest fog its own side has not seen.
+##
+## The choice itself lives in `ExploreTarget` — pure, static and shared
+## with whatever asks next (the AI is the named candidate, #120) — so this
+## function is only the plumbing between the sim's state and that
+## decision.
+func _pick_explore_destination(squad: int, claimed: Dictionary = {}) -> void:
+	if knowledge == null:
+		return
+	var knower := knowledge_group_of(squad)
+	var target := ExploreTarget.next_destination(space,
+		knowledge.explored_cells(knower), knowledge.believed_passable(knower),
+		space.from_index(_cell[squad]), explore_quantum, claimed)
+	if target == ExploreTarget.nothing():
+		# Everything this side can form an opinion about has been seen.
+		# The squad stays in explore mode and simply stands still: an ally
+		# losing ground, or a gate opening, can make fog again, and a mode
+		# that silently cancelled itself would leave the button lit with
+		# nothing behind it.
+		explore_exhausted += 1
+		return
+	explore_repicks += 1
+	# Through the ORDINARY move path, quantised — so an explore order
+	# reaches the flow field, the tier logic and `_approachable` exactly as
+	# a player's click does. A second movement path for scouts is a second
+	# set of bugs.
+	var previous := destination_quantum
+	destination_quantum = explore_quantum
+	_apply_move_order(squad, target, true)
+	destination_quantum = previous
 
 
 ## Halt where the squad actually is (D-034).
@@ -1382,6 +1536,8 @@ func stop(squad: int) -> void:
 	# AFTER calling this, which is what keeps a contact halt and a
 	# player's halt telling the squad different things.
 	_attack_move_goal.erase(squad)
+	# "Until told to stop" (#120), and this is being told to stop.
+	_explore[squad] = 0
 	# A squad mid-approach to a tower's door is stopping short of climbing
 	# it (D-076) — the same "an order in progress is spent" rule a move
 	# order already applies to server.gd's _pending_builds.
@@ -1418,6 +1574,11 @@ func flee_move(squad: int, destination: Vector2i) -> void:
 	# destination is idle, and resuming would send it straight back at
 	# the enemy it just broke against.
 	_attack_move_goal.erase(squad)
+	# Nor is it scouting (#120). Without this the explore pass would see a
+	# fleeing squad arrive at its rout destination, call it idle, and
+	# immediately send it back toward the fog it just ran away from —
+	# which is the enemy it broke against.
+	_explore[squad] = 0
 	var previous := destination_quantum
 	destination_quantum = rout_quantum
 	_apply_move_order(squad, destination, true)
@@ -1602,6 +1763,8 @@ var last_curves_usec: int = 0
 ## tick — so a pass with no accumulator of its own does not go unmeasured,
 ## it lands in `other` and looks like the next unexplained rise.
 var last_separation_usec: int = 0
+var last_explore_usec: int = 0
+var total_explore_usec: int = 0
 var last_economy_usec: int = 0
 var last_squad_combat_usec: int = 0
 var last_buildings_usec: int = 0
@@ -2468,10 +2631,27 @@ func tick() -> void:
 		# investigation into an unattributed per-squad rise, and a new cost
 		# quietly joining an existing slice is exactly how a number stops
 		# meaning what its name says.
-		knowledge.absorb(vision, _passable)
+		# cell_count so a sim with no terrain array still accumulates what
+		# each side has SEEN — passability is unknowable there, fog is not.
+		knowledge.absorb(vision, _passable, space.width * space.height)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
 		vision_rebuilds += 1
+
+		# Scouts repick against the map that stamp just produced (#120),
+		# on vision's cadence and immediately after it — the explored set
+		# is the input, so running between rebuilds would re-read an
+		# identical map and re-answer identically.
+		#
+		# Its OWN phase, not folded into vision's: it is a region scan per
+		# repicking squad, `phase_usec_per_squad_update` partitions the
+		# tick exactly (D-20260818), and a pass without its own accumulator
+		# does not go unmeasured — it lands in `other`, which is the
+		# disappearing act that decision exists to stop.
+		var explore_started := Time.get_ticks_usec()
+		_advance_explore()
+		last_explore_usec = Time.get_ticks_usec() - explore_started
+		total_explore_usec += last_explore_usec
 
 	# Combat resolves against THIS tick's freshly-derived positions
 	# (D-024), one round per 10 Hz tick (D-020's 100 ms minimum round
@@ -2638,7 +2818,7 @@ func mean_combat_usec_per_squad_update() -> float:
 func phase_usec_per_squad_update() -> Dictionary:
 	var named := (total_fields_usec + total_curves_usec + total_vision_usec
 		+ total_combat_usec + total_buildings_usec + total_economy_usec
-		+ total_separation_usec)
+		+ total_separation_usec + total_explore_usec)
 	return {
 		"fields": _mean_usec_per_squad_update(total_fields_usec),
 		"curves": _mean_usec_per_squad_update(total_curves_usec),
@@ -2648,6 +2828,7 @@ func phase_usec_per_squad_update() -> Dictionary:
 		"production": _mean_usec_per_squad_update(total_production_usec),
 		"economy": _mean_usec_per_squad_update(total_economy_usec),
 		"separation": _mean_usec_per_squad_update(total_separation_usec),
+		"explore": _mean_usec_per_squad_update(total_explore_usec),
 		"other": _mean_usec_per_squad_update(total_tick_usec - named),
 	}
 
@@ -2676,7 +2857,10 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 ## an arbitrary number of times and hoping the schedule has caught up.
 func recompute_vision_now() -> void:
 	vision.rebuild(self, buildings)
-	knowledge.absorb(vision, _passable)
+	# Same cell_count as tick()'s call — the two must not disagree about
+	# how big a side's belief is, or a test that forces a rebuild gets a
+	# differently-sized array from the one the tick would have built.
+	knowledge.absorb(vision, _passable, space.width * space.height)
 
 
 ## How many of `player`'s squads still have soldiers in them.

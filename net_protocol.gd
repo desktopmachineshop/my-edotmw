@@ -69,6 +69,20 @@ const C2S_ORDER_CHARGE := 36
 ## The stance byte (D-20260819-stances-are-standing-orders).
 const C2S_ORDER_STANCE := 37
 
+## ORDER_EXPLORE (#120): hunt fog until told to stop. Carries a squad and
+## NOTHING else — the destination is the server's to choose, repeatedly,
+## which is the whole point of the order. Shaped like ORDER_STOP for that
+## reason rather than like ORDER_MOVE.
+## 41, not 39. Three PRs each took 39 off `main` — surrender (#297),
+## this, and research (#225) — because each saw 39 free and none could
+## see the others (#362). Surrender keeps it (first in the published
+## merge order); this moved.
+##
+## When #362's registry lands this becomes `OPCODES["C2S_ORDER_EXPLORE"]`
+## and the literal goes away entirely; the reservation is already
+## recorded there so nothing can take 41 in the meantime.
+const C2S_ORDER_EXPLORE := 41
+
 const C2S_CHEAT_ADD_RESOURCES := 30
 const C2S_CHEAT_SPAWN_UNIT := 31
 const C2S_CHEAT_SPAWN_BUILDING := 32
@@ -215,6 +229,26 @@ static func decode_order_stop(data: PackedByteArray) -> Dictionary:
 	return {"squad": buf.get_u32()}
 
 
+## ORDER_EXPLORE: put a squad into the fog-hunting mode (#120).
+##
+## A squad id and no destination, because a destination is exactly what
+## the player is declining to choose. The server holds the mode (#120
+## point 5 — explore extends this channel rather than opening a second
+## one) and re-picks for as long as it lasts.
+static func encode_order_explore(squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_EXPLORE)
+	buf.put_u32(squad)
+	return buf.data_array
+
+
+static func decode_order_explore(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32()}
+
+
 ## ATTACK_MOVE: advance, but stop on contact (D-034).
 ##
 ## Squads already engage anything that comes into range, so this is not
@@ -333,6 +367,12 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# The stance byte (D-20260819-stances): panel display, not hashed
 		# (the owner/tier family).
 		buf.put_u8(int(entry.get("stance", 0)) & 0xFF)
+		# Whether the squad is exploring (#120), carried the same way and
+		# for the same reason: explore is a MODE, so a player who cannot
+		# see that it is still on cannot tell "scouting" from "stopped
+		# somewhere odd". Not hashed — it is a display fact, and the
+		# positions it produces are replicated as ordinary curves.
+		buf.put_u8(1 if bool(entry.get("exploring", false)) else 0)
 	return buf.data_array
 
 
@@ -362,6 +402,10 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 			"facing": -1 if facing_wire == 0xFFFF else facing_wire,
 			"files": int(buf.get_u8()),
 			"stance": int(buf.get_u8()),
+			# Read INSIDE the literal like the two above it — GDScript
+			# evaluates dictionary values in source order, which is what
+			# keeps these three aligned with the encoder's three writes.
+			"exploring": buf.get_u8() == 1,
 		})
 	return out
 
