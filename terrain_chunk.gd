@@ -740,7 +740,27 @@ static func height_at(space: TorusSpace, surface: PackedFloat32Array,
 
 	var fractional := space.world_to_axial(Vector3(x, 0.0, z))
 	var cell := space.round_axial(fractional)
-	var base := space.index(cell) * TerrainGen.SURFACE_STRIDE
+	return height_in_cell(space, surface, fractional, cell, space.index(cell))
+
+
+## The height at a point whose CELL somebody has already found.
+##
+## Public because every drawn man needs his height AND his footing, and
+## both are answers about the same cell: `world_to_axial` + `round_axial`
+## + `index` is the expensive part of each and the part they share, so
+## `Formation` derives the cell once and asks this for the rest (#245).
+## Until it did, every man on screen paid for his cell twice, every
+## frame — the sixth instance of the family that includes vision's
+## `distance()` per cell (M2), `UnitRoster.by_id` (M4), terrain noise per
+## soldier (M5), the per-squad building scan (M6) and the flow-field
+## neighbour lookup (D-20260818).
+##
+## Split out rather than duplicated, so this and `height_at` cannot come
+## to answer differently: the only thing worse than paying twice would be
+## two spellings of the interpolation (D-096's rule).
+static func height_in_cell(space: TorusSpace, surface: PackedFloat32Array,
+		fractional: Vector2, cell: Vector2i, cell_index: int) -> float:
+	var base := cell_index * TerrainGen.SURFACE_STRIDE
 
 	# Offset of the point from the cell's centre, in world units.
 	var local := space.axial_offset_to_world(fractional - Vector2(cell))

@@ -148,6 +148,9 @@ var _terrain_sampler := Callable()
 ## sampler because a benchmark that skipped the clamp would price a
 ## derivation the client does not run.
 var _terrain_passable := PackedByteArray()
+## The surface field, handed to `ClientState` so per-man derivation takes
+## the one-cell path the client takes (#245).
+var _terrain_surface := PackedFloat32Array()
 
 
 func _ready() -> void:
@@ -263,6 +266,7 @@ func _build_terrain() -> void:
 	_terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(_space, surface, x, z)
 	_terrain_passable = fields.passable
+	_terrain_surface = surface
 
 	# One shared definition (D-066), so the benchmark renders what the game
 	# renders. Textured when generated/ has been built, vertex colour alone
@@ -307,6 +311,7 @@ func _setup_count(count: int) -> void:
 	_state = ClientState.new()
 	if _sample_terrain:
 		_state.terrain_sampler = _terrain_sampler
+		_state.terrain_surface = _terrain_surface
 	if _clamp_to_ground:
 		_state.terrain_passable = _terrain_passable
 	_now = 0.0
