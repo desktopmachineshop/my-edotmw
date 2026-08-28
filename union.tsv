@@ -92,3 +92,5 @@
 300	ao/my-edotmw-79/opening-hint	CONFLICT-RESOLVED	justfile: SECOND positional-signature divergence - test-client is RESOLUTION on one side and HOLD on the other. Keep-both would define the recipe twice and just refuses the file; combined into one signature.
 306	ao/my-edotmw-79/controls-screen	CLEAN	8
 320	ao/my-edotmw-79/manual	CONFLICT	client.gd decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md 
+320	ao/my-edotmw-79/manual	CONFLICT-RESOLVED	client.gd additive keyboard-letter registry block; decisions file add/add with #369's ahead-of-code copy, kept the owning PR's.
+348	ao/my-edotmw-79/ai-fortifies	CONFLICT	ai_player.gd bot_client.gd 

@@ -106,6 +106,8 @@ func update(now: float) -> void:
 	_found_town()
 	_raise_buildings()
 	_research(now)
+	_fortify()
+	_hold_the_gates()
 	_train()
 	_put_gatherers_to_work()
 	if not economy_only:
@@ -173,8 +175,30 @@ func _raise_buildings() -> void:
 		return
 
 
-## What to build, in priority order: anything that trains soldiers first,
-## because that is what makes this a game.
+## What to build UNCONDITIONALLY, in priority order: anything that trains
+## soldiers first, because that is what makes this a game, then anything
+## that shortens a haul.
+##
+## DEFENCE IS NOT ON THIS LIST, and that is #337's other half.
+##
+## It used to be. Every wall, gate and tower passes `can_build(gatherers)`
+## and produces nothing, so they all landed in `support` and were built in
+## `all_defs()` order — which is alphabetical, so the AI's second building
+## was a `garrison_gate`. That is wrong twice over. It is 110 stone the AI
+## could not gather (see `_kinds_below_floor`), so the queue stalled
+## behind it forever; and even paid for, ONE wall segment on a
+## pseudo-random cell two steps from whichever gatherer happened to be
+## nearest is not a wall. It is a rock in a field, bought with the wood
+## that would have trained soldiers.
+##
+## A wall is a shape, in a place, against somebody. That is a different
+## question from "what do I not have yet", and it is asked in `_fortify()`
+## against a threat model. This list answers the unconditional question
+## and nothing else.
+##
+## Found by RULE rather than by id, as before: `WallPlan.is_wall_like`
+## and a positive `damage` are fields, so a civ shipping its own wall or
+## its own tower is picked up here with no edit (D-047).
 func _wanted_buildings() -> Array:
 	var military := []
 	var support := []
@@ -190,6 +214,12 @@ func _wanted_buildings() -> Array:
 			continue
 		# A building behind a tech is not a building it can want yet.
 		if not state.has_tech(def.requires_tech):
+	for def in BuildingSim.all_defs():
+		if def.consumes_builder:
+			continue
+		if not BuildingSim.can_build(def, &"gatherers"):
+			continue
+		if WallPlan.is_wall_like(def) or def.damage > 0.0:
 			continue
 		if def.produces.size() > 0:
 			military.append(def)
@@ -251,6 +281,50 @@ func _squads_matching(predicate: Callable) -> Array:
 
 
 var _buildings_placed := 0
+
+# --- what this seat did about defence (#337) ---------------------------
+#
+# Reported in AI_STATS and gated on by `just ai-ladder`. `defences_ordered`
+# is an INTENT and `defences_standing_peak` is the OUTCOME, and both are
+# here because they are different faults with the same symptom: an AI that
+# never decided to fortify and one whose every build order was refused
+# both report zero defences standing. D-107's lesson, applied at the
+# instrument rather than only at the latch.
+var defences_ordered := 0
+
+## Sites already asked for, and when they may be asked for again. Bounded
+## by the screen's width, so this cannot grow.
+var _defence_tried := {}
+
+## How long a defence order is given to become a building before the site
+## is offered again. Long, because the builder walks: the screen stands
+## `WallPlan.STANDOFF_CELLS` out and a crew starts wherever it was
+## hauling. A bound on a FAILURE rather than a difficulty knob, so it is a
+## constant — the same line `StaticDefence.THREAT_CELLS` draws.
+const DEFENCE_RETRY_SECONDS := 45.0
+var defences_standing_peak := 0
+var gate_orders := 0
+var gates_sealed := 0
+
+## Own buildings destroyed, and own buildings seen taking damage. Both
+## feed `StaticDefence.pressure`, and both are DERIVED from the replicated
+## building state this seat already receives rather than from a new wire
+## field — a client can see its own buildings' `health_fraction` (D-076's
+## amendment made it actually move), so nothing new crosses the wire.
+var buildings_lost := 0
+var attacks_survived := 0
+
+## Own DEFENCES seen taking damage or destroyed — "a wall was fought
+## over", separately from "a building was attacked".
+##
+## Separate because the ladder gate #337 asks for is about the WALL. A
+## seat whose town centre was shelled while its wall stood untouched has
+## not exercised D-076 at all, and `attacks_survived` cannot tell the two
+## apart — which is the vacuous-gate shape this project keeps paying for
+## (`test-client`'s casualty gate is satisfied by founding a town hall).
+var defences_fought := 0
+var _building_health := {}
+var _buildings_seen := {}
 
 ## The worker currently committed to a build order, held off hauling
 ## until the order has had time to land.
@@ -872,15 +946,80 @@ func _drop_unreachable_assignments() -> void:
 		_assigned_at.erase(squad)
 
 
-## The resources currently under their floor. Food always qualifies, so a
+## The resources currently under their floor, PLUS whatever the next
+## thing this AI wants to buy is short of. Food always qualifies, so a
 ## crew is never left with nothing to do when everything is stocked.
+##
+## That second clause is #337's root cause, and it was worth more than the
+## walls it was filed about.
+##
+## This list was FOOD and WOOD, full stop — so the AI never gathered stone
+## or gold in any match that has ever been played. Every wall, gate and
+## tower in the roster costs stone, so every one of them was unaffordable
+## forever; and because `_raise_buildings` SAVES for what it cannot afford
+## rather than skipping it, the alphabetically-first support building
+## (`garrison_gate`, 110 stone) stalled the queue behind it and the AI
+## never built a storehouse either.
+##
+## Measured on `main` before this change, `just ai-ladder 1 300 2`:
+## **buildings~2.0 on both seats** — a town centre and a barracks, for the
+## whole match. The wall half of D-076 was not merely unexercised by the
+## ladder; it was unreachable by the economy.
+##
+## So an AI gathers what its NEXT PURCHASE costs. Naval stage 7 inherits
+## the fix rather than rediscovering it: a dock is another building whose
+## price is not food.
 func _kinds_below_floor() -> Array:
 	var out := []
 	if state.wallet.size() >= 4:
 		if state.wallet[1] < profile.wood_floor:
 			out.append(Economy.ResourceKind.WOOD)
+	var short := _shortfall_for_next_purchase()
+	if short >= 0 and not out.has(short):
+		out.append(short)
 	out.append(Economy.ResourceKind.FOOD)
 	return out
+
+
+## Which resource the thing this AI is saving for is most short of, or -1.
+##
+## "The thing it is saving for" is `_wanted_buildings()`'s first unbuilt
+## entry — the same list `_raise_buildings` walks, so the economy is
+## always working toward the purchase the build step is waiting on. Two
+## copies of "what do I want next" is the pair that comes to disagree
+## (D-058/D-065's family), which is why this asks rather than deciding.
+func _shortfall_for_next_purchase() -> int:
+	if state.wallet.size() < Economy.RESOURCE_COUNT:
+		return -1
+	for def in _wanted_buildings():
+		if _owned_building_count(def.id) > 0:
+			continue
+		return StaticDefence.scarcest_shortfall(state.wallet, StaticDefence.cost_of(def))
+	# And then whatever DEFENCE it intends to buy, because defences are
+	# deliberately not on `_wanted_buildings` (see that function) and an
+	# economy that did not know about them would never gather the stone
+	# they cost — which is #337's root cause coming back through the door
+	# the fix opened. Measured: with walls off the unconditional list, the
+	# shortfall went to -1 the moment the storehouse was up and stone
+	# income stopped again.
+	var defence := _next_defence_wanted()
+	if defence != null:
+		return StaticDefence.scarcest_shortfall(state.wallet,
+			StaticDefence.cost_of(defence))
+	return -1
+
+
+## The defensive building this seat would buy next, or null if it does not
+## want one. Asks `_fortify`'s own question, so the economy and the build
+## step cannot disagree about what is being saved for.
+func _next_defence_wanted() -> BuildingDef:
+	if not StaticDefence.wants_to_invest(_threat_report(), _economy_report(),
+			profile.defence_appetite, _defences_standing(), DEFENCES_CAP):
+		return null
+	var tower := WallPlan.cheapest_defensive_tower(&"gatherers")
+	if tower != null and _owned_building_count(tower.id) == 0:
+		return tower
+	return WallPlan.cheapest_wall(false)
 
 
 ## Which resource to send the next worker after.
@@ -1115,6 +1254,40 @@ func _record_stats() -> void:
 	# did.
 	peak_enemy_buildings_known = maxi(peak_enemy_buildings_known, theirs)
 
+	# What defence has cost this seat, and what it has standing. Both are
+	# read off the buildings the server already sends it: a client sees its
+	# own buildings' health (D-076's amendment made `health_fraction`
+	# actually move, having carried a constant 1.0 for a milestone), so
+	# there is no new wire field here and no second data-hiding mechanism.
+	var defences := 0
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player:
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+		var is_defence := WallPlan.is_static_defence(def)
+		if bool(info["destroyed"]):
+			if _buildings_seen.has(wire_id) and not bool(_buildings_seen[wire_id]):
+				buildings_lost += 1
+				# A wall that was pulled down was fought over by
+				# definition, and it is the one case `health_fraction`
+				# cannot report: a building destroyed between two thinks
+				# never shows an intermediate value.
+				if is_defence:
+					defences_fought += 1
+				_buildings_seen[wire_id] = true
+			continue
+		_buildings_seen[wire_id] = false
+		if is_defence:
+			defences += 1
+		var health := float(info.get("health_fraction", 1.0))
+		if _building_health.has(wire_id) and health < float(_building_health[wire_id]) - 0.001:
+			attacks_survived += 1
+			if is_defence:
+				defences_fought += 1
+		_building_health[wire_id] = health
+	defences_standing_peak = maxi(defences_standing_peak, defences)
+
 	# Friends in sight, counted the same way and for the opposite reason
 	# (#119): `ally_objectives=0` says nothing at all unless this AI had an
 	# ally it could actually have marched on.
@@ -1149,7 +1322,7 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d epoch=%d techs=%d techs_ordered=%d" % [
+	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d epoch=%d techs=%d techs_ordered=%d defences_ordered=%d defences_standing=%d gate_orders=%d gates_sealed=%d buildings_lost=%d attacks_survived=%d defences_fought=%d" % [
 		player, civ, profile.id, _own_team(), peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
 		attacks_launched, first_attack_at, first_attack_soldiers,
@@ -1160,7 +1333,8 @@ func stats_line() -> String:
 		# never asked" (techs_ordered 0) from "it asked and was refused"
 		# (techs_ordered high, techs 0). Those are different faults with
 		# the same symptom.
-		state.epoch, state.techs.size(), techs_ordered]
+		state.epoch, state.techs.size(), techs_ordered,
+		defences_ordered, defences_standing_peak, gate_orders, gates_sealed,
 
 
 ## The side this seat is on, as the AI itself understands it — read off
@@ -1398,3 +1572,424 @@ func _friendly_homes() -> Dictionary:
 ## corner forever.
 var _looked := {}
 var _look_at := 0
+
+# --- static defence (#337, D-076's standing gap) ------------------------
+#
+# `decisions/D-20260828-an-ai-that-fortifies.md`. D-076 shipped walls,
+# gates and a walkable wall-top tier, and its own entry recorded that
+# **no AI builds or uses any of it, so `just ai-ladder` cannot exercise
+# the feature at all** — the defect class that left `BuildingSim.damage()`
+# uncalled for two milestones (D-055).
+#
+# The decision half is `static_defence.gd`, which names no wall and is
+# shared with naval stage 7 (#301). The geometry half is `wall_plan.gd`.
+# What is here is the seat: reading its own threat, spending, and USING
+# what it built.
+
+
+## How many defensive buildings this seat will own, ever.
+##
+## A wall is a means and the army is the end. Without a cap an AI whose
+## threat pressure stays high — which is every AI in a match it is losing
+## — keeps buying masonry until it has fortified itself out of the game.
+## The screen plus one tower is the whole investment.
+const DEFENCES_CAP := WallPlan.SEGMENTS + 1
+
+
+## Raise static defence when the threat and the wallet both argue for it.
+##
+## Runs AFTER `_raise_buildings`, so the barracks is never outbid: that
+## step returns having spent, and this one is reached on a later think.
+func _fortify() -> void:
+	if state.space == null:
+		return
+	var standing := _defences_standing()
+	var threat := _threat_report()
+	var economy := _economy_report()
+	if not StaticDefence.wants_to_invest(threat, economy,
+			profile.defence_appetite, standing, DEFENCES_CAP):
+		return
+
+	var builder := _idle_builder()
+	if builder < 0:
+		return
+
+	# A tower first, and it is not a preference. A wall does nothing to an
+	# attacker; a tower shoots one. D-066 is the standing warning that a
+	# defence whose numbers do nothing is a feature that is absent, and the
+	# tower is the only member of this family with a `damage` at all.
+	var tower := WallPlan.cheapest_defensive_tower(&"gatherers")
+	if tower != null and _owned_building_count(tower.id) == 0 and _pay_for(tower):
+		_place_defence(builder, tower, _defence_site(tower))
+		return
+	# NOT `return` when the tower is unaffordable. That is the SAVE-rather-
+	# than-skip rule, and it is right for the barracks — where skipping
+	# ahead buys a storehouse with the wood the barracks needed — and
+	# wrong here: a wall segment is 30 wood and 40 stone against a tower's
+	# 40 and 120, so saving for the tower means a seat under attack builds
+	# nothing at all for the rest of the match. Measured: a seat with
+	# `buildings_lost=2 attacks_survived=43` ordered zero defences.
+
+	# Then the screen, gate first (`WallPlan.screen` returns it first,
+	# because it is the cell squarely on the approach).
+	var wall := WallPlan.cheapest_wall(false)
+	var gate := WallPlan.cheapest_wall(true)
+	if wall == null:
+		return
+	var cells := _screen_cells()
+	if cells.is_empty():
+		return
+	var next := _next_screen_cell(cells)
+	if next.x < 0:
+		return
+	var def := gate if (gate != null and next == cells[0]) else wall
+	if not _pay_for(def):
+		return
+	# One order per site, then WAIT for it to appear.
+	#
+	# Without this the AI re-issues the same refused order every think
+	# forever, because `_next_screen_cell` looks for a building that a
+	# refusal means will never be there. Measured on a real teamed match:
+	# **40 orders, 1 standing.** That is D-107's lesson in the other
+	# direction — not a latch on an intent read as an outcome, but no
+	# latch at all, so an intent was repeated instead of being checked.
+	#
+	# The timeout is generous because a builder WALKS: the screen stands
+	# five cells out and a crew starts wherever it was hauling.
+	var index := state.space.index(next)
+	if _defence_tried.has(index) and state_time() < float(_defence_tried[index]):
+		return
+	_defence_tried[index] = state_time() + DEFENCE_RETRY_SECONDS
+	_place_defence(builder, def, next)
+
+
+## Every defensive building this seat has standing — walls, gates and
+## anything that shoots. Read off its own `ClientState`, like everything
+## else the AI knows.
+func _defences_standing() -> int:
+	var count := 0
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+		if def == null:
+			continue
+		if WallPlan.is_static_defence(def):
+			count += 1
+	return count
+
+
+## What this seat believes about the danger it is in.
+##
+## Everything here comes from its own `ClientState` — the packets the
+## server chose to send it through `visible_to` (D-025). An AI that read
+## the simulation would fortify against an army it could not see, and
+## D-051's whole point is that it cannot.
+func _threat_report() -> Dictionary:
+	var home := _home_cell()
+	var near := 0
+	var nearest := -1
+	if home.x >= 0 and state.space != null:
+		for id in state.composition:
+			var owner := int(state.composition[id].get("owner", 0))
+			if owner == player or state.alive_of(id) <= 0 or not _hostile(owner):
+				continue
+			var cell := state.squad_cell(id, state_time())
+			if cell.x < 0:
+				continue
+			var away := state.space.distance(home, cell)
+			if nearest < 0 or away < nearest:
+				nearest = away
+			if away <= StaticDefence.THREAT_CELLS:
+				near += 1
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if bool(info["destroyed"]) or not _hostile(int(info["owner"])):
+				continue
+			var away := state.space.distance(home,
+				state.space.from_index(int(info["cell"])))
+			if nearest < 0 or away < nearest:
+				nearest = away
+	# The horizon is HALF THE WAY to the nearest other start: that is this
+	# seat's own ground, and the distance a threat has to be inside before
+	# it is this seat's problem. Relative rather than fixed, because a flat
+	# radius contributed nothing on the shipped ladder map — the starts are
+	# further apart than any constant worth having.
+	var horizon := 0
+	var neighbour := _nearest_other_start()
+	if home.x >= 0 and neighbour.x >= 0 and state.space != null:
+		horizon = state.space.distance(home, neighbour) / 2
+	return {
+		"hostiles_near": near,
+		"nearest_hostile": nearest,
+		"horizon": horizon,
+		"enemy_base_known": peak_enemy_buildings_known > 0,
+		"buildings_lost": buildings_lost,
+		"attacks_survived": attacks_survived,
+	}
+
+
+func _economy_report() -> Dictionary:
+	var army := 0
+	for squad in _own_squads():
+		var def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if def != null and def.carry_capacity <= 0:
+			army += 1
+	var military := 0
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+		if def != null and not def.produces.is_empty() and not def.consumes_builder:
+			military += 1
+	return {"military_buildings": military, "army_squads": army}
+
+
+## Affordability WITH the economy's floors held back, so a wall is never
+## bought with the wood a barracks was waiting on.
+func _pay_for(def: BuildingDef) -> bool:
+	var floors := PackedInt32Array()
+	floors.resize(Economy.RESOURCE_COUNT)
+	floors[Economy.ResourceKind.FOOD] = profile.food_floor
+	floors[Economy.ResourceKind.WOOD] = profile.wood_floor
+	return StaticDefence.can_afford_with_reserve(state.wallet,
+		StaticDefence.cost_of(def), floors)
+
+
+## The screen this seat would raise, against whatever it is most afraid
+## of. Recomputed rather than remembered: the threat moves, and a screen
+## laid against a raider who has since gone home is a screen facing the
+## wrong way with no way to notice.
+func _screen_cells() -> Array:
+	var home := _home_cell()
+	if home.x < 0:
+		return []
+	var threat := _nearest_hostile_cell()
+	if threat.x < 0:
+		return []
+	# Blocked is anything the server will refuse: a cell with a building on
+	# it, and any cell inside a HOSTILE building's `no_build_radius`
+	# (D-062 — nobody hostile may found inside it).
+	#
+	# The second half is not tidiness. On a scenario where the bases start
+	# close, a screen five cells toward the enemy lands inside their claim,
+	# every order is refused, and the AI spends the match ordering walls
+	# that never appear. The refusal is a rule the AI can READ — it can see
+	# their buildings — so asking anyway is asking to be told no.
+	var blocked := {}
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]):
+			continue
+		var at := int(info["cell"])
+		blocked[at] = true
+		if not _hostile(int(info["owner"])):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+		if def == null or def.no_build_radius <= 0:
+			continue
+		var centre := state.space.from_index(at)
+		for offset in TorusSpace.disk_offsets(def.no_build_radius):
+			blocked[state.space.index(centre + offset)] = true
+	return WallPlan.screen(state.space, home, threat, blocked)
+
+
+## The first cell of the screen with nothing on it yet.
+func _next_screen_cell(cells: Array) -> Vector2i:
+	var taken := {}
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) == player and not bool(info["destroyed"]):
+			taken[int(info["cell"])] = true
+	for cell in cells:
+		if not taken.has(state.space.index(cell)):
+			return cell
+	return Vector2i(-1, -1)
+
+
+## Where a tower goes: between home and the threat, but INSIDE the screen,
+## so it covers the gate rather than standing in front of it.
+func _defence_site(def: BuildingDef) -> Vector2i:
+	var home := _home_cell()
+	if home.x < 0:
+		return Vector2i(-1, -1)
+	var threat := _nearest_hostile_cell()
+	if threat.x < 0:
+		return home
+	var inside := WallPlan.screen(state.space, home, threat, {}, 1,
+		maxi(1, WallPlan.STANDOFF_CELLS - 2))
+	if inside.is_empty():
+		return home
+	return inside[0]
+
+
+func _nearest_hostile_cell() -> Vector2i:
+	var home := _home_cell()
+	if home.x < 0 or state.space == null:
+		return Vector2i(-1, -1)
+	var best := Vector2i(-1, -1)
+	var best_away := 1 << 30
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]) or not _hostile(int(info["owner"])):
+			continue
+		var cell := state.space.from_index(int(info["cell"]))
+		var away := state.space.distance(home, cell)
+		if away < best_away:
+			best_away = away
+			best = cell
+	for id in state.composition:
+		var owner := int(state.composition[id].get("owner", 0))
+		if owner == player or state.alive_of(id) <= 0 or not _hostile(owner):
+			continue
+		var cell := state.squad_cell(id, state_time())
+		if cell.x < 0:
+			continue
+		var away := state.space.distance(home, cell)
+		if away < best_away:
+			best_away = away
+			best = cell
+	if best.x < 0:
+		# Nothing seen yet. The starting positions were sent at join
+		# (D-036) and an opponent's town is at one of them, so a seat that
+		# has met nobody still knows which way trouble comes from. Same
+		# source `_next_place_to_look` scouts toward, for the same reason.
+		return _nearest_other_start()
+	return best
+
+
+func _nearest_other_start() -> Vector2i:
+	var home := _home_cell()
+	if home.x < 0 or state.space == null:
+		return Vector2i(-1, -1)
+	var best := Vector2i(-1, -1)
+	var best_away := 1 << 30
+	for index in state.spawn_cells:
+		var cell := state.space.from_index(int(index))
+		if cell == home:
+			continue
+		var away := state.space.distance(home, cell)
+		if away < best_away:
+			best_away = away
+			best = cell
+	return best
+
+
+func _home_cell() -> Vector2i:
+	var home := state.spawn_cell_of(player)
+	if home.x >= 0:
+		return home
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) == player and not bool(info["destroyed"]):
+			return state.space.from_index(int(info["cell"]))
+	return Vector2i(-1, -1)
+
+
+func _place_defence(builder: int, def: BuildingDef, site: Vector2i) -> void:
+	if site.x < 0:
+		return
+	var order := state.encode_build(builder, String(def.id), site)
+	if order.is_empty():
+		return
+	_builder_squad = builder
+	_builder_busy_until = state_time() + profile.think_interval * 3.0
+	defences_ordered += 1
+	print("server: AI_FORTIFY player=%d %s at %s" % [player, def.id, site])
+	send.call(order)
+
+
+## SEAL a gate that hostiles are standing at; let it go back to AUTO when
+## they are gone.
+##
+## This is the USING half of #337, and getting it right meant throwing the
+## obvious version away.
+##
+## The obvious version was "set every gate to AUTO", and it is **vacuous**:
+## `BuildingSim._gate_mode`'s own comment says new gates start in auto
+## mode, so an AI that ordered AUTO would send a packet that changed
+## nothing, and a ladder gate counting those packets would have passed
+## against an AI that never used a gate at all. That is precisely the
+## shape of check this project forbids — the whole reason #337 exists is
+## that a feature can look exercised and not be.
+##
+## What is NOT vacuous is closing it. An auto gate opens whenever one of
+## the owner's own squads is within `AUTO_GATE_RADIUS` — which includes a
+## squad fighting an attacker on the doorstep, so at the exact moment a
+## gate matters most it stands open for whoever is winning that fight.
+## Sealing it is a decision, it is reversible, and it uses both gate
+## opcodes rather than one.
+##
+## Latched on the EFFECT — the gate's replicated `gate_mode` and
+## `gate_open` coming back — never on having sent the packet. D-107 is the
+## standing reason: a latch that records an INTENT is eventually read as a
+## record of an outcome, and reading one that way cost this project every
+## AI match it had ever played.
+func _hold_the_gates() -> void:
+	if state.space == null:
+		return
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+		if def == null or not def.is_gate:
+			continue
+
+		var cell := state.space.from_index(int(info["cell"]))
+		var besieged := _hostiles_within(cell, GATE_SEAL_CELLS) > 0
+		var mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+		var open := bool(info.get("gate_open", false))
+
+		if besieged:
+			# Two orders, and both are needed: MANUAL alone leaves it
+			# however the auto pass last set it, which under an attack is
+			# open. The server refuses a state order on a gate still in
+			# auto mode, so the mode has to land first — which it does on
+			# an earlier think, because this reads the mode BACK before
+			# asking to close.
+			if mode != BuildingSim.GATE_MODE_MANUAL:
+				gate_orders += 1
+				send.call(NetProtocol.encode_order_gate_mode(
+					int(wire_id), BuildingSim.GATE_MODE_MANUAL))
+				continue
+			if open:
+				gate_orders += 1
+				gates_sealed += 1
+				print("server: AI_GATE player=%d sealed %d" % [player, int(wire_id)])
+				send.call(NetProtocol.encode_order_gate_state(int(wire_id), false))
+			continue
+
+		# Clear. Hand it back to the auto rule rather than leaving it
+		# shut: a gate a player's own army cannot get through is a wall
+		# they paid extra for.
+		if mode != BuildingSim.GATE_MODE_AUTO:
+			gate_orders += 1
+			send.call(NetProtocol.encode_order_gate_mode(
+				int(wire_id), BuildingSim.GATE_MODE_AUTO))
+
+
+## How near a hostile has to be to a gate before it is worth shutting.
+##
+## Smaller than `StaticDefence.THREAT_CELLS`, which is the radius at which
+## a threat argues for BUILDING something. Shutting a gate is a reaction
+## to somebody at the door; fortifying is a response to somebody in the
+## region, and one number for both would either seal the gates all match
+## or never seal them at all.
+const GATE_SEAL_CELLS := 6
+
+
+func _hostiles_within(cell: Vector2i, cells: int) -> int:
+	var count := 0
+	for id in state.composition:
+		var owner := int(state.composition[id].get("owner", 0))
+		if owner == player or state.alive_of(id) <= 0 or not _hostile(owner):
+			continue
+		var where := state.squad_cell(id, state_time())
+		if where.x < 0:
+			continue
+		if state.space.distance(cell, where) <= cells:
+			count += 1
+	return count

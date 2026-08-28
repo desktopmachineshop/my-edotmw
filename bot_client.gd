@@ -45,6 +45,12 @@ const BUILD_SITE_SEARCH_CELLS := 3
 ## gatherer's 1.96 cells/s.
 const BUILDER_COOLDOWN_SECONDS := 20.0
 
+## How often a bot works its gate (#337). Slow on purpose: a gate change
+## flushes the flow fields that cross it (D-076's own revisit trigger
+## names exactly that interaction), so a bot hammering it would be
+## measuring the flush rather than the wire.
+const GATE_WORK_SECONDS := 12.0
+
 # WHY a handful of each bot's squads march on a neighbouring player's
 # start rather than wandering. Left as random
 # single-squad orders (the pre-existing periodic behaviour below), two
@@ -129,6 +135,15 @@ class VirtualClient:
 	## actually THERE.
 	var _site_attempts := 0
 	var _builder_free_at := 0.0
+
+	# The one gate this bot builds and works (#337). `gate_orders` is the
+	# INTENT and `gate_toggles` the state changes actually asked for;
+	# both are reported, because "never decided to" and "asked and was
+	# refused" are different faults with the same symptom.
+	var gate_orders := 0
+	var gate_toggles := 0
+	var _gate_next_at := 0.0
+	var _gate_wanted_open := false
 
 	## The crew currently walking to raise something, or -1.
 	##
@@ -709,6 +724,12 @@ class VirtualClient:
 			return
 		var def := BotBuildPlan.wanted_building(owned, &"gatherers")
 		if def == null:
+			# Nothing that TRAINS is outstanding, so the one gate (#337).
+			# Deliberately last: a gate must never outbid a barracks, and
+			# reaching this line at all means there is no barracks left to
+			# outbid.
+			def = BotBuildPlan.wanted_gate(owned, &"gatherers")
+		if def == null:
 			build_block = "nothing wanted"
 			return
 		if not BotBuildPlan.can_afford(state.wallet, def):
@@ -739,6 +760,52 @@ class VirtualClient:
 		_builder_squad = builder
 		_site_attempts += 1
 		_builder_free_at = now + BUILDER_COOLDOWN_SECONDS
+
+	## Work the gate this bot built (#337).
+	##
+	## D-076's two gate opcodes had never crossed a real socket under
+	## load — no bot built a gate, so nothing drove them. That is the
+	## same gap #337 names in the AI, in the harness.
+	##
+	## It CLOSES and re-opens rather than setting AUTO, and the
+	## difference is the whole point. New gates start in auto mode
+	## (`BuildingSim._gate_mode`'s own comment), so a bot ordering AUTO
+	## would send a packet that changed nothing and a verdict counting
+	## those packets would pass against a bot that never used a gate.
+	## Closing is a state change the server can refuse, the sim has to
+	## re-path around, and the client has to redraw.
+	##
+	## Latched on the EFFECT — the replicated `gate_mode` and `gate_open`
+	## coming back — never on having sent. D-107.
+	func work_the_gate(now: float) -> void:
+		if now < _gate_next_at:
+			return
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) != state.player or bool(info["destroyed"]):
+				continue
+			var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+			if def == null or not def.is_gate:
+				continue
+			var mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+			# Manual first: the server refuses a state order on a gate
+			# still in auto mode, so the two orders are two ticks apart
+			# and the second is only sent once the first has ARRIVED.
+			if mode != BuildingSim.GATE_MODE_MANUAL:
+				gate_orders += 1
+				peer.send(0, NetProtocol.encode_order_gate_mode(
+					int(wire_id), BuildingSim.GATE_MODE_MANUAL),
+					ENetPacketPeer.FLAG_RELIABLE)
+				_gate_next_at = now + GATE_WORK_SECONDS
+				return
+			gate_orders += 1
+			gate_toggles += 1
+			_gate_wanted_open = not bool(info.get("gate_open", false))
+			peer.send(0, NetProtocol.encode_order_gate_state(
+				int(wire_id), _gate_wanted_open), ENetPacketPeer.FLAG_RELIABLE)
+			_gate_next_at = now + GATE_WORK_SECONDS
+			return
+
 
 	## A crew that can be spared to build: a hauler that is not scouting.
 	## The LAST one, so this does not fight the patrol over the first —
@@ -776,6 +843,8 @@ class VirtualClient:
 	## a move order would cancel the haul (D-034) every pass. One split, two
 	## halves, no squad in both.
 	func _put_gatherers_to_work() -> void:
+		# ONE crew may be diverted off wood per pass; see `_kind_wanted`.
+		var diverted := false
 		for squad in BotPatrol.assign(state.squads, _founding_squad)["workers"]:
 			if squad == _builder_squad:
 				continue  # walking to a building site; see `_builder_squad`
@@ -788,8 +857,11 @@ class VirtualClient:
 			var best := -1
 			var best_distance := 1 << 30
 			var here := state.squad_cell(squad, 0.0)
+			var wanted := _kind_wanted(diverted)
+			if wanted != Economy.ResourceKind.WOOD:
+				diverted = true
 			for cell in state.nodes:
-				if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+				if int(state.nodes[cell]) != wanted:
 					continue
 				var d := state.space.distance(here, state.space.from_index(int(cell)))
 				if d < best_distance:
@@ -844,6 +916,44 @@ class VirtualClient:
 		if _owns_a_building():
 			return false
 		return _founding_builder() >= 0
+	## Which resource the next crew should be sent after (#337).
+	##
+	## WOOD unless something the bot wants to BUY is short of something
+	## else, and then exactly ONE crew is diverted per pass.
+	##
+	## The bots gathered wood and nothing else — not even food — which was
+	## fine while the only thing they bought was a barracks. It stopped
+	## being fine the moment they were asked to build a gate: `gate.tres`
+	## costs 45 STONE, so the gate was unaffordable forever and the bot
+	## half of #337 would have shipped as dead code exercising nothing.
+	## Measured before this: `test-load 4 300` came back clean with
+	## `gate_orders=0 gate_toggles=0`.
+	##
+	## That is the SAME root cause as the AI half, and it reuses the same
+	## shared function rather than a second copy of the rule
+	## (`StaticDefence.scarcest_shortfall`, which naval stage 7 also
+	## reads).
+	##
+	## ONE crew, and only while the purchase is unaffordable, because
+	## every timing in `docs/status/load-testing.md` is tuned against
+	## these bots gathering wood — this must move the economy as little as
+	## it can while still reaching the thing it has to exercise.
+	func _kind_wanted(already_diverted: bool) -> int:
+		if already_diverted:
+			return Economy.ResourceKind.WOOD
+		var owned: Array = []
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) == state.player and not bool(info["destroyed"]):
+				owned.append(String(info["def_id"]))
+		var next := BotBuildPlan.wanted_building(owned, &"gatherers")
+		if next == null:
+			next = BotBuildPlan.wanted_gate(owned, &"gatherers")
+		if next == null or BotBuildPlan.can_afford(state.wallet, next):
+			return Economy.ResourceKind.WOOD
+		var short := StaticDefence.scarcest_shortfall(
+			state.wallet, StaticDefence.cost_of(next))
+		return Economy.ResourceKind.WOOD if short < 0 else short
 
 
 	## Ask for a town hall, and keep asking until there IS one.
@@ -926,6 +1036,11 @@ class VirtualClient:
 		# symptoms cancelled; fixing the honest one exposed this.
 		_issue_production()
 		_raise_buildings(now)
+		# Beside the build step, and BEFORE the "no squads" guard below:
+		# working a gate needs no squad, and putting it after that guard
+		# is precisely how `_issue_production` became a deadlock the
+		# moment a bot could legitimately own nothing (D-031).
+		work_the_gate(now)
 		_put_gatherers_to_work()
 
 		if state.squads.is_empty():
@@ -1356,6 +1471,28 @@ func _refused_count() -> int:
 	return count
 
 
+## Gate orders and state changes across all bots (#337). Reported rather
+## than gated, and the reasoning is #123's `nodes_felled` verbatim: a bot
+## reaches its gate only after a barracks is standing and a crew is spare,
+## which needs minutes of match — so gating on it would re-set D-031's
+## stale-timing trap, where a duration that no longer reaches the
+## condition fails an honest run. `just test-scenario` starts mid-game and
+## is where the gate belongs once somebody measures the duration that
+## always reaches it.
+func _gate_orders() -> int:
+	var count := 0
+	for vc in _clients:
+		count += vc.gate_orders
+	return count
+
+
+func _gate_toggles() -> int:
+	var count := 0
+	for vc in _clients:
+		count += vc.gate_toggles
+	return count
+
+
 func _max_known_squads() -> int:
 	var most := 0
 	for vc in _clients:
@@ -1488,7 +1625,7 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d techs_ordered=%d techs_held=%d refused=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d techs_ordered=%d techs_held=%d gate_orders=%d gate_toggles=%d refused=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
@@ -1496,7 +1633,7 @@ func _report() -> void:
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
 		_patrol_legs(), _scouts_peak(), _raid_orders(), _military_squads(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
-		_nodes_felled(), _techs_ordered(), _techs_held(), _refused_count()])
+		_nodes_felled(), _techs_ordered(), _techs_held(), _gate_orders(), _gate_toggles(), _refused_count()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
