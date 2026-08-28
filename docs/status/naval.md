@@ -54,3 +54,45 @@ other.
 `MapConfig.walkable_components` is domain-agnostic and its name is not —
 every naval stage will call it with a navigability field. It belongs to
 an unmerged PR (#216); raised there rather than edited here.
+
+---
+
+**Stage 5 — combat across the shoreline — is built
+(D-20260828-melee-does-not-cross-a-shoreline, §2.5, cut-list row 5).**
+`Combat._can_reach_tier` is now `_can_reach_domain`, and `SquadSim`
+declares `DOMAIN_GROUND` / `DOMAIN_WALL_TOP` / `DOMAIN_WATER`. Nothing
+else in `combat.gd` moved: ships are squads, so the bucket map, the disk
+scan and D-024's arithmetic are untouched.
+
+**THE PLAN'S "same sentence" IS NOT THE SAME SENTENCE, and this is the
+thing to know.** §2.5 says melee cannot cross a domain boundary and calls
+that "the same sentence D-076 already enforces between ground and
+wall-top". D-076's rule is **asymmetric**: it refuses melee UP onto a
+wall and permits melee DOWN off one, which is what makes climbing a
+defensive choice rather than a way to leave the battle.
+
+Implementing §2.5 literally makes it symmetric and **takes that away** —
+a wall-top squad becomes unable to fight the attackers at its foot. **No
+existing test covers it**: `test_wall_top.gd`'s melee test uses an ARCHER
+as the defender, so it asserts a ranged defender shoots back and says
+nothing about melee downward. Verified rather than assumed — with melee
+refused across every boundary the whole existing suite still passes, and
+the only red is the new test written for it.
+
+So: the plan is followed for water and deliberately **not** followed for
+walls. A shoreline stops melee both ways; a wall stops it one way. If the
+owner wants wall-tops to stop meleeing the ground, that is a change to
+D-076, in D-076's file, with its own reasoning — not a side effect of
+adding boats.
+
+Two smaller things:
+
+- **`DOMAIN_WATER` is declared before anything can be in it.** Stage 2
+  puts squads there; stage 5 needs to name the domain it refuses melee
+  across, and a bare `2` in `combat.gd` would be a second definition of
+  the same fact.
+- **The live half is stage 2's.** Nothing puts a squad in water yet, so
+  the tests drive the predicate directly. A ship actually failing to be
+  meleed is stage 2's gate; what stage 5 owes is a rule that is right
+  before anything depends on it.
+
