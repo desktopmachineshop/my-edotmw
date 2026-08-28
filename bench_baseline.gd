@@ -43,7 +43,73 @@ class_name BenchBaseline
 ## one, and a gate nobody can run headless is a gate nobody perturbs.
 
 const VERSION := 1
-const PATH := "res://bench/baseline.json"
+
+## Where baselines live. ONE FILE PER ADAPTER (`baseline-<slug>.json`),
+## because a frame time is a statement about hardware and a single slot
+## makes recording on a second machine an act that DESTROYS the first
+## one's history — silently, in a commit whose message says "recorded".
+##
+## That was a live trap rather than a hypothetical: #285 books scarce
+## hardware time on a discrete GPU, and the file it would have overwritten
+## holds the Intel Iris Xe numbers every figure in
+## `docs/status/client-render.md` is quoted against. Per-adapter slots
+## close it STRUCTURALLY — a different adapter physically cannot write
+## another's file — rather than with a `--force` somebody has to
+## remember, which is the same argument #359 settled for the artifact
+## rule.
+const DIR := "res://bench"
+const PREFIX := "baseline-"
+
+## The pre-#285 single slot. Still READ, never written: a branch cut
+## before this change has one, and a check that ignored it would report
+## "nothing has ever been recorded" on a tree that plainly had.
+const LEGACY_PATH := "res://bench/baseline.json"
+
+
+## The file this adapter's numbers belong in.
+##
+## Derived from the adapter STRING the GPU reports, because that is the
+## only identifier both halves have: the run knows it because it just
+## measured on it, and the check knows it because the run says so.
+static func path_for(adapter: String) -> String:
+	return "%s/%s%s.json" % [DIR, PREFIX, slug_for(adapter)]
+
+
+## An adapter name as a filename: lowercase, one dash per run of anything
+## that is not a letter or a digit, no leading or trailing dash.
+##
+## "Intel(R) Iris(R) Xe Graphics" -> "intel-r-iris-r-xe-graphics".
+## Deliberately NOT cleverer than that: stripping "(R)" would be a rule
+## about one vendor's punctuation, and two adapters that differed only in
+## what it stripped would then share a slot — which is the exact failure
+## this whole change exists to prevent. Ugly and injective beats tidy and
+## lossy.
+static func slug_for(adapter: String) -> String:
+	var out := ""
+	var last_was_dash := true
+	for i in range(adapter.length()):
+		var c := adapter.substr(i, 1).to_lower()
+		if (c >= "a" and c <= "z") or (c >= "0" and c <= "9"):
+			out += c
+			last_was_dash = false
+		elif not last_was_dash:
+			out += "-"
+			last_was_dash = true
+	return out.trim_suffix("-")
+
+
+## Every recorded slot on this tree, newest-looking first is not a thing
+## — they are returned in directory order, which is stable enough for a
+## report and is never used to CHOOSE one.
+static func slots() -> PackedStringArray:
+	var found := PackedStringArray()
+	for name in DirAccess.get_files_at(DIR):
+		var file := String(name)
+		if file.begins_with(PREFIX) and file.ends_with(".json"):
+			found.append("%s/%s" % [DIR, file])
+	if FileAccess.file_exists(LEGACY_PATH):
+		found.append(LEGACY_PATH)
+	return found
 
 ## Which counts are deterministic given the fingerprint, and therefore
 ## gate. `soldiers` is the army the roster fields; `drawn` and
