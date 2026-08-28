@@ -333,7 +333,10 @@ func test_a_landing_order_is_not_corrected_into_the_sea() -> void:
 	assert_eq(sim.cargo_of(hull).size(), 1, "Setup: laden")
 
 	sim.order_move(hull, quay)
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
+		if sim.cargo_of(hull).is_empty():
+			break
 	assert_eq(sim.cargo_of(hull).size(), 0, "the cargo went ashore")
 
 
@@ -366,3 +369,40 @@ func test_nothing_subtracts_a_cell_from_the_navigable_array() -> void:
 		fresh.set_navigable(w["navigable"])
 		assert_true(fresh.is_navigable(Vector2i(12, 6)),
 			"%s subtracts from the navigable array — the water layer now needs belief" % def.id)
+
+
+# --- the schema cannot drift from the constants (#367) ------------------
+
+func test_the_default_movement_domain_is_inside_its_own_enum() -> void:
+	# #367: `UnitDef.movement_domain` was declared with DIFFERENT ENUM
+	# VALUES by two independent chains — `("ground", "water")` here and
+	# `("land", "water")` in the design PR — and `decisions/D-010.md`
+	# recorded both, because each chain appended to the log without seeing
+	# the other. A `.tres` authored against the losing spelling LOADS, is
+	# not in the shipped enum, and reads as not-water: the hull walks.
+	#
+	# Settled at `"ground"`, on the data (two implementations and every
+	# shipped .tres) and on the naming (`DOMAIN_GROUND`).
+	#
+	# THIS is the guard that catches the next one, and its virtue is that
+	# it needs no cross-branch knowledge: whatever the enum says, the
+	# default must be a member of it, and the default string must be the
+	# one `add_squad` maps to the ground domain. It fails from inside
+	# whichever chain breaks it, which is the property #367 says was
+	# missing when two of them broke it at once.
+	var def := UnitDef.new()
+	var hint := ""
+	for property in def.get_property_list():
+		if String(property.get("name", "")) == "movement_domain":
+			hint = String(property.get("hint_string", ""))
+			break
+	assert_ne(hint, "", "movement_domain must be an exported enum")
+	var allowed := hint.split(",")
+	assert_true(allowed.has(def.movement_domain),
+		"the default %s is not one of %s" % [def.movement_domain, allowed])
+
+	var space := TorusSpace.new(8, 4, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(def, 1, Vector2i(1, 1))
+	assert_eq(sim.tier_of(id), SquadSim.DOMAIN_GROUND,
+		"a default unit must start on the ground, whatever the string is spelled")

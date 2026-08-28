@@ -306,8 +306,15 @@ func test_a_laden_hull_ordered_at_land_puts_its_cargo_ashore() -> void:
 	assert_eq(sim.space.distance(sim.cell_of(hull), beach), 1,
 		"Setup: and the hull is beside it")
 
+	# Ticked until it ARRIVES rather than once. A hull ordered at land is
+	# corrected (naval 2.4) to the nearest sea room, which need not be the
+	# cell it is already on — so "ordered" and "arrived" are different
+	# ticks even when the beach is one step away.
 	sim.order_move(hull, beach)
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
+		if not sim.last_landings.is_empty():
+			break
 
 	assert_eq(sim.cargo_of(hull).size(), 0, "the hold is empty")
 	assert_eq(sim.last_landings.size(), 1, "and a squad came ashore")
@@ -338,7 +345,10 @@ func test_a_landed_squad_is_an_ordinary_squad_that_kept_its_men() -> void:
 	assert_eq(sim.cargo_of(hull).size(), 1, "Setup: aboard")
 
 	sim.order_move(hull, _beach_beside(sim, sim.cell_of(hull)))
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
+		if not sim.last_landings.is_empty():
+			break
 	assert_eq(sim.last_landings.size(), 1)
 	if sim.last_landings.is_empty():
 		return
@@ -354,34 +364,45 @@ func test_a_hull_ordered_at_water_is_not_a_landing() -> void:
 	var sim: SquadSim = w["sim"]
 	var loaded := _loaded(w)
 	sim.order_move(loaded["hull"], Vector2i(15, 8))
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
 	assert_eq(sim.cargo_of(loaded["hull"]).size(), 1, "the cargo stays aboard")
 	assert_eq(sim.last_landings.size(), 0, "and nobody landed")
 
 
-func test_a_hull_far_from_its_target_lands_nobody_yet() -> void:
-	# The arrival test. A hull cannot unload across a strait it never
-	# crossed — which is also what makes this wait for naval stage 2
-	# honestly rather than by pretending.
-	var w := _world()
+func test_a_hull_still_under_way_lands_nobody_yet() -> void:
+	# The arrival test, stated as what it actually is. A laden hull puts
+	# its cargo ashore when it ARRIVES — `_cell == _destination` — and not
+	# before, or an army would be dropped in the water halfway across.
+	#
+	# It says "not yet" rather than "never" on purpose: a hull ordered
+	# somewhere it cannot reach is corrected (naval 2.4) to the nearest
+	# sea room it CAN reach, arrives there, and unloads — which is the
+	# right behaviour and not what this test is about. Measured while
+	# writing it: an earlier version claimed "never", ticked 120 times,
+	# and went red because the hull had sensibly landed the army on the
+	# nearest shore.
+	var w := _channel()
 	var sim: SquadSim = w["sim"]
-	var hull := sim.add_squad(_transport(), 1, Vector2i(18, 8))
+	var hull := sim.add_squad(_transport(), 1, w["water"])
 	var squad := sim.add_squad(_land_unit(), 1, w["quay"])
-	# Board it at the dock first, then move the hull far off.
-	var near := sim.add_squad(_transport(), 1, w["water"])
 	sim.order_move(squad, w["water"])
-	for _t in range(20):
+	for _t in range(60):
 		sim.tick()
 		if sim.alive_of(squad) <= 0:
 			break
-	assert_eq(sim.cargo_of(near).size(), 1, "Setup: aboard the near hull")
+	assert_eq(sim.cargo_of(hull).size(), 1, "Setup: aboard")
 
-	sim.order_move(near, Vector2i(4, 4))  # far inland
-	sim.tick()
-	assert_eq(sim.cargo_of(near).size(), 1,
-		"a hull that has not arrived lands nobody")
+	# The far island, a long crossing away.
+	sim.order_move(hull, Vector2i(21, 6))
+	for _t in range(10):  # nowhere near enough to cross
+		sim.tick()
+	assert_ne(sim.cell_of(hull), sim.space.from_index(sim.space.index(Vector2i(21, 6))),
+		"Setup: it has not arrived")
+	assert_eq(sim.cargo_of(hull).size(), 1,
+		"a hull still under way keeps its cargo aboard")
 	assert_eq(sim.last_landings.size(), 0)
-	assert_eq(sim.alive_of(hull), sim.alive_of(hull), "unused hull, kept for clarity")
+	assert_true(sim.is_navigable(sim.cell_of(hull)), "and is still at sea")
 
 
 # --- 5. THE hash, with cargo aboard -------------------------------------
@@ -417,7 +438,10 @@ func test_the_hash_still_agrees_after_the_cargo_lands() -> void:
 	var sim: SquadSim = w["sim"]
 	var loaded := _loaded(w)
 	sim.order_move(loaded["hull"], _beach_beside(sim, sim.cell_of(loaded["hull"])))
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
+		if not sim.last_landings.is_empty():
+			break
 	assert_eq(sim.last_landings.size(), 1, "Setup: something landed")
 
 	var state := ClientState.new()
@@ -468,3 +492,125 @@ func test_an_empty_hull_costs_the_wire_a_zero_and_nothing_else() -> void:
 	for entry in decoded:
 		assert_true(entry.has("cargo"), "every squad reports its cargo")
 		assert_eq((entry["cargo"] as Array).size(), 0, "which is empty here")
+
+
+# --- 6. the crossing, now that a hull can sail --------------------------
+
+## The clause stage 4 could NOT discharge, discharged.
+##
+## Stage 4's done-when is "a land squad crosses water and lands"; it was
+## written before naval stage 2, so every voyage above is PLACED rather
+## than sailed and the file said so rather than claiming otherwise. With
+## the water domain live the whole leg can be run, and this is it: board
+## at a dock on one shore, sail a real field across a real channel, land
+## on the far side.
+##
+## TWO ISLANDS, not one coastline with water in the middle — and that
+## distinction is the fixture trap this project has recorded before ("a
+## wall of constant q does not block a torus at all"). A single band of
+## water on a 40-wide torus leaves the far shore reachable the SHORT way
+## round, so the first version of this measured an 11-cell wrap and called
+## it a crossing. Land on x in [0,5) and [20,25), water everywhere else:
+## whichever way the hull goes, it goes over open sea.
+func _channel() -> Dictionary:
+	var space := TorusSpace.new(40, 12, 1.0)
+	var passable := PackedByteArray()
+	var navigable := PackedByteArray()
+	passable.resize(space.cell_count())
+	navigable.resize(space.cell_count())
+	for index in range(space.cell_count()):
+		var coord := space.from_index(index)
+		var dry := coord.x < 5 or (coord.x >= 20 and coord.x < 25)
+		passable[index] = 1 if dry else 0
+		navigable[index] = 0 if dry else 1
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var buildings := BuildingSim.new(space)
+	sim.buildings = buildings
+	sim.set_passable(passable)
+	sim.set_navigable(navigable)
+
+	var quay := Vector2i(4, 6)
+	var water := Vector2i(5, 6)
+	var dock: int = buildings.add_building(BuildingSim.def_by_id(&"dock"), 1, quay, true)
+	buildings.set_water_cell(dock, space.index(water))
+	return {"sim": sim, "space": space, "quay": quay, "water": water}
+
+
+func test_a_land_squad_crosses_water_and_lands() -> void:
+	var w := _channel()
+	var sim: SquadSim = w["sim"]
+	var far_shore := Vector2i(21, 6)
+	assert_true(sim.is_passable(far_shore), "Setup: the far shore is land")
+	assert_gt(sim.space.distance(w["quay"], far_shore), 12,
+		"Setup: and it is a genuine crossing — TOROIDAL distance, so a wrap")
+	# The two islands must not touch by land, or a "crossing" is a walk.
+	assert_false(sim.is_passable(Vector2i(12, 6)), "Setup: open sea between them")
+	assert_false(sim.is_passable(Vector2i(32, 6)), "Setup: and the other way too")
+
+	# 1. board at the dock.
+	var hull := sim.add_squad(_transport(), 1, w["water"])
+	var squad := sim.add_squad(_land_unit(), 1, w["quay"])
+	var boarded := sim.alive_of(squad)
+	sim.order_move(squad, w["water"])
+	for _t in range(60):
+		sim.tick()
+		if sim.alive_of(squad) <= 0:
+			break
+	assert_eq(sim.cargo_of(hull).size(), 1, "it boarded at the dock")
+
+	# 2. sail — a real water field across a real channel — and 3. land.
+	sim.order_move(hull, far_shore)
+	var landed := -1
+	for _t in range(600):
+		sim.tick()
+		if not sim.last_landings.is_empty():
+			landed = int(sim.last_landings[0])
+			break
+	assert_gte(landed, 0, "the cargo came ashore on the far side")
+	if landed < 0:
+		return
+	assert_true(sim.is_passable(sim.cell_of(landed)), "on ground it could walk")
+	assert_lte(sim.space.distance(sim.cell_of(landed), far_shore), 4,
+		"where it was sent")
+	assert_eq(sim.alive_of(landed), boarded, "with the men that boarded")
+	assert_gt(sim.space.distance(sim.cell_of(landed), w["quay"]), 12,
+		"and it is genuinely on the OTHER island")
+
+
+func test_the_hash_agrees_across_the_whole_voyage() -> void:
+	# The done-when's other half, re-asked at every stage of a real
+	# crossing rather than only with the hull parked: aboard at the dock,
+	# aboard mid-channel, and ashore on the far side. Through the wire
+	# each time.
+	var w := _channel()
+	var sim: SquadSim = w["sim"]
+	var hull := sim.add_squad(_transport(), 1, w["water"])
+	var squad := sim.add_squad(_land_unit(), 1, w["quay"])
+	sim.order_move(squad, w["water"])
+	for _t in range(60):
+		sim.tick()
+		if sim.alive_of(squad) <= 0:
+			break
+	_assert_wire_agrees(sim, "aboard at the dock")
+
+	sim.order_move(hull, Vector2i(21, 6))
+	for _t in range(40):
+		sim.tick()
+	_assert_wire_agrees(sim, "aboard, mid-channel")
+
+	for _t in range(600):
+		sim.tick()
+		if not sim.last_landings.is_empty():
+			break
+	_assert_wire_agrees(sim, "ashore on the far side")
+
+
+func _assert_wire_agrees(sim: SquadSim, when: String) -> void:
+	var state := ClientState.new()
+	state.space = sim.space
+	state.player = 1
+	var visible := sim.visible_to(1)
+	state._handle_squad_info(NetProtocol.encode_squad_info(
+		sim.squad_info_entries(visible)))
+	assert_eq(state.composition_hash(), sim.composition_hash(visible),
+		"server and client must agree: %s" % when)
