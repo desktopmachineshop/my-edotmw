@@ -96,3 +96,52 @@ Two smaller things:
   meleed is stage 2's gate; what stage 5 owes is a rule that is right
   before anything depends on it.
 
+---
+
+**Stage 7 — the AI's naval decision layer — is built; the BEHAVIOUR is
+blocked on stage 2 (D-20260828-an-ai-invests-in-what-it-cannot-walk-to,
+§6.1/§6.3).** `ai_investment.gd`, `ai_naval.gd` and `bot_naval.gd` are
+static, pure and tested; `AiProfileDef.naval_commitment` ships on all
+three difficulties.
+
+**The cut-list's done-condition is NOT met, and it is not a matter of
+effort.** It asks for *"a landing happens in a played match"*, and today
+no landing can happen on any map:
+
+- **ships cannot move** — `SquadSim.is_passable` does not dispatch on the
+  water domain and no water flow field exists (stage 2);
+  `set_navigable`'s own comment says *"nothing paths on it today"*;
+- **there is no naval map** — `islands` was retired (#280/#299) and
+  `maps/isles.tres` is stage 9's, while §6.2 specifies the gates *on an
+  islands map*.
+
+So an AI could be given the whole behaviour and no landing would result,
+however committed the profile. **Shipping AI naval behaviour that cannot
+be run would BE the D-076 mistake rather than the fix for it** — which is
+the argument §6 opens with — so the behaviour, the `AI_STATS` keys, the
+bot's crossing and `beachhead.tres` land WITH stage 2.
+
+Four things worth carrying:
+
+- **The trigger is REACHABILITY, not a map flag**: does my landmass hold
+  a known enemy building? On `continents` that is almost always yes, so
+  the behaviour costs nothing where it is not wanted, and no map needs
+  labelling. **Knowing of no enemy is not a reason to build a navy** —
+  an AI that has scouted nothing says no, or it talks itself into a fleet
+  before it has looked.
+- **`AiInvestment` is the reusable half, and #337 (walls-AI) is its
+  second customer.** An investment is a named, ordered list of steps —
+  dock, transport, embark, landing — which is also how a harness reports
+  WHICH leg broke rather than a bare zero. Nothing in it names water.
+- **Stage 4 got the order path right, and it is worth knowing**: embark
+  and landing ride the ORDINARY move order (a squad ordered onto a hull's
+  cell boards it; a laden hull ordered at land records a landing), so no
+  new opcode exists and §2.4's "orders never choose a domain" survives.
+- **Three of the four steps could already succeed** once the behaviour is
+  wired — dock (stage 3), transport (stage 6), embark (stage 4 spawns
+  hulls at a dock's water side). Only the landing waits, so the ordered
+  vacuity guards will report "stuck at landing" rather than a bare zero.
+
+**Found on the way, filed not fixed:** seven shipped `.tres` files are
+not UTF-8, so every Godot run prints twelve parse warnings (#338).
+
