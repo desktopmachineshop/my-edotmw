@@ -1,4 +1,31 @@
-**Naval is DESIGNED but NOT BUILT** — the design session ran on
+**Naval is DESIGNED, and STAGE 2 of nine is built** — the design session
+ran on 2026-08-28 (issue #301) and the water domain landed the same day.
+Everything else in the cut-list is still specification: **no `.tres`
+declares a ship, no dock exists, nothing embarks, and no AI sails**, so
+treat every schema field named below that stage 2 did not add as a
+specification rather than a description of the repo.
+
+**What stage 2 built:** `SquadSim.DOMAIN_WATER` as a third value of
+`_tier`, `set_navigable` taking the water graph the way `set_passable`
+takes the land one, a third `FlowField` layer with its own budget and
+cache, `UnitDef.movement_domain`, and water belief in
+`TerrainKnowledge`. It consumes an array and never computes one, which is
+what let stage 1 be written in parallel.
+
+**The budget is measured.** A full naval solve on the `islands` preset is
+5,690 cells / 5.8 ms at Skirmish, 22,149 / 22.9 ms at Standard, 48,717 /
+52.0 ms at Large and 86,989 / 108.4 ms at Huge — about 1.03 us per cell,
+so a Standard naval field is two thirds of a whole-map ground field. The
+budget is set EQUAL to `field_cells_per_tick` (neither layer privileged),
+which puts the first naval order at 1 tick on Skirmish and 2 on Standard.
+**A live worst-tick figure is OWED**: nothing sails in a real match yet,
+which is exactly the position D-076 reported for the wall layer, and the
+number to quote comes from `test-load` on a water map once the AI stage
+lands.
+
+---
+
+**The design, as written —** the design session ran on
 2026-08-28 on the owner's directive (issue #301) and produced
 `docs/plans/naval.md` plus three decisions:
 `D-20260828-water-is-a-second-movement-domain`,
