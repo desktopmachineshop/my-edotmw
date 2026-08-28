@@ -39,6 +39,19 @@ charge is refused, and a charge already running ends at
 {SquadSim.CHARGE_EXHAUST_FLOOR}. Sprinting, running and fighting drain
 stamina; standing still restores it. Charge, rest, charge has a price.
 
+## Across a shoreline
+
+Melee does not cross a shoreline, in EITHER direction. Your soldiers
+cannot reach a ship, and a ship cannot reach the shore. Missiles cross
+it freely.
+
+That is what makes a beach dangerous: an army caught on one by a warship
+is shot at and cannot answer, unless it brought archers.
+
+The rule is deliberately not the same as a wall's, which stops melee only
+ONE way — you cannot strike a man on a wall from the ground, and he can
+strike you.
+
 ## Ground
 
 Attacking downhill multiplies your damage by {Combat.DOWNHILL_MULT}, uphill
@@ -53,4 +66,4 @@ A stance is a rule a squad keeps following without being told again.
 - HOLD FIRE waits until you explicitly order an attack.
 - RUN moves faster and spends stamina to do it."
 sources = Array[String](["res://combat.gd", "res://squad_sim.gd", "res://decisions/D-20260819-only-men-in-contact-fight.md", "res://decisions/D-20260819-a-charge-is-spent-on-its-impact.md", "res://decisions/D-20260819-tired-men-fight-uphill.md", "res://decisions/D-20260819-stances-are-standing-orders.md"])
-stamp = "8fe3bd1db756fed203f9a7dae49d8e339cfadb6a253886299a6f02881c3c4330"
+stamp = "c60bb6bb160f485f95e475118733e5d3ff3c488f73e226de4627b54191d0e033"

@@ -32,6 +32,17 @@ His death costs every squad in that circle
 yours. Losing him does not lose you the match; it loses you the battle you
 were standing in.
 
+## Men at sea cannot break, and cannot be saved
+
+Troops aboard a ship are not on the battlefield: they have no morale, take
+no shock from a friend breaking beside them, and cannot rout. Nor can they
+fight.
+
+If the ship goes down they go down with it. There is no rout, no chain
+shock and no swimming ashore — the squads are simply gone. Loading an army
+onto transports is therefore the one move that can lose it all at once, and
+it is worth an escort.
+
 ## Some troops never break
 
 Troops with no morale to lose cannot be routed by anything: not casualties,
@@ -39,4 +50,4 @@ not a flank, not a general dying beside them. The Civilisations page names
 which army that is, because it reads it off the troop data rather than being
 told."
 sources = Array[String](["res://combat.gd", "res://decisions/D-20260819-morale-reads-the-fight.md", "res://decisions/D-20260819-a-general-holds-the-line.md"])
-stamp = "218df1ac2bb7a8dfb1cf4e578c3f9aadcfa4151818f27da2d77844cce70a69a2"
+stamp = "d6f5692ee0913bd5e18941aa7da9f9b3aa89c5f63d6b95ec4e63f3700926f9f1"
