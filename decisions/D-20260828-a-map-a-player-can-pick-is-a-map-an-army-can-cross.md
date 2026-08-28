@@ -1,7 +1,13 @@
 # D-20260828 · A map a player can pick is a map an army can cross
 
 **Date:** 2026-08-28
-**Status:** Accepted
+**Status:** Superseded by `D-20260828-water-is-a-second-movement-domain`
+(same day, owner's directive #301). **The measurement below stands and is
+the reason the naval feature is worth building; what is superseded is the
+conclusion.** #280 offered two exits — retire the preset or write the
+naval decision — and the owner chose naval. `TerrainPreset.playable`
+survives as the mechanism, and the naval cut-list's last stage is what
+flips it back.
 **Issue:** #280, from the gap assessment (`docs/plans/gap-assessment.md` §1.5)
 
 ## Decision
