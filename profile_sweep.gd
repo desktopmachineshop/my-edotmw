@@ -58,6 +58,17 @@ func _initialize() -> void:
 		_derive_sweep(config)
 	if only == "" or only == "ladder":
 		_tick_ladder(config)
+	if only == "" or only == "water":
+		_water_ladder()
+	if only == "" or only == "scale":
+		# `--counts=150,180,210` brackets a budget crossing without paying
+		# for the whole sweep again. Empty is the shipped ladder.
+		var raw := String(args.get("counts", ""))
+		var counts := []
+		for piece in raw.split(",", false):
+			if piece.is_valid_int():
+				counts.append(piece.to_int())
+		_scale_ladder(config, counts if not counts.is_empty() else SCALE_COUNTS)
 	quit(0)
 
 
@@ -104,14 +115,14 @@ const LADDER_WARMUP := 120
 const LADDER_TICKS := 200
 const LADDER_PLAYERS := 4
 
-## One rally per five squads. The count sweep above uses eight for any
-## count, which at 120 squads puts fifteen squads on one cell — and
+## Squads per rally point. The count sweep above uses eight rally points
+## at ANY count, which at 120 squads puts fifteen squads on one cell — and
 ## separation then spends its whole budget shoving them outward past each
 ## other. Measured: 51-70 us/squad of separation against the 5-8 a real
 ## `just test-load` run reports. That is a pathological workload, not a
 ## defect, and a ladder built on it would attribute host noise and pile-up
 ## to whichever knob happened to be off.
-const LADDER_RALLY_POINTS := 24
+const LADDER_SQUADS_PER_RALLY := 5
 
 ## Interleaved repeats, and the ladder reports the MINIMUM of them.
 ##
@@ -137,7 +148,9 @@ const LADDER_PASSES := 7
 ## both are deterministic, both are expensive, and rebuilding them thirty
 ## times would put their variance inside the measurement.
 func _ladder_run(space: TorusSpace, passable: PackedByteArray,
-		terrain: TerrainGen, nodes: Dictionary, off: String) -> Dictionary:
+		terrain: TerrainGen, nodes: Dictionary, off: String,
+		squads: int = LADDER_SQUADS, hulls: int = 0,
+		navigable: PackedByteArray = PackedByteArray()) -> Dictionary:
 	# `control` is the shipped configuration under another name — the
 	# noise-floor row. Nothing below may branch on it.
 	if off == "control":
@@ -174,7 +187,32 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	var defs := UnitRoster.load_all()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 0xF00D
-	for i in range(LADDER_SQUADS):
+
+	# The WATER layer (naval stage 2). A hull paths on a third field layer
+	# with its own cell budget, and #343 measured that layer alone; what
+	# nothing measures is the two of them in the same tick, at the scale
+	# `D-20260828-the-shipping-scale` actually decided. That is the whole
+	# question here, so hulls are part of the same squad total rather
+	# than added on top of it — a fleet is a share of an army, not a
+	# bonus one.
+	var water_cells := []
+	# Guarded, so this file compiles and runs on a tree WITHOUT the naval
+	# stack: `set_navigable` and `movement_domain` are naval stage 1/2,
+	# and without them the water section reports "no hulls" instead of
+	# failing to parse. Same degradation `_first_hull` gives.
+	if hulls > 0 and not navigable.is_empty() and sim.has_method("set_navigable"):
+		sim.set_navigable(navigable)
+		for index in range(space.cell_count()):
+			if navigable[index] != 0:
+				water_cells.append(index)
+	var hull_def := _first_hull(defs)
+	var hull_ids := []
+	if not water_cells.is_empty() and hull_def != null:
+		for n in range(mini(hulls, squads)):
+			hull_ids.append(sim.add_squad(hull_def, 1 + (n % LADDER_PLAYERS),
+				space.from_index(int(water_cells[(n * 97) % water_cells.size()]))))
+
+	for i in range(squads - hull_ids.size()):
 		sim.add_squad(defs[i % defs.size()], 1 + (i % LADDER_PLAYERS), Vector2i(
 			rng.randi_range(0, space.width - 1),
 			rng.randi_range(0, space.height - 1)))
@@ -189,8 +227,13 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 					rng.randi_range(0, space.width - 1),
 					rng.randi_range(0, space.height - 1)), true)
 
+	# One rally per five squads at every count, so the sweep varies the
+	# COUNT and not the crowding — a fixed rally list would pile five
+	# times as many squads onto each point at 480 as at 60 and measure
+	# separation instead of scale.
+	var rally_points := maxi(4, squads / LADDER_SQUADS_PER_RALLY)
 	var rallies := []
-	for r in range(LADDER_RALLY_POINTS):
+	for r in range(rally_points):
 		rallies.append(Vector2i(
 			rng.randi_range(0, space.width - 1),
 			rng.randi_range(0, space.height - 1)))
@@ -199,8 +242,7 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	# opening field solves is an average of a transient that never recurs.
 	for tick in range(LADDER_WARMUP):
 		if tick % MOVE_EVERY_TICKS == 0:
-			for squad in range(sim.squad_count()):
-				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+			_order_everyone(sim, rallies, rally_points, hull_ids, water_cells)
 		sim.tick()
 
 	var keys := ["tick", "fields", "curves", "vision", "combat", "buildings",
@@ -212,12 +254,11 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	var worst := 0
 	for tick in range(LADDER_TICKS):
 		if tick % MOVE_EVERY_TICKS == 0:
-			for squad in range(sim.squad_count()):
-				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+			_order_everyone(sim, rallies, rally_points, hull_ids, water_cells)
 		sim.tick()
 		worst = maxi(worst, sim.last_tick_usec)
 
-	var updates := float(LADDER_TICKS * LADDER_SQUADS)
+	var updates := float(LADDER_TICKS * squads)
 	var out := {"worst_ms": float(worst) / 1000.0}
 	for key in keys:
 		out[key] = float(int(sim.get("total_%s_usec" % key)) - int(before[key])) / updates
@@ -313,6 +354,158 @@ func _tick_ladder(config: MapConfig) -> void:
 			row["tick"], row["fields"], row["curves"], row["vision"],
 			row["combat"], row["buildings"], row["production"], row["economy"],
 			row["separation"], row["other"], row["worst_ms"]])
+
+
+## The first hull in the roster, whoever fields it — by FIELD
+## (`movement_domain`), never by name, the discipline `bot_build_plan.gd`
+## already uses. Null on a tree with no naval content, which is what makes
+## the water section degrade to "no hulls" rather than to an error.
+func _first_hull(defs: Array) -> UnitDef:
+	for def in defs:
+		if def.get("movement_domain") == "water":
+			return def
+	return null
+
+
+## Re-order everybody: ground squads to their rally, hulls to a far corner
+## of the sea. Hulls are sent to DIFFERENT destinations from each other,
+## which is the worst case the water budget exists to bound (#343's own
+## harness does the same) — a fleet sharing one destination shares one
+## field and measures the cheap case.
+func _order_everyone(sim: SquadSim, rallies: Array, rally_points: int,
+		hull_ids: Array, water_cells: Array) -> void:
+	var hulls := {}
+	for id in hull_ids:
+		hulls[id] = true
+	for squad in range(sim.squad_count()):
+		if not hulls.has(squad):
+			sim.order_move(squad, rallies[squad % rally_points])
+	for n in range(hull_ids.size()):
+		sim.order_move(int(hull_ids[n]), sim.space.from_index(int(water_cells[
+			(water_cells.size() - 1 - (n * 89)) % water_cells.size()])))
+
+
+## Squad counts the scale ladder walks, looking for where D-020's 100 ms
+## tick runs out (#287).
+##
+## The count sweep at the top of this file already walks 100/250/500/1000
+## — on a BARE simulation. This walks the same question on the world the
+## server actually builds, which is the whole reason the tick ladder
+## exists: a count that fits in the budget without teams, buildings, an
+## economy or combat between four sides is not a count that fits.
+const SCALE_COUNTS := [60, 120, 240, 480]
+
+## Fewer passes than the bisection: this is looking for a budget crossing
+## measured in tens of milliseconds, not a knob difference measured in
+## single microseconds, so the noise floor that matters here is much
+## coarser and three interleaved passes buy enough.
+const SCALE_PASSES := 3
+
+## The scale `D-20260828-the-shipping-scale` decided, held fixed by the
+## water ladder so that hull count is the only thing varying.
+const SHIPPING_SCALE_SQUADS := 200
+
+
+## Where the tick budget runs out, on the world the server builds
+## (#287, and D-20260818-battle-quality-outranks-player-count's exit
+## criterion 8).
+##
+## Reports MEAN tick milliseconds and WORST, because D-020's budget is
+## about a tick being late and a mean that fits while the worst does not
+## is a stutter a player feels. Worst is the honest column.
+func _scale_ladder(config: MapConfig, counts: Array = SCALE_COUNTS) -> void:
+	var space := config.to_space()
+	var terrain := TerrainGen.new()
+	terrain.noise_seed = 1337
+	var passable := terrain.passability(space)
+	var template := Economy.new(space)
+	template.generate(terrain, 1)
+
+	print("profile: --- scale ladder, shipped world, %d ticks after %d warm-up, best of %d ---"
+		% [LADDER_TICKS, LADDER_WARMUP, SCALE_PASSES])
+	print("profile: squads,us_per_squad,ms_per_tick,ms_worst,fields,curves,vision,combat,buildings,separation")
+
+	var best := {}
+	for _pass in range(SCALE_PASSES):
+		for count in counts:
+			var row := _ladder_run(space, passable, terrain, template.nodes, "", int(count))
+			if not best.has(count) or float(row["tick"]) < float(best[count]["tick"]):
+				best[count] = row
+	for count in counts:
+		var row: Dictionary = best[count]
+		# us/squad x squads x 1 tick = us per tick.
+		var ms_per_tick := float(row["tick"]) * float(count) / 1000.0
+		print("profile: %d,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f" % [
+			int(count), row["tick"], ms_per_tick, row["worst_ms"],
+			row["fields"], row["curves"], row["vision"], row["combat"],
+			row["buildings"], row["separation"]])
+
+
+## Hull counts the water ladder walks, at a FIXED total squad count.
+##
+## The total is `D-20260828-the-shipping-scale`'s decided scale, and it is
+## held constant on purpose: the question #105 has to be re-read against
+## is not "what does a fleet cost" — #343 measured that — it is "what does
+## the tick cost at the scale we actually ship, once a third field layer
+## is in it". Varying the total as well would answer neither.
+const WATER_HULLS := [0, 10, 20, 40]
+
+## The preset the water ladder measures on.
+##
+## `islands` rather than the shipped default, and that is the honest
+## choice rather than the flattering one: #343 measured `islands` at
+## 67-71% water against `continents`' 16-21% and `plains`' 0.2-1.3%, so
+## it is where a water field is biggest and where the layer costs most.
+## A naval budget measured on a map with no sea in it is not a budget.
+const WATER_PRESET := &"islands"
+
+
+## What the tick costs at the DECIDED scale with the water layer active
+## (#105 re-read against `D-20260828-the-shipping-scale`; the layer's own
+## budget is #343).
+func _water_ladder() -> void:
+	var settings := MapSettings.from_map(load("res://maps/default.tres"))
+	var preset := TerrainPresetRoster.by_id(WATER_PRESET)
+	if preset == null:
+		print("profile: --- water ladder skipped: no '%s' preset ---" % WATER_PRESET)
+		return
+	settings.preset = WATER_PRESET
+	settings.apply_preset(preset)
+	settings.pin_seed(1337)
+
+	var space := settings.to_space()
+	var terrain := settings.to_terrain()
+	var passable := terrain.passability(space)
+	if not terrain.has_method("navigability"):
+		print("profile: --- water ladder skipped: no water layer on this tree ---")
+		return
+	var navigable: PackedByteArray = terrain.call("navigability", space)
+	var template := Economy.new(space)
+	template.generate(terrain, 1)
+
+	var water := 0
+	for i in range(navigable.size()):
+		if navigable[i] != 0:
+			water += 1
+	print("profile: --- water ladder, %s %dx%d, %.1f%% navigable, %d squads total, best of %d ---"
+		% [WATER_PRESET, space.width, space.height,
+			100.0 * float(water) / float(space.cell_count()),
+			SHIPPING_SCALE_SQUADS, SCALE_PASSES])
+	print("profile: hulls,us_per_squad,ms_per_tick,ms_worst,fields,combat,vision,separation")
+
+	var best := {}
+	for _pass in range(SCALE_PASSES):
+		for hulls in WATER_HULLS:
+			var row := _ladder_run(space, passable, terrain, template.nodes, "",
+				SHIPPING_SCALE_SQUADS, int(hulls), navigable)
+			if not best.has(hulls) or float(row["tick"]) < float(best[hulls]["tick"]):
+				best[hulls] = row
+	for hulls in WATER_HULLS:
+		var row: Dictionary = best[hulls]
+		print("profile: %d,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.2f" % [
+			int(hulls), row["tick"],
+			row["tick"] * float(SHIPPING_SCALE_SQUADS) / 1000.0, row["worst_ms"],
+			row["fields"], row["combat"], row["vision"], row["separation"]])
 
 
 ## Client-side derivation cost — D-006's other half.
