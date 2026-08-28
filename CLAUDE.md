@@ -106,6 +106,7 @@ and measurements belong in the decision entry that took them.
 @docs/status/fantasy-civs.md
 
 @docs/status/tech-tree.md
+@docs/status/naval-plan.md
 
 @docs/status/m9-plan.md
 
