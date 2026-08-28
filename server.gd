@@ -679,24 +679,6 @@ func _build_world() -> void:
 		_settings.width, _settings.height, _settings.preset, _settings.seed,
 		_spawn_points.size()])
 
-	# How many DISTINCT landmasses the starts occupy — map topology, not
-	# anybody's decision about it.
-	#
-	# This exists for `gate-check.sh naval`, and the reason is worth
-	# stating where the number is made. That gate has to tell two
-	# identical-looking runs apart: an AI that correctly wanted no navy
-	# because every enemy was walkable, and an AI that wanted no navy on
-	# an archipelago, which is #351 — the defect the gate exists to
-	# catch. `wants_navy=0` is what BOTH report, so keying the skip on it
-	# lets the AI's own output excuse the AI from the test.
-	#
-	# The map knows, and it is the only thing here that does. One
-	# landmass means naval is impossible and a skip is honest; more than
-	# one means the crossing was available and declining it is a
-	# finding. Harness knowledge, never the AI's — D-051 is about what a
-	# player may know, and a log line is not a player.
-	print("server: SPAWN_LANDMASSES=%d — %d start(s)" % [
-		_spawn_landmasses(space), _spawn_points.size()])
 
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
@@ -2262,32 +2244,6 @@ func _send_visible_nodes(peer, player: int, record) -> void:
 ## when the set of buildings changes — raising one, losing one — never per
 ## tick, and `SquadSim.set_passable` discards cached flow fields, which is
 ## exactly right: a field solved before a wall existed routes through it.
-## How many distinct walkable components the starting positions sit in.
-##
-## Deliberately over the TERRAIN passability handed in, not the sim's —
-## `SquadSim._passable` has living buildings stamped out of it, and a
-## town hall is not a topology change.
-##
-## Counts what the starts actually occupy rather than what the map holds:
-## a map of forty islands where every seat lands on one of them is, for
-## the purpose this serves, a one-landmass map.
-func _spawn_landmasses(space: TorusSpace) -> int:
-	if _spawn_points.is_empty():
-		return 0
-	var components := MapConfig.walkable_components(space, _passable)
-	var labels: PackedInt32Array = components["labels"]
-	var seen := {}
-	for point in _spawn_points:
-		var index := space.index(point)
-		if index < 0 or index >= labels.size():
-			continue
-		var label := labels[index]
-		if label < 0:
-			continue
-		seen[label] = true
-	return seen.size()
-
-
 func _refresh_passability() -> void:
 	# Everything else derived from the set of living buildings rides here
 	# too, above the `_sim` guard, and the farm registry is the first of

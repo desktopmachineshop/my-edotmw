@@ -124,9 +124,21 @@ case "$check" in
         # So the map decides. SPAWN_LANDMASSES is topology: one means no
         # crossing was ever available and a skip is honest; more than one
         # means the crossing was there and declining it is a finding.
-        islands="$(marker SPAWN_LANDMASSES "$1")"
-        if [ -z "$islands" ]; then
-            echo "gate-check(naval): the server log has no SPAWN_LANDMASSES — cannot tell a land map from an archipelago, so a skip here would be unearned" >&2
+        # NECESSARY AND SUFFICIENT ARE TWO QUESTIONS, and the map answers
+        # both. `landmasses > 1` says a ship is REQUIRED — somebody cannot
+        # be walked to. `sea_components == 1` says a ship is SUFFICIENT —
+        # there is one body of water joining the starts. A map that
+        # maroons every seat on its own island with its own private sea
+        # satisfies the first and is unplayable, so demanding a landing
+        # there would fail an honest run.
+        #
+        # Both come from `SEAT_LANDMASSES`, which the server derives from
+        # spawn placement and tells no AI (D-051 — a log line is not a
+        # player).
+        islands="$(marker landmasses "$1")"
+        seas="$(marker sea_components "$1")"
+        if [ -z "$islands" ] || [ -z "$seas" ]; then
+            echo "gate-check(naval): the server log has no SEAT_LANDMASSES — cannot tell a land map from an archipelago, so a skip here would be unearned" >&2
             exit 1
         fi
         if [ "$wanted" -eq 0 ]; then
@@ -134,7 +146,11 @@ case "$check" in
                 echo "gate-check(naval): skipped — the starts share one landmass, so no crossing was available and zero landings is correct"
                 exit 0
             fi
-            echo "gate-check(naval): the starts span $islands landmasses and NO seat wanted a navy — an AI that cannot walk to its enemy declined to sail (#351)" >&2
+            if [ "$seas" -ne 1 ]; then
+                echo "gate-check(naval): skipped — the starts span $islands landmasses but $seas separate seas, so no single crossing joins them"
+                exit 0
+            fi
+            echo "gate-check(naval): the starts span $islands landmasses joined by one sea and NO seat wanted a navy — an AI that cannot walk to its enemy declined to sail (#351)" >&2
             exit 1
         fi
         for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
