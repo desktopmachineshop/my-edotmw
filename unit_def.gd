@@ -102,7 +102,7 @@ const MORALE_REFERENCE_SQUAD := 36.0
 ## annihilated before it can be frightened.** Not rarely: never, at any
 ## level of beating, from any direction, with recovery disabled entirely.
 ## Measured: 12 of 27 combat defs, including EVERY cavalry def in the
-## game and the whole of stoneblood's non-levy roster.
+## game and the whole of one civ's non-levy roster.
 ##
 ## Scaled, the casualties needed become a constant FRACTION of the squad
 ## instead: `(morale - rout_threshold) / (loss * REFERENCE)`, about half
@@ -110,12 +110,11 @@ const MORALE_REFERENCE_SQUAD := 36.0
 ## and a forty-eight-man levy now break at comparable attrition, which is
 ## what "morale" was always supposed to mean.
 ##
-## Fearlessness survives untouched and for free: gravesworn ship
+## Fearlessness survives untouched and for free: a fearless def ships
 ## `morale_loss_per_casualty = 0`, and zero times any scale is zero
 ## (#191, `tests/test_fearless.gd`). That matters more than it looks —
-## the defect this fixes was silently sharing the deathless court's one
-## distinguishing feature with twelve units belonging to the other five
-## civs.
+## the defect this fixes was silently sharing the fearless civ's one
+## distinguishing feature with twelve units belonging to the other five.
 ##
 ## An APPLIED accessor rather than the raw field, per
 ## `D-20260823-a-civs-knobs-are-read-by-the-simulation`: both readers are
