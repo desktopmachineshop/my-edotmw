@@ -108,3 +108,6 @@
 246	ao/my-edotmw-88/renewable-food	CONFLICT-RESOLVED	13 files. client.gd BUILD_KEYS: kept #302's J-for-garrison_wall AND #246's O-for-farm (88 had already moved farm off J after the rehearsal filed #363). bot_client.gd: VERDICT and BOT format strings + arg arrays extended by four PRs, tails hand-merged; the gather loop taken from #246 (its fields pass is a rewrite, not an addition). ai/*.tres, civs/*.tres, D-010 additive.
 312	ao/my-edotmw-82/renewable-metals	CLEAN	4
 216	ao/my-edotmw-80/map-spawn-fixes	CONFLICT	docs/status/playtests-2026-08.md docs/status/spawns.md 
+216	ao/my-edotmw-80/map-spawn-fixes	CONFLICT-RESOLVED	two status docs appended by several PRs; kept both.
+313	ao/my-edotmw-81/naval-1-water-graph	CLEAN	7
+323	ao/my-edotmw-88/naval-3-docks	CONFLICT	server.gd 
