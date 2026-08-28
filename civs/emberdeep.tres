@@ -6,7 +6,7 @@
 script = ExtResource("1_civ")
 id = &"emberdeep"
 display_name = "Emberdeep"
-summary = "Fortification and siege. The slowest army in the game, the hardest to remove from anywhere it stands — and the one civ that both holds walls and reliably brings them down."
+summary = "Fortification and siege. The slowest army in the game, the hardest to remove from anywhere it stands â€” and the one civ that both holds walls and reliably brings them down."
 colour = Color(0.68, 0.36, 0.16, 1)
 starting_food = 250
 starting_wood = 160
