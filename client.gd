@@ -5646,6 +5646,15 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	# Explore (#120): a standing order, so the button shows whether it is
+	# ON — and the pressed state comes off the WIRE (`ClientState`), not
+	# from remembering that we sent it, because a rout cancels the mode
+	# server-side and a locally-guessed light would go on claiming the
+	# squad was scouting. Same discipline as the stance buttons below.
+	out.append({"label": "Explore",
+		"hint": "Explore: go and uncover the map, until given another order",
+		"current": _state.is_exploring(int(_selected[0])),
+		"kind": "explore", "id": &""})
 	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
 		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
 			"kind": "charge_arm", "id": &""})
@@ -5902,6 +5911,8 @@ func _on_action_pressed(index: int) -> void:
 			_gather_selected()
 		"stop":
 			_stop_selected()
+		"explore":
+			_explore_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
 		"width":
@@ -8135,6 +8146,24 @@ func _stop_selected() -> void:
 			sent += 1
 	if sent > 0:
 		print("client: stopped %d squad(s)" % sent)
+
+
+## Send every selected squad off to hunt fog (#120).
+##
+## Modelled on `_stop_selected` exactly — one order per squad through
+## `ClientState`, reliable, with a count printed. Several squads ordered
+## at once deliberately do NOT coordinate here: the server spreads them,
+## because it is the side that knows what has been explored and what the
+## other scouts are already walking towards.
+func _explore_selected() -> void:
+	var sent := 0
+	for squad in _selected:
+		var order := _state.encode_explore(squad)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			sent += 1
+	if sent > 0:
+		print("client: exploring with %d squad(s)" % sent)
 
 
 ## WASD pans relative to WHERE THE CAMERA IS LOOKING, not to world axes.
