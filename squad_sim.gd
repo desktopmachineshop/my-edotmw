@@ -223,7 +223,27 @@ var _curves: Array[StateCurve] = []
 var _morale := PackedFloat32Array()
 var _routed := PackedByteArray()  # 0/1 — not bool, to stay a packed array
 var _damage_accum := PackedFloat32Array()  # fractional casualties carried
+var _last_hit_tick := PackedInt32Array()  # -1 = never been shot at
 var _last_attack_tick := PackedInt32Array()  # -1 = never attacked
+## The tick a squad last TOOK DAMAGE, or -1. Read by combat's morale
+## recovery, which must not restore a squad's nerve while it is being shot
+## (#218): recovery was unconditional, so any attrition slower than
+## `morale_recovery_per_second` could never rout anybody however long it
+## went on — a town centre killed a levy squad to the last man with its
+## morale never below ~94 of 100 against a rout threshold of 25.
+##
+## DAMAGE, not casualties, and the difference is load-bearing. Keyed on
+## losing a man, the window has to outlast the gap BETWEEN deaths: a town
+## centre firing every 1.4 s kills an 85 HP levy only every ~2.8 s, so
+## a 2 s window let recovery leak through every gap and the squad still
+## died at 41 morale rather than routing. Being shot at is the thing that
+## stops men steadying, whether or not the last shot happened to kill one
+## — and it needs no constant tuned against a particular building's rate
+## of fire, which would be a number fitted to a fixture.
+##
+## A TICK rather than a timestamp, because everything else in this file
+## that dates an event is a tick (`_last_attack_tick` above), and a replay
+## reproduces ticks exactly.
 
 # Stance (D-034). 1 means the squad is attack-moving and should halt the
 # moment it finds something to fight; 0 means an ordinary move, which
@@ -457,6 +477,7 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_routed.append(0)
 	_damage_accum.append(0.0)
 	_last_attack_tick.append(-1)
+	_last_hit_tick.append(-1)
 	_attack_move.append(0)
 
 	_tier.append(0)
@@ -706,6 +727,25 @@ func morale_of(squad: int) -> float:
 
 func set_morale(squad: int, value: float) -> void:
 	_morale[squad] = value
+
+
+## Record that `squad` took damage on `tick`. Called from BOTH places
+## damage is applied — melee resolution and `_shoot_squad`, which is what
+## building fire and missiles come through — so "under fire" means the
+## same thing whatever is doing the shooting, and it is recorded BEFORE
+## the casualty rounding so a shot that killed nobody still counts.
+func mark_hit(squad: int, tick: int) -> void:
+	_last_hit_tick[squad] = tick
+
+
+## Ticks since `squad` was last shot at, or a very large number if it
+## never has been. Large rather than -1 so a caller can compare it against
+## a window without special-casing the never case.
+func ticks_since_hit(squad: int, tick: int) -> int:
+	var last := _last_hit_tick[squad]
+	if last < 0:
+		return 1 << 30
+	return tick - last
 
 
 func is_routed(squad: int) -> bool:
