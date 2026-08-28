@@ -51,7 +51,7 @@ func test_every_compose_invocation_is_scoped_to_this_instance() -> void:
 		"a compose invocation is not scoped to {{compose_project}}: %s"
 		% (offence.get_string() if offence != null else ""))
 
-	# Explicit CONTAINER names collide across worktrees unless prefixed
+	# Explicit container names collide across worktrees unless prefixed
 	# with the per-instance project.
 	#
 	# Scanned PER LINE, and only on lines that actually invoke docker.
