@@ -166,6 +166,19 @@ var _reported_match_end := false
 var _accumulator := 0.0
 var _port := DEFAULT_PORT
 var _run_seconds := -1.0  # negative = run until stopped
+## How long to keep simulating after the match is decided, in SIMULATED
+## seconds. Negative means "until `--run-seconds`", which is what every
+## harness did before #224 and what a player-hosted server must keep
+## doing — a human wants to sit in the victory screen.
+##
+## `just ai-ladder` sets it, because a headless ladder match that was won
+## at 95 s of a 600 s cap then simulated 505 further seconds of a survivor
+## gathering against nobody: 84% of that match's wall clock, and the whole
+## reason `ai-ladder 3 600` costs a flat half hour however fast the
+## matches decide.
+var _stop_after_match := -1.0
+## When the match was decided, in simulated seconds; negative until it is.
+var _match_over_at := -1.0
 var _status_every_ticks := 100
 var _shutting_down := false
 var _ticks_dropped := 0
@@ -223,13 +236,15 @@ func _ready() -> void:
 	var bad_args := CmdArgs.invalid_integers(args,
 		["port", "seed", "ai", "players", "lobby", "sandbox", "random-civs",
 		"ai-teams"])
-	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds", "height_scale"]))
+	bad_args.append_array(CmdArgs.invalid_numbers(args,
+		["run-seconds", "stop-after-match", "height_scale"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("server", bad_args))
 		get_tree().quit(1)
 		return
 	_port = int(args.get("port", DEFAULT_PORT))
 	_run_seconds = float(args.get("run-seconds", -1.0))
+	_stop_after_match = float(args.get("stop-after-match", -1.0))
 	var map_path := String(args.get("map", DEFAULT_MAP))
 
 	# --scenario=<id> starts the match MID-GAME instead of playing the
@@ -717,10 +732,44 @@ func _process(delta: float) -> void:
 			_reported_drop = true
 			push_error("server: dropped %d simulation tick(s) catching up — the sim is falling behind wall-clock (total is in the final summary)" % dropped)
 
-	if _run_seconds > 0.0 and _sim.time >= _run_seconds:
-		print("server: reached %.1fs, stopping" % _run_seconds)
+	var stop := stop_reason(_sim.time, _run_seconds, _match_over_at, _stop_after_match)
+	if stop != "":
+		print("server: %s" % stop)
 		_shutdown()
 		get_tree().quit(0)
+
+
+## Why this run should stop NOW, or "" to keep going (#224).
+##
+## Static and pure so the rule can be tested at all: it lives inside
+## `_process`, which needs a scene tree, a socket and a world — and the
+## half with the interesting behaviour is four floats. Same split as
+## `RenderCull` and `Formation`, and the same lesson D-106's amendment
+## and `docs/status/civ-knobs.md` both paid for — when a rule cannot be
+## tested where it lives, that is a fact about where it lives.
+##
+## Two conditions, and the ORDER between them matters. A decided match
+## stops on the match clause even though the cap has not been reached;
+## that is the point of the clause. A match that is still running stops
+## only on the cap.
+##
+## `--stop-after-match` is opt-in and negative by default, so every
+## harness that does not pass it — `test-load`, `test-scenario`,
+## `test-ai-teams` — measures exactly the window it measured before, and
+## a player-hosted server (which passes no `--run-seconds` at all) never
+## reaches either clause. That matters more than it looks: a decided
+## match is a perfectly ordinary thing for a HUMAN to be sitting in, and
+## a server that quit out from under the victory screen would be this
+## change escaping the harness it was written for.
+static func stop_reason(sim_time: float, run_seconds: float,
+		match_over_at: float, stop_after_match: float) -> String:
+	if match_over_at >= 0.0 and stop_after_match >= 0.0 \
+			and sim_time - match_over_at >= stop_after_match:
+		return "match decided at %.1fs, stopping %.1fs later (--stop-after-match=%.1f)" % [
+			match_over_at, sim_time - match_over_at, stop_after_match]
+	if run_seconds > 0.0 and sim_time >= run_seconds:
+		return "reached %.1fs, stopping" % run_seconds
+	return ""
 
 
 ## Totals for the run so far.
@@ -2552,6 +2601,7 @@ func _advance_match() -> void:
 	var finished := _match.is_finished() and not _reported_match_end
 	if finished:
 		_reported_match_end = true
+		_match_over_at = _sim.time
 		print("server: MATCH_OVER winner=%d" % _match.winner)
 
 	# Tell the clients, not just the log (D-102). Elimination was a
