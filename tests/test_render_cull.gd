@@ -7,6 +7,12 @@ extends GutTest
 ## here is the part with the interesting failure mode: which lattice copy
 ## of a squad the renderer should be looking at, and that drawing fewer
 ## soldiers never changes anything the simulation reads.
+##
+## Since #155 that includes WHEN a squad changes tier, which the client
+## used to answer with a memoryless lookup and is the last section of this
+## file. It moved into `render_cull.gd` for exactly the reason everything
+## else here did: a frame-to-frame flip is arithmetic, and arithmetic can
+## be tested without a GPU.
 
 const W := 128
 const H := 64
@@ -683,3 +689,198 @@ func test_a_forest_with_no_visible_copy_is_hidden_rather_than_relocated() -> voi
 	assert_false(RenderCull.is_on_screen(camera, centre + fallback, margin, size),
 		"the fallback copy is off screen too, so relocating the block buys "
 		+ "nothing and costs a map-wide jump the frame it flips")
+
+
+# --- the tier is STABLE, not merely correct (#155) ---------------------
+#
+# Every LOD check above this line is single-frame, and #155 is a
+# frame-to-frame difference: a squad sitting near 55 or 110 flipped tier
+# on the smallest movement of itself or the camera, taking a forty-man
+# squad to twelve (-70%) and back in the MIDDLE of the view. No test could
+# see it, because none of them asked the question twice.
+
+func test_a_squad_jittering_across_a_boundary_holds_its_tier() -> void:
+	# THE defect, stated as the issue asks for it: the tier for a fixed
+	# squad must not change when the camera moves by a small amount across
+	# a boundary.
+	#
+	# 3 units of wobble either side of 55 — less than two soldiers' worth
+	# of spacing, and far less than a squad drifting on its curve while a
+	# player nudges the camera.
+	var tier := RenderCull.detail_tier(30.0, -1)
+	assert_eq(tier, 0, "setup: a squad 30 units from the camera is drawn in full")
+
+	var flips := 0
+	for i in range(400):
+		var distance := 55.0 + sin(float(i) * 0.37) * 3.0
+		var next := RenderCull.detail_tier(distance, tier)
+		if next != tier:
+			flips += 1
+		tier = next
+
+	assert_eq(flips, 0,
+		"the tier changed %d times while the squad wobbled 3 units around a boundary" % flips)
+	assert_eq(tier, 0, "the squad ended up thinned without ever having receded")
+
+
+func test_the_far_boundary_is_as_stable_as_the_near_one() -> void:
+	# Both boundaries, because 12 -> 5 is a 58% drop and the issue reports
+	# the same symptom at both. A band expressed as a FRACTION covers the
+	# far one without a second constant, which is the reason it is one.
+	var tier := RenderCull.detail_tier(112.0, 1)
+	assert_eq(tier, 1, "setup: a squad just past 110 is on the middle tier")
+
+	var flips := 0
+	for i in range(400):
+		var distance := 110.0 + sin(float(i) * 0.37) * 6.0
+		var next := RenderCull.detail_tier(distance, tier)
+		if next != tier:
+			flips += 1
+		tier = next
+
+	assert_eq(flips, 0,
+		"the tier changed %d times while the squad wobbled 6 units around 110" % flips)
+
+
+func test_detail_is_lost_going_out_and_regained_at_the_plain_boundary() -> void:
+	# The band is one-sided on purpose, so state both sides of it. Erring
+	# toward detail is the cheap direction to err: the cost of coming back
+	# early is a little derivation, and the cost of leaving early is
+	# under-drawing a squad the player is looking straight at.
+	assert_eq(RenderCull.detail_tier(60.0, 0), 0,
+		"a squad that has receded to 60 thinned before it left the band")
+	assert_eq(RenderCull.detail_tier(64.0, 0), 1,
+		"a squad 64 units out — past the whole band — kept full detail")
+	assert_eq(RenderCull.detail_tier(60.0, 1), 1,
+		"a thinned squad regained detail at 60, which is outside 55")
+	assert_eq(RenderCull.detail_tier(54.0, 1), 0,
+		"a squad that came back inside 55 was still drawn thinned")
+
+
+func test_a_squad_with_no_history_reads_the_plain_ladder() -> void:
+	# A first sighting has no side of the band to be on, so it takes the
+	# tiers as tuned. The band must not become a permanent 15% shift of
+	# the whole ladder — that would be a retune of numbers measured
+	# against `just bench-render`, smuggled in as a stability fix.
+	assert_eq(RenderCull.detail_tier(54.0, -1), 0)
+	assert_eq(RenderCull.detail_tier(56.0, -1), 1)
+	assert_eq(RenderCull.detail_tier(109.0, -1), 1)
+	assert_eq(RenderCull.detail_tier(111.0, -1), 2)
+
+
+func test_a_squad_that_really_recedes_still_loses_detail() -> void:
+	# The other half of a hysteresis guard, and the one that keeps it
+	# honest: "never changes" would pass every assertion above and delete
+	# D-045's only lever on the frame budget. Every tier must still be
+	# reached, in order, by a squad that genuinely walks away.
+	var tier := -1
+	var seen: Array[int] = []
+	for step in range(400):
+		tier = RenderCull.detail_tier(20.0 + float(step), tier)
+		if seen.is_empty() or seen[seen.size() - 1] != tier:
+			seen.append(tier)
+	assert_eq(seen, [0, 1, 2] as Array[int],
+		"a squad walking from 20 to 420 units out passed through tiers %s" % [seen])
+
+	# And it must not take forever about it: the band is 15%, so the
+	# latest a squad may thin is one step past 63.25.
+	assert_eq(RenderCull.detail_tier(64.0, 0), 1)
+	assert_eq(RenderCull.detail_tier(127.0, 1), 2)
+
+
+func test_the_ladder_only_ever_thins() -> void:
+	# D-045's thinner-never-smaller rule needs the ladder to be monotone:
+	# a further tier may not draw MORE men. Cheap, and it is the check
+	# that would catch a tier inserted in the wrong place.
+	var previous := 1 << 30
+	for tier in range(RenderCull.LOD_TIERS.size()):
+		var soldiers := RenderCull.lod_soldiers(tier)
+		assert_true(soldiers <= previous,
+			"tier %d draws %d soldiers, more than the tier before it" % [tier, soldiers])
+		previous = soldiers
+	assert_true(RenderCull.lod_soldiers(-1) >= previous,
+		"a caller with no tier at all must be given FULL detail, never the coarsest")
+	assert_eq(RenderCull.lod_soldiers(RenderCull.LOD_TIERS.size()),
+		RenderCull.lod_soldiers(-1),
+		"an out-of-range tier must over-draw, exactly as a missing one does")
+
+
+# --- the distance the ladder is asked about (#155's second trigger) ----
+
+func test_lod_distance_takes_the_nearest_visible_copy() -> void:
+	var offsets: Array[Vector3] = [Vector3.ZERO, Vector3(0.0, 0.0, 100.0)]
+	var distance := RenderCull.lod_distance(offsets, Vector3.ZERO, Vector3(0.0, 0.0, 90.0))
+	assert_almost_eq(distance, 10.0, 0.001,
+		"the wrapped copy sits 10 units from the camera and was not the one measured")
+
+
+func test_lod_distance_does_not_jump_when_the_nearest_copy_changes() -> void:
+	# Since D-20260818-entities-are-drawn-at-every-visible-copy a squad is
+	# drawn at every copy on screen, and `nearest_offset` picks one of them
+	# for the things that need a single position. That is an ARGMIN, and it
+	# is taken against what the camera LOOKS AT while the ladder measures
+	# to where the camera IS — two different points on this rig, so the
+	# distance handed to the ladder jumped a whole map period the moment
+	# the argmin flipped, with the camera perfectly still.
+	#
+	# A minimum is continuous across exactly that tie. Sweeping the look-at
+	# point over it, the argmin must flip (or this fixture proves nothing)
+	# while `lod_distance` must not move.
+	var period := 100.0
+	var offsets: Array[Vector3] = [Vector3.ZERO, Vector3(0.0, 0.0, period)]
+	var centre := Vector3.ZERO
+
+	var chosen: Array[Vector3] = []
+	var distances: Array[float] = []
+	var argmin_distances: Array[float] = []
+	for i in range(11):
+		# The look-at point crossing the halfway line, and the eye on
+		# client.gd's own rig: `RenderCull.PITCH_RUN` behind it, one
+		# height above.
+		var target := Vector3(0.0, 0.0, period * 0.5 + (float(i) - 5.0) * 0.01)
+		var eye := target + Vector3(0.0, 40.0, 40.0 * RenderCull.PITCH_RUN)
+		var offset := RenderCull.nearest_offset(offsets, centre, target)
+		if not chosen.has(offset):
+			chosen.append(offset)
+		argmin_distances.append((centre + offset).distance_to(eye))
+		distances.append(RenderCull.lod_distance(offsets, centre, eye))
+
+	assert_eq(chosen.size(), 2,
+		"setup: the sweep never crossed the tie, so this fixture measures nothing")
+	assert_gt(argmin_distances.max() - argmin_distances.min(), 20.0,
+		"setup: the argmin's distance did not move, so there was nothing to fix")
+	# Not zero: the sweep moves the CAMERA 0.1 units, so the honest answer
+	# moves with it. What must not happen is a jump of the size the argmin
+	# takes above — and 0.5 is two orders of magnitude below it.
+	assert_lt(distances.max() - distances.min(), 0.5,
+		"lod_distance moved %.2f units across a tie the camera never noticed"
+			% (distances.max() - distances.min()))
+
+
+func test_a_still_camera_cannot_flip_a_tier_across_a_lattice_tie() -> void:
+	# The consequence, in the units the player sees: the argmin's distance
+	# straddles 55 at this rig, so the same motionless squad was drawn with
+	# every man on one frame and twelve on the next.
+	var period := 100.0
+	var offsets: Array[Vector3] = [Vector3.ZERO, Vector3(0.0, 0.0, period)]
+	var centre := Vector3.ZERO
+
+	var tier := -1
+	var flips := 0
+	var argmin_tiers: Array[int] = []
+	for i in range(21):
+		var target := Vector3(0.0, 0.0, period * 0.5 + (float(i) - 10.0) * 0.01)
+		var eye := target + Vector3(0.0, 40.0, 40.0 * RenderCull.PITCH_RUN)
+		var next := RenderCull.detail_tier(
+			RenderCull.lod_distance(offsets, centre, eye), tier)
+		if tier >= 0 and next != tier:
+			flips += 1
+		tier = next
+		var offset := RenderCull.nearest_offset(offsets, centre, target)
+		argmin_tiers.append(
+			RenderCull.detail_tier((centre + offset).distance_to(eye), -1))
+
+	assert_true(argmin_tiers.has(0) and argmin_tiers.has(1),
+		"setup: the old argmin distance did not cross a tier boundary here, so this proves nothing")
+	assert_eq(flips, 0,
+		"the tier changed %d times while nothing moved but the tie" % flips)

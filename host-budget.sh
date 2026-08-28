@@ -138,11 +138,29 @@ fits() {
 }
 
 # Why a request was refused, in the terms the gate prints to a human.
+#
+# `available` is THE number `fits` compares - free + charged MINUS the
+# reserve. It used to print `pool`, which is that sum WITHOUT the reserve
+# taken off, so a refusal read, verbatim:
+#
+#   not enough memory: free=2268MB charged=4100MB reserve=768MB
+#                      pool=6370MB need=5600MB
+#
+# `pool=6370` against `need=5600` says there is room and the gate refused
+# anyway. The real comparison is 6370 - 768 = 5602 >= 5600, which passes
+# by 2 MB. The message was RIGHT and its presentation was not, and it
+# cost a reader a whole diagnosis concluding the gate was broken (#254).
+#
+# free/charged/reserve stay beside it deliberately: `available` alone
+# would hide WHY, and the reserve is precisely the term that was
+# invisible in the comparison. The parts are shown AND the total that is
+# actually tested.
 explain() {
     local class="$1" charged="${2:-0}"
-    printf 'free=%sMB charged=%sMB reserve=%sMB pool=%sMB need=%sMB' \
+    printf 'free=%sMB charged=%sMB reserve=%sMB available=%sMB need=%sMB' \
         "$(free_mb)" "$charged" "$(reserve_mb)" \
-        "$(( $(free_mb) + charged ))" "$(( charged + $(cost_of "$class") ))"
+        "$(( $(free_mb) + charged - $(reserve_mb) ))" \
+        "$(( charged + $(cost_of "$class") ))"
 }
 
 report() {

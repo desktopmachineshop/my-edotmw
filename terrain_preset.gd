@@ -20,6 +20,23 @@ class_name TerrainPreset
 @export var display_name: String = ""
 @export_multiline var summary: String = ""
 
+## Whether the LOBBY offers this preset (#280,
+## D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross).
+##
+## A preset can generate perfectly good terrain and still not host a
+## match. `islands` does: measured over 48 worlds it is 29-35% walkable
+## across 8-268 disconnected components, and there is no naval movement,
+## no transport and no bridge anywhere in the game — so most of what it
+## draws is ground no army can reach. It fails at TWO seats, which is why
+## it is retired rather than gated behind a seat count.
+##
+## `false` hides it from `ids()` — the list both the lobby picker and the
+## server's option channel cycle — and NOTHING else. `load_all()` and
+## `by_id()` still return it, so `--preset=islands` still generates one
+## for terrain work, every tuned number in the file survives, and the day
+## armies can cross water this is one bool.
+@export var playable: bool = true
+
 ## How much of the map is under water. The single biggest lever on what a
 ## map FEELS like: raise it and the continents break into islands.
 @export var sea_level: float = 0.38

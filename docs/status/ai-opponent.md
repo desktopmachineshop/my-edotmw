@@ -77,6 +77,39 @@ counter triangle, retreat on morale, formations, walls; and a pacing
 target derived from D-056's 1–2 hour match length rather than emerging
 from a cooldown.
 
+**The ladder reports every match it was asked for, since 2026-08-28**
+(`D-20260828-a-harness-asserts-the-match-ended`, #224). `just ai-ladder
+3 600` asked for three matches; one started, ran to ~140 s with 37 squads
+on the board, died printing nothing, and the recipe reported
+**`decided: 2 of 2`**.
+
+Three things to know:
+
+- **The denominator was counted from the survivors**, so a vanished match
+  could not appear in it by construction. It is the asked-for count now,
+  the recipe counts `MATCH_RESULT` lines against `MATCHES`, and it keeps
+  each server's exit status instead of discarding it with `|| true` — a
+  failure names the seeds that died, and flags 137 as usually this host's
+  OOM killer rather than a game defect (#153).
+- **This is D-107 one layer in.** That entry made the ladder assert that
+  matches START — after three milestones of reporting `draws (time cap)`
+  for matches that never left the lobby. Nothing asserted they END. The
+  general rule: **assert both ends, and take the denominator from what
+  was ASKED for, never from what came back.**
+- **A ladder run's wall clock is no longer `MATCHES x SECONDS`.** A match
+  decided at 95 s of a 600 s cap used to simulate 505 further seconds of
+  its winner gathering against nobody — 84% of that match's wall clock.
+  `--stop-after-match` (opt-in, passed by this recipe alone) stops it
+  shortly after `MATCH_OVER`. **Every other harness measures the window
+  it always did**, and a player-hosted server never stops by itself, so
+  no figure recorded before this moves.
+
+**Quote a ladder result WITH its cap** exactly as before — the cap is
+still what truncates an *undecided* match. Measured 2026-08-28
+(`just ai-ladder 2 120`, native): 2 of 2 results, `decided: 1 of 2`, with
+both paths exercised in the one run — match 1 undecided ran to its cap,
+match 2 was decided at 99.7 s and stopped 5.1 s later.
+
 **And the retry had nowhere else to go (#217, 2026-08-28).** An AI seat
 whose SPAWN CELL held a resource node never founded a town centre — not
 late, ever. `_found_town` sited itself at `ClientState.spawn_cell_of`,

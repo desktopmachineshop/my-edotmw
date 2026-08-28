@@ -168,6 +168,45 @@ and its overflow chip PAGES rather than merely reporting. **When a layout
 gets tighter, the question is never "what still fits" — it is "what can no
 longer be reached".**
 
+**And a client that lost its server said nothing at all
+(D-20260827-a-client-with-no-server-says-so, #162, from launching
+playtest P09).** The window looked frozen. It was not: the server had
+shut down — correctly, per D-075's "no humans, no server" — and the
+client kept its window, kept ~44% of a core and kept drawing a world
+that could no longer change. `client: disconnected` went to stdout and
+nowhere a player can see.
+
+Three things worth carrying, none of them about netcode:
+
+- **D-075 was careful about the SERVER half of this lifecycle and the
+  client half was never written.** The ordinary shape: a rule absent
+  rather than wrong, so nothing fails and the symptom is reported as a
+  hang. It is one overlay now, and the backdrop TAKES the mouse — that
+  is the "sane state" half, because the client sends orders from about
+  twenty `_peer.send` sites and one backdrop is one place where twenty
+  guards would be the same rule written twenty times.
+- **The match is deliberately NOT torn down.** `_teardown_match()` frees
+  the terrain, the squads and the buildings, so a player who has just
+  lost the server would get a black screen instead of the last thing
+  that happened. The overlay therefore has to OUTLIVE a teardown — which
+  is asserted, because a thing `_ready` built once being freed by
+  `_teardown_match` is exactly how the second match came up with no
+  ground for a milestone.
+- **The two tests that matter are the CALLER scans.** Everything else in
+  `tests/test_connection_lost.gd` drives `_on_connection_lost()`
+  directly and would pass on a client that never shows anything; the
+  scans assert `_ready` builds the overlay and the disconnect branch
+  calls the handler. Same rule as D-106's, and it is the third time
+  `client.gd`'s LIFETIME has had to be shown testable — instantiated,
+  never added to the tree.
+
+Deliberately small: #180 (the pre-lobby main menu) names #162 as its
+sibling and is where a disconnect should eventually land, so this is one
+function with one caller for that ticket to replace. **#162's second
+defect, the blocking terrain build, is already fixed** by
+`D-20260818-terrain-builds-a-slice-at-a-time` (#106) and is not
+re-addressed here.
+
 **And a gate did not know its owner had allies
 (#210, 2026-08-28).** An auto-mode gate opened for its OWNER's squads and
 for nobody else, so a teammate stood at a closed gate and walked round

@@ -1,0 +1,77 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS38C: begin
+
+OBS38C POWER - D-072's V = sqrt(DPS x EHP) against RP, per squad.
+  unit                     class      size    sqDPS     sqHP        V      RP    V/RP
+  emberdeep_archers        missile      22    121.0     1320    399.6    63.0    6.34
+  emberdeep_bombard        missile       4     30.2      440    115.3   180.0    0.64
+  emberdeep_heavy          infantry     20    182.6     2600    689.0    92.5    7.45
+  emberdeep_levy           infantry     26    158.4     2210    591.6    48.0   12.32
+  emberdeep_ram            infantry      6     32.0     1200    196.0   110.0    1.78
+  gildedreach_archers      missile      24    133.3     1320    419.5    75.0    5.59
+  gildedreach_cavalry      cavalry      14    126.0     1050    363.7    75.0    4.85
+  gildedreach_engine       missile       4     29.7      400    109.0   165.0    0.66
+  gildedreach_levy         infantry     30    189.0     2040    620.9    45.0   13.80
+  gildedreach_sellswords   infantry     18    205.7     2160    666.6   130.0    5.13
+  gildedreach_spearmen     infantry     28    173.1     2016    590.7    55.0   10.74
+  gravesworn_engine        missile       3     22.5      270     77.9   135.0    0.58
+  gravesworn_levy          infantry     48    230.4     1920    665.1    32.0   20.78
+  gravesworn_shades        infantry     20    150.0      760    337.6    47.5    7.11
+  gravesworn_spearmen      infantry     40    189.1     1800    583.4    44.0   13.26
+  stoneblood_breaker       infantry      6     96.0     2520    491.9   150.0    3.28
+  stoneblood_heavy         infantry      8    200.0     3040    779.7   115.0    6.78
+  stoneblood_levy          infantry     24    204.0     2280    682.0    50.0   13.64
+  stoneblood_skirmishers   missile      12     93.3     1320    351.0    65.0    5.40
+  thornwood_archers        missile      26    156.0     1300    450.3    70.0    6.43
+  thornwood_cavalry        cavalry      14    112.0      980    331.3    70.0    4.73
+  thornwood_greatbow       missile      16    116.4      880    320.0    90.0    3.56
+  thornwood_levy           infantry     28    179.2     1736    557.8    40.0   13.94
+  windmarch_bowriders      cavalry      16    100.0      928    304.6    72.5    4.20
+  windmarch_cavalry        cavalry      16    160.0     1360    466.5    95.0    4.91
+  windmarch_levy           cavalry      28    182.0     1708    557.5    38.0   14.67
+  windmarch_skirmishers    cavalry      24    144.0     1152    407.3    26.0   15.67
+
+OBS38C MATRIX - every MISSILE unit that claims a bonus against
+  INFANTRY, against every infantry unit of another civ.
+  'sq' = 1 squad each. 'rp' = squad counts chosen so both sides
+  spend within ~15%% of the same RP (capped at 3 squads a side).
+
+  --- emberdeep_archers (x1.30 vs infantry, RP 63, V 400)
+    vs gildedreach_levy         sq shooter=6/8 target=2 undec=0(gap 0) margin=+0.06 | rp 2v3 shooter=4/6 margin=+0.43
+    vs gildedreach_sellswords   sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.64 | rp 2v1 shooter=6/6 margin=+0.79
+    vs gildedreach_spearmen     sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.51 | rp 1v1 shooter=6/6 margin=+0.52
+    vs gravesworn_levy          sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.32 | rp 1v2 shooter=0/6 margin=-0.72
+    vs gravesworn_shades        sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.78 | rp 2v3 shooter=6/6 margin=+0.47
+    vs gravesworn_spearmen      sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.48 | rp 2v3 shooter=0/6 margin=-0.55
+    vs stoneblood_breaker       sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.38 | rp n/a
+    vs stoneblood_heavy         sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.86 | rp 2v1 shooter=6/6 margin=+0.53
+    vs stoneblood_levy          sq shooter=1/8 target=7 undec=0(gap 0) margin=-0.48 | rp n/a
+    vs thornwood_levy           sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.48 | rp 2v3 shooter=6/6 margin=+0.48
+
+  --- gildedreach_archers (x1.30 vs infantry, RP 75, V 420)
+    vs emberdeep_heavy          sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.62 | rp n/a
+    vs emberdeep_levy           sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.51 | rp 2v3 shooter=1/6 margin=+0.25
+    vs emberdeep_ram            sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.96 | rp 3v2 shooter=6/6 margin=+1.00
+    vs gravesworn_levy          sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.26 | rp n/a
+    vs gravesworn_shades        sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.82 | rp 2v3 shooter=6/6 margin=+0.68
+    vs gravesworn_spearmen      sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.33 | rp 2v3 shooter=1/6 margin=-0.32
+    vs stoneblood_breaker       sq shooter=4/8 target=4 undec=0(gap 0) margin=-0.01 | rp 2v1 shooter=6/6 margin=+0.88
+    vs stoneblood_heavy         sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.77 | rp 3v2 shooter=6/6 margin=+0.41
+    vs stoneblood_levy          sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.61 | rp 2v3 shooter=0/6 margin=-0.44
+    vs thornwood_levy           sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.73 | rp 1v2 shooter=0/6 margin=-0.71
+
+  --- thornwood_archers (x1.40 vs infantry, RP 70, V 450)
+    vs emberdeep_heavy          sq shooter=4/8 target=4 undec=0(gap 0) margin=-0.11 | rp 3v2 shooter=6/6 margin=+0.88
+    vs emberdeep_levy           sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.69 | rp 2v3 shooter=6/6 margin=+0.68
+    vs emberdeep_ram            sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.99 | rp 3v2 shooter=6/6 margin=+1.00
+    vs gildedreach_levy         sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.78 | rp 2v3 shooter=6/6 margin=+0.67
+    vs gildedreach_sellswords   sq shooter=2/8 target=6 undec=0(gap 0) margin=-0.14 | rp 2v1 shooter=6/6 margin=+0.89
+    vs gildedreach_spearmen     sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.73 | rp n/a
+    vs gravesworn_levy          sq shooter=7/8 target=1 undec=0(gap 0) margin=+0.34 | rp 1v2 shooter=0/6 margin=-0.58
+    vs gravesworn_shades        sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.89 | rp 2v3 shooter=6/6 margin=+0.84
+    vs gravesworn_spearmen      sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.50 | rp 2v3 shooter=0/6 margin=-0.15
+    vs stoneblood_breaker       sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.37 | rp 2v1 shooter=6/6 margin=+0.90
+    vs stoneblood_heavy         sq shooter=0/8 target=8 undec=0(gap 0) margin=-0.67 | rp 3v2 shooter=6/6 margin=+0.74
+    vs stoneblood_levy          sq shooter=8/8 target=0 undec=0(gap 0) margin=+0.53 | rp 2v3 shooter=1/6 margin=-0.35
+OBS38C: end
