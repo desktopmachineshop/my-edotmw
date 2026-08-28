@@ -669,7 +669,7 @@ func _shoot_squad(sim: SquadSim, squad: int, amount: float, from_cell_index: int
 		return
 
 	sim.set_alive(squad, maxi(0, sim.alive_of(squad) - casualties))
-	var morale := sim.morale_of(squad) - float(casualties) * def.morale_loss_per_casualty
+	var morale := sim.morale_of(squad) - def.morale_loss_for(casualties)
 	sim.set_morale(squad, maxf(morale, 0.0))
 
 	# Being shelled by a fortification breaks a squad the same way being
@@ -906,8 +906,7 @@ func _resolve_attack(sim: SquadSim, attacker: int, defender: int, tick: int,
 	# SAME aspect the formation's defence already priced above, so the
 	# terror and the shield agree about where the blow landed.
 	var morale := sim.morale_of(defender) \
-		- float(casualties) * defender_def.morale_loss_per_casualty \
-			* _morale_mult_for(aspect)
+		- defender_def.morale_loss_for(casualties) * _morale_mult_for(aspect)
 	sim.set_morale(defender, maxf(morale, 0.0))
 	# A general's death shocks (D-20260819-a-general-holds-the-line):
 	# twice a chain rout, through the same machinery, cascading like one.
