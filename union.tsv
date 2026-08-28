@@ -113,3 +113,5 @@
 323	ao/my-edotmw-88/naval-3-docks	CONFLICT	server.gd 
 323	ao/my-edotmw-88/naval-3-docks	CONFLICT-RESOLVED	server.gd: the same add_building() call extended by two PRs - #336 adds a civ build_time argument, #323 adds a following water-side block. Both kept; taking either side alone drops the other's feature silently.
 333	ao/my-edotmw-88/naval-4-embark	CONFLICT	client_state.gd net_protocol.gd squad_sim.gd 
+333	ao/my-edotmw-88/naval-4-embark	CONFLICT-RESOLVED	SQUAD_INFO extended by two PRs at once: #273 adds an 'exploring' byte, #333 adds a variable-length 'cargo' block. Keep-both duplicated the decoder's files/stance keys AND left the decoder reading cargo BEFORE exploring while the encoder writes exploring BEFORE cargo - a real wire desync of every field after it. Hand-merged to files->stance->exploring->cargo on both sides.
+343	ao/my-edotmw-88/naval-2-domain	CONFLICT	squad_sim.gd 
