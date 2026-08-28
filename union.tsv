@@ -75,3 +75,5 @@
 377	ao/my-edotmw-87/per-adapter-baselines	CLEAN	8
 205	ao/my-edotmw-79/export	CLEAN	14
 213	ao/my-edotmw-79/handshake	CONFLICT	bot_client.gd server.gd 
+213	ao/my-edotmw-79/handshake	CONFLICT-RESOLVED	bot_client.gd: the load-test VERDICT format string and its argument array are extended by several PRs at once (#248 scenario, #225 techs, #213 refused) - tails hand-merged, the other two hunks additive. server.gd: #186's identify/reclaim handlers beside #213's handshake; kept both.
+239	ao/my-edotmw-79/main-menu	CONFLICT	client.gd justfile 

@@ -882,6 +882,81 @@ build-audio:
     # iteration, no timestamps.
     python audio/sfx.py
     echo "audio: now run   {{just_executable()}} test-unit audio   to check the table still resolves"
+# A picture of the PRE-CONNECTION menu (#180).
+#
+# It exists because every other instrument this project has is aimed at a
+# CONNECTED client: `test-client` needs a server to point at, and
+# `lobby-shot` photographs the lobby, which is only reachable once a
+# socket exists. The menu is the first thing a tester who installs a
+# build ever sees, and until this recipe nothing could look at it — which
+# is the blind spot this project has now paid for four times (cliffs,
+# forest interiors, the fog edge, the HUD at 1080p).
+#
+# Modelled on `lobby-shot`, including being DOCKER-ONLY: it renders
+# through Mesa's software GL under a virtual X server, so it needs no GPU
+# and — the part that matters here — opens no window on anybody's
+# desktop. `--headless` cannot be used instead: the dummy rendering
+# driver draws nothing, so the screenshot would be a blank image that
+# looked like a broken menu.
+#
+# Unlike `lobby-shot` it starts NO SERVER, and that is the point: the menu
+# is the one screen that must render with nothing running.
+#
+# LOOK at artifacts/main-menu.png.
+[doc("Render the pre-connection main menu to artifacts/main-menu.png")]
+menu-shot SECONDS="4" RESOLUTION="1280x720": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    gate="$(bash host-gate.sh acquire medium 'menu-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "menu-shot requires the docker runtime (it needs the software-GL image)." >&2
+        echo "A native run would open a real window on somebody's desktop, which an" >&2
+        echo "instrument has no business doing." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/main-menu.png"
+    log="{{artifacts_dir}}/menu-shot.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
+
+    status=0
+    # `--menu=1` forces the screen even though `--run-seconds` is capture
+    # mode, which would otherwise connect. `=1` rather than a bare flag
+    # because CmdArgs only parses `--key=value` and drops the rest — see
+    # main_menu.gd, where the bare version cost a wrong picture.
+    # No --address anywhere, and no server: this recipe is only honest if
+    # nothing is running.
+    timeout 180 docker compose -p {{compose_project}} run --rm --no-deps client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution {{RESOLUTION}} \
+        -- --menu=1 --run-seconds={{SECONDS}} \
+        --screenshot=res://artifacts/main-menu.png \
+        > "$log" 2>&1 || status=$?
+
+    if [ ! -s "$shot" ]; then
+        echo "menu-shot: no screenshot written — the menu did not render (see $log)" >&2
+        exit 1
+    fi
+    # A frame that rendered NOTHING still saves as a valid PNG — it is one
+    # flat colour. The capture path already counts distinct colours for
+    # exactly that reason, so read its count rather than trusting the
+    # file's existence (CLAUDE.md: assert the thing happened).
+    colours="$(grep -oE 'distinct_colours=[0-9]+' "$log" | tail -1 | cut -d= -f2 || true)"
+    if [ -z "$colours" ] || [ "$colours" -lt 8 ]; then
+        echo "menu-shot: the frame has ${colours:-no} distinct colours — nothing was drawn (see $log)" >&2
+        exit 1
+    fi
+    # The client's own VERDICT is expected to FAIL here and its exit
+    # status with it: that verdict is about a MATCH — terrain, squads,
+    # state hashes — and this recipe deliberately runs with no server at
+    # all. Reported rather than hidden, so a real crash is still visible.
+    echo "menu-shot: wrote $shot — $colours distinct colours, client exit $status (its match verdict does not apply here)"
+    echo "menu-shot: LOOK AT IT"
 
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT=port:

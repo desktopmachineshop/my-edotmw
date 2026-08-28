@@ -82,6 +82,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/join-handshake.md
 
+@docs/status/main-menu.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md
@@ -424,6 +426,13 @@ client_state.gd          Everything a client knows, with no rendering
                         headless even though the client itself isn't.
 server.gd / server.tscn  Headless authoritative server (D-002).
 client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
+                        Starts at a MAIN MENU when no connection was asked
+                        for on the command line (D-20260827, #180), so an
+                        installed build has a way in; every failed,
+                        refused or lost connection returns there with a
+                        message. `main_menu.gd` is the pure half — which
+                        endpoint a launch means, how a typed address
+                        parses, what the title says.
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
@@ -1002,6 +1011,12 @@ Dev loop and tests:
   camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
   compass snaps back to north, right-click orders, ESC opens the game
   menu (D-063).
+- `just menu-shot [SECONDS] [RESOLUTION]` — a picture of the
+  PRE-CONNECTION menu (#180), through the docker software-GL image with
+  NO server running. Every other rendered check here is aimed at a
+  connected client, so nothing could look at this screen; its first two
+  runs found two defects nothing else could. **Look at
+  `artifacts/main-menu.png`.**
 - `just test-client [SECONDS]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker

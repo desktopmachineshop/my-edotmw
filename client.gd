@@ -111,6 +111,34 @@ var _peer: ENetPacketPeer
 var _state := ClientState.new()
 var _connected := false
 
+## The pre-connection screen (#180). Everything below exists because this
+## client had no state in which it was NOT connected: `_ready()` opened a
+## socket from a CLI flag, and the lobby — the first thing a player ever
+## saw — was reachable only because that socket already existed. A tester
+## who installs a build has no command line to type into.
+var _menu_layer: CanvasLayer = null
+var _menu_address: LineEdit = null
+var _menu_status: Label = null
+## Where this client last pointed itself, remembered across launches, so
+## the second session with a friend's server is one click. Always
+## `host:port`: an address without one reconnects somewhere else the day
+## the port changes, and D-095 gives every worktree its own.
+var _menu_last_endpoint := ""
+## Wall-clock at which the current connection attempt began, or -1 when
+## there is none. ENet never reports "the host is not there" — it simply
+## stays silent — so without a deadline a wrong address is a client that
+## sits forever showing nothing, which is the reported shape of #162.
+var _connect_started_at := -1.0
+## Which dev instance launched this client (D-095), for the title bar.
+## Read once in `_ready()` because the title is rewritten on every
+## connection now, not just at startup.
+var _instance := ""
+
+## How long to wait for ENet to report a connection before giving up and
+## saying so. Generous: a first connection also pays for the server
+## generating a 32,592-cell world if it was only just started.
+const CONNECT_TIMEOUT_SECONDS := 12.0
+
 var _unit_def: UnitDef
 var _squad_nodes := {}  # squad id -> PrimitiveUnit
 var _terrain_root: Node3D
@@ -303,31 +331,28 @@ func _ready() -> void:
 	# as a plausible number and the capture recipes photograph the wrong
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
-		["port", "lobby-ai", "lobby-preset-steps"])
+		["port", "lobby-ai", "lobby-preset-steps", "menu"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
 		get_tree().quit(1)
 		return
-	# Inside the compose network the server is a hostname, not localhost,
-	# so the address is overridable by env as well as by flag — same
-	# convention as bot_client.gd.
-	var default_address := OS.get_environment("EDOTMW_SERVER_ADDRESS")
-	if default_address == "":
-		default_address = DEFAULT_SERVER_ADDRESS
-	var address := String(args.get("address", default_address))
-	var port := int(args.get("port", DEFAULT_SERVER_PORT))
+	# Where this launch is pointed, and whether it was pointed anywhere at
+	# all (#180). The rule is "was a connection ASKED for on the command
+	# line" — `--address` has defaulted to 127.0.0.1 since this file
+	# existed, so a rule reading the resolved value would autoconnect
+	# every launch and the menu would be unreachable. See
+	# `MainMenu.autoconnect` for the whole argument, including why
+	# capture mode and EDOTMW_SERVER_ADDRESS count.
+	var target := MainMenu.autoconnect(args,
+		OS.get_environment("EDOTMW_SERVER_ADDRESS"),
+		DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	# Which dev instance (agent worktree / branch) launched this client
 	# (D-095). Several agents run servers and clients on one desktop in
 	# parallel, so the title bar names the instance and the endpoint —
 	# otherwise two identical windows are only tellable apart by clicking
 	# around in them, and the human tests the wrong agent's build.
-	var instance := String(args.get("instance", ""))
-	var window_title := "eDotMW"
-	if instance != "":
-		window_title += " — %s" % instance
-	window_title += "  [%s:%d]" % [address, port]
-	get_window().title = window_title
+	_instance = String(args.get("instance", ""))
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
@@ -370,20 +395,11 @@ func _ready() -> void:
 	_build_loading_screen()
 	_build_connection_lost_screen()
 
-	_host = ENetConnection.new()
-	var err := _host.create_host(1, CHANNELS)
-	if err != OK:
-		push_error("client: could not create ENet host (error %d)" % err)
-		return
-	_peer = _host.connect_to_host(address, port, CHANNELS)
-	if _peer == null:
-		push_error("client: could not reach %s:%d" % [address, port])
-		return
-	# Kept so the connection-lost screen can name what it could not
-	# reach (#162): `address` and `port` are locals of `_ready`, and by
-	# the time that screen is shown there is nothing left to ask.
-	_server_endpoint = "%s:%d" % [address, port]
-	print("client: connecting to %s:%d" % [address, port])
+	_build_main_menu()
+	if bool(target["connect"]):
+		_connect_to(String(target["address"]), int(target["port"]))
+	else:
+		_show_main_menu("")
 
 
 func _exit_tree() -> void:
@@ -436,6 +452,23 @@ func _process(delta: float) -> void:
 		_now += delta
 	_frame_delta = delta
 	_service_network()
+	# Before anything reads the connection: ENet never reports "there is
+	# nothing at that address", so this is the only thing that can end a
+	# doomed attempt (#180).
+	_check_connect_timeout()
+	# Nothing below can run without a socket. Returning here rather than
+	# guarding each caller is what makes the menu a real state rather
+	# than an overlay drawn on top of a client still pretending.
+	if _host == null:
+		# A capture run must still END. `_finish_capture` is the only
+		# thing that quits, and a headless run whose server refused it or
+		# never answered would otherwise hang its recipe forever — a
+		# worse failure than the one it was testing, and exactly the
+		# "a recipe must never wait on something that will not happen"
+		# rule this project already applies to the host gate.
+		if _run_seconds > 0.0 and _wall_now >= _run_seconds:
+			_finish_capture()
+		return
 	# Immediately after the packets that could have produced one, so a
 	# desync is reported on the frame it is detected.
 	_report_desyncs()
@@ -697,6 +730,8 @@ func _service_network() -> void:
 				# would leave the rest of it unread.
 				if not _state.refusal.is_empty() and not _refusal_shown:
 					_show_refusal()
+			ENetConnection.EVENT_ERROR:
+				push_error("client: ENet reported a host error")
 
 
 ## The chunk size the ground is meshed at (D-017).
@@ -9301,6 +9336,7 @@ func _save_settings() -> void:
 	var config := ConfigFile.new()
 	config.set_value("client", "pan_speed", _pan_speed)
 	config.set_value("client", "hud_scale_override", _hud_scale_override)
+	config.set_value("client", "last_endpoint", _menu_last_endpoint)
 	config.set_value("client", "fullscreen",
 		DisplayServer.window_get_mode() in [
 			DisplayServer.WINDOW_MODE_FULLSCREEN,
@@ -9309,11 +9345,23 @@ func _save_settings() -> void:
 
 
 func _load_settings() -> void:
+	# The address box starts with something Join can act on, even on a
+	# launch with no settings file at all — which is every first launch,
+	# and therefore every tester's. `just menu-shot`'s picture is what
+	# showed this: the box LOOKED filled because a LineEdit draws its
+	# placeholder, and pressing Join on it would have answered "enter an
+	# address" at a player looking straight at one.
+	_menu_last_endpoint = MainMenu.format_endpoint(
+		DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	var config := ConfigFile.new()
 	if config.load(SETTINGS_PATH) != OK:
 		return
 	_pan_speed = clampf(float(config.get_value("client", "pan_speed", CAMERA_PAN_SPEED)),
 		6.0, 48.0)
+	_menu_last_endpoint = String(config.get_value("client", "last_endpoint", ""))
+	if _menu_last_endpoint.is_empty():
+		_menu_last_endpoint = MainMenu.format_endpoint(
+			DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	_hud_scale_override = float(config.get_value("client", "hud_scale_override", 0.0))
 	if _hud_scale_override > 0.0:
 		_hud_scale_override = clampf(_hud_scale_override,
@@ -9323,6 +9371,249 @@ func _load_settings() -> void:
 	# fighting that would make screenshots depend on whoever ran last.
 	if _run_seconds <= 0.0 and bool(config.get_value("client", "fullscreen", false)):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+# --- the pre-connection menu (#180) --------------------------------------
+#
+# `decisions/D-20260827-a-client-starts-before-it-connects.md`. Until this
+# existed the client had no state in which it was NOT connected: `_ready()`
+# opened a socket from a CLI flag and the lobby was the first thing anybody
+# ever saw, reachable only because that socket already existed. Every human
+# match so far was launched by `just run-client` with arguments; a tester
+# who installs a build had no way in at all.
+#
+# The arithmetic — which endpoint a launch means, and how a typed address
+# parses — lives in `main_menu.gd`, all-static and pure, for the D-061
+# reason. What is here is the drawing and the LIFETIME, and the lifetime
+# is the half that has broken silently before (D-075's amendment: a second
+# match came up with no terrain for a whole milestone because `_ready()`
+# built a node that `_teardown_match()` freed).
+
+
+func _build_main_menu() -> void:
+	_menu_layer = CanvasLayer.new()
+	# Above everything, the lobby included: while this is up there is no
+	# connection, so nothing behind it can be acted on.
+	_menu_layer.layer = 20
+	_menu_layer.visible = false
+	add_child(_menu_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_menu_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_menu_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 12)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = BuildVersion.string().to_upper()
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.TEXT_GHOST
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	var headline := Label.new()
+	headline.text = "eDotMW"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE + 24)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	# The status line doubles as the reason a player is looking at this
+	# screen rather than a world - a refused join, a server that never
+	# answered, a match they left. It is the whole reason the menu is the
+	# right destination for those: a message needs somewhere to be read.
+	_menu_status = Label.new()
+	_menu_status.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_menu_status.modulate = HudTheme.ACCENT
+	_menu_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_menu_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_menu_status.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_menu_status)
+
+	var address_caption := Label.new()
+	address_caption.text = "SERVER ADDRESS"
+	address_caption.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	address_caption.modulate = HudTheme.TEXT_GHOST
+	column.add_child(address_caption)
+
+	_menu_address = LineEdit.new()
+	_menu_address.placeholder_text = "127.0.0.1:%d" % DEFAULT_SERVER_PORT
+	_menu_address.text = _menu_last_endpoint
+	# Enter joins, because typing an address and then reaching for the
+	# mouse is the one interaction on this screen anybody repeats.
+	_menu_address.text_submitted.connect(func(_t: String) -> void: _on_menu_join_pressed())
+	column.add_child(_menu_address)
+
+	var join := _styled_button("Join", HudTheme.ACCENT)
+	join.pressed.connect(_on_menu_join_pressed)
+	column.add_child(join)
+
+	# HOST is drawn and DISABLED, and that is deliberate rather than
+	# unfinished. D-088's host runs the authoritative server in the host's
+	# own process, and `server.gd` currently ends its PROCESS when the last
+	# client leaves (D-075) - so hosting in-process is a lifecycle change,
+	# not a button, and it is #182. A control that silently did nothing is
+	# this project's oldest defect family (D-061); one that says what it is
+	# waiting for is not.
+	var host := _styled_button("Host a match", HudTheme.NEUTRAL)
+	host.disabled = true
+	host.tooltip_text = "Hosting from inside the game is not built yet (#182). Run a server and join it."
+	column.add_child(host)
+
+	var host_note := Label.new()
+	host_note.text = "Hosting from inside the game is not built yet — run a server and join it."
+	host_note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	host_note.modulate = HudTheme.TEXT_GHOST
+	host_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	host_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	host_note.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(host_note)
+
+	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
+	quit.pressed.connect(_on_quit_pressed)
+	column.add_child(quit)
+
+
+## Show the menu, with `message` explaining why if there is one.
+func _show_main_menu(message: String) -> void:
+	if _menu_layer == null:
+		return
+	if _menu_status != null:
+		_menu_status.text = message
+	if _menu_address != null:
+		_menu_address.text = _menu_last_endpoint
+	_menu_layer.visible = true
+	_set_title("")
+
+
+func _hide_main_menu() -> void:
+	if _menu_layer != null:
+		_menu_layer.visible = false
+
+
+func _on_menu_join_pressed() -> void:
+	var typed := _menu_address.text if _menu_address != null else ""
+	var parsed := MainMenu.parse_endpoint(typed, DEFAULT_SERVER_PORT)
+	if not bool(parsed["ok"]):
+		if _menu_status != null:
+			_menu_status.text = String(parsed["error"])
+		return
+	_connect_to(String(parsed["address"]), int(parsed["port"]))
+
+
+## Open a socket and start talking. Reached from `_ready()` when the
+## command line named a server, and from the menu otherwise - one
+## function, because "how this client connects" is exactly the kind of
+## thing that drifts when written twice.
+func _connect_to(address: String, port: int) -> void:
+	_close_connection()
+	# A fresh attempt is not carrying the last one's refusal.
+	_state.refusal = {}
+	_menu_last_endpoint = MainMenu.format_endpoint(address, port)
+	_save_settings()
+	_set_title(MainMenu.format_endpoint(address, port))
+
+	_host = ENetConnection.new()
+	var err := _host.create_host(1, CHANNELS)
+	if err != OK:
+		push_error("client: could not create ENet host (error %d)" % err)
+		_return_to_menu("Could not open a network socket (error %d)." % err)
+		return
+	_peer = _host.connect_to_host(address, port, CHANNELS)
+	# Kept so the connection-lost screen can name what it could not reach
+	# (#162). #239's main menu moved the connect out of _ready(), which
+	# deleted the site this was assigned at -- without this line the
+	# screen shows an empty endpoint and nothing fails.
+	_server_endpoint = "%s:%d" % [address, port]
+	if _peer == null:
+		push_error("client: could not reach %s:%d" % [address, port])
+		_return_to_menu("Could not reach %s. Check the address, and that the server is running."
+			% _menu_last_endpoint)
+		return
+	_connect_started_at = _wall_now
+	_hide_main_menu()
+	print("client: connecting to %s:%d" % [address, port])
+
+
+## Drop the socket, leaving the scene alone. Split out from
+## `_return_to_menu` because `_connect_to` needs exactly this and nothing
+## else: joining a second server must not tear down a world that a failed
+## attempt never built.
+func _close_connection() -> void:
+	if _peer != null and _connected:
+		_peer.peer_disconnect_now(0)
+	if _host != null:
+		_host.destroy()
+	_host = null
+	_peer = null
+	_connected = false
+	_connect_started_at = -1.0
+
+
+## Back to the menu, with a reason a player can read.
+##
+## THE destination for every way a session can end short of quitting, and
+## the reason #180 is a prerequisite for the rest: before it there was
+## nowhere for such a message to go, so the client kept its window and
+## said nothing (#162).
+##
+## Deliberately full: a new connection is a NEW SERVER, so everything the
+## last one told this client has to go, `ClientState`'s ever-revealed
+## building set included. That set is exactly what
+## `docs/status/sandbox.md` records leaking across a return to the lobby
+## and desyncing 106 buildings in 55,239 checks - the same trap, one door
+## further out.
+func _return_to_menu(reason: String) -> void:
+	_close_connection()
+	if _in_match:
+		_teardown_match()
+	_in_match = false
+	if _lobby_layer != null:
+		_lobby_layer.visible = false
+	_state.disconnected()
+	_clock_synced = false
+	_now = 0.0
+	if not reason.is_empty():
+		print("client: back to the menu — %s" % reason.replace("\n", " "))
+	_show_main_menu(reason)
+
+
+## Name what this client is looking at, in the one place that decides it.
+##
+## `get_window()` is null on a Node that is not in a tree, which is how
+## `tests/test_main_menu.gd` drives this file at all (the same technique
+## D-075's amendment established for the lifecycle half of client.gd).
+## Guarding here rather than at each caller is what keeps that possible
+## without a second code path.
+func _set_title(endpoint: String) -> void:
+	var window := get_window()
+	if window != null:
+		window.title = MainMenu.window_title(_instance, endpoint)
+
+
+## Give up on a connection ENet has not reported.
+##
+## ENet never says "there is nothing at that address" - it stays silent -
+## so without a deadline a typo is a client that sits forever showing an
+## empty world, which is precisely the shape #162 was reported as.
+func _check_connect_timeout() -> void:
+	if _connect_started_at < 0.0 or _connected:
+		return
+	if _wall_now - _connect_started_at < CONNECT_TIMEOUT_SECONDS:
+		return
+	_return_to_menu("No answer from %s after %d seconds. Check the address, and that the server is running."
+		% [_menu_last_endpoint, int(CONNECT_TIMEOUT_SECONDS)])
 
 
 # --- the join handshake, and being refused ------------------------------
@@ -9351,67 +9642,16 @@ func _show_refusal() -> void:
 	var text := str(_state.refusal.get("text", ""))
 	# Loudly, in both places: the log for a bug report to quote, and the
 	# screen for the player who has to act on it. push_error rather than
-	# print because this ends the session.
-	push_error("client: REFUSED by the server
-" + text)
-	print("client: REFUSED by the server — " + text.replace("
-", " "))
-	_build_refusal_screen(text)
-
-
-func _build_refusal_screen(text: String) -> void:
-	var layer := CanvasLayer.new()
-	# Above everything, the lobby included: nothing behind it can be
-	# acted on, because there is no connection left to act through.
-	layer.layer = 20
-	add_child(layer)
-
-	var backdrop := ColorRect.new()
-	backdrop.color = HudTheme.BG_VOID
-	backdrop.anchor_right = 1.0
-	backdrop.anchor_bottom = 1.0
-	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-	layer.add_child(backdrop)
-
-	var centre := CenterContainer.new()
-	centre.anchor_right = 1.0
-	centre.anchor_bottom = 1.0
-	layer.add_child(centre)
-
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 10)
-	column.custom_minimum_size = Vector2(460.0, 0.0)
-	column.alignment = BoxContainer.ALIGNMENT_CENTER
-	centre.add_child(column)
-
-	var eyebrow := Label.new()
-	eyebrow.text = "CANNOT JOIN"
-	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
-	eyebrow.modulate = HudTheme.ACCENT
-	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(eyebrow)
-
-	var headline := Label.new()
-	headline.text = "Refused by the server"
-	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
-	headline.modulate = HudTheme.TEXT_BRIGHT
-	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(headline)
-
-	var body := Label.new()
-	body.text = text
-	body.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
-	body.modulate = HudTheme.TEXT_DIM
-	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.custom_minimum_size = Vector2(460.0, 0.0)
-	column.add_child(body)
-
-	var button_row := CenterContainer.new()
-	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
-	quit.pressed.connect(func() -> void: get_tree().quit())
-	button_row.add_child(quit)
-	column.add_child(button_row)
+	# print because this ends the connection.
+	push_error("client: REFUSED by the server\n" + text)
+	print("client: REFUSED by the server — " + text.replace("\n", " "))
+	# The MENU is where a refusal belongs (#180), which #179 said in its
+	# own decision entry and could not do: the address is still in the
+	# field, so acting on "update and join again" is one click rather
+	# than a relaunch. `_return_to_menu` clears `refusal`, so the flag is
+	# reset here for the next attempt.
+	_return_to_menu(text)
+	_refusal_shown = false
 
 
 # --- defeat screen ------------------------------------------------------
