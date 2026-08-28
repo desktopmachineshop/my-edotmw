@@ -96,9 +96,22 @@ func normalize(coord: Vector2i) -> Vector2i:
 ## Cell index for packed-array storage (D-009). Normalizes first, so an
 ## out-of-domain coordinate maps to its wrapped cell rather than blowing
 ## up or silently indexing out of bounds.
+##
+## The wrap is written out rather than delegated to `normalize`, and that
+## is a measurement rather than a preference: a GDScript call costs
+## 0.174 us on this hardware, `normalize` costs 0.214 total, and the two
+## `posmod`s it performs cost 0.095 — so the delegation was more call
+## than arithmetic. `index` runs once per drawn man per frame (and once
+## per cell in every disk scan in the project), which is where 0.19 us
+## stops being nothing.
+##
+## D-008 is untouched: the wrap rule still lives in exactly one FILE, and
+## every caller still goes through this class. What is gone is a stack
+## frame, not a definition — `normalize` remains the answer for anyone
+## who wants the coordinate rather than the index, and
+## `test_torus_space.gd` holds the two to the same answer.
 func index(coord: Vector2i) -> int:
-	var c := normalize(coord)
-	return c.y * width + c.x
+	return posmod(coord.y, height) * width + posmod(coord.x, width)
 
 
 func from_index(i: int) -> Vector2i:
@@ -217,11 +230,13 @@ func world_to_axial(world: Vector3) -> Vector2:
 ##
 ## Cube rounding rather than rounding q and r independently — see
 ## `world_to_cell`, which this is factored out of.
+##
+## The body is here rather than in a private helper for the same measured
+## reason as `index` above: the delegation was a whole extra call
+## (0.174 us of the 0.621 this used to cost) around arithmetic that is
+## cheaper than the frame it sat in, on a function that runs once per
+## drawn man per frame.
 func round_axial(fractional: Vector2) -> Vector2i:
-	return _axial_round(fractional)
-
-
-func _axial_round(fractional: Vector2) -> Vector2i:
 	# Convert to cube, round, then repair the component with the largest
 	# rounding error so x + y + z == 0 still holds.
 	var x := fractional.x

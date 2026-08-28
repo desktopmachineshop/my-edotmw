@@ -1,3 +1,43 @@
+**What the DERIVE phase is made of, and the two levers left in it**
+(`D-20260828-inside-the-derive-phase`). Measured by ablation on the
+shipped function — only its inputs vary — 96 squads of 36 men drawn at
+LOD tier 2, real terrain, native, **Intel Iris Xe**:
+
+| part | cost | share of a 12-man squad |
+|---|---|---|
+| ground sample, per man | **7.2 µs** | **51%** |
+| formation math + transform write, per man | 3.2 µs | 23% |
+| per-SQUAD setup | 26 µs | 16% |
+| passability clamp, per man | 1.4 µs | 10% |
+
+- **There is no hot spot.** The `atan2` in the ground sampler — the
+  obvious suspect — costs **0.02 µs**, a fortieth of the `round_axial`
+  beside it. What the phase is made of is **GDScript calls**: a trivial
+  method call costs **0.174 µs** here, against 0.095 µs for the two
+  `posmod`s inside `TorusSpace.normalize`.
+- **Taken, both bit-identical**: `_offset_for`'s squad invariants (a
+  `maxf` and a `clampi`/`sqrt` recomputed per man) hoisted out of the
+  loop, and two delegations collapsed (`index` writes its own wrap,
+  `round_axial` took its body back from `_axial_round`). **D-008 is
+  untouched** — the wrap rule still lives in one FILE and every caller
+  still comes through `TorusSpace`; what is gone is a stack frame, and a
+  test now holds `index` and `normalize` to the same answer. Worth
+  **10-18% of the phase** over interleaved pairs (5.592 → 4.714 µs/man
+  headless; 54.31 → 44.57 and 52.35 → 47.40 ms in `bench-render`).
+- **Filed rather than shipped**, because each is visible to a player or
+  changes what the project builds: **#315** (derive a distant squad at a
+  lower cadence — the sim is 10 Hz, so a distant squad at 20 Hz shows the
+  same curve, but it is per-soldier state surviving frames) and **#316**
+  (D-021's GDExtension hatch, whose "measured, not suspected" trigger
+  this attribution meets). Drawing fewer men is refused outright: D-045's
+  rule is thinner, never smaller.
+- **A `bench-check` taken during another agent's `test-load` reported
+  every phase 44-302% slower — including phases this did not touch — with
+  NO COUNT lines.** The baseline mechanism behaving exactly as designed,
+  and the reason every number above comes from an interleaved pair.
+
+---
+
 **The quadratic in the client's frame is gone**
 (`D-20260828-the-jostle-looks-where-the-men-are`, #262). The cross-squad
 jostle walked every squad the match had ever drawn, for every STANDING

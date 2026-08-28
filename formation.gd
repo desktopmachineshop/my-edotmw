@@ -121,8 +121,23 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float,
 ## a line and merely look wrong.
 static func _offset_for(def: FormationDef, index: int, alive: int,
 		spacing: float, files: int = 0) -> Vector2:
-	var scaled := spacing * maxf(def.spacing_scale, 0.01)
-	var chosen := clampi(files, 1, alive) if files > 0 else _grid_files(def, alive)
+	return _offset_in(def, index, alive,
+		spacing * maxf(def.spacing_scale, 0.01),
+		clampi(files, 1, alive) if files > 0 else _grid_files(def, alive))
+
+
+## The geometry itself, with the two SQUAD-invariant values already
+## worked out: the scaled spacing and the file count.
+##
+## Split from `_offset_for` because both were recomputed for every man —
+## a `maxf` and a `clampi`, or a `sqrt` and a `ceili` through
+## `_grid_files` — inside a loop whose own header explains that
+## everything squad-invariant is hoisted out of it. Same family as the
+## FormationDef lookup hoisted before it, and the same guarantee: bit
+## identical, because `_offset_for` computes exactly what it always did
+## and hands it here.
+static func _offset_in(def: FormationDef, index: int, alive: int,
+		scaled: float, chosen: int) -> Vector2:
 	match def.kind:
 		"grid":
 			return _grid_offset(index, alive, chosen, scaled)
@@ -724,6 +739,14 @@ static func soldier_transforms_sampled(
 	if def == null:
 		push_error("Unknown formation '%s' — falling back to line" % shape)
 		def = FormationRoster.by_id(&"line")
+	# The scaled spacing and the file count are properties of the SQUAD
+	# too — a `maxf` and a `clampi`, or a `sqrt` and a `ceili`, per man
+	# until now. Resolved here, beside the def they come from.
+	var scaled := 0.0
+	var chosen := 1
+	if def != null:
+		scaled = spacing * maxf(def.spacing_scale, 0.01)
+		chosen = clampi(files, 1, alive) if files > 0 else _grid_files(def, alive)
 	# Hoisted for the same reason everything else here is: without terrain
 	# there is nothing to clamp against, and this path derives every
 	# soldier on screen every frame.
@@ -735,7 +758,7 @@ static func soldier_transforms_sampled(
 		# division), so the full-detail path is unchanged and stays
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
-		var local := _offset_for(def, clampi(slot, 0, alive - 1), alive, spacing, files) \
+		var local := _offset_in(def, clampi(slot, 0, alive - 1), alive, scaled, chosen) \
 			if def != null \
 			else _grid_offset(clampi(slot, 0, alive - 1), alive,
 				_files_for_ranks(alive, LINE_RANKS), spacing)
