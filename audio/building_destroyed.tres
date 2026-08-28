@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="SoundDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://sound_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+event = &"building_destroyed"
+stream_path = "res://generated/audio/building_destroyed.wav"
+gain_db = -1.0
+audible_cells = 60
+min_interval = 0.5
+max_voices = 2
+pitch_jitter = 0.04
+fog_gated = true

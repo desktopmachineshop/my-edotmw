@@ -162,6 +162,12 @@ var _world_environment: WorldEnvironment = null
 ## issue #58.
 var _fog: TerrainFog = null
 
+## Audio (#344). Client-only and one-way: nothing the simulation, the
+## wire or the composition hash reads depends on a sound having played
+## (D-006 clause 2). The DECISIONS live in `audio_cue.gd`, which is pure
+## and tested headless; this reference is only the device half.
+var _audio: AudioDirector = null
+
 ## The one terrain material (`TerrainChunk.make_material`), kept so the
 ## fog field above can be pushed into it, and the texture it is pushed
 ## through — updated in place four times a second rather than rebuilt, so
@@ -783,6 +789,13 @@ func _begin_terrain() -> void:
 	# every lattice copy — and the drain that feeds it only records while
 	# this flag says a renderer is reading (D-20260819).
 	_state.record_corpses = true
+	# Only something that DRAINS the queue may set this — bots and AI
+	# seats run this same ClientState and leave it off, so their list
+	# stays empty for the length of a run.
+	_state.record_audio = true
+	_audio = AudioDirector.new()
+	_audio.name = "AudioDirector"
+	add_child(_audio)
 	_corpse_layer = CorpseLayer.new()
 	add_child(_corpse_layer)
 	_corpse_layer.set_offsets(space.lattice_offsets())
@@ -1097,6 +1110,7 @@ func _refresh_squads() -> void:
 	# (D-20260819-a-casualty-is-visible), and the falls still playing get
 	# their one phase write.
 	_drain_casualty_sites()
+	_drain_audio_events()
 	if _corpse_layer != null:
 		_corpse_layer.update(_now)
 
@@ -3079,6 +3093,51 @@ var _frame_delta := 0.0
 ## (D-024), and their transforms are derived here exactly as the living
 ## are drawn — same curve, same formation function, same sampler — so a
 ## body lies where the man was standing.
+## Turn what happened into what is heard (#344).
+##
+## The resolution is `AudioCue`'s, not this function's: fog, distance,
+## rate and voice caps are all decided there, purely, and this only
+## supplies the three things that need a live client — the fog LEVEL for
+## the cell, where the camera is looking, and the clock.
+##
+## Fog is read through `TerrainFog.level_at`, which is the ONE vision
+## query this client already has (D-106) and the one the ground shader
+## and the minimap read. #344 is explicit that ears must not invent a
+## second: a sound whose cause a player cannot SEE must not play.
+func _drain_audio_events() -> void:
+	if _audio == null or _state.space == null:
+		return
+	_audio.reap()
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var listener := _state.space.index(_state.space.world_to_cell(_camera_target))
+	for event in _state.take_audio_events():
+		var def := SoundRoster.by_event(StringName(event["event"]))
+		if def == null:
+			continue
+		var cell := int(event["cell"])
+		var level := _fog.level_at(cell) if _fog != null and cell >= 0 else TerrainFog.VISIBLE
+		var cue := AudioCue.resolve(def, cell, listener, _state.space, level, now,
+			_audio.ledger(), float(event.get("magnitude", 1.0)))
+		_audio.play(cue, now)
+
+
+## Play an interface cue — a click, an order acknowledgement, a stinger.
+##
+## Never fog gated (the DATA says so, `SoundDef.fog_gated`), because a UI
+## sound has no cause on the map: gating it on sight would silence the
+## one category that is unambiguously the player's own.
+func _play_ui(event: StringName) -> void:
+	if _audio == null:
+		return
+	var def := SoundRoster.by_event(event)
+	if def == null:
+		return
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var cue := AudioCue.resolve(def, -1, -1, _state.space, TerrainFog.VISIBLE,
+		now, _audio.ledger())
+	_audio.play(cue, now, true)
+
+
 func _drain_casualty_sites() -> void:
 	if _corpse_layer == null:
 		return
@@ -5949,6 +6008,7 @@ func _can_afford(food: int, wood: int, gold: int, stone: int) -> bool:
 func _on_action_pressed(index: int) -> void:
 	if index < 0 or index >= _actions.size():
 		return
+	_play_ui(&"ui_click")
 	var action: Dictionary = _actions[index]
 	match String(action["kind"]):
 		"train":
@@ -8189,6 +8249,7 @@ func _train_selected(archetype: StringName) -> void:
 
 
 func _stop_selected() -> void:
+	_play_ui(&"order_move")
 	var sent := 0
 	for squad in _selected:
 		var order := _state.encode_stop(squad)
