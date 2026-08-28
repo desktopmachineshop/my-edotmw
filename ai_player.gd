@@ -377,16 +377,23 @@ func _found_site(squad: int) -> Vector2i:
 	if home.x < 0 or state.space == null:
 		return Vector2i(-1, -1)
 
-	var skipped := 0
+	var sites: Array[Vector2i] = []
 	for offset in TorusSpace.disk_offsets(FOUND_SEARCH_RADIUS):
 		var cell := state.space.normalize(home + offset)
-		if not _looks_buildable(cell):
-			continue
-		if skipped < _found_attempts:
-			skipped += 1
-			continue
-		return cell
-	return home
+		if _looks_buildable(cell):
+			sites.append(cell)
+	if sites.is_empty():
+		return home
+	# WRAPPED, not walked off the end. The first version returned `home`
+	# once `_found_attempts` passed the number of acceptable cells, which
+	# quietly rebuilt #217 after about a dozen refusals — and a real match
+	# reached that: `--map=ladder --seed=7 --ai=4` had a seat sending its
+	# twelfth attempt at 56 s and every attempt from then on at the same
+	# blocked start. Cycling instead keeps the retry a retry for as long as
+	# the match lasts, which also covers a refusal that CLEARS later — an
+	# enemy claim razed, a node worked out — since the site comes round
+	# again.
+	return sites[_found_attempts % sites.size()]
 
 
 ## Whether this AI has any reason to believe a hall cannot go here.

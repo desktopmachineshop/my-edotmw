@@ -129,6 +129,28 @@ The `after` run also shows the widening doing the half the node check
 cannot: one `Too close to another building` refusal for seat 1001,
 retried past rather than spun on.
 
+**The first version of the fix ran out of sites, and only a played match
+found it.** It skipped `_found_attempts` acceptable cells and fell
+through to `home` once it passed the end of the list — so after about a
+dozen refusals it rebuilt #217 exactly. A four-AI run on `ladder` at seed
+7 reached that: a seat sent its twelfth attempt at 56 s and every attempt
+from then on at the same blocked start. The list is CYCLED now, which
+also covers a refusal that clears later (an enemy claim razed, a node
+worked out), since the site comes round again. **Every unit test passed
+throughout** — the exhaustion needed more retries than a fixture had
+reason to run, and the instrument that saw it was a printout from a real
+match.
+
+**And that same run turned up a defect that is not the AI's at all
+(#247): `civs/gravesworn.tres` ships `starting_wood = 140` against a
+150-wood town centre**, so that civ begins the match unable to raise the
+one building its opening crew exists to raise. The AI then deadlocks —
+every five-second founding retry re-claims the crew off hauling (the #123
+fix), so it never gathers the ten wood that would break it: `workers_peak=1`,
+`peak_wood=140` flat for the whole match, eliminated. Filed rather than
+fixed, because which number moves is a balance call. **Read any ladder
+result involving gravesworn as suspect until it is settled.**
+
 **And it means ladder numbers can contain matches nobody played, again.**
 A seat that never founds is eliminated and the harness reports a decisive
 win with plausible `AI_STATS` for the winner — D-107's own failure

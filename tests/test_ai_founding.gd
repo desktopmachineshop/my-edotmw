@@ -247,3 +247,52 @@ func test_the_first_attempt_on_clear_ground_is_home_itself() -> void:
 	_feed(w)
 	assert_eq(brain._found_site(brain._founder()), HOME,
 		"with nothing in the way the seat should settle exactly where the map put it")
+
+
+## The site chooser must not run out. The first version of this fix
+## skipped `_found_attempts` acceptable cells and fell through to `home`
+## once it passed the end of the list, which quietly rebuilt #217 after
+## about a dozen refusals — and a real match reached it: on
+## `maps/ladder.tres` at seed 7 a seat sent its twelfth attempt at 56 s
+## and every attempt from then on at the same blocked start. Found by
+## instrumenting a played match, not by a test, which is why this one
+## exists now.
+func test_the_search_cycles_rather_than_falling_back_to_the_blocked_start() -> void:
+	var w := _world()
+	var server = w["server"]
+	var brain: AiPlayer = w["brain"]
+	_plant(server, w["space"].index(HOME))
+	server._sim.tick()
+	_feed(w)
+
+	# Far past the number of cells in the search disk, so a version that
+	# walked off the end is guaranteed to have done so.
+	for attempt in range(200):
+		brain._found_attempts = attempt
+		assert_ne(brain._found_site(brain._founder()), HOME,
+			"attempt %d fell back to the blocked start" % attempt)
+
+
+## ...and cycling means it comes round again, which is the property that
+## matters for a refusal that CLEARS later — an enemy claim razed, a node
+## worked out. A chooser that only ever moved outward would never re-offer
+## the cell that became free.
+func test_a_cycled_site_comes_round_again() -> void:
+	var w := _world()
+	var brain: AiPlayer = w["brain"]
+	_plant(w["server"], w["space"].index(HOME))
+	w["server"]._sim.tick()
+	_feed(w)
+
+	brain._found_attempts = 0
+	var first: Vector2i = brain._found_site(brain._founder())
+	var period := 0
+	for attempt in range(1, 400):
+		brain._found_attempts = attempt
+		if brain._found_site(brain._founder()) == first:
+			period = attempt
+			break
+	assert_gt(period, 1, "the chooser never returned to its first site")
+	brain._found_attempts = period * 2
+	assert_eq(brain._found_site(brain._founder()), first,
+		"the cycle is not a cycle — two periods on should be the first site again")
