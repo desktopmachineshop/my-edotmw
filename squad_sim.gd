@@ -435,6 +435,260 @@ func is_navigable(cell: Vector2i) -> bool:
 	return index < _navigable.size() and _navigable[index] != 0
 
 
+# --- cargo (naval stage 4, #301, docs/plans/naval.md section 3) -------
+
+## What each squad is CARRYING: an Array per squad of
+## {"def_id", "def", "owner", "alive", "shape", "spacing"}.
+##
+## A carried squad is NOT IN THE WORLD (3.1). It is removed the way
+## `consume_squad` removes a founder — `alive` to zero, reported through
+## the ordinary casualty path — and its composition is recorded HERE, on
+## the carrier, to be rebuilt when it lands.
+##
+## Removed rather than flagged in place, and that is the load-bearing
+## choice. Every loop in this file already guards `alive <= 0`, so a
+## carried squad cannot fight, be seen, be targeted, be separated or
+## gather without a single one of them being edited to know about cargo.
+## A flag would have needed every one of them audited, and the one missed
+## would be a squad fighting from inside a boat with nothing failing.
+##
+## The cost is that a squad's ID does not survive a voyage. That is
+## honest rather than convenient: 3.1 already says cargo is not
+## addressable — not targetable, not in `visible_to`, not drawn — so an
+## id that outlived the embark would be an id naming nothing.
+var _cargo := []
+
+## Squads lost with a hull on the last tick, as the rider records that
+## went down with it. Read by the server for its log and by the naval
+## gates; nothing on the wire needs it, because the carrier's own death
+## is what a client already sees.
+var last_drownings := []
+
+## Squads put ashore on the last tick, as new squad ids. The server
+## replicates them the way it replicates any squad that did not exist a
+## tick ago.
+var last_landings := []
+
+## Squads that boarded on the last tick, as casualty-shaped events for the
+## server to broadcast. Drained by reading it — the same contract
+## `last_wallet_changes` has, and the same reason: the simulation reports
+## news, the server decides who hears it.
+var last_embarks := []
+
+## Squads walking to a dock in order to board, and the carrier they mean:
+## squad -> carrier id, or -1. `_pending_tier_target`'s sibling, and
+## deliberately the same shape — this is the same two-leg order D-076
+## already established, with a boat where the ladder was.
+var _pending_embark := PackedInt32Array()
+
+## Carriers ordered to put their cargo ashore, and where: carrier -> land
+## cell index, or -1.
+var _pending_landing := PackedInt32Array()
+
+
+func cargo_of(carrier: int) -> Array:
+	if carrier < 0 or carrier >= _cargo.size():
+		return []
+	return _cargo[carrier]
+
+
+func cargo_capacity_left(carrier: int) -> int:
+	if carrier < 0 or carrier >= _cargo.size():
+		return 0
+	var def := _defs[carrier]
+	if def == null:
+		return 0
+	return maxi(0, def.transport_capacity - (_cargo[carrier] as Array).size())
+
+
+## Total squads a player has at sea inside a hull.
+##
+## Cargo still counts against the squad cap — it is an army slot you are
+## using (3.1) — and it has to be counted HERE rather than left to
+## `living_squad_count`, whose whole contract is "alive on the field".
+func carried_squad_count(player: int) -> int:
+	var n := 0
+	for i in range(_cargo.size()):
+		if _alive[i] <= 0:
+			continue
+		for rider in _cargo[i]:
+			if int(rider["owner"]) == player:
+				n += 1
+	return n
+
+
+## May `squad` board `carrier`? THE one predicate, so the order path, the
+## arrival hop and any future caller cannot disagree about it.
+func can_carry(carrier: int, squad: int) -> bool:
+	if carrier < 0 or carrier >= _cell.size() or squad < 0 or squad >= _cell.size():
+		return false
+	if carrier == squad or _alive[carrier] <= 0 or _alive[squad] <= 0:
+		return false
+	var carrier_def := _defs[carrier]
+	var rider_def := _defs[squad]
+	if carrier_def == null or rider_def == null:
+		return false
+	if carrier_def.transport_capacity <= 0:
+		return false
+	# A hull carries; a land squad rides. A ship cannot be cargo, which is
+	# 3.4's "no ship-to-ship transfer" falling out of the data rather than
+	# needing a rule of its own.
+	if carrier_def.movement_domain != "water" or rider_def.movement_domain != "ground":
+		return false
+	if _owner[carrier] != _owner[squad] and not are_allied(_owner[carrier], _owner[squad]):
+		return false
+	return cargo_capacity_left(carrier) > 0
+
+
+## The hop that puts `squad` aboard `carrier` (3.3's second leg).
+##
+## ONE explicit hop, nothing partial, which is what keeps it legal under
+## D-006 clause 1: there is nowhere for a half-embarked value to live.
+## Returns the casualty-shaped events the server broadcasts, exactly as
+## `consume_squad` does — clients already know how to apply them and the
+## composition hash stays in agreement for free.
+func embark(carrier: int, squad: int) -> Array:
+	if not can_carry(carrier, squad):
+		return []
+	(_cargo[carrier] as Array).append({
+		"def_id": _def_id[squad],
+		"def": _defs[squad],
+		"owner": _owner[squad],
+		"alive": _alive[squad],
+		"shape": _shape[squad],
+		"spacing": _spacing[squad],
+	})
+	_alive[squad] = 0
+	_routed[squad] = 0
+	_pending_embark[squad] = -1
+	# `fell` is FALSE: nobody died boarding a boat.
+	# D-20260819-a-casualty-is-visible lays a corpse for men lost to
+	# violence, and drawing one here would put a row of bodies on the quay
+	# every time a squad got on a ship.
+	return [{"id": squad, "alive": 0, "routed": false, "fell": false}]
+
+
+## Put every rider ashore around `at` (3.3's one leg), returning the new
+## squad ids. Empty if the carrier has no cargo or there is no passable
+## land to land on.
+##
+## Cells are taken nearest-first through `disk_offsets` (D-067 sorted it
+## for exactly this walk), so a landing is deterministic and a replay
+## lands the same army on the same beach.
+func disembark(carrier: int, at: Vector2i) -> Array:
+	if carrier < 0 or carrier >= _cargo.size():
+		return []
+	var riders: Array = _cargo[carrier]
+	if riders.is_empty():
+		return []
+	var landed := []
+	var taken := {}
+	for rider in riders:
+		var spot := _landing_cell_near(at, taken)
+		if spot.x < 0:
+			break  # nowhere ashore; the rest stay aboard
+		taken[space.index(spot)] = true
+		var id := add_squad(rider["def"], int(rider["owner"]), spot)
+		# A landed squad is an ORDINARY squad the tick it lands (3.4) — no
+		# assault penalty, no bonus — but it keeps what it was: the men it
+		# had left and the shape its player chose.
+		_alive[id] = mini(int(rider["alive"]), _alive[id])
+		_shape[id] = String(rider["shape"])
+		_spacing[id] = float(rider["spacing"])
+		landed.append(id)
+	if landed.size() >= riders.size():
+		_cargo[carrier] = []
+	else:
+		_cargo[carrier] = riders.slice(landed.size())
+	_pending_landing[carrier] = -1
+	return landed
+
+
+## Every hull that has died still holding cargo, emptied (3.2).
+##
+## Iterates `_cargo` rather than tracking deaths, because a carrier can
+## die down several paths — squad combat, building fire, a disconnect
+## wipe, elimination — and a hook on each is a hook one of them will one
+## day be added without. The list is one entry per squad and almost all
+## of them are empty, so this is a scan of nothing on nearly every tick.
+## A laden hull standing beside the ground it was sent to puts its cargo
+## ashore (3.3).
+##
+## "Beside" rather than "on": a hull cannot stand on land, so the arrival
+## test is that the ordered cell is within reach of where the hull now is.
+## One cell, because that is what adjacency means on this lattice and a
+## wider radius would let a ship unload across a strait it never crossed.
+##
+## Returns the squads that landed, so the server can replicate them the
+## way it replicates anything else newly created.
+func _advance_landings() -> Array:
+	var landed := []
+	for carrier in range(_cargo.size()):
+		var target := _pending_landing[carrier]
+		if target < 0:
+			continue
+		if _alive[carrier] <= 0 or (_cargo[carrier] as Array).is_empty():
+			_pending_landing[carrier] = -1
+			continue
+		var at := space.from_index(target)
+		if space.distance(cell_of(carrier), at) > 1:
+			continue  # still sailing — naval stage 2 is what moves it
+		landed.append_array(disembark(carrier, at))
+	return landed
+
+
+func _advance_drownings() -> Array:
+	var lost := []
+	for carrier in range(_cargo.size()):
+		if _alive[carrier] > 0:
+			continue
+		if (_cargo[carrier] as Array).is_empty():
+			continue
+		lost.append_array(drown_cargo(carrier))
+	return lost
+
+
+func _landing_cell_near(at: Vector2i, taken: Dictionary) -> Vector2i:
+	for offset in TorusSpace.disk_offsets(4):
+		var candidate := space.normalize(at + offset)
+		var index := space.index(candidate)
+		if taken.has(index):
+			continue
+		if not is_passable(candidate):
+			continue
+		var occupied := false
+		for other in range(_cell.size()):
+			if _alive[other] > 0 and _cell[other] == index:
+				occupied = true
+				break
+		if not occupied:
+			return candidate
+	return Vector2i(-1, -1)
+
+
+## Everything a sinking carrier takes down with it (3.2).
+##
+## The cargo DROWNS. Ejecting it onto the nearest shore would make a
+## transport strictly better than not using one, and would be an
+## invisible rule a player cannot see operating. D-076 chose the opposite
+## for a razed wall — evict, do not kill — and its reason does not
+## transfer: a squad on a razed wall is standing on ground that still
+## exists, while a squad on a sunk ship is in open water it could never
+## have entered on its own.
+##
+## The riders have no squad ids any more — they left the world when they
+## boarded — so this returns what was lost rather than casualty events.
+## The carrier's own death is what clients already see.
+func drown_cargo(carrier: int) -> Array:
+	if carrier < 0 or carrier >= _cargo.size():
+		return []
+	var riders: Array = _cargo[carrier]
+	if riders.is_empty():
+		return []
+	_cargo[carrier] = []
+	return riders
+
+
 func set_passable_top(p: PackedByteArray) -> void:
 	_passable_top = p
 	_fields_top.clear()
@@ -474,6 +728,9 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_fatigue.append(100.0)
 	_def_id.append(def.id)
 	_defs.append(def)
+	_cargo.append([])
+	_pending_embark.append(-1)
+	_pending_landing.append(-1)
 
 	_morale.append(def.morale)
 	_routed.append(0)
@@ -783,7 +1040,18 @@ func squad_info_entries(squad_ids: Array) -> Array:
 			# server's exact values.
 			"facing": _facing[id], "files": _files[id],
 			"stance": _stance[id],
+			# What it is carrying (3.1). Only the two fields a client can
+			# use — a name and a count — because cargo is drawn nowhere and
+			# the selection panel is all it feeds.
+			"cargo": _cargo_wire(id),
 		})
+	return out
+
+
+func _cargo_wire(carrier: int) -> Array:
+	var out := []
+	for rider in _cargo[carrier]:
+		out.append({"def_id": String(rider["def_id"]), "alive": int(rider["alive"])})
 	return out
 
 
@@ -1237,12 +1505,132 @@ func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
+	# THE EMBARK TRIGGER, and it comes first on purpose (naval stage 4).
+	#
+	# Section 2.4 pins "a land squad ordered to a water cell is corrected
+	# to the nearest passable land cell, UNLESS IT IS AN EMBARK ORDER" and
+	# never says what an embark order is, while insisting there be no new
+	# opcode for movement. The reading taken here is the one that needs
+	# neither: ordering a land squad onto a cell holding a FRIENDLY
+	# TRANSPORT WITH ROOM is the embark. The cell's contents disambiguate,
+	# it is the gesture every game in the genre uses — right-click the
+	# boat — and it makes the exception precise.
+	#
+	# Checked BEFORE any destination correction so that naval stage 2 can
+	# write section 2.4's rule without knowing embark exists: the
+	# correction is naturally downstream of this branch. If that ordering
+	# is ever inverted, every embark order silently becomes a walk to the
+	# beach.
+	var carrier := _transport_at(destination, squad)
+	if carrier >= 0:
+		_begin_embark(squad, carrier)
+		return
+	_pending_embark[squad] = -1
+	# A LADEN HULL ordered at land is a landing (3.3's one leg), and the
+	# asymmetry with embark is the design's central choice: loading is a
+	# logistics operation you build a dock for, landing is the attack.
+	# D-076 chose "one door" for a wall and explicitly rejected "any
+	# adjacent cell" because it made a wall's LINE pointless — there is no
+	# line to defend at sea, and a rule that only let you land where
+	# somebody had already built a dock would mean you can only invade an
+	# island the enemy has already settled.
+	#
+	# The hull still has to GET there, which is naval stage 2. This
+	# records the intent; `_advance_landings` performs it when the hull is
+	# actually beside the ground it was sent to.
+	if not (_cargo[squad] as Array).is_empty() and not is_passable(destination):
+		pass  # ordered at water: an ordinary move for a hull, not a landing
+	elif not (_cargo[squad] as Array).is_empty():
+		_pending_landing[squad] = space.index(destination)
 	var wanted_tier := _tier_for_destination(destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
 		_apply_move_order(squad, destination, true)
 		return
 	_begin_tier_crossing(squad, destination, wanted_tier)
+
+
+## The friendly transport standing on `destination` that `squad` could
+## board, or -1. Every condition is `can_carry`'s, so there is one answer
+## to "may this squad board that hull" and the order path cannot drift
+## from the hop.
+func _transport_at(destination: Vector2i, squad: int) -> int:
+	var index := space.index(destination)
+	for other in range(_cell.size()):
+		if _alive[other] <= 0 or _cell[other] != index:
+			continue
+		if can_carry(other, squad):
+			return other
+	return -1
+
+
+## Start the two-leg embark (section 3.3), in exactly
+## `_begin_tier_crossing`'s shape and for the same reason: this is one
+## explicit two-leg order, not a unified graph.
+##
+## Leg one is an ordinary land walk to the DOCK'S LAND CELL — the cell a
+## land squad can actually stand on beside the hull. Leg two is the hop,
+## in `_advance_embarks`.
+func _begin_embark(squad: int, carrier: int) -> void:
+	var quay := _quay_for(carrier)
+	if quay.x < 0:
+		# The hull is not at a dock, so there is nowhere to board from.
+		# Degrades like any other unreachable order — the squad keeps
+		# doing whatever it was doing, which is D-076's own answer to a
+		# missing tower.
+		return
+	_pending_embark[squad] = carrier
+	_pending_tier_target[squad] = -1
+	_apply_move_order(squad, quay, true)
+
+
+## The land cell a squad boards `carrier` from: the cell of the dock whose
+## water side the hull is sitting on, or (-1, -1) if it is not at one.
+##
+## Section 3.4: you load at a dock and nowhere else. Landing is the thing
+## that can happen anywhere.
+func _quay_for(carrier: int) -> Vector2i:
+	if buildings == null:
+		return Vector2i(-1, -1)
+	var at := _cell[carrier]
+	for i in range(buildings.building_count()):
+		if buildings.is_destroyed(i) or not buildings.is_complete(i):
+			continue
+		if buildings.water_cell_of(i) == at:
+			return buildings.cell_of(i)
+	return Vector2i(-1, -1)
+
+
+## Leg two: hop aboard, once the squad is standing on the quay and the
+## hull is still there with room. Called from the tick beside
+## `_advance_tier_transitions`, which is the same shape and the same
+## arrival test.
+##
+## Returns the casualty-shaped events for every squad that boarded, so the
+## server broadcasts them through the path it already has.
+func _advance_embarks() -> Array:
+	var events := []
+	for squad in range(_cell.size()):
+		var carrier := _pending_embark[squad]
+		if carrier < 0:
+			continue
+		if _alive[squad] <= 0:
+			_pending_embark[squad] = -1
+			continue
+		if _cell[squad] != _destination[squad]:
+			continue  # still walking to the quay
+		_pending_embark[squad] = -1
+		# Re-asked on ARRIVAL, never trusted from order time: a hull sails,
+		# is sunk, or fills up while a squad walks to the quay. Every other
+		# rule in this codebase that survives a walk is re-checked the same
+		# way (server._finish_build re-asks the ground, the cost and the
+		# claims).
+		if not can_carry(carrier, squad):
+			continue
+		if _quay_for(carrier) != cell_of(squad):
+			continue  # the hull moved to another dock while we walked
+		events.append_array(embark(carrier, squad))
+	return events
 
 
 ## Advance, but halt on contact (D-034). Combat clears the stance when it
@@ -2436,6 +2824,16 @@ func tick() -> void:
 	# after positions are derived and arrivals settle, so it acts on this
 	# tick's real position, and before vision/combat see the result.
 	_advance_tier_transitions()
+	# And a squad that just reached a quay boards here, for the identical
+	# reason and in the identical place: on this tick's real position,
+	# before vision and combat see the result — so a squad that is aboard
+	# is aboard for the whole of the tick in which anything could have
+	# seen or shot it.
+	last_embarks = _advance_embarks()
+	# And a laden hull beside its target puts its cargo ashore. After the
+	# embarks so that the two cannot interleave within one tick: a squad
+	# boards or lands, never both.
+	last_landings = _advance_landings()
 
 	last_curves_usec = Time.get_ticks_usec() - curves_started
 	total_curves_usec += last_curves_usec
@@ -2484,6 +2882,12 @@ func tick() -> void:
 	combat.apply_skirmish(self, tick_count)
 	# Both halves of the combat phase, not just resolve(): the assignment
 	# scan is combat work and would otherwise land in the residual.
+	# A hull that went down this tick takes its cargo with it (naval 3.2).
+	# After combat, because combat is what sinks it, and before anything
+	# reads the cargo lists — so a drowned squad is drowned for the whole
+	# of the tick in which it died.
+	last_drownings = _advance_drownings()
+
 	last_squad_combat_usec = Time.get_ticks_usec() - combat_started
 	total_combat_usec += last_squad_combat_usec
 

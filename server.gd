@@ -2633,6 +2633,14 @@ func _replicate() -> void:
 	# separately so a client applies both in one message and the
 	# composition hash that follows is already current.
 	var combat_events := _sim.last_combat_events
+	# A squad that boarded a hull left the world this tick (naval 3.1), and
+	# it leaves it through the SAME casualty path a founder spent on a town
+	# hall does — the events carry `fell = false`, so no corpse is laid and
+	# every client applies them with code it already has. Appended here
+	# rather than given a message of their own, which is D-003's and
+	# D-025's standing rule: extend the path, never duplicate it.
+	if not _sim.last_embarks.is_empty():
+		combat_events = combat_events + _sim.last_embarks
 	if not _pending_events.is_empty():
 		combat_events = combat_events + _pending_events
 
