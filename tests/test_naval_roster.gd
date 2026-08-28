@@ -418,3 +418,37 @@ func test_a_caller_naming_a_real_civ_is_still_never_handed_another_civs_unit() -
 			assert_eq(resolved.civ, StringName(civ),
 				"%s asked for %s and must never be handed %s's" % [
 					civ, archetype, resolved.civ])
+
+
+func test_a_mid_match_seat_can_still_be_asked_what_to_build() -> void:
+	# The WHOLE CHAIN, on this branch alone — no union, no merge, no other
+	# worker's PR. 82 asked, fairly, whether a hand-reconciled union might
+	# itself have caused the production failure, and this answers that
+	# without another union run: the defect needs only THIS branch's
+	# narrowing plus `MatchState`'s own seating, both of which are here.
+	#
+	# `MatchState` seats a player with `civ = CivRoster.RANDOM` and only
+	# `_on_match_started` resolves it, so any player seated after the
+	# match begins — every load-test bot — asks with "random".
+	var state := MatchState.new()
+	state.add_player(1)
+	state.add_player(2)
+	# Seat 2 is the one that keeps the placeholder; seating resolves the
+	# first seat's Random through `civ_rng`. That asymmetry is why exactly
+	# one bot per match worked and the rest did not, which read as
+	# per-civ and was not.
+	var seat: Dictionary = state.seats[state.seat_of(2)]
+	assert_eq(StringName(seat["civ"]), CivRoster.RANDOM,
+		"fixture: a later seat must still hold the placeholder, or this "
+		+ "test is not about the case that broke")
+
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	assert_not_null(hall, "fixture: the town centre must exist")
+	assert_false(hall.produces.is_empty(), "fixture: and produce something")
+
+	var asked := BotBuildPlan.archetype_for(hall, StringName(seat["civ"]), 0)
+	assert_ne(asked, &"",
+		"a bot at an unresolved seat must still find something to ask its "
+		+ "town centre for — returning \"\" here is the whole defect: the "
+		+ "bot sends NO produce order at all, so the server refuses "
+		+ "nothing and the log shows no refusals to find")
