@@ -10,6 +10,55 @@ red, and restored — and doing that found **four defects in the pipeline
 itself**, one of which was a workflow reporting a green job over a red
 suite.
 
+## The second reason, which is not "catch what nobody ran"
+
+#290 was filed on eleven incidents in which `main` sat red and an
+unrelated worker eventually noticed. That is a real reason and it is the
+weaker one.
+
+> Beyond catching what nobody ran, CI is a reader who cannot inherit your
+> derivation. An author cannot re-derive their own claim — they remember
+> the derivation, so re-reading the field returns the meaning already in
+> mind. CI has no memory to substitute.
+
+(That framing is 88's, from a cluster of five wrong readings found in one
+day — the write-up is on #350 and the entry is
+`D-20260828-read-what-a-metric-counts-not-what-it-is-called`.)
+
+The case for it from this file's own author, because it is the one that
+should be least reassuring:
+
+**`[exited with code 0]` was printed over a recipe that had failed with
+exit code 1.** A backgrounded `just test-unit 2>&1 | tail` reported
+success while the host gate had timed out after 1834 s and the suite had
+never run at all. The pipe returns *`tail`'s* status. That is the
+identical defect this workflow's `defaults.run.shell: bash` exists to fix
+— written up thirty lines above, by the same person, hours earlier — and
+it was not re-derived on sight. It was **recognised**: "exit 0, fine."
+An exit code whose *name* says the pipeline succeeded and whose *value*
+is the last element's status is
+`read-what-a-metric-counts-not-what-it-is-called` with a shell builtin in
+place of a game field.
+
+### And the limit of the argument, which belongs beside it and not after it
+
+**CI could not have caught that one.** It was not a defect in the tree;
+it was a defect in how a run was read. No workflow sits between an author
+and their own terminal.
+
+So the rule the pipeline supports rather than replaces: **when no machine
+sits between you and the claim, the second reader has to be the primary
+data itself.** Read the log, not the status. The only reason that miss
+was caught is that this project already requires it — "a green run is not
+the same as a run that happened", which is D-022's audit block, and which
+is older than any of this automation.
+
+A corollary for anything with a `##[error]` or an `assert` message in it:
+**a guard's message has to survive being skimmed by somebody who already
+believes they know what it says.** Two of the day's five misreadings were
+of guard text that was not unclear and was not being read — it was being
+confirmed against what the reader already thought it said.
+
 ## The workflows
 
 | workflow | when | runtime | what it is for |
