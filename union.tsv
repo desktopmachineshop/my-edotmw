@@ -136,3 +136,4 @@
 357	ao/my-edotmw-79/gap-assessment-2	CONFLICT	docs/plans/gap-assessment-2.md 
 357	ao/my-edotmw-79/gap-assessment-2	CONFLICT-RESOLVED	docs/plans/gap-assessment-2.md: head moved mid-build; took the newer version.
 369	ao/my-edotmw-79/decisions-ahead	CONFLICT	decisions/D-20260828-a-dock-stands-on-a-shore.md docs/plans/decision-manifest.md docs/plans/decisions-ahead.gen.py 
+369	ao/my-edotmw-79/decisions-ahead	CONFLICT-RESOLVED	head moved mid-build. Kept the OWNING PR's dock decision (#308's design-only set) and took #369's newer manifest/generator.
