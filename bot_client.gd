@@ -187,6 +187,37 @@ class VirtualClient:
 	## the line whether they had ever had more). The server's periodic
 	## status line carries a FLEET total that answers it in aggregate,
 	## but a fleet total cannot see one bot losing while another gains.
+	## The most squads this bot ever OWNED, against `squads` in the BOT
+	## line, which is the count at the END.
+	##
+	## Two lines, and they turn "one squad" from ambiguous into evidence.
+	## A terminal count of 1 is equally consistent with *crews were
+	## produced and then lost* and with *no crew was ever produced*, and
+	## those want opposite investigations — the first is combat or
+	## consumption, the second is production. #376 cost real time to
+	## separate, and only by reading the SERVER's per-tick squad
+	## trajectory, which a bot log does not have.
+	##
+	## READ IT AGAINST THE OPENING SIZE, which is TWO — a gatherer crew
+	## AND a general since D-20260823.
+	##
+	## The natural reading of "peak 2, now 1" is a COMBAT LOSS, and it is
+	## not: it is the crew being CONSUMED founding the town hall, by
+	## design. Naming the wrong meaning the eye reaches for first is
+	## worth more here than the table below, because the table is only
+	## consulted by somebody who already suspects they are misreading it
+	## (phrasing from worker 87, who ran the counter and hit this).
+	##
+	##   peak 2 / end 1 / military 1        founded, and produced nothing since
+	##   peak 2 / end 2 / build='no hall'   never founded, crew still standing (#247)
+	##   peak > 2                           production happened at least once
+	##
+	## The first row is #376's signature, stated by the harness instead of
+	## reconstructed afterwards from a server log. An earlier version of
+	## this comment said `peak == 1`, which is wrong and would have read a
+	## healthy opening as a dead one — corrected by worker 87 from having
+	## run the counter on a real union match, which is the difference
+	## between a diagnostic that was reasoned about and one that was used.
 	var squads_peak := 0
 
 	## Raid orders actually issued. The verdict gates on this, because
@@ -1687,17 +1718,14 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d squads_peak=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f farms_peak=%d field_orders=%d build=%s" % [
+		print("bot_client.gd: BOT player=%d squads=%d squads_peak=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f techs=%d/%d epoch=%d farms_peak=%d field_orders=%d build=%s" % [
 			vc.state.player, vc.state.squads.size(), vc.squads_peak,
 			vc.military_squads(), vc.state.buildings.size(),
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f techs=%d/%d epoch=%d build=%s" % [
-			vc.state.player, vc.state.squads.size(), vc.military_squads(),
-			vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
 			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at,
-			vc.state.techs.size(), vc.techs_ordered, vc.state.epoch, vc.farms_peak, vc.field_orders, vc.build_block])
-
+			vc.state.techs.size(), vc.techs_ordered, vc.state.epoch,
+			vc.farms_peak, vc.field_orders, vc.build_block])
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:
 		push_error("bot_client.gd: %d squad(s) had a curve but no composition — the server replicated something it never described" % awaiting)
