@@ -147,6 +147,18 @@ var _replay: ReplayLog
 ## curve log (D-016), so silently truncating one is losing the match.
 var _matches_played := 0
 
+## Answers "is anybody there" on the local network (#187). Always
+## constructed, only listening once `begin` succeeds — so every call
+## below is safe on a server that has no discovery socket.
+var _beacon := LanBeacon.new()
+
+## What this game calls itself in a browser's list. Display only.
+var _game_name := ""
+
+## This server's token in a browser's list, minted once per process. See
+## `_describe_for_browser` for what it is for and what it is not.
+var _browser_token := ""
+
 var _match: MatchState
 var _buildings: BuildingSim
 var _economy: Economy
@@ -297,7 +309,7 @@ func _ready() -> void:
 	# value in the log that looks wrong enough to notice (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
 		["port", "seed", "ai", "players", "lobby", "sandbox", "random-civs",
-		"ai-teams"])
+		"ai-teams", "discovery"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args,
 		["run-seconds", "stop-after-match", "height_scale"]))
 	if not bad_args.is_empty():
@@ -518,6 +530,26 @@ func _ready() -> void:
 	print("server: listening on 0.0.0.0:%d — map %s, tick %d Hz%s" % [
 		_port, _config.id, int(SquadSim.TICK_HZ),
 		" (lobby)" if _match.require_admin_start else ""])
+
+	# Answer browsers on the local network (#187). AFTER the game socket,
+	# because a server that cannot host has nothing to advertise — and
+	# NOT fatal if it fails: discovery is how a game is FOUND, and a game
+	# nobody can find is still a game anybody can join by address. The one
+	# arrangement where this bind reliably fails is a second server on one
+	# machine sharing an instance, which is a dev accident rather than a
+	# player's evening.
+	if int(args.get("discovery", 1)) != 0:
+		var token_rng := RandomNumberGenerator.new()
+		token_rng.randomize()
+		_browser_token = "%d-%d" % [_port, token_rng.randi()]
+		_game_name = String(args.get("name", "")).strip_edges()
+		if _game_name.is_empty():
+			_game_name = LanProtocol.default_game_name()
+		if _beacon.begin(_port, _describe_for_browser) == OK:
+			print("server: %s — \"%s\"" % [_beacon.status(), _game_name])
+		else:
+			print("server: %s; this game will not appear in LAN browsers"
+				% _beacon.status())
 	if _run_seconds > 0.0:
 		print("server: will stop after %.1f simulated seconds" % _run_seconds)
 
@@ -728,6 +760,7 @@ func _shutdown() -> void:
 		# one line an hour ago is a run whose missing replay is a surprise
 		# (#201).
 		print("server: NOT recording a replay — %s" % _replay.open_error)
+	_beacon.stop()
 	if _host != null:
 		_host.destroy()
 		_host = null
@@ -739,6 +772,10 @@ func _process(delta: float) -> void:
 
 	_service_network()
 	_sweep_silent_peers()
+	# Cheap: one datagram per browsing player per second, and nothing at
+	# all while nobody is looking at a menu (`lan_protocol.gd` explains
+	# why discovery asks rather than announces).
+	_beacon.poll()
 
 	# Every departure in this frame has now been processed, so a
 	# broadcast can no longer land on a socket whose disconnect was still
@@ -1108,6 +1145,55 @@ func _handle_hello(peer, data: PackedByteArray) -> void:
 	_pending.erase(peer)
 	_handshakes_accepted += 1
 	_admit_connection(peer)
+
+
+## What this server tells a browser it is (#187).
+##
+## Called freshly for every reply rather than cached, because the whole
+## point of the list is that it is CURRENT: a lobby that filled up while
+## somebody read the row is the case a cache gets wrong, and this is one
+## dictionary per browser per second.
+##
+## What it deliberately does NOT say: who is in the seats, what they
+## picked, or anything at all from inside the match. This socket answers
+## the whole network without a handshake, so everything here is public by
+## construction — the same question D-102's scoreboard had to answer
+## about a MENU rather than a network, with the same answer: identity and
+## counts, never anybody's army.
+func _describe_for_browser() -> Dictionary:
+	var running := _match != null and _match.phase == MatchState.Phase.RUNNING
+	var humans := _clients.size()
+	var seats := _match.seats.size() if _match != null else 0
+	return {
+		# WHO this server is, so one game answering a broadcast on three
+		# interfaces is one row rather than three (`GameBrowser.entry_id`
+		# — found by running it, not by reasoning about it). A token, not
+		# an identity: it says "these replies are the same server" and
+		# nothing else, so there is nothing here to impersonate.
+		"id": _browser_token,
+		# The one field a browser cannot do without: what a click
+		# connects to. The ADDRESS is the sender's, taken by the browser
+		# from the datagram rather than claimed here (`lan_discovery.gd`).
+		"port": _port,
+		"name": _game_name,
+		"map": "%s %dx%d" % [_settings.preset, _settings.width, _settings.height],
+		"players": humans,
+		"seats": maxi(seats, humans),
+		"phase": "running" if running else "lobby",
+		# Joining mid-match is a thing this server genuinely does — an
+		# admitted player is seated and given an opening wherever the
+		# match has got to (`_admit_player`) — so a running game is
+		# offered rather than greyed out. When D-090's repossession lands
+		# this becomes "are there seats to repossess", which is why the
+		# browser takes the answer from HERE rather than computing one
+		# from the counts (`GameBrowser.can_join`).
+		"joinable": humans < MAX_CLIENTS,
+		# So an incompatible build is greyed out BEFORE a doomed join
+		# rather than refused after it (#179, #187). The same number the
+		# handshake compares, from the same constant.
+		"protocol": NetProtocol.PROTOCOL_VERSION,
+		"build": BuildVersion.string(),
+	}
 
 
 ## Send the refusal and drop the peer.

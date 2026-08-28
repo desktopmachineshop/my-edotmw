@@ -127,6 +127,47 @@ var _connected := false
 ## socket from a CLI flag, and the lobby — the first thing a player ever
 ## saw — was reachable only because that socket already existed. A tester
 ## who installs a build has no command line to type into.
+# --- the game browser (#187) -------------------------------------------
+#
+# The menu lists games it FOUND, from an array of providers it knows
+# almost nothing about: five methods each (`lan_discovery.gd` documents
+# the duck type). The LAN one works on any network today; the platform's
+# is handed over by the boundary script and is simply absent when there
+# is no platform, which is every context this repo automates.
+#
+# What a row SAYS and whether it can be pressed is `game_browser.gd`'s,
+# all-static and tested — the D-061 rule, because a list that offers a
+# join it cannot complete looks exactly like a list that works.
+
+## How wide the pre-lobby column is. One number rather than the four
+## copies of `420.0` that were here, because the game list has to be the
+## same width as everything above it and a fifth copy is how that stops
+## being true.
+const MENU_WIDTH := 460.0
+
+## How much room the game list keeps even while it is empty. See
+## `_build_main_menu` for why it is reserved rather than grown into.
+const BROWSER_MIN_HEIGHT := 132.0
+
+## An extra address the LAN provider asks directly, beside the
+## broadcast. Empty for a player; set by `--browser-probe=` for a network
+## that does not carry one (a docker bridge, a VPN, another subnet).
+var _browser_probe := ""
+
+## The providers being polled while the menu is up. Empty otherwise:
+## nothing is on the wire while somebody is playing.
+var _browser_providers: Array = []
+
+## Every game currently known, freshest answer per endpoint.
+var _browser_entries: Array = []
+
+## What the last drawn list looked like, so the rows are rebuilt when
+## they CHANGE rather than four times a second. A list that rebuilds
+## itself under the cursor eats the click that was meant for a row.
+var _browser_signature := ""
+var _browser_rows: VBoxContainer = null
+var _browser_status: Label = null
+
 var _menu_layer: CanvasLayer = null
 var _menu_address: LineEdit = null
 var _menu_status: Label = null
@@ -438,14 +479,25 @@ func _ready() -> void:
 	# and hosting is the more specific request: a launch that says both
 	# `--host=1` and `--address` is asking to host, and connecting
 	# somewhere else instead would be a plausible, entirely wrong answer.
+	# WHICH PORT THIS BUILD PLAYS ON. A player never passes either of
+	# these — the menu hosts on the default so a friend can be told one
+	# number — but a recipe must, because D-095 gives every agent
+	# worktree its own port and one that bound the shared 4433 could
+	# collide with another agent's server on the same laptop.
+	#
+	# Read unconditionally, not just when hosting, because the game
+	# browser derives the DISCOVERY port from it (#187,
+	# `LanProtocol.discovery_port`): a dev client that browsed 4434 while
+	# its instance plays on 20001 would find nothing, correctly, for a
+	# reason nobody could see. `--port` is the fallback because that is
+	# what `just run-client` passes.
+	_host_port = int(args.get("host-port", int(args.get("port", DEFAULT_SERVER_PORT))))
+	# An extra address to ask directly, beside the broadcast. For a
+	# machine on another subnet, and for the recipes: a docker bridge is
+	# not a LAN and does not have to carry a broadcast.
+	_browser_probe = String(args.get("browser-probe", "")).strip_edges()
 	if int(args.get("host", 0)) == 1:
 		_host_ai_wanted = int(args.get("host-ai", 0))
-		# Which port this host BINDS. A player never passes it — the menu
-		# hosts on the default so a friend can be told one number — but
-		# `just test-host` must, because D-095 gives every agent worktree
-		# its own port and a recipe that bound the shared 4433 could
-		# collide with another agent's server on the same laptop.
-		_host_port = int(args.get("host-port", DEFAULT_SERVER_PORT))
 		_host_match()
 	elif bool(target["connect"]):
 		_connect_to(String(target["address"]), int(target["port"]))
@@ -516,6 +568,13 @@ func _process(delta: float) -> void:
 	# the test is "is there a connection", not "is there a socket". Read
 	# as the latter, a host would tick its server and render nothing.
 	if _host == null and _hosted_server == null:
+		# Looking for games is the ONE thing this client does while it is
+		# not connected, and it belongs above the capture return below:
+		# a capture run with no server is exactly the menu-shot case
+		# (`just menu-shot`), and a list that only polls on connected
+		# frames would render an empty one for ever.
+		if _menu_layer != null and _menu_layer.visible:
+			_browser_poll()
 		# A capture run must still END. `_finish_capture` is the only
 		# thing that quits, and a headless run whose server refused it or
 		# never answered would otherwise hang its recipe forever — a
@@ -9469,7 +9528,7 @@ func _build_main_menu() -> void:
 
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 12)
-	column.custom_minimum_size = Vector2(420.0, 0.0)
+	column.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	centre.add_child(column)
 
 	var eyebrow := Label.new()
@@ -9495,11 +9554,37 @@ func _build_main_menu() -> void:
 	_menu_status.modulate = HudTheme.ACCENT
 	_menu_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_menu_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_menu_status.custom_minimum_size = Vector2(420.0, 0.0)
+	_menu_status.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	column.add_child(_menu_status)
 
+	# THE GAME LIST (#187). Above the address box on purpose: typing an
+	# address is the fallback a player reaches for when the list has not
+	# got what they want, and D-094 criterion 4's whole flow is "nobody
+	# touches an IP".
+	var browser_caption := Label.new()
+	browser_caption.text = "GAMES ON THIS NETWORK"
+	browser_caption.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	browser_caption.modulate = HudTheme.TEXT_GHOST
+	column.add_child(browser_caption)
+
+	_browser_status = Label.new()
+	_browser_status.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	_browser_status.modulate = HudTheme.TEXT_GHOST
+	_browser_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_browser_status.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
+	column.add_child(_browser_status)
+
+	# A fixed minimum height, so the address box and the buttons below do
+	# not JUMP DOWN the moment a game is found. The list appears while a
+	# player is reading the screen, and a menu that reflows under a
+	# reaching cursor is one that presses the wrong thing.
+	_browser_rows = VBoxContainer.new()
+	_browser_rows.add_theme_constant_override("separation", 4)
+	_browser_rows.custom_minimum_size = Vector2(MENU_WIDTH, BROWSER_MIN_HEIGHT)
+	column.add_child(_browser_rows)
+
 	var address_caption := Label.new()
-	address_caption.text = "SERVER ADDRESS"
+	address_caption.text = "OR JOIN BY ADDRESS"
 	address_caption.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
 	address_caption.modulate = HudTheme.TEXT_GHOST
 	column.add_child(address_caption)
@@ -9530,12 +9615,136 @@ func _build_main_menu() -> void:
 	host_note.modulate = HudTheme.TEXT_GHOST
 	host_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	host_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	host_note.custom_minimum_size = Vector2(420.0, 0.0)
+	host_note.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	column.add_child(host_note)
 
 	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
+
+
+## Start looking for games, and say who is being asked (#187).
+##
+## Providers are built HERE rather than in `_ready`, and torn down when
+## the menu closes, because a socket that outlives the screen it serves
+## is a socket nobody is watching: this is a game whose whole frame
+## budget is measured (see `docs/status/client-render.md`), and the
+## browser must cost exactly nothing while somebody is playing.
+func _browser_begin() -> void:
+	if not _browser_providers.is_empty():
+		return
+	_browser_entries = []
+	_browser_signature = ""
+
+	var lan := LanDiscovery.new()
+	# The port GAMES are played on; the discovery port is derived from it
+	# (D-095, `LanProtocol.discovery_port`), so two worktrees on one
+	# machine cannot answer each other's browsers.
+	var probes := PackedStringArray()
+	if not _browser_probe.is_empty():
+		probes.append(LanDiscovery.BROADCAST)
+		probes.append(_browser_probe)
+	if lan.begin(_host_port, probes) == OK:
+		_browser_providers.append(lan)
+	else:
+		print("client: %s" % lan.status())
+
+	# The platform's provider, if there IS a platform. Reached by PATH
+	# rather than by class name: exactly one script in this project may
+	# name the platform (D-093, #181), and this is not it. Absent, the
+	# array simply has one provider in it and there is no second code
+	# path to be broken by.
+	var boundary := load("res://steam_platform.gd")
+	if boundary != null:
+		var provided = boundary.lobby_provider()
+		if provided != null:
+			_browser_providers.append(provided)
+
+	_refresh_browser_rows(true)
+
+
+func _browser_stop() -> void:
+	for provider in _browser_providers:
+		if provider.has_method("stop"):
+			provider.stop()
+	_browser_providers = []
+
+
+## Ask, collect, and redraw when the answer changed.
+##
+## Called every frame the menu is up. The polling is the providers' own
+## business — the LAN one sends at most one datagram a second — and the
+## expiry, ordering and wording are `GameBrowser`'s, which is why this
+## function is as short as it is.
+func _browser_poll() -> void:
+	if _browser_providers.is_empty():
+		return
+	var seen: Array = []
+	for provider in _browser_providers:
+		provider.poll(_wall_now)
+		seen.append_array(provider.take_seen())
+	_browser_entries = GameBrowser.fresh(
+		GameBrowser.merge(_browser_entries, seen, _wall_now), _wall_now)
+	_refresh_browser_rows(false)
+
+
+## Draw the list, but only when it has actually changed.
+##
+## The signature is the whole list as text: cheap to build, and it makes
+## "changed" mean what a player would mean by it. Rebuilding every frame
+## would destroy and recreate the very button somebody is pressing —
+## a click on a `Button` freed between press and release does nothing at
+## all, silently, which is precisely the failure a busy list would hide.
+func _refresh_browser_rows(force: bool) -> void:
+	if _browser_rows == null:
+		return
+	var rows := GameBrowser.rows(_browser_entries, NetProtocol.PROTOCOL_VERSION)
+	var signature := ""
+	for row in rows:
+		signature += "%s|%s|%s|%s
+" % [row["title"], row["detail"],
+			row["joinable"], row["reason"]]
+	if not force and signature == _browser_signature:
+		return
+	_browser_signature = signature
+
+	for child in _browser_rows.get_children():
+		_browser_rows.remove_child(child)
+		child.queue_free()
+
+	if _browser_status != null:
+		_browser_status.text = GameBrowser.summary(rows, not _browser_providers.is_empty())
+
+	# A STRUCTURED MARKER, not a scary-word scan (CLAUDE.md's rule, bought
+	# by `test-load`'s vacuous desync grep). `just browser-check` reads
+	# these lines, and they are what makes "the list found the game" a
+	# thing a recipe can assert rather than a thing somebody looked at.
+	print("client: BROWSER games=%d" % rows.size())
+	for row in rows:
+		print("client: BROWSER_GAME name=%s address=%s port=%d joinable=%s provider=%s" % [
+			String((row as Dictionary)["title"]), String((row as Dictionary)["address"]),
+			int((row as Dictionary)["port"]), str(bool((row as Dictionary)["joinable"])),
+			String((row as Dictionary)["provider"])])
+
+	for row in rows:
+		var entry: Dictionary = row
+		var label := "%s
+%s" % [entry["title"], entry["detail"]]
+		if not bool(entry["joinable"]):
+			label += " — %s" % String(entry["reason"])
+		var button := _styled_button(label,
+			HudTheme.ACCENT if bool(entry["joinable"]) else HudTheme.NEUTRAL)
+		button.disabled = not bool(entry["joinable"])
+		button.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
+		if bool(entry["joinable"]):
+			# The endpoint the ROW carries, never the address box: those
+			# are two different answers to "where am I connecting", and a
+			# click that used the typed one would join whatever was last
+			# typed while showing the name of what was pressed.
+			var address := String(entry["address"])
+			var port := int(entry["port"])
+			button.pressed.connect(func() -> void: _connect_to(address, port))
+		_browser_rows.add_child(button)
 
 
 ## Show the menu, with `message` explaining why if there is one.
@@ -9548,11 +9757,15 @@ func _show_main_menu(message: String) -> void:
 		_menu_address.text = _menu_last_endpoint
 	_menu_layer.visible = true
 	_set_title("")
+	_browser_begin()
 
 
 func _hide_main_menu() -> void:
 	if _menu_layer != null:
 		_menu_layer.visible = false
+	# The sockets go with the screen: see `_browser_begin` for why a
+	# browser that outlives the menu is a cost nobody is watching.
+	_browser_stop()
 
 
 func _on_menu_join_pressed() -> void:
