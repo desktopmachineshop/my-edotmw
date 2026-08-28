@@ -216,8 +216,13 @@ func _rtw_capability_survey() -> void:
 		% [front, flank, rear, Combat.FLANK_MORALE_MULT, Combat.REAR_MORALE_MULT])
 
 	# A12 men pair off in melee.
-	var has_duel := ClassDB.class_exists("CosmeticDuel") \
-		or ResourceLoader.exists("res://cosmetic_duel.gd")
+	# Deliberately the FILE check alone. The class-name literal would trip
+	# `test_cosmetic_duel.gd`'s reader scan, which is a text scan and so
+	# cannot tell an existence probe from a use — and it is right not to
+	# try: D-006 clause 2 keeps that reader set to the render path and its
+	# preview, and an allow-list entry for a harness would make the next
+	# entry easier. This answers the same question and stays out of it.
+	var has_duel := ResourceLoader.exists("res://cosmetic_duel.gd")
 	print("  A12 men pair off in melee   : cosmetic_duel.gd present=%s (render-side, D-006 cl.2)"
 		% has_duel)
 
