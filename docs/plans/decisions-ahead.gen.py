@@ -92,8 +92,21 @@ def blob(sha):
                           capture_output=True).stdout
 
 
+## This branch's OWN pr, excluded from its own inputs.
+##
+## Re-running the generator after the branch has a PR makes it count its
+## own copies as evidence: a path shipped by one PR and by #369's staging
+## of that PR looks like two sources, and where the two have drifted it
+## reports a FALSE ambiguity and drops a legitimate entry. Found by
+## rebasing onto a `main` that had moved.
+SELF = "ao/my-edotmw-79/decisions-ahead"
+
+
 def open_prs():
-    """(number, head branch, title) for every open PR, from gh."""
+    """(number, head branch, title) for every open PR, from gh.
+
+    This branch is excluded — see SELF.
+    """
     out = subprocess.run(
         ["gh", "pr", "list", "--state", "open", "--limit", "200", "--json",
          "number,headRefName,title"], capture_output=True)
@@ -106,7 +119,8 @@ def open_prs():
     # this one was reintroduced by a tool, in a file whose own docstring
     # warns about it, which is worth leaving written down.
     return [(str(p["number"]), p["headRefName"], p["title"])
-            for p in json.loads(out.stdout.decode("utf-8"))]
+            for p in json.loads(out.stdout.decode("utf-8"))
+            if p["headRefName"] != SELF]
 
 
 def declared_bases():
@@ -347,6 +361,28 @@ def main():
         with open(path, "wb") as handle:
             handle.write(blob(sha))
     print("wrote %d entries" % len(copied))
+
+    # PRUNE what no longer qualifies, or a re-run is additive-only and the
+    # branch stops being reproducible from this script — which is the
+    # exact "trust the output rather than re-running it" failure the
+    # header warns about. It bit on the first rebase: an entry whose PR
+    # had LANDED, and one that had become ambiguous, both stayed behind.
+    #
+    # Safe by construction: an entry is removed only when it is NOT on
+    # `main` (so nothing shipped is touched) and NOT selected now (so it
+    # is a staging copy that has stopped qualifying).
+    pruned = 0
+    for path in sorted(tree("HEAD", DECISIONS)):
+        if path in on_main or path in copied or path.startswith(SCHEMA_PREFIX):
+            continue
+        if os.path.exists(path):
+            os.remove(path)
+            pruned += 1
+            print("  pruned %s (landed, or no longer unambiguous)"
+                  % os.path.basename(path))
+    if pruned:
+        print("pruned %d stale staging cop%s"
+              % (pruned, "y" if pruned == 1 else "ies"))
 
     write_manifest(copied, ambiguous, amended, title_of, base_of, len(on_main))
 

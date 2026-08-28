@@ -134,3 +134,5 @@
 385	ao/my-edotmw-87/bot-squads-peak	CONFLICT	bot_client.gd 
 385	ao/my-edotmw-87/bot-squads-peak	CONFLICT-RESOLVED	bot_client.gd: #380 and #385 both add a squads_peak field and doc block (both cite #376/#350). Kept one - the field is already declared and already reported in the merged BOT line.
 357	ao/my-edotmw-79/gap-assessment-2	CONFLICT	docs/plans/gap-assessment-2.md 
+357	ao/my-edotmw-79/gap-assessment-2	CONFLICT-RESOLVED	docs/plans/gap-assessment-2.md: head moved mid-build; took the newer version.
+369	ao/my-edotmw-79/decisions-ahead	CONFLICT	decisions/D-20260828-a-dock-stands-on-a-shore.md docs/plans/decision-manifest.md docs/plans/decisions-ahead.gen.py 
