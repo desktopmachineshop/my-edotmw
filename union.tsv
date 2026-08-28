@@ -87,3 +87,5 @@
 264	ao/my-edotmw-79/steam-transport	CONFLICT	CLAUDE.md client.gd platform.gd server.gd 
 264	ao/my-edotmw-79/steam-transport	CONFLICT-RESOLVED	client.gd 3 hunks: #264 replaces ENetConnection with a NetTransport seam, deleting _host AND the connect site. Re-attached #232's _server_endpoint and #162's _on_connection_lost onto the transport path (SECOND refactor to delete that same feature's home), and kept #354's browser poll on the new _transport == null check. CLAUDE.md/platform.gd/server.gd additive.
 295	ao/my-edotmw-79/onboarding	CONFLICT	civs/emberdeep.tres civs/gildedreach.tres civs/gravesworn.tres civs/stoneblood.tres civs/thornwood.tres civs/windmarch.tres 
+295	ao/my-edotmw-79/onboarding	CONFLICT-RESOLVED	all six civs/*.tres: additive (#295 signature_unit beside #336's knobs and #225's epoch_names); kept both. The 5-chain civs contention the merge plan predicted.
+300	ao/my-edotmw-79/opening-hint	CONFLICT	justfile 

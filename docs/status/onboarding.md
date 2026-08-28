@@ -47,3 +47,50 @@ Five things to know:
   the same "aim the instrument at the thing" rule `gen-terrain-shot` and
   `gen-forest-preview` exist under. The picture is what confirmed both
   the identity line and the em dash rendering correctly.
+
+---
+
+## The opening coin-flip (#284)
+
+`D-20260828-the-opening-says-which-squad-founds`, 2026-08-28. Since
+`D-20260823-the-opening-is-a-crew-and-a-general` a player opens with a
+**gatherer crew and a general**; only the crew can found, and the general
+can build nothing. Nothing on screen said which was which — and guessing
+wrong does not fail loudly. Ordering the general to build is simply
+refused server-side, so a new player clicks, nothing happens, and their
+economy has not started while the other player's has.
+
+Now: a **role line** on the selection panel, and a **standing objective**
+in the HUD's banner slot that names the player's own crew and the
+building, and disappears once one stands.
+
+Five things to know:
+
+- **`opening_brief.gd` names no archetype and no building.** "Can this
+  squad found" is `BuildingSim.can_build` against the shipped
+  `BuildingDef.built_by` — **the same call the order gate makes**, so the
+  panel cannot promise something the server will refuse. The founding
+  building is found by its RULE (`consumes_builder`), not its id. A test
+  scans the file for both, comments stripped.
+- **Only the two openers get a line.** An archer does not need to be told
+  it is an archer, and a panel that editorialised about everything would
+  be noise a player learns to skip — taking the two lines that matter
+  with it.
+- **The objective is derived from what a player OWNS**, not from a match
+  clock. That is what makes it survive the three cases a timed tutorial
+  gets wrong: founding late, losing the crew, and resettling after being
+  razed (which D-20260823 made possible).
+- **One banner, not two.** It shares the notice slot: a server refusal
+  wins while it is up, and a second permanent strip would cost
+  battlefield height for a line that is empty after the first minute.
+  It is dimmer than a refusal, because a standing instruction at full
+  warning strength reads as an error the player cannot clear.
+- **`test-client` could not photograph it, so it was given a way.** The
+  capture founds within a second or two of being welcomed, and the hint's
+  whole job is to vanish once a town centre exists — so
+  `just test-client SECONDS BOTS HOLD=1` makes it deliberately not act.
+  That is the **fourth** time this instrument's framing could not show
+  something, after cliffs (a spawn is walkable by construction), forest
+  interiors (a spawn is open ground) and the fog edge. The frame reads
+  *"Select your Hill Thralls and build a Town Centre. Your general
+  cannot."*

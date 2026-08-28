@@ -1958,11 +1958,18 @@ scenarios: _import
 # that reason. The default is unchanged, so every frame taken before this is
 # still comparable.
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3" RESOLUTION="1280x720": _import
+test-client SECONDS="90" BOTS="3" RESOLUTION="1280x720" HOLD="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int BOTS "{{BOTS}}"
+    # HOLD reaches the client as `--hold-opening=N` and is read with
+    # `int()`, which STRIPS non-digits rather than failing — so `HOLD=yes`
+    # would silently mean 0 and the capture would found anyway, producing
+    # the empty-banner frame this flag exists to avoid
+    # (D-20260817-recipe-args-are-positional). Caught by
+    # `test_every_numeric_recipe_argument_is_checked`, not by me.
+    bash recipe-arg.sh enum HOLD "{{HOLD}}" 0 1
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
     # Waits for room on the machine every other agent is also using. $$ is
     # THIS recipe's shell and the lock is stamped with it — a lock stamped
@@ -2004,6 +2011,7 @@ test-client SECONDS="90" BOTS="3" RESOLUTION="1280x720": _import
         --audio-driver Dummy \
         --resolution {{RESOLUTION}} \
         -- --address=server --run-seconds={{SECONDS}} \
+        --hold-opening={{HOLD}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
 
