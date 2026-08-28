@@ -234,16 +234,32 @@ func _process(delta: float) -> void:
 	_shot = true
 	await RenderingServer.frame_post_draw
 	var image := get_viewport().get_texture().get_image()
-	var absolute := ProjectSettings.globalize_path(out_path)
-	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
-	var error := image.save_png(absolute)
-	if error != OK:
-		print("VERDICT: fail - could not write %s (error %d)" % [out_path, error])
+	# `res://` cannot be written in an exported build (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write). Identity
+	# in a checkout, so the recipe's own `--out=` still lands exactly where
+	# the justfile looks for it, and this instrument keeps working as it
+	# did — the same one-line conversion every other writer in the estate
+	# took.
+	out_path = ArtifactPath.resolve(out_path)
+	var dir_error := ArtifactPath.ensure_dir_for(out_path)
+	if dir_error != OK:
+		print("VERDICT: fail - could not make the directory for %s (error %d)"
+			% [ArtifactPath.describe(out_path), dir_error])
 		get_tree().quit(1)
 		return
-	print("seam_shot: wrote %s (%dx%d)" % [out_path, image.get_width(),
-		image.get_height()])
-	print("VERDICT: ok - LOOK AT %s" % out_path)
+	var absolute := ProjectSettings.globalize_path(out_path)
+	var error := image.save_png(absolute)
+	if error != OK:
+		print("VERDICT: fail - could not write %s (error %d)"
+			% [ArtifactPath.describe(out_path), error])
+		get_tree().quit(1)
+		return
+	# `describe` rather than the bare path: `user://` is not a place
+	# anybody can open, and the whole of #201 is a writer whose failure
+	# nobody could act on.
+	print("seam_shot: wrote %s (%dx%d)" % [ArtifactPath.describe(out_path),
+		image.get_width(), image.get_height()])
+	print("VERDICT: ok - LOOK AT %s" % ArtifactPath.describe(out_path))
 	get_tree().quit(0)
 
 
