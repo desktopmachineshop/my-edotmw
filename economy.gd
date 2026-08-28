@@ -41,10 +41,56 @@ const TREE_STOCK := 105
 ## one-minute gold node would trivialise the map's contested spots.
 const RICH_STOCK := 2400
 
+## A worked-out VEIN keeps yielding, slowly and forever
+## (D-20260828-a-vein-runs-deep-it-does-not-run-out). Gold and stone only:
+## a tree is felled when it runs out (D-087) and that felling is drawn on
+## the client, so leaving trees alone is what keeps that animation
+## truthful.
+##
+## Derived, not chosen. A heavy squad costs 30 gold, so one vein at 0.25/s
+## funds one every two minutes late in a match — a trickle a player plans
+## around rather than an income they live on. A tower costs 120 stone, so
+## one quarry at 0.4/s funds one every five minutes.
+##
+## Both are far below a LIVE seam, which a crew takes at ~1.96/s until its
+## 2,400 is gone. That gap is the property that matters: the opening is
+## still a race for rich ground and the tail is a floor, not a
+## replacement.
+const DEEP_MINE_PER_SECOND := {
+	ResourceKind.GOLD: 0.25,
+	ResourceKind.STONE: 0.4,
+}
+
+## Ten minutes of regrowth, so a vein left alone buffers a raid or a
+## rebuild and no more. Capacity only ever BUFFERS — the income is the
+## rate — which is what stops "come back in an hour" being a strategy,
+## exactly as `BuildingDef.grow_capacity` does for a field.
+const DEEP_MINE_CAPACITY := {
+	ResourceKind.GOLD: 150,
+	ResourceKind.STONE: 240,
+}
+
+
 ## How far a crew looks for the next tree of the same kind when the one it
 ## was working runs out. Covers a forest's internal gaps without silently
 ## marching workers across the map to ground the player never chose.
 const RETARGET_RADIUS := 8
+
+## Cells whose vein has been worked below its tail capacity and is
+## therefore regrowing (D-20260828-a-vein-runs-deep-it-does-not-run-out).
+## A cell enters when a crew empties it and never leaves: a vein that has
+## been dug once is a deep mine from then on.
+##
+## Kept as its own set rather than re-derived by scanning `nodes`, which
+## holds 5,559 entries on the shipped map against a 10 Hz tick.
+var _deep_veins := {}
+
+## The fractional part of what each deep vein has regrown. `remaining` is
+## an integer count of things a crew can carry, so without this a 0.25/s
+## tail would add floor(0.025) = 0 on every tick, forever — the mechanism
+## correct and the shipped numbers doing nothing, which is the defect
+## family this project keeps meeting (D-055, D-066).
+var _deep_stock := {}
 
 var space: TorusSpace
 
@@ -549,6 +595,46 @@ func sync_farms(buildings: BuildingSim) -> void:
 			farms.erase(cell)
 
 
+## Bring worked-out veins back toward their tail capacity.
+##
+## Only nodes ALREADY BELOW their tail capacity regrow, so a fresh 2,400
+## seam is untouched and the opening plays exactly as it did — the tail is
+## a floor under a spent vein, not a slow refill of a rich one.
+##
+## O(veins that are actually low), because the ones at or above capacity
+## are skipped on the first comparison. The dictionary of low veins is
+## kept rather than scanning every node: `nodes` is 5,559 entries on the
+## shipped map and this runs at 10 Hz, so walking all of it per tick would
+## be the per-candidate scan this project keeps paying for (vision's
+## `distance()`, `UnitRoster.by_id`, terrain noise, the per-squad building
+## scan).
+func _regrow_veins(dt: float) -> void:
+	for cell in _deep_veins:
+		var node: Dictionary = nodes.get(cell, {})
+		if node.is_empty():
+			continue
+		var kind := int(node["kind"])
+		var capacity := int(DEEP_MINE_CAPACITY.get(kind, 0))
+		if capacity <= 0:
+			continue
+		var whole := int(node["remaining"])
+		if whole >= capacity:
+			continue
+		var carried := float(_deep_stock.get(cell, 0.0)) \
+			+ float(DEEP_MINE_PER_SECOND.get(kind, 0.0)) * dt
+		var gained := int(floor(carried))
+		_deep_stock[cell] = carried - float(gained)
+		if gained > 0:
+			node["remaining"] = mini(whole + gained, capacity)
+
+
+## Whether this node is a VEIN — a mineral a deep mine can keep working.
+## Asked of the KIND, so a future resource is covered by adding it to the
+## two tables above and nowhere else.
+static func is_vein(kind: int) -> bool:
+	return DEEP_MINE_PER_SECOND.has(kind)
+
+
 func has_farm(cell_index: int) -> bool:
 	return farms.has(cell_index)
 
@@ -694,6 +780,23 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 		farm["stock"] = minf(float(farm["stock"]) + float(farm["regrow"]) * dt,
 			float(farm["capacity"]))
 
+	# And the other renewable half: a VEIN runs deep
+	# (D-20260828-a-vein-runs-deep-it-does-not-run-out). A gold or stone
+	# node that has been worked out keeps producing at a slow permanent
+	# rate rather than dying, so the map's metal budget stops being fixed
+	# at generation — 48 gold nodes on the shipped map, one per 679 cells,
+	# is a wall inside the first third of a 1-2 hour match (D-056).
+	#
+	# The site rather than a building, deliberately: a mine a player could
+	# raise anywhere would delete map control from the late game, which is
+	# the thing D-039's scattered spawns and D-087's ore-on-the-mountain
+	# -perimeter exist to create.
+	#
+	# `_deep_stock` carries the fraction, so a tail is not rounded away
+	# tick by tick: at 0.25/s and a 0.1 s tick, an integer-only version
+	# would add zero forever.
+	_regrow_veins(dt)
+
 	for squad in _hauls.keys():
 		if squad >= sim.squad_count() or sim.alive_of(squad) <= 0:
 			_hauls.erase(squad)
@@ -799,7 +902,13 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 		farms[cell]["stock"] = float(farms[cell]["stock"]) - float(taken)
 	else:
 		nodes[cell]["remaining"] = remaining_at(cell) - taken
-		if remaining_at(cell) <= 0:
+		if is_vein(int(nodes[cell]["kind"])):
+			# A vein does not die. Once dug out it regrows toward its tail
+			# capacity forever, so it never reaches `_depleted` and no
+			# felling is ever sent for it — the outcrop stays on the map
+			# because it is still there and still being worked.
+			_deep_veins[cell] = true
+		elif remaining_at(cell) <= 0:
 			# The tree comes down. The entry stays in `nodes` (a depleted
 			# cell is still not a place to start another node) — this list
 			# is how the server learns to tell clients about the felling.
