@@ -1013,6 +1013,20 @@ const SCOUTED_ENOUGH_LEGS := 3
 var _land_labels := PackedInt32Array()
 var _land_sizes := PackedInt32Array()
 var _navigable := PackedByteArray()
+
+## The GROUND, as this AI derives it for itself.
+##
+## NOT `state.terrain_passable`, which is filled by `client.gd` and
+## `bench_render.gd` and by nothing else — an AI has no rendering path, so
+## that array is empty for every AI in every match. `_raise_dock` read it
+## and therefore asked `is_shore` about a map with no land in it, found no
+## coast anywhere, and never built a dock however close the water was.
+##
+## Derived here from the replicated MapSettings, beside `_navigable` and
+## the component labels, because those three answer one question and a
+## caller holding two of them from one source and the third from another
+## is the shape that hid this.
+var _terrain_passable := PackedByteArray()
 var _terrain_key := ""
 ## Squads already ordered aboard, so the AI does not re-order them every
 ## think while they walk to the quay. Dropped when they stop existing,
@@ -1085,9 +1099,10 @@ func _refresh_naval_terrain() -> void:
 	if key == _terrain_key:
 		return
 	var terrain := MapSettings.from_dict(state.map_settings).to_terrain()
-	var passable := terrain.passability(state.space)
+	_terrain_passable = terrain.passability(state.space)
 	_navigable = terrain.navigability(state.space)
-	var components := MapConfig.walkable_components(state.space, passable)
+	var components := MapConfig.walkable_components(
+		state.space, _terrain_passable)
 	_land_labels = components["labels"]
 	# The SIZES too, because "is there land I cannot walk to" is only a
 	# reason when that land is worth going to — a stray islet is not, and
@@ -1154,7 +1169,7 @@ func _raise_dock() -> void:
 	# long the dock takes and never whether it can exist.
 	for offset in TorusSpace.disk_offsets(DOCK_SEARCH_RADIUS):
 		var cell := state.space.normalize(from + offset)
-		if not TerrainGen.is_shore(state.space, state.terrain_passable,
+		if not TerrainGen.is_shore(state.space, _terrain_passable,
 				_navigable, state.space.index(cell)):
 			continue
 		var order := state.encode_build(builder, "dock", cell)
