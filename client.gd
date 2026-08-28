@@ -2852,9 +2852,15 @@ func _to_hud(at: Vector2) -> Vector2:
 ## hint string listing the same letters twice.
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
-	# D-20260828-food-is-grown-not-only-found. J is free of WASD, Q/E and
+	# D-20260828-food-is-grown-not-only-found. O is free of WASD, Q/E and
 	# every other letter in this table and TRAIN_KEYS.
-	"J": &"farm",
+	#
+	# It was J until #363: D-076's wall family is laid out adjacently
+	# (J/K/L), and #302 moves `garrison_wall` off G onto J to free the
+	# gather hotkey — so a farm sitting on J collided with a key that was
+	# not yet taken when this was written. O is what the shared keybinding
+	# table reserves for it.
+	"O": &"farm",
 	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
 	# existing BUILD_KEYS/TRAIN_KEYS letter.
 	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
