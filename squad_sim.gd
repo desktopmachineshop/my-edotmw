@@ -736,10 +736,20 @@ func _advance_landings() -> Array:
 		if _alive[carrier] <= 0 or (_cargo[carrier] as Array).is_empty():
 			_pending_landing[carrier] = -1
 			continue
-		var at := space.from_index(target)
-		if space.distance(cell_of(carrier), at) > 1:
-			continue  # still sailing — naval stage 2 is what moves it
-		landed.append_array(disembark(carrier, at))
+		if _cell[carrier] != _destination[carrier]:
+			continue  # still sailing
+		# Ashore around the HULL, not around the cell that was clicked.
+		#
+		# 3.3 says the ship "sails to the nearest navigable cell adjacent
+		# to it, and the cargo hops out onto passable land cells around
+		# THAT point" — and the two are not the same cell. A land target
+		# inside an island has no adjacent water at all, so the order was
+		# corrected (2.4) to the nearest sea room, which can be several
+		# cells off. Landing around the ordered cell instead left a hull
+		# parked at the only water it could reach, holding an army,
+		# forever — found by sailing a real crossing rather than by
+		# reading it.
+		landed.append_array(disembark(carrier, cell_of(carrier)))
 	return landed
 
 
