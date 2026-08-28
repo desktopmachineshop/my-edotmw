@@ -17,6 +17,16 @@ the field has cost its owner an economy, not a match.
 
 The match ends when one player — or one team — is the last left standing.
 
+## An army at sea does not count
+
+Squads aboard a ship have left the map: they are cargo, not soldiers on
+the field. So they do NOT keep you in the match. If your last buildings
+fall while your last squads are still afloat, you are eliminated with a
+full transport at sea.
+
+Land before you are down to nothing, and keep a building standing while
+you cross.
+
 ## So razing is not enough
 
 Take the buildings and the troops. Whichever you leave is what they rebuild
@@ -33,4 +43,4 @@ rule applied to an army that has stopped existing.
 If you were HOSTING, the match ends for everybody. A hosted game runs inside
 the host's own client, so there is nothing left to play on."
 sources = Array[String](["res://match_state.gd", "res://decisions/D-027.md", "res://decisions/D-075-leaving-a-match-returns-to-the.md"])
-stamp = "4613f8401cebef88cf7fd575896a5801657f4291dc163258c761046d57bbb58d"
+stamp = "0c0a5771efe4c75301071c805bb967f64508b20498e1d1fc74f10c0e07cb62e2"
