@@ -2919,41 +2919,16 @@ const RESERVED_KEYS := {
 	"G": "gather at the cursor's node",
 }
 
-## Letters claimed by work IN FLIGHT on another branch (#363).
-##
-## The half that PREVENTS a collision rather than detecting one, and the
-## gap #302's guard structurally could not close: that test checks
-## BUILD_KEYS against RESERVED_KEYS and TRAIN_KEYS, and cannot check
-## against a letter that does not exist yet on its own branch.
-##
-## It bit immediately. #302 moved `garrison_wall` G -> J on the reasoning
-## that G is what a player reaches for to GATHER; #246 added `farm` on J
-## with the comment "J is free of WASD, Q/E and every other letter in
-## this table and TRAIN_KEYS", which was true when it was written. Both
-## checked J against the tables AS THEY STOOD ON MAIN, and neither could
-## see the other. Merged, `BUILD_KEYS` has a duplicate key and `client.gd`
-## does not even PARSE — a Dictionary literal cannot hold one letter
-## twice, so the collision is not a subtle wrong binding, it is the
-## client failing to load.
-##
-## A claim here is visible to every branch that rebases. An entry leaves
-## this table in the same commit that adds its real binding.
-const RESERVED_FOR_IN_FLIGHT := {
-	# Empty, and that is this table working rather than unused. #246's
-	# claim on O has been honoured: `farm` is bound in `BUILD_KEYS`
-	# below, so the reservation left in the same commit that added the
-	# real binding, exactly as the note above requires. The next branch
-	# to need a letter it cannot yet bind adds it here.
-}
-
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
 	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
 	# took J (#302) because G is the letter a player reaches for to
 	# GATHER, and both branches picked their letter against the tables as
 	# they stood on main, neither able to see the other. O is the letter
-	# `RESERVED_FOR_IN_FLIGHT` was holding for this PR, and this binding
-	# is why that entry is now gone from it.
+	# `RESERVED_FOR_IN_FLIGHT` was holding O for this PR; binding it here
+	# is what retired that reservation, and the table went with its last
+	# entry rather than being left empty — which is what its own test
+	# required.
 	"O": &"farm",
 	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
 	# together deliberately; F and U continue it.
