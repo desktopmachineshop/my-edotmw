@@ -4,7 +4,7 @@ fixed at generation and D-056's 1–2 hour target was not slow to reach, it
 was **impossible**: past the sum of what the generator placed, nobody
 could build anything. `buildings/farm.tres` is the answer — a building
 that GROWS food at a rate, worked by an ordinary gatherer crew through
-D-028's existing haul cycle. `just build` it with **J**, or from the civic
+D-028's existing haul cycle. Build one with **J**, or from the civic
 column of the build menu.
 
 Six things to know before touching any of it, and most are not about
@@ -77,6 +77,31 @@ different faults with the same symptom. **Both are METRICS, not gates**,
 because a farm needs an opening plus 80 wood and the shipped map already
 leaves two of four bots short of a barracks at 420 s — gating would fail
 honest runs and re-set D-031's stale-timing trap for the fourth time.
+
+**A bot raises ONE field before it starts saving for a barracks, and that
+ordering was measured rather than preferred.** Producers-first is the
+obvious order and is what `ai_player.gd` argues for — but a bot SAVES for
+what it wants rather than falling through to something cheaper, and a
+barracks is 150 wood against a bot's 140-200 `wood_peak` over two
+minutes. Measured on `test-load 4 120` and on `test-scenario siege 4 90`:
+`farms_peak=0 field_orders=0`, every bot reporting `cannot afford
+barracks`. **A rule fully written, correctly called, and standing behind
+a branch nothing reaches** — D-061's harder variant, arriving inside the
+change written to avoid it. One field, not three: at 80 wood it delays
+the barracks by about half a hauling round trip. The AI keeps
+producers-first, because it saves too but its matches are long enough to
+reach a barracks; **a played ladder run confirming an AI actually raises
+one is still owed.**
+
+**The gate, measured 2026-08-28** — `just test-load 4 150`, default map,
+docker, on a shared host: **`VERDICT ok`, `test-load: clean`**, 0 desyncs
+over 574 state-hash checks, 0 dropped ticks, all three `gate-check.sh`
+comparisons green, `farms_peak=1 field_orders=1`. **179.70 µs per
+squad-update at 32 squads**, of which the economy phase is 10.86 —
+**quote it with the squad count**, since `docs/status/m10-plan.md`'s
+167.7 is at 48 and per-tick fixed overhead inflates the figure when
+squads are few. An earlier run of the same build measured 223.47 at the
+same 32 squads on a busier host, which is the size of the noise.
 
 **Every ladder and load-test number taken before this was measured against
 an economy with a hard ceiling**, and the AI now spends wood on fields it

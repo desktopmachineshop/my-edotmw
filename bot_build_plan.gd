@@ -64,15 +64,49 @@ const FIELDS_WANTED := 3
 ##
 ## Named through `Economy.grows_kind` rather than by id, so a civ's own
 ## field or a later woodlot is covered without this file learning a name.
+## The ORDER is one field, then the producers, then the rest of the
+## fields, and that first clause was bought by a measurement rather than
+## reasoned to.
+##
+## The obvious order — producers first, fields after — was written first
+## and shipped a rule nothing could ever reach. `_raise_buildings` saves
+## for what it wants rather than falling through to something cheaper
+## (`ai_player.gd` records why), and a barracks is 150 wood against a
+## bot's 140-200 `wood_peak` in a 120 s run and 140-270 mid-game from a
+## scenario. Measured on both: `farms_peak=0 field_orders=0`, every bot
+## reporting `cannot afford barracks`. That is D-061's harder variant —
+## a rule fully written, correctly called, and standing behind a branch
+## nothing reaches — arriving in the change that was written to avoid it.
+##
+## ONE field first, not all of them: at 80 wood it delays the barracks by
+## about half a hauling round trip, where three would delay it past the
+## end of most runs, and the shipped map already leaves two of four bots
+## short of a barracks at 420 s (`docs/status/load-testing.md`).
 static func wanted_building(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
+	var fields: Array = []
+	var producers: Array = []
 	for def in BuildingSim.all_defs():
-		if def.produces.is_empty() and not grows_something(def):
-			continue
 		if not BuildingSim.can_build(def, builder_archetype):
 			continue
-		if owned_def_ids.count(String(def.id)) >= wanted_count(def):
-			continue
-		return def
+		if grows_something(def):
+			fields.append(def)
+		elif not def.produces.is_empty():
+			producers.append(def)
+
+	var have_a_field := false
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) > 0:
+			have_a_field = true
+			break
+	if not have_a_field and not fields.is_empty():
+		return fields[0]
+
+	for def in producers:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
 	return null
 
 
