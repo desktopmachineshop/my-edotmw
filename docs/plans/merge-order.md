@@ -559,6 +559,15 @@ branch.** Settled by the authors on the merits rather than on process:
 MODELS — emberdeep's levy is a shieldwarden with a round shield
 (`shield_wall`), its heavy carries the kite shield (`testudo`).
 
+**Verified by performing it, 2026-08-28.** #243 at `741eb68` ("drop all
+four again — final arbitration") touches NONE of the four unit files, so
+`main` → #324 → #243 merges **clean at both steps, with no conflict at
+all**, and the final granted set is exactly `emberdeep_heavy=testudo`,
+`emberdeep_levy=shield_wall`, `gildedreach_spearmen=shield_wall`.
+`test_fighting_styles` 6/6 on the result. Earlier drafts of this ruling
+predicted "one expected conflict on `emberdeep_heavy`" — that was true of
+the two-deletion form and is NOT true of the shipped four-deletion one.
+
 **Merge #324 BEFORE #243.** That is the whole resolution and it is free:
 #324 supplies the grants first, so #243 lands with nothing to supply and
 **is never itself red** — the make-main-green PR does not pass through a
