@@ -30,6 +30,19 @@ concurrency:
   group: test-unit-${{ github.ref }}
   cancel-in-progress: true
 
+# Every `run:` step is `bash -eo pipefail`, and that is LOAD-BEARING, not
+# tidiness. GitHub's default shell has `-e` but NOT `pipefail`, so
+# `just test-unit 2>&1 | tee log` returns TEE's exit status and a failing
+# suite reports a GREEN job. That is not hypothetical: it happened on this
+# workflow's second run — the suite reported `Failing Tests 1` and the job
+# reported success — and it was caught only because the gate was
+# deliberately perturbed to watch it go red. It is D-022's audit block
+# rebuilt in CI: `test-load` once reported clean while every bot had
+# exited non-zero. The observed-red is recorded in docs/ci.md.
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 
