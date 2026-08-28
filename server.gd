@@ -594,9 +594,14 @@ func _build_world() -> void:
 		var seats: int = maxi(maxi(1, _match.players_expected), _spawn_points.size())
 		_scenario_homes = Scenario.homes(_scenario, seats, space,
 			_passable, _spawn_points)
-		print("server: SCENARIO id=%s seats=%d separation=%d squads_each=%d buildings_each=%d" % [
+		# `proves_fog_gating` rides the marker rather than being re-read
+		# from the `.tres` by the recipe: a structured marker is how every
+		# other cross-process fact in this project travels, and a second
+		# reader of a resource is a second thing to keep in step (#230).
+		print("server: SCENARIO id=%s seats=%d separation=%d squads_each=%d buildings_each=%d proves_fog_gating=%s" % [
 			_scenario.id, seats, _scenario.separation,
-			_scenario.squad_count(), _scenario.buildings.size()])
+			_scenario.squad_count(), _scenario.buildings.size(),
+			"true" if _scenario.proves_fog_gating else "false"])
 
 
 	# Combat's RNG must be seeded from map configuration, never wall-clock
