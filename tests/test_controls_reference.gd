@@ -143,16 +143,38 @@ func test_the_dead_gather_shortcut_is_not_documented_as_working() -> void:
 	# A controls screen that documented the intent would turn that bug
 	# into the player's fault — they would press G, get a garrison wall,
 	# and conclude they had misread the screen.
+	# Asserted on BOTH sides of #302, because the branch this test used to
+	# take when the key moved was `pass_test("revisit this row")` — which
+	# is a check that stops checking at exactly the moment the thing it
+	# guards changes. #363 moved `garrison_wall` to `J` and `farm` to `O`,
+	# so that moment has arrived, and the test has to survive it rather
+	# than announce it.
 	var bound := _client_constant("BUILD_KEYS")
-	if not bound.has("G"):
-		# #302 fixed by moving the build key: then G IS the gather key and
-		# this test should be revisited rather than silently passing.
-		pass_test("G is no longer a build key — see #302; revisit this row")
-		return
+	var gather := ControlsReference.gather_key()
+	assert_ne(gather, "", "client.gd must still dispatch a gather key somewhere")
+
+	var says := ""
 	for row in ControlsReference.rows():
-		if String(row[0]) == "G":
-			assert_false(String(row[1]).to_lower().contains("gather"),
-				"G builds a garrison wall today (#302); documenting it as gather is a lie")
+		if String(row[0]) == gather:
+			says = String(row[1]).to_lower()
+
+	if bound.has(gather):
+		# The build table is consulted first, so the build wins and the
+		# gather branch below it is unreachable. Say what pressing it
+		# DOES: a screen documenting the intent would turn the bug into
+		# the player's fault.
+		assert_false(says.contains("gather"),
+			("%s builds %s today, because BUILD_KEYS is checked before the "
+			+ "gather branch (#302). Documenting it as gather is a lie.")
+			% [gather, bound[gather]])
+		assert_ne(says, "", "and it must still be listed as the build key it is")
+	else:
+		# #302 resolved: nothing steals the key, so gather is reachable
+		# and a player must be told it exists.
+		assert_true(says.contains("gather"),
+			("%s is no longer stolen by BUILD_KEYS, so gather is reachable "
+			+ "and belongs on the controls screen — found '%s'")
+			% [gather, says])
 
 
 # --- it fits on the screen --------------------------------------------
