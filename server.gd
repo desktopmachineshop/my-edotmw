@@ -2740,7 +2740,8 @@ func _tech_name(player: int, line: StringName) -> String:
 ## them in. Own state only — an enemy's research is what a scout is for.
 func _send_tech_state(peer, player: int) -> void:
 	peer.send(0, NetProtocol.encode_tech_state(
-		_research.epoch_of(player, _civ_of(player)), _research.lines_of(player)),
+		_research.epoch_of(player, _civ_of(player)), _research.lines_of(player),
+		_civ_of(player)),
 		ENetPacketPeer.FLAG_RELIABLE)
 
 
@@ -2749,6 +2750,16 @@ func _send_tech_state(peer, player: int) -> void:
 ## The SIMULATION grants the tech and re-points the army (that is a rule);
 ## this only tells the owner (that is the wire). Called once per replicate
 ## tick, beside the other per-tick publications.
+## The last epoch each player was TOLD they were in.
+##
+## An epoch change has no message of its own on the wire — it is derived
+## from the tech set both sides hold (`ResearchState.epoch_of`), which is
+## the point of the design. But a rung is the biggest thing that happens
+## to a player in ninety minutes and deriving it silently would leave the
+## client to notice on its own. This is the announcement, not the rule.
+var _epoch_announced := {}
+
+
 func _publish_research() -> void:
 	if _sim == null or _sim.completed_research.is_empty():
 		return
@@ -2759,11 +2770,34 @@ func _publish_research() -> void:
 		# refusal and the readout on one number, which is D-20260823's
 		# own rule for the same field.
 		_sim.civs[who] = _civ_effects_for(who)
+		var civ := _civ_of(who)
+		var now_epoch := _research.epoch_of(who, civ)
 		print("server: player %d researched %s (epoch %d)"
-			% [who, finished["line"], _research.epoch_of(who, _civ_of(who))])
-		for peer in _clients:
-			if int(_clients[peer]["player"]) == who:
-				_send_tech_state(peer, who)
+			% [who, finished["line"], now_epoch])
+		var advanced := now_epoch > int(_epoch_announced.get(who, 1))
+		_epoch_announced[who] = now_epoch
+		# `_recipients()`, not `_clients` — sockets AND AI seats (D-051).
+		# An AI is a client with no socket and reasons off its own
+		# ClientState, so telling only the humans would leave every AI
+		# permanently believing it had researched nothing: it would
+		# re-offer the same tech forever, be refused as "already known",
+		# and never climb. #119's finding again — the handover nothing
+		# performs is the dangerous half.
+		var everyone := _recipients()
+		for peer in everyone:
+			if int(everyone[peer]["player"]) != who:
+				continue
+			_send_tech_state(peer, who)
+			# The epoch banner goes to HUMAN clients only. An AI reads
+			# `last_notice` to report refusals (D-054's instrument), and a
+			# congratulation landing in that field would be logged as a
+			# refused order.
+			if advanced and _clients.has(peer):
+				# In this civ's own words. `TechRoster.epoch_name` falls
+				# back to the EpochDef's, so a civ that names no rungs
+				# still reads sensibly rather than "Epoch 3".
+				_notify(peer, "Your people enter %s"
+					% TechRoster.epoch_name(civ, now_epoch))
 	_sim.completed_research = []
 
 

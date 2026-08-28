@@ -737,6 +737,15 @@ func _military_archetype() -> StringName:
 	# `bot_build_plan.gd` already uses.
 	for archetype in _producible_archetypes():
 		var def := UnitRoster.for_civ_archetype(civ, archetype)
+		# And not one still behind a tech
+		# (`D-20260827-the-tree-is-the-ladder`). Skipped by FIELD, like
+		# the two above it, and for the same reason: an order the server
+		# refuses spends a whole training cooldown. This picker takes the
+		# FIRST match, so without the filter it would work only by
+		# accident of `barracks.produces` starting with the one ungated
+		# archetype.
+		if def != null and not state.has_tech(def.requires_tech):
+			continue
 		if def != null and def.damage > 1.0 and def.carry_capacity <= 0 \
 				and not def.is_general:
 			return archetype

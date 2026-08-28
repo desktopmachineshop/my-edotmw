@@ -5998,6 +5998,17 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 		var unit := UnitRoster.for_civ_archetype(civ, archetype)
 		if unit == null:
 			continue
+		# The tech gate (`D-20260827-the-tree-is-the-ladder`). Hidden
+		# rather than greyed out: an unaffordable unit is a decision about
+		# money and belongs on screen, but a unit four rungs away is not a
+		# choice yet, and listing every one of them is D-069's own
+		# unlock-overload warning arriving early.
+		#
+		# The client is not trusted (D-002) and the server refuses the
+		# order too — this is so the panel tells the truth, not so the
+		# rule is enforced.
+		if not _state.has_tech(unit.requires_tech):
+			continue
 		out.append({
 			"label": "%s  ·  %s" % [unit.display_name, _cost_text(
 				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
@@ -6009,6 +6020,34 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"enabled": _can_afford(unit.cost_food, unit.cost_wood,
 				unit.cost_gold, unit.cost_stone),
 		})
+	# What can be RESEARCHED here (`D-20260827-the-tree-is-the-ladder`).
+	#
+	# These sit in the ORDERS column rather than the chip strip because
+	# the chips are already a building's train orders and are a fixed
+	# width — `D-20260817-selection-bar-three-columns`'s trap was a strip
+	# that could not show a barracks' whole list, and adding research to
+	# it would make that worse rather than better.
+	#
+	# Availability comes from `ClientState.research_view()`, which is a
+	# real `ResearchState` — the SAME object the server reasons with. The
+	# panel does not get its own copy of the prerequisite and epoch rules
+	# (the D-058/D-065 lesson, paid for before it costs anything).
+	var here := BuildingSim.archetype_of_def(def)
+	if bool(info.get("destroyed", false)) == false \
+			and float(info.get("progress", 0.0)) >= 0.999:
+		for tech in _state.research_view().available(_state.player, civ):
+			var t := tech as TechDef
+			if t.research_at != here:
+				continue
+			out.append({
+				"label": "%s  ·  %s" % [t.display_name, _cost_text(
+					t.cost_food, t.cost_wood, t.cost_gold, t.cost_stone)],
+				"hint": t.description,
+				"kind": "research", "id": t.line,
+				"enabled": _can_afford(t.cost_food, t.cost_wood,
+					t.cost_gold, t.cost_stone),
+			})
+
 	# Only an ARMED building offers this (D-032's `damage` gate, the same
 	# one Combat.resolve_buildings itself checks) — a storehouse has
 	# nothing to focus-fire with.
@@ -6037,6 +6076,19 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 				"kind": "gate_set", "id": mode_entry["key"],
 			})
 	return out
+
+
+## Start a tech at the selected building
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## Sends a LINE, never a tech id — the server resolves it against this
+## player's civ, exactly as `_train_selected` sends an archetype. A client
+## therefore cannot name another civ's version of a tech at all.
+func _research_selected(line: StringName) -> void:
+	if not _connected or _selected_building < 0:
+		return
+	_peer.send(0, NetProtocol.encode_order_research(_selected_building, String(line)),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Costs with the ZEROES left out. "50 food 0 wood 0 gold 0 stone" is four
@@ -6177,8 +6229,18 @@ func _squad_build_actions(def_id: StringName) -> Array:
 	var unit := UnitRoster.by_id(def_id)
 	var archetype := unit.archetype if unit != null else def_id
 	var by_category := {}
-	for building in BuildingSim.all_defs():
+	# This player's civ's defs, not every def
+	# (`D-20260827-a-research-site-is-a-building`). The research sites are
+	# per-civ, so `all_defs()` would offer a Thornwood player a Deep
+	# Forge — and the server would refuse it, which is the "looking
+	# available and then being refused" failure `_building_actions`
+	# already records for training.
+	for building in BuildingSim.defs_for_civ(_state.civ_of(_state.player)):
 		if not BuildingSim.can_build(building, archetype):
+			continue
+		# And not a building whose tech is still unresearched. Hidden
+		# rather than greyed, for the same reason a rung-4 unit is.
+		if not _state.has_tech(building.requires_tech):
 			continue
 		var category := building.category
 		if not by_category.has(category):
@@ -6345,6 +6407,8 @@ func _on_action_pressed(index: int) -> void:
 	match String(action["kind"]):
 		"train":
 			_train_selected(StringName(action["id"]))
+		"research":
+			_research_selected(StringName(action["id"]))
 		"build":
 			_build_selected(String(action["id"]))
 		"build_group":

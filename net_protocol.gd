@@ -980,10 +980,23 @@ static func decode_order_research(data: PackedByteArray) -> Dictionary:
 ## the curve protocol deliberately does not have (D-042's note that
 ## in-order delivery is load-bearing) — a dropped delta would leave a
 ## client permanently one tech behind with nothing able to notice.
-static func encode_tech_state(epoch: int, lines: Array) -> PackedByteArray:
+## `civ` rides along because a tech set is meaningless without it: every
+## line resolves to a DIFFERENT TechDef per civ, so a client holding
+## `breaking` and not knowing whose it is cannot name it, price it or draw
+## it. The lobby carries civs too (D-048), but a match started with
+## `--lobby=0` broadcasts no lobby at all — and the load-test bots run
+## that way, so `ClientState.civ_of` answers "" for every bot in every
+## run (docs/status/load-testing.md, where that blind spot already cost a
+## run to find). One field here closes it for everything downstream of the
+## tree.
+static func encode_tech_state(epoch: int, lines: Array,
+		civ: StringName = &"") -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(S2C_TECH_STATE)
 	buf.put_u32(epoch)
+	var civ_bytes := String(civ).to_utf8_buffer()
+	buf.put_u16(civ_bytes.size())
+	buf.put_data(civ_bytes)
 	buf.put_u16(lines.size())
 	for line in lines:
 		var name_bytes := String(line).to_utf8_buffer()
@@ -997,12 +1010,18 @@ static func decode_tech_state(data: PackedByteArray) -> Dictionary:
 	buf.data_array = data
 	buf.get_u8()
 	var epoch := buf.get_u32()
+	var civ_length := buf.get_u16()
+	var civ_bytes: PackedByteArray = buf.get_data(civ_length)[1]
 	var lines := []
 	for i in range(buf.get_u16()):
 		var length := buf.get_u16()
 		var name_bytes: PackedByteArray = buf.get_data(length)[1]
 		lines.append(StringName(name_bytes.get_string_from_utf8()))
-	return {"epoch": epoch, "lines": lines}
+	return {
+		"epoch": epoch,
+		"civ": StringName(civ_bytes.get_string_from_utf8()),
+		"lines": lines,
+	}
 
 
 static func encode_order_produce(building_wire_id: int, unit_def_id: String) -> PackedByteArray:
