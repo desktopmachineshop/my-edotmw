@@ -1727,3 +1727,112 @@ static func sanitise_chat(text: String) -> String:
 	if out.length() > CHAT_MAX_CHARS:
 		out = out.substr(0, CHAT_MAX_CHARS)
 	return out
+
+
+## --- the join handshake (D-094 criterion 3, #179) ---------------------
+##
+## THE protocol version. Bump it whenever a change would make an older
+## build misread this one's packets — a new opcode, a changed payload
+## shape, a field that gains or loses a byte. It is NOT the build version
+## (build_version.gd): two builds can differ in art, balance or a bug fix
+## and still speak the same wire, and refusing those would make every
+## hotfix a flag day.
+##
+## Before this existed the protocol had no version field at all, and a
+## stale client meeting a new server produced confusing DESYNCS rather
+## than a refusal — a symptom that costs a debugging session and ends in
+## "you were on last week's build". Steam's rolling updates make mixed
+## versions routine (D-094's own rationale); alpha testers self-updating
+## from zips are worse at staying current than Steam is.
+const PROTOCOL_VERSION := 1
+
+## HELLO is the FIRST thing a client sends after connecting, and the
+## server admits nobody until it arrives. Deliberately client-first: the
+## server would otherwise have to spend a player id, a seat and a lobby
+## broadcast on a peer it is about to refuse, and D-033's seat lifecycle
+## is not something to run backwards.
+const C2S_HELLO := 39
+const S2C_REFUSED := 40
+
+## Why a join was refused. On the wire as an integer rather than as
+## prose, so the client composes the message with `refusal_text` from its
+## OWN version — one definition of the wording, and no untrusted string
+## from the network reaching a label.
+const REFUSED_PROTOCOL := 1
+const REFUSED_SILENT := 2
+
+## How long a connected peer may go without saying hello before it is
+## refused. It exists for exactly one client: one built before this
+## handshake did, which will never send HELLO and would otherwise sit
+## connected forever, admitted to nothing, with no message anywhere.
+const HELLO_TIMEOUT_SECONDS := 5.0
+
+
+static func encode_hello(protocol: int, build: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_HELLO)
+	buf.put_u32(protocol)
+	_put_string(buf, build)
+	return buf.data_array
+
+
+static func decode_hello(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var protocol := buf.get_u32()
+	return {"protocol": protocol, "build": _get_string(buf)}
+
+
+## The refusal carries the SERVER's numbers and nothing else. The client
+## already knows its own, and a message assembled from both ends'
+## constants at the receiving end cannot be half a build old the way a
+## sentence composed on the far side can.
+static func encode_refused(reason: int, server_protocol: int,
+		server_build: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_REFUSED)
+	buf.put_u8(reason)
+	buf.put_u32(server_protocol)
+	_put_string(buf, server_build)
+	return buf.data_array
+
+
+static func decode_refused(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var reason := buf.get_u8()
+	var protocol := buf.get_u32()
+	return {"reason": reason, "protocol": protocol, "build": _get_string(buf)}
+
+
+## The one wording of a refusal, used by the client that displays it AND
+## by the server that logs it — so the sentence a player reads and the
+## sentence in the log a bug report quotes cannot disagree.
+##
+## `mine`/`my_protocol` are the READER's own build, which is why this
+## takes them rather than reading BuildVersion itself: the server calls
+## it about a client, and the client calls it about itself.
+##
+## It must say BOTH builds and what to do. "Version mismatch" is a
+## message a player cannot act on; "your build is X, the server is Y —
+## update" is one they can.
+static func refusal_text(reason: int, server_protocol: int, server_build: String,
+		mine: String, my_protocol: int) -> String:
+	match reason:
+		REFUSED_PROTOCOL:
+			return ("This build cannot join that server.\n"
+				+ "Your build: %s (protocol %d)\n" % [mine, my_protocol]
+				+ "Server build: %s (protocol %d)\n" % [server_build, server_protocol]
+				+ "Update to the same build as the server and join again.")
+		REFUSED_SILENT:
+			return ("The server refused this connection: it never received a "
+				+ "version handshake.\n"
+				+ "Server build: %s (protocol %d)\n" % [server_build, server_protocol]
+				+ "This build is too old to say which build it is. Update and "
+				+ "join again.")
+		_:
+			return ("The server refused this connection (reason %d).\n" % reason
+				+ "Your build: %s (protocol %d)\n" % [mine, my_protocol]
+				+ "Server build: %s (protocol %d)" % [server_build, server_protocol])

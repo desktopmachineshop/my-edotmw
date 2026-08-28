@@ -115,6 +115,20 @@ func research_view() -> ResearchState:
 var last_notice := ""
 var notices_received: int = 0
 
+## The server's refusal of this connection, or empty (#179, D-094
+## criterion 3). A Dictionary of `reason` / `protocol` / `build` as
+## decoded, plus `text` — the one wording, composed by
+## `NetProtocol.refusal_text` from the SERVER's numbers and THIS build's,
+## so the sentence a player reads is assembled where both halves are
+## known.
+##
+## Held here rather than in client.gd because the bots share this file
+## and a refusal is the one server message a load-test bot must be able
+## to report: a bot that quietly failed to connect and a bot that was
+## refused for being the wrong build look identical from outside, and one
+## of them is a broken test estate.
+var refusal := {}
+
 ## Resource nodes: cell index -> ResourceKind. Fog-gated by the server as
 ## vision reaches them; the client draws where resources are, never how
 ## much is left.
@@ -409,6 +423,8 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NOTICE:
 			last_notice = NetProtocol.decode_notice(data)
 			notices_received += 1
+		NetProtocol.S2C_REFUSED:
+			_handle_refused(data)
 		NetProtocol.S2C_WALLET:
 			wallet = NetProtocol.decode_wallet(data)
 			wallet_updates += 1
@@ -424,6 +440,15 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_building_state_hash(data)
 		_:
 			unknown_packets += 1
+
+
+## The server will not have us. Decoded here, worded here, and left for
+## whoever owns a screen — this file has none.
+func _handle_refused(data: PackedByteArray) -> void:
+	refusal = NetProtocol.decode_refused(data)
+	refusal["text"] = NetProtocol.refusal_text(
+		int(refusal["reason"]), int(refusal["protocol"]), str(refusal["build"]),
+		BuildVersion.string(), NetProtocol.PROTOCOL_VERSION)
 
 
 func _handle_welcome(data: PackedByteArray) -> void:

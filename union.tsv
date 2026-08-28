@@ -69,3 +69,9 @@
 310	ao/my-edotmw-87/every-tres-is-utf8	CLEAN	9
 317	ao/my-edotmw-87/inside-the-derive-phase	CLEAN	4
 326	ao/my-edotmw-87/inside-the-decoration-phase	CONFLICT	decisions/D-20260828-a-squad-looks-up-its-buildings.md 
+326	ao/my-edotmw-87/inside-the-decoration-phase	CONFLICT-RESOLVED	decisions/D-20260828-a-squad-looks-up-its-buildings.md: add/add with #369's ahead-of-code copy; took the OWNING PR's version.
+329	ao/my-edotmw-87/the-gather-stops-repeating	CLEAN	6
+331	ao/my-edotmw-87/inside-the-pipeline	CLEAN	3
+377	ao/my-edotmw-87/per-adapter-baselines	CLEAN	8
+205	ao/my-edotmw-79/export	CLEAN	14
+213	ao/my-edotmw-79/handshake	CONFLICT	bot_client.gd server.gd 
