@@ -463,3 +463,107 @@ func test_the_ordinary_building_list_does_not_include_a_dock() -> void:
 		"_wanted_buildings must exclude shore buildings — the naval investment "
 		+ "raises the dock, and a dock raised without naval intent breaks the gate's "
 		+ "first leg")
+
+
+## An AI that wants a navy, holding a crew, on a coast some distance away.
+##
+## `_raise_dock` had NO test at all — I wrote it in stage 7 and never drove
+## it, which is how it came to no-op silently on a played match
+## (`naval_step=dock`, `docks=0`, for twenty minutes).
+func _ai_on_a_coast(builder_at: Vector2i, sea_columns: Array) -> Dictionary:
+	var space := TorusSpace.new(48, 24)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
+	var crew := UnitRoster.for_civ_archetype(CivRoster.ids()[0], &"gatherers")
+	# TWO crews: `_idle_builder` will not spend an AI's only gatherer, so
+	# a one-crew fixture measures that rule and not the site search.
+	sim.add_squad(crew, 1000, builder_at)
+	sim.add_squad(crew, 1000, builder_at + Vector2i(1, 0))
+	sim.tick()
+
+	var seats := [{"kind": "ai", "player": 1000, "civ": String(ai.civ),
+		"team": 0, "name": "AI 1000"}]
+	ai.state.handle_packet(NetProtocol.encode_lobby(0, seats, {}, 1))
+	var visible := sim.visible_to(1000)
+	ai.state.handle_packet(NetProtocol.encode_welcome(1000, 48, 24, visible))
+	ai.state.handle_packet(NetProtocol.encode_squad_info(
+		sim.squad_info_entries(visible)))
+	for packet in sim.replicator.collect_for_client(1000, sim.time, visible):
+		ai.state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+	ai.state.handle_packet(NetProtocol.encode_wallet(
+		PackedInt32Array([9999, 9999, 9999, 9999])))
+
+	# A NARROW sea, and that is the whole point of the fixture.
+	#
+	# The first version made everything east of x=20 water, and called a
+	# builder at x=4 "sixteen cells inland". On a 48-wide TORUS it was
+	# five cells from the same sea going WEST, so a six-cell search found
+	# a shore and the test passed with the defect reverted — vacuous, by
+	# exactly the trap this file warns about for the crossing fixture and
+	# `formation.md` records for the wheeling one. Wrapping is not an
+	# edge case here; it is the geometry.
+	#
+	# A three-column sea leaves the builder 19 cells from it the near way
+	# and 27 the far way, so "further than six, nearer than thirty-two"
+	# is true in EVERY direction.
+	var passable := PackedByteArray()
+	var navigable := PackedByteArray()
+	passable.resize(space.cell_count())
+	navigable.resize(space.cell_count())
+	for i in range(space.cell_count()):
+		var wet := sea_columns.has(space.from_index(i).x)
+		passable[i] = 0 if wet else 1
+		navigable[i] = 1 if wet else 0
+	ai.state.terrain_passable = passable
+	ai._navigable = navigable
+
+	var sent := []
+	ai.send = func(packet: PackedByteArray) -> void: sent.append(packet)
+	ai.set_time(sim.time)
+	return {"ai": ai, "sent": sent, "space": space}
+
+
+func test_an_ai_inland_still_raises_a_dock_on_the_coast() -> void:
+	# THE DEFECT. The site search walked `disk_offsets(6)` around the
+	# BUILDER, so an AI whose base sat more than six cells from water
+	# found no shore, issued nothing, and reported `naval_step=dock`
+	# forever — the investment stuck on its first leg with everything
+	# else about it correct.
+	#
+	# Six cells is a "nearby" heuristic, and it is the wrong shape: a
+	# builder WALKS to its site (D-031's build reach), so how far the
+	# coast is bounds how long the dock takes, not whether it is
+	# possible. On `maps/isles.tres` a start can easily be further from
+	# the water than that.
+	var w := _ai_on_a_coast(Vector2i(4, 12), [23, 24, 25])
+	var ai: AiPlayer = w["ai"]
+	ai._raise_dock()
+
+	var built := 0
+	for packet in w["sent"]:
+		if NetProtocol.opcode_of(packet) == NetProtocol.C2S_ORDER_BUILD:
+			built += 1
+	assert_gt(built, 0,
+		"an AI nineteen cells from the sea must still order a dock — the "
+		+ "builder walks, so distance is a delay and not a refusal")
+
+
+func test_the_dock_still_goes_on_the_shore() -> void:
+	# The widened search must not become "anywhere": a dock is a shore
+	# building, and `is_shore` is the one definition of that (stage 1).
+	var w := _ai_on_a_coast(Vector2i(4, 12), [23, 24, 25])
+	var ai: AiPlayer = w["ai"]
+	ai._raise_dock()
+
+	var space: TorusSpace = w["space"]
+	var found := false
+	for packet in w["sent"]:
+		if NetProtocol.opcode_of(packet) != NetProtocol.C2S_ORDER_BUILD:
+			continue
+		found = true
+		# The wire carries a cell INDEX, not a coordinate.
+		var order := NetProtocol.decode_order_build(packet)
+		assert_true(TerrainGen.is_shore(space, ai.state.terrain_passable,
+			ai._navigable, int(order["cell"])),
+			"the dock site must be a shore cell, not merely a reachable one")
+	assert_true(found, "premise: an order was issued to inspect")

@@ -1471,6 +1471,18 @@ var naval_step := "none"
 ## Three, because `_scout_for_what_it_lacks` expands its radius by 5 cells a
 ## leg from 6, so three legs have swept ~21 cells around home — more than
 ## `min_spawn_landmass`'s 96-cell disc is wide.
+## How far to look for a coast to put a dock on.
+##
+## Big enough to cross an island that could hold a base: a landmass only
+## qualifies as a start at `min_spawn_landmass` (96) cells, and a real one
+## is elongated rather than a disc, so its far end is a good deal further
+## from the water than a compact 96-cell blob's radius of about six.
+##
+## The cost is a sorted offset table that `TorusSpace.disk_offsets`
+## memoises per radius, walked only while the AI wants a navy and has no
+## dock — so it is paid once, by the seats that are actually going to sea.
+const DOCK_SEARCH_RADIUS := 32
+
 const SCOUTED_ENOUGH_LEGS := 3
 
 var _land_labels := PackedInt32Array()
@@ -1607,7 +1619,15 @@ func _raise_dock() -> void:
 	# coast allows — `disk_offsets` is sorted by distance (D-067) and this
 	# is exactly the "walk outward until you find one" that sorting made
 	# legal.
-	for offset in TorusSpace.disk_offsets(6):
+	#
+	# THE RADIUS BOUNDS THE SEARCH, NOT THE POSSIBILITY, and getting that
+	# backwards is what this was. It was 6, a "nearby" heuristic — so an
+	# AI whose base sat further than six cells from water found no shore,
+	# issued nothing, and reported `naval_step=dock` for the whole match
+	# with every other part of the investment correct. A builder WALKS to
+	# its site (D-031's build reach), so how far the coast is decides how
+	# long the dock takes and never whether it can exist.
+	for offset in TorusSpace.disk_offsets(DOCK_SEARCH_RADIUS):
 		var cell := state.space.normalize(from + offset)
 		if not TerrainGen.is_shore(state.space, state.terrain_passable,
 				_navigable, state.space.index(cell)):
