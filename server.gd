@@ -1717,17 +1717,33 @@ func _update_auto_gates() -> void:
 	for i in gates:
 		var owner := _buildings.owner_of(i)
 		var gate_cell := _buildings.cell_of(i)
-		var near_owner := false
+		var near_friend := false
 		for offset in TorusSpace.disk_offsets(AUTO_GATE_RADIUS):
 			var neighbor := _sim.space.index(gate_cell + offset)
 			for squad in buckets.get(neighbor, []):
-				if _sim.owner_of(squad) == owner:
-					near_owner = true
+				# ALLIES, not just the owner (#210). This compared owner
+				# ids while `combat.gd` asks `are_allied` in five places
+				# and `client.gd` and `ai_player.gd` ask it too — so a
+				# teammate stood at a closed gate and walked round the
+				# wall, or could not get through at all. D-076 specifies
+				# "the owner's own squads" and mentions teams nowhere;
+				# D-050 predates it, so this is a question that was never
+				# asked rather than one that was answered. Third of the
+				# family, after #83 (the AI marched onto a teammate's town
+				# centre) and #82 (the minimap drew an ally in the enemy
+				# tone): a raw owner comparison beside a codebase that
+				# compares teams everywhere else, with nothing failing.
+				#
+				# The SIMULATION's teams, not the seat list — that is what
+				# every other alliance rule reads, and #119's finding is
+				# that the handover nothing performs is the dangerous half.
+				if _sim.are_allied(_sim.owner_of(squad), owner):
+					near_friend = true
 					break
-			if near_owner:
+			if near_friend:
 				break
-		if _buildings.is_gate_open(i) != near_owner:
-			_buildings.set_gate_open(i, near_owner)
+		if _buildings.is_gate_open(i) != near_friend:
+			_buildings.set_gate_open(i, near_friend)
 			changed = true
 
 	if changed:

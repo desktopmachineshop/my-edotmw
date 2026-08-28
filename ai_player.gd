@@ -276,6 +276,21 @@ var _builder_busy_until := 0.0
 ## "attempt every second forever".
 const FOUND_RETRY := 5.0
 
+## How far from home the founding search will wander (#217). Small on
+## purpose: a hall is a base, and a seat driven ten cells off its own
+## start is a worse outcome than a seat that takes a few more seconds to
+## settle. 4 is 61 cells — far more than D-104's fairness pass can block,
+## since it tops resources up within `fairness_radius` (9) of a start but
+## nowhere near densely enough to fill a disk.
+const FOUND_SEARCH_RADIUS := 4
+
+## How many founding orders have been refused, or at least not yet seen to
+## land. Drives `_found_site` one acceptable cell further out each time,
+## which is the whole of the retry: D-107 made the AI ask again and this
+## makes it ask somewhere else. Never reset — a hall exists or it does
+## not, and `_found_town` returns early once one does.
+var _found_attempts := 0
+
 
 ## The opening every player makes: plant the town hall
 ## (D-20260823-the-opening-is-a-crew-and-a-general). The gatherer crew is
@@ -299,6 +314,23 @@ const FOUND_RETRY := 5.0
 ## conditions bound it instead, and both are things the AI can SEE — it
 ## stops when the town centre exists, and it cannot start when it holds no
 ## squad allowed to found one. Between them there is nothing to spam.
+##
+## ## And the retry has to vary the SITE (#217)
+##
+## D-107 made the AI retry. Nothing made it retry anywhere ELSE: the site
+## was `spawn_cell_of(player)`, which never moves, so a seat whose spawn
+## cell happened to hold a resource node re-sent the identical refused
+## order every five seconds for the whole match — no buildings, no
+## production, banked wood it never spent, eliminated the moment its two
+## opening squads died. Measured on `maps/ladder.tres` at seed 2:
+## `buildings=0 peak_wood=200` against a 150-wood hall, and a match the
+## ladder reported as a decisive win. D-087 puts thousands of nodes on the
+## shipped map and D-104's fairness pass deliberately tops resources up
+## NEAR starts, so this is a likely opening rather than an exotic one.
+##
+## `_found_site` is the fix, and `_report_refusals`' dedupe on message
+## text is why nobody saw it: the log carried ONE refusal line for a loop
+## that ran for the whole match.
 func _found_town() -> void:
 	if _owned_building_count(&"town_centre") > 0:
 		return
@@ -307,13 +339,14 @@ func _found_town() -> void:
 	var squad := _founder()
 	if squad < 0:
 		return
-	var home := state.spawn_cell_of(player)
-	if home.x < 0:
-		home = state.squad_cell(squad, state_time())
-	var order := state.encode_build(squad, "town_centre", home)
+	var site := _found_site(squad)
+	if site.x < 0:
+		return
+	var order := state.encode_build(squad, "town_centre", site)
 	if order.is_empty():
 		return
 	_found_at = state_time() + FOUND_RETRY
+	_found_attempts += 1
 	# Hold the crew off hauling until the order lands, exactly as
 	# `_raise_buildings` does for every other build. Founders had no carry
 	# capacity, so nothing else ever wanted them; the crew is a gatherer,
@@ -323,6 +356,85 @@ func _found_town() -> void:
 	_builder_squad = squad
 	_builder_busy_until = state_time() + profile.think_interval * 3.0
 	send.call(order)
+
+
+## Where to plant the town hall this attempt (#217).
+##
+## Home first, then outward — `TorusSpace.disk_offsets` is sorted
+## nearest-first (D-067), so this takes the closest cell it has no reason
+## to doubt, and "walk outward until you find one" is the idiom that table
+## already exists for. The seat's own spawn is what home means, so a
+## successful founding still lands where the map put the player.
+##
+## Two mechanisms, and the ORDER of them is the point:
+##
+## 1. **Skip what this AI can SEE is blocked.** `ClientState.nodes` is
+##    fog-gated and the AI's own opening squads are standing on its spawn,
+##    so the node that actually caused #217 is one the AI knows about. That
+##    makes the common case converge on the FIRST attempt rather than after
+##    a walk outward.
+## 2. **Then skip one more acceptable cell per failed attempt.** This is
+##    what makes the retry a retry. The AI cannot model every refusal the
+##    server can issue — steep ground and water are not on this client at
+##    all (`terrain_passable` is set by `client.gd` and never for an AI
+##    seat), and an enemy's no-build claim (D-062) may be under fog — so
+##    checking only what it knows would rebuild #217 for every reason it
+##    does not. Advancing the site on each refusal converges regardless of
+##    WHY, which is the property that matters.
+##
+## Deriving passability here was rejected: it would mean a full terrain
+## pass per AI seat at match start, to answer a question the widening
+## retry already answers in a few seconds. The node check earns its place
+## only because it is a Dictionary lookup against data the AI already
+## holds for its economy.
+##
+## Falls back to home when nothing in range is acceptable, rather than
+## returning "nowhere": the server owns the rules (D-002) and has the last
+## word, and an AI that stopped asking would be back to `buildings=0`.
+func _found_site(squad: int) -> Vector2i:
+	var home := state.spawn_cell_of(player)
+	if home.x < 0:
+		home = state.squad_cell(squad, state_time())
+	if home.x < 0 or state.space == null:
+		return Vector2i(-1, -1)
+
+	var sites: Array[Vector2i] = []
+	for offset in TorusSpace.disk_offsets(FOUND_SEARCH_RADIUS):
+		var cell := state.space.normalize(home + offset)
+		if _looks_buildable(cell):
+			sites.append(cell)
+	if sites.is_empty():
+		return home
+	# WRAPPED, not walked off the end. The first version returned `home`
+	# once `_found_attempts` passed the number of acceptable cells, which
+	# quietly rebuilt #217 after about a dozen refusals — and a real match
+	# reached that: `--map=ladder --seed=7 --ai=4` had a seat sending its
+	# twelfth attempt at 56 s and every attempt from then on at the same
+	# blocked start. Cycling instead keeps the retry a retry for as long as
+	# the match lasts, which also covers a refusal that CLEARS later — an
+	# enemy claim razed, a node worked out — since the site comes round
+	# again.
+	return sites[_found_attempts % sites.size()]
+
+
+## Whether this AI has any reason to believe a hall cannot go here.
+##
+## Deliberately only what the AI KNOWS, and deliberately optimistic about
+## the rest — the same asymmetry
+## `D-20260818-pathing-knows-only-what-the-player-knows` chose for
+## terrain belief, and for the same reason: being wrongly refused costs
+## one retry, and refusing yourself costs the match.
+func _looks_buildable(cell: Vector2i) -> bool:
+	var index := state.space.index(cell)
+	if state.nodes.has(index):
+		return false
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if bool(info["destroyed"]):
+			continue
+		if state.space.index(info["cell"]) == index:
+			return false
+	return true
 
 
 ## A squad of this AI's that may actually found a town centre, or -1.
