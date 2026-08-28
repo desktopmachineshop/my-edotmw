@@ -124,6 +124,13 @@ var _frame_decorate := 0
 var _frame_gather := 0
 var _frame_jostle := 0
 var _frame_enemy := 0
+## What the pipeline is actually handed, per drawn squad. The ablation
+## that prices `SquadRender.frame` has to use the real mix or it prices a
+## different battle (#315/#316's evidence page).
+var _frame_boxes_n := 0
+var _frame_discs_n := 0
+var _frame_neighbours_n := 0
+var _frame_pipeline_squads := 0
 var _frame_boxes := 0
 var _frame_discs := 0
 var _mix := [0, 0, 0]
@@ -545,6 +552,10 @@ func _refresh_squads() -> void:
 	_frame_gather = 0
 	_frame_jostle = 0
 	_frame_enemy = 0
+	_frame_boxes_n = 0
+	_frame_discs_n = 0
+	_frame_neighbours_n = 0
+	_frame_pipeline_squads = 0
 	_frame_boxes = 0
 	_frame_discs = 0
 	_frame_soldiers = 0
@@ -650,6 +661,10 @@ func _refresh_squads() -> void:
 			_frame_discs += Time.get_ticks_usec() - discs_at
 			_frame_gather += Time.get_ticks_usec() - gather_at
 
+			_frame_boxes_n += boxes.size()
+			_frame_discs_n += discs.size()
+			_frame_neighbours_n += neighbours.size()
+			_frame_pipeline_squads += 1
 			var rendered := SquadRender.frame({
 				"transforms": transforms,
 				"doing": doing,
@@ -833,6 +848,12 @@ func _report(count: int) -> void:
 		# Inside the gather. `rest` is the residual — activity resolution
 		# and the squad's own speed — printed rather than left implicit,
 		# for the same reason every other phase line here carries one.
+		print("bench: handed squads=%d %.1f boxes, %.1f discs, %.1f foreign men per drawn squad (%d squads through the pipeline)" % [
+			count,
+			float(_frame_boxes_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			float(_frame_discs_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			float(_frame_neighbours_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			_frame_pipeline_squads])
 		print("bench: gather squads=%d enemy=%.2f boxes=%.2f discs=%.2f jostle=%.2f rest=%.2f ms/frame" % [
 			count, enemy / 1000.0, boxes / 1000.0, discs / 1000.0,
 			jostle / 1000.0,
