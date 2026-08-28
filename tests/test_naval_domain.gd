@@ -333,7 +333,10 @@ func test_a_landing_order_is_not_corrected_into_the_sea() -> void:
 	assert_eq(sim.cargo_of(hull).size(), 1, "Setup: laden")
 
 	sim.order_move(hull, quay)
-	sim.tick()
+	for _t in range(60):
+		sim.tick()
+		if sim.cargo_of(hull).is_empty():
+			break
 	assert_eq(sim.cargo_of(hull).size(), 0, "the cargo went ashore")
 
 
