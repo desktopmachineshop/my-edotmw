@@ -85,6 +85,17 @@ func test_every_writer_goes_through_the_rule() -> void:
 	# state #201 found. Carries D-106's own caveat — it covers the
 	# literals it can see, and a path assembled from pieces is invisible
 	# to it.
+	#
+	# IT HAS ALREADY CAUGHT ONE ARRIVAL FROM OUTSIDE, which is what this
+	# kind of guard is for and is worth recording where the next person
+	# reads it (#359): `playtest_seam_shot.gd` was written on another
+	# branch, by somebody who could not see this rule, at the same time as
+	# this rule was written by somebody who could not see that writer.
+	# Both PRs were green alone and the union was red, with NO textual
+	# conflict for git to report — the two files are different files. The
+	# failure message below therefore names the one-line fix rather than
+	# only the rule, because whoever meets it will be somebody who has
+	# never read this file.
 	var scripts: Array = []
 	_all_scripts("res://", scripts)
 	assert_gt(scripts.size(), 40, "the scan found the project's scripts")
@@ -103,7 +114,12 @@ func test_every_writer_goes_through_the_rule() -> void:
 	assert_eq(missing, [],
 		"a script naming res://artifacts must resolve it through "
 		+ "ArtifactPath, or an exported build writes into a read-only "
-		+ "filesystem and says nothing (#201)")
+		+ "filesystem and says nothing (#201). THE FIX IS ONE LINE, and "
+		+ "every writer in the estate has taken it: "
+		+ "`out_path = ArtifactPath.resolve(out_path)` before the write, "
+		+ "then `ArtifactPath.ensure_dir_for` and `ArtifactPath.describe` "
+		+ "in the log line. Identity in a checkout, so recipes and docs "
+		+ "keep finding the file exactly where they look for it.")
 
 
 func test_the_replay_the_shipped_build_records_is_resolved() -> void:
