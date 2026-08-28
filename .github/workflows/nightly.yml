@@ -1,0 +1,196 @@
+# The nightly: what a per-PR budget cannot afford, and what a counter
+# cannot see (#290).
+#
+# Two halves, on purpose:
+#
+#   1. `just test-load 4 120` — the wire gate. A real server, real bots,
+#      real fog, and since D-20260818-the-fast-loop-carries-the-gate the
+#      same log comparisons `gate-check.sh` makes everywhere else.
+#   2. The PICTURES. Every one of the last three milestones' worst
+#      defects — soldiers rendering inside terrain, forests drawn as
+#      ranks and files, tools rendering bright red, the minimap crop —
+#      was invisible to every counter and visible in a frame. These
+#      recipes exist BECAUSE their failures do not show up in numbers,
+#      so the nightly produces the images and a human glances at them.
+#      Nothing here asserts about a picture; that is not a robot's job.
+#
+# NOTE ON WHAT IS NOT HERE: `just bench-render` is absent, deliberately.
+# It is native and needs a REAL GPU (D-014), and D-086's standing rule is
+# that a frame time without hardware attached is not a number anyone can
+# use. A GitHub-hosted runner has no GPU, so this workflow would publish
+# an llvmpipe figure that looks like a measurement and is not — which is
+# the "green verdict over a dead mechanism" failure this project keeps
+# paying for, dressed as diligence. #286 owns what a render baseline is;
+# docs/ci.md records the three options and which was taken.
+name: nightly
+
+on:
+  schedule:
+    # 03:00 UTC — after a working day, before the next one.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "test-load duration in seconds"
+        default: "120"
+      force:
+        description: "Run even if main has not moved"
+        type: boolean
+        default: true
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  EDOTMW_NO_GATE: "1"
+
+jobs:
+  # A nightly that re-measures an unchanged tree burns minutes to learn
+  # nothing, and this repo is PRIVATE so those minutes are billed. Skipped
+  # unless main actually moved — and `workflow_dispatch` can always force
+  # it, which is also what makes this workflow OBSERVABLE: a schedule
+  # nobody can trigger is a schedule nobody can watch fail, and by project
+  # law a check nobody has seen fail is vacuous.
+  should-run:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$(git log --since='24 hours ago' --oneline origin/main)" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main has not moved in 24h — skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test-load:
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned tool versions
+        id: pins
+        run: echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch just
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C tools just
+          chmod +x tools/just
+          : > tools/.gdignore
+
+      # Docker, because `just up` is docker-only and there is no native
+      # path for test-load. Runner sizing is the #223 question and the
+      # answer is measured, not assumed: the import peaks at 1.052 GiB and
+      # the suite at 987 MiB, against compose limits of 2g (server, test)
+      # and 1g (bots) and a hosted runner's 16 GB. A `test-load` run holds
+      # server + bots = 3 GB of ceiling. There is room.
+      - name: just test-load
+        run: |
+          set -euo pipefail
+          ./tools/just test-load 4 "${{ github.event.inputs.duration || '120' }}" 2>&1 | tee /tmp/test-load.log
+
+      # The verdict line and the phase breakdown into the summary, so
+      # µs/squad is recorded per night WITH ITS SQUAD COUNT rather than
+      # pasted into a PR body by hand. Published, never gated: this
+      # project's own rule is publish milliseconds, gate on counts, and
+      # D-106's amendment records a wall-clock gate going red on a loaded
+      # host with nothing wrong.
+      - name: Publish the verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          clean=$(mktemp)
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/test-load.log > "$clean"
+          {
+            echo '### `just test-load 4 ${{ github.event.inputs.duration || '120' }}`'
+            echo ''
+            echo '```'
+            grep -E 'VERDICT|gate-check|us/squad=|MEMORY' "$clean" | grep -v 'host-gate: waiting' || \
+              echo '(no verdict line — the run did not get that far)'
+            echo '```'
+            echo ''
+            echo '_Read µs/squad with its squad count; a figure taken under host contention is not comparable (CLAUDE.md)._'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-load-log
+          path: /tmp/test-load.log
+          retention-days: 30
+
+  # The pictures. Separate job so a red test-load does not cost us the
+  # images — they are the instrument for a different class of defect and
+  # there is no reason for one failure to hide the other.
+  pictures:
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EDOTMW_RUNTIME: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned tool versions
+        id: pins
+        run: |
+          echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+          echo "godot=$(tr -d '[:space:]' < .godot-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch just and Godot
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C tools just
+          curl -fsSL -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/${{ steps.pins.outputs.godot }}-stable/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d tools
+          mv "tools/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64" tools/godot
+          chmod +x tools/just tools/godot
+          : > tools/.gdignore
+
+      # Software-rasterised, so no GPU is involved and the output is
+      # comparable run to run. These recipes each FAIL on their own terms
+      # (nothing drawn, a palette naming a model that did not load, two
+      # byte-identical frames) — that is the assertion. Whether the
+      # picture READS right is the human's half, which is why they are
+      # uploaded rather than diffed.
+      - name: The picture recipes
+        run: |
+          set -euo pipefail
+          ./tools/just gen-terrain-shot
+          ./tools/just gen-forest-preview
+          ./tools/just gen-model-preview
+
+      - name: Upload the pictures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-pictures
+          path: artifacts/*.png
+          retention-days: 30
+          if-no-files-found: error

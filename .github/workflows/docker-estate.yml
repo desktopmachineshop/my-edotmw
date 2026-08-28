@@ -1,0 +1,140 @@
+# The weekly docker-estate canary (#290).
+#
+# THIS IS THE JOB THAT WOULD HAVE CAUGHT #223. Every docker recipe depends
+# on `just _import`, and it was being SIGKILLed at the test service's 1g
+# mem_limit (exit 137) — so `test-unit`, `test-load`, `test-scenario` and
+# `test-client` were all dead at once and the project's own gate could not
+# be run at all. Nobody had changed the limit; the thing being imported
+# outgrew it. It surfaced days later, by hand, as a worker trying to run
+# the gate for an unrelated ticket.
+#
+# The PR gate runs NATIVE (cost), so it structurally cannot see a docker
+# break. That is the gap this fills. Weekly rather than nightly because
+# the estate breaks on the scale of asset growth, not of commits — and
+# because a docker image build is the most expensive thing in this
+# pipeline and the repo is private.
+name: docker-estate
+
+on:
+  schedule:
+    # Mondays 04:00 UTC — a break found on Monday costs the week, not the
+    # weekend.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-estate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  EDOTMW_NO_GATE: "1"
+  # Explicit rather than relying on the default, so this workflow says
+  # what it is testing in the one place somebody will read.
+  EDOTMW_RUNTIME: docker
+
+jobs:
+  estate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned tool versions
+        id: pins
+        run: echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch just
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C tools just
+          chmod +x tools/just
+          : > tools/.gdignore
+
+      - name: just doctor
+        run: ./tools/just doctor
+
+      # THE #223 canary, and it is deliberately its own step so the log
+      # says which thing broke. EDOTMW_FORCE_IMPORT=1 because a skipped
+      # import proves nothing at all — that is the whole point of this
+      # job, and letting the stamp short-circuit it would be a vacuous
+      # pass of exactly the kind D-022's audit block was written against.
+      - name: The import survives its own memory ceiling
+        run: |
+          set -euo pipefail
+          EDOTMW_FORCE_IMPORT=1 ./tools/just _import 2>&1 | tee /tmp/import.log
+          echo "::notice::docker _import completed — the #223 ceiling holds"
+
+      # What the import peaked at, published so the ceiling's headroom is
+      # a number somebody can watch shrink rather than a surprise SIGKILL.
+      # #223's measured figures: import 1.052 GiB, suite 987 MiB, against
+      # a 2g limit.
+      - name: Report the ceiling headroom
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo '### docker estate'
+            echo ''
+            echo 'Compose memory ceilings (see `docker-compose.yml`, #223):'
+            echo ''
+            echo '```'
+            grep -n 'mem_limit' docker-compose.yml
+            echo '```'
+            echo ''
+            echo 'Measured at the time of #223: `_import` peaked at **1.052 GiB**,'
+            echo '`test-unit` at **987 MiB**. The revisit trigger is ~1.6 GiB.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: just test-unit (docker)
+        run: ./tools/just test-unit 2>&1 | tee /tmp/test-unit-docker.log
+
+      # The one thing only the docker estate can do: render the real GUI
+      # client under Mesa's software rasteriser and check the frame.
+      # D-014's 2026-07-29 amendment is why this does not contradict "the
+      # client cannot be containerized".
+      - name: just test-client
+        run: ./tools/just test-client 2>&1 | tee /tmp/test-client.log
+
+      # D-014's teardown requirement, tightened per-instance by D-095: a
+      # recipe must not leave containers behind. On an ephemeral runner
+      # nothing would notice a leak, which is exactly why it is asserted
+      # HERE rather than trusted — the rule is about the owner's laptop
+      # and this is the only place it is ever checked mechanically.
+      - name: Nothing was left running
+        if: always()
+        run: |
+          set -euo pipefail
+          ./tools/just down || true
+          # ANY surviving container is a leak here, and that is a stronger
+          # check than filtering by compose project — not a lazier one.
+          # This runner is ephemeral and runs nothing else, so there is no
+          # other agent's container to be careful of; and filtering would
+          # mean RE-DERIVING `edotmw-<instance>` in YAML, which is the one
+          # thing D-095 forbids outright (instance-id.sh is the single
+          # definition, and tests/test_multi_agent_isolation.gd exists to
+          # make a second one fail).
+          left="$(docker ps -aq)"
+          if [ -n "$left" ]; then
+            echo "::error::containers survived teardown — D-014's teardown requirement"
+            docker ps -a
+            exit 1
+          fi
+          echo "::notice::teardown clean"
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-estate-logs
+          path: |
+            /tmp/import.log
+            /tmp/test-unit-docker.log
+            /tmp/test-client.log
+            artifacts/client-frame.png
+          retention-days: 30
