@@ -38,6 +38,13 @@
 set shell := ["bash", "-cu"]
 
 godot_version := `cat .godot-version`
+# The GodotSteam release paired with THAT engine version (D-093, #181).
+# Its own file, beside .godot-version, because the two are a PAIR and a
+# mismatched pair fails at LOAD rather than at build — on a player's
+# machine, not the builder's. Reported by `just doctor`; nothing here
+# requires it, because absent Steam costs Steam features and never the
+# game.
+godotsteam_version := `cat .godotsteam-version`
 runtime := env_var_or_default("EDOTMW_RUNTIME", "docker")
 tools_dir := justfile_directory() + "/tools"
 artifacts_dir := justfile_directory() + "/artifacts"
@@ -218,6 +225,20 @@ doctor:
     # a window — blender-path.sh's header says which.
     echo
     bash blender-path.sh explain | sed 's/^/blender: /'
+
+    # --- Steam (D-093, #181) -------------------------------------------
+    # Reported, never required, and never a FAILURE: Steam-less is the
+    # configuration every automated context here runs in — docker, CI,
+    # the bots, this whole test estate — so a preflight that failed on it
+    # would fail everywhere that matters.
+    #
+    # What is printed is the PAIRING, because that is the part a human
+    # can get wrong: whether Steam is actually reachable is a runtime
+    # question and `steam_platform.gd` is the one thing allowed to
+    # answer it (a second definition in shell would be free to disagree).
+    echo
+    echo "GodotSteam pin: {{godotsteam_version}} (for Godot {{godot_version}}) — steam_platform.gd decides availability at runtime"
+    echo "note: absent Steam costs Steam features (relay, lobbies, invites), never the game (D-093)"
 
     # --- host budget (D-20260818) -------------------------------------
     # Reported, never enforced here: doctor's job is to say what the
