@@ -2713,7 +2713,7 @@ gen-seam-shot SEAM="q" HEIGHT="16": _import
 # The ladder (#304) is the section a perf question usually wants, and the
 # whole sweep is minutes of work.
 [doc("Scale sweep: simulation cost at 100/250/500/1000 squads; ONLY=count|map|derive|ladder")]
-profile ONLY="": _import
+profile ONLY="" COUNTS="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
@@ -2724,10 +2724,10 @@ profile ONLY="": _import
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd -- --only="{{ONLY}}"
+        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd -- --only="{{ONLY}}" --counts="{{COUNTS}}"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script profile_sweep.gd -- --only="{{ONLY}}"
+        "$godot" --headless --script profile_sweep.gd -- --only="{{ONLY}}" --counts="{{COUNTS}}"
     fi
 
 # Client render benchmark (D-044 criteria 1-3, closing Q15's trigger).
