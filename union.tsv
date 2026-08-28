@@ -119,3 +119,5 @@
 352	ao/my-edotmw-88/naval-9-maps	CONFLICT	justfile 
 352	ao/my-edotmw-88/naval-9-maps	CONFLICT-RESOLVED	justfile ai-ladder: #251 adds died="" tracking, #352 parameterises the map in the echo. Keep-both left two echo lines; kept died= plus the {{MAP}} echo.
 342	ao/my-edotmw-81/naval-7-ai-and-bots	CONFLICT	ai_player.gd ai_profile.gd docs/status/playtests-2026-08.md gate-check.sh 
+342	ao/my-edotmw-81/naval-7-ai-and-bots	CONFLICT-RESOLVED	ai_player.gd AI_STATS extended a THIRD time (ladder #225, fortify #348, naval #342) - format string and arg array hand-merged again; the naval section body kept whole. ai_profile.gd, gate-check.sh, status doc additive.
+353	ao/my-edotmw-81/naval-integration	CONFLICT	CLAUDE.md justfile 

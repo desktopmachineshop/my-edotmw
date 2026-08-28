@@ -394,3 +394,46 @@ Four things worth carrying:
 **Found on the way, filed not fixed:** seven shipped `.tres` files are
 not UTF-8, so every Godot run prints twelve parse warnings (#338).
 
+---
+
+**Naval stage 8 — presentation — is built
+(D-20260828-a-hull-is-drawn-on-the-sea, #301, `docs/plans/naval.md` §7
+row 8).** A ship's men derive at the sea plane, inshore as well as out;
+the minimap and selection needed nothing and are asserted rather than
+assumed; and there is a rendered frame of ships on water to look at.
+
+```
+just gen-naval-shot          # artifacts/naval-godot.png — LOOK AT IT
+just gen-naval-shot 9 1      # ...the same frame with hulls on the seabed
+```
+
+Four things to know:
+
+- **The drawn sea was ALREADY FLAT, so most of this stage was a test
+  rather than a change.** `build_fields` clamps every vertex of a water
+  cell up to `sea_level`, so a hull in open water was always at the right
+  height through the ordinary sampler. §6.4 expected `PrimitiveUnit` to
+  need a domain-aware height; what actually needed one is the SHORE,
+  where a water cell borrows its corners from the land and lifts a hull
+  **0.055 world units** up the beach — on exactly the cells every landing
+  happens on.
+- **`water_height` is an ARGUMENT to the pure derivation, NAN meaning
+  "not a ship"** — D-006 clause 1 untouched, the same shape as #97's
+  passability clamp and D-076's walkway bump. It also skips the land
+  clamp, because that array describes ground a hull is floating over
+  rather than standing on.
+- **`ClientState.DOMAIN_*` alias `SquadSim`'s.** The tier byte on the
+  wire is what makes them one definition rather than two, and a
+  source-scanning test asserts the alias — a copy with the right value
+  passes every value comparison there is.
+- **The picture cannot show the shore lift, and the recipe says so.**
+  0.055 units on a hull 0.6 thick is a number; `--seabed=1` prints it
+  (1.120..1.175 against the plane's 1.120) and the two frames look
+  identical. The shot's job is "ships are on the water", framed on
+  purpose because every other rendered instrument in the repo points
+  somewhere a hull cannot be.
+
+**Not this stage, and deliberately:** authored ship models. The hulls
+render at the primitive tier (`mesh_primitive = "hull"`), which is D-064's
+designed degradation — a `.blend` under `art/source/` is what upgrades
+them, with no code change.
