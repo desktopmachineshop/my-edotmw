@@ -1,0 +1,15 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS-SIEGE-DIAG: begin
+  stoneblood_heavy     x2 vs town centre + 0 defender squad(s)       : razed=true  at 60.4s    building 0/3000 hp | attackers 12/16 left, 2 of 2 in reach, closest ever 1 cells | defenders 0 left
+  stoneblood_heavy     x3 vs town centre + 0 defender squad(s)       : razed=true  at 39.8s    building 0/3000 hp | attackers 21/24 left, 3 of 3 in reach, closest ever 1 cells | defenders 0 left
+  stoneblood_heavy     x2 vs town centre + 1 defender squad(s)       : razed=false at -        building 3000/3000 hp | attackers 0/16 left, 0 of 2 in reach, closest ever 3 cells | defenders 0 left
+  stoneblood_heavy     x3 vs town centre + 1 defender squad(s)       : razed=false at -        building 1263/3000 hp | attackers 0/24 left, 0 of 3 in reach, closest ever 1 cells | defenders 0 left
+  emberdeep_levy       x2 vs town centre + 0 defender squad(s)       : razed=true  at 98.5s    building 0/3000 hp | attackers 18/52 left, 1 of 2 in reach, closest ever 1 cells | defenders 0 left
+  emberdeep_levy       x2 vs town centre + 1 defender squad(s)       : razed=false at -        building 3000/3000 hp | attackers 0/52 left, 0 of 2 in reach, closest ever 3 cells | defenders 0 left
+  --- control: the same defender placed BEHIND the building,
+      off the attackers' approach, to separate 'a screen denies
+      the building' from 'the defence is simply stronger'.
+  stoneblood_heavy     x2 vs town centre + 1 defender squad(s) BEHIND: razed=true  at 60.4s    building 0/3000 hp | attackers 12/16 left, 2 of 2 in reach, closest ever 1 cells | defenders 30 left
+  emberdeep_levy       x2 vs town centre + 1 defender squad(s) BEHIND: razed=true  at 99.6s    building 0/3000 hp | attackers 17/52 left, 1 of 2 in reach, closest ever 1 cells | defenders 30 left
+OBS-SIEGE-DIAG: end

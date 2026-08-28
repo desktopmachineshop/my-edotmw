@@ -41,3 +41,6 @@
 257	ao/my-edotmw-82/fortifications-frighten	CONFLICT	buildings/tower.tres buildings/town_centre.tres 
 257	ao/my-edotmw-82/fortifications-frighten	CONFLICT-RESOLVED	buildings/{tower,town_centre}.tres: the ONE expected conflict inside the balance cluster, predicted in the merge-order doc. #222 sets 1250/2400, #257 re-derives to 980/1900 against the post-#266/#218 combat (#361). Took #257's.
 297	ao/my-edotmw-82/surrender	CONFLICT	building_sim.gd 
+297	ao/my-edotmw-82/surrender	CONFLICT-RESOLVED	building_sim.gd: #322 and #297 both add BuildingSim.eliminate_player, semantically identical; kept the one already in the tree.
+336	ao/my-edotmw-82/civ-knobs	CLEAN	13
+233	ao/my-edotmw-84/playtest-bot-findings	CONFLICT	docs/playtests/README.md 

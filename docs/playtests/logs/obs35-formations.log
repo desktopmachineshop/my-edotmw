@@ -1,0 +1,54 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS35: begin
+
+OBS35 A7 - formations shipped, and which are OFFERED to a player.
+  #35's table says 'only 3 offered (ring/sparse/tight)'. Re-read
+  off the .tres as they ship today:
+  offered=true  (6): ["column", "line", "ring", "sparse", "tight", "wedge"]
+  offered=false (2): ["shield_wall", "testudo"]
+
+OBS35 A5/A8/A9 WIRE - shape, facing and files across real bytes.
+  squad  shape srv  shape cli  facing s  facing c  files s files c
+  0      line       line       0         0         4       4       
+  1      column     column     1024      1024      9       9       
+  2      wedge      wedge      3072      3072      2       2       
+  every field survived the wire: true
+  composition_hash server=32507382 client=32507382 agree=true
+  squad 0: server derived 28 soldiers, client 0 <-- MISMATCH
+  squad 1: server derived 28 soldiers, client 0 <-- MISMATCH
+  squad 2: server derived 28 soldiers, client 0 <-- MISMATCH
+  worst server/client soldier position disagreement: 0.000000 world units
+
+OBS35 A4 - a player's shape on a GATHERING crew, over a full haul.
+  Note the ground moved under this row: `SquadSim.suggest_shape`
+  and its latch are GONE (D-20260820 amendment) - nothing in the
+  simulation asserts a shape per tick any more, so there is no
+  per-tick suggestion left to survive. Measured anyway.
+  set 'wedge' on a working crew; shapes seen over 120s: ["wedge"]
+  player's shape survived: true
+
+OBS35 RTW ROWS - #35's table was written before the twelve
+  workstreams of D-20260818-battle-quality-outranks-player-count
+  landed. Each row below is EXERCISED here, not read off a doc.
+  A8 facing is an order      : set_facing(2048) -> facing_of=2048, angle=3.142 rad
+  A9 width is an order       : files 0 -> 12, footprint now 4 cells
+  A10 charge                 : order_charge -> is_charging=true (x3.0 impact, x1.5 pace)
+  A11 flank/rear attacks     : aspect front=2 flank=1 rear=0 (x1.5/x2.5 morale)
+  A12 men pair off in melee   : cosmetic_duel.gd present=true (render-side, D-006 cl.2)
+  A6/A13 restamp + gap fill  : soldier_motion.gd present=true (D-006 clause 2 as amended)
+  A15 phalanx/testudo        : ["shield_wall", "testudo"] ship as FormationDef, granted via UnitDef.formations
+  A16 guard mode             : STANCE_GUARD set -> has_stance=true; stance byte also carries SKIRMISH/HOLD_FIRE/RUN
+  ws11 fatigue               : fatigue_of=100.0, charge refused under 40, ended at 25
+
+  B11 civ mechanical difference - #35's table says 'read by nothing'.
+    emberdeep      squad_cap_bonus=0 production_speed=1.00 gather_speed=1.00
+    gildedreach    squad_cap_bonus=0 production_speed=1.00 gather_speed=1.15
+    gravesworn     squad_cap_bonus=4 production_speed=1.15 gather_speed=1.00
+    stoneblood     squad_cap_bonus=0 production_speed=1.00 gather_speed=1.00
+    thornwood      squad_cap_bonus=0 production_speed=1.00 gather_speed=1.00
+    windmarch      squad_cap_bonus=0 production_speed=1.00 gather_speed=1.00
+    (all three are read by the simulation as of #158 — see
+     docs/status/civ-knobs.md; measured for gather_speed in obs_economy.gd)
+  B12 number of civs         : 6 shipped
+OBS35: end
