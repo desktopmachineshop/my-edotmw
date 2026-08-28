@@ -24,6 +24,15 @@ So round 2 is not a second content audit. The content gaps round 1 found
 are answered, in branches. **The question that matters now is why none of
 it is in the game, and what the second cycle has to do differently.**
 
+> **Addendum, added when this branch was rebased.** The audit below is a
+> dated snapshot and is left exactly as ratified. Since it was written the
+> queue has started moving — `main` has advanced **36 commits** past the
+> `cc2f4c6` every number here is measured against, and the first merges
+> are landing in #350's order. So the headline "0 merged this cycle" is
+> now history rather than a present-tense fact, which is the outcome the
+> document was arguing for. **Re-measure before quoting any figure below
+> as current**; the Method section says how each was taken.
+
 **Severity scale**, unchanged from round 1:
 
 | | meaning |
