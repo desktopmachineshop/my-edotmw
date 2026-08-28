@@ -699,6 +699,14 @@ quick-test SEED="1337" SANDBOX="auto":
 gen-formation-icons: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818). This recipe launches Godot and was
+    # the one gen-* that never declared a class — `test_host_budget.gd`'s
+    # "a recipe nobody remembered" check has been red on main since it was
+    # added, which is the same under-counting #153 is about arriving
+    # through the other door: work on the machine the ledger cannot see.
+    gate="$(bash host-gate.sh acquire medium 'gen-formation-icons' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2

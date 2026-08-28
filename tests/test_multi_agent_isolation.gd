@@ -51,10 +51,19 @@ func test_every_compose_invocation_is_scoped_to_this_instance() -> void:
 		"a compose invocation is not scoped to {{compose_project}}: %s"
 		% (offence.get_string() if offence != null else ""))
 
-	# Explicit container names collide across worktrees unless prefixed
+	# Explicit CONTAINER names collide across worktrees unless prefixed
 	# with the per-instance project.
+	#
+	# Scoped to docker invocations, which it was not: `--name` is an
+	# ordinary flag and the art tooling takes one
+	# (`art/attach_kit.py --name "{{TARGET}}"`), so the bare scan went red
+	# on a Blender argument that has nothing to do with D-095 — and a
+	# guard that cries wolf is a guard somebody eventually relaxes rather
+	# than reads. The rule itself is unchanged: every docker `--name` must
+	# carry {{compose_project}}, and all three real ones sit on the same
+	# line as their `docker compose`.
 	var name_re := RegEx.new()
-	name_re.compile("--name (?!\\{\\{compose_project\\}\\})\\S+")
+	name_re.compile("docker[^\n]*--name (?!\\{\\{compose_project\\}\\})\\S+")
 	offence = name_re.search(justfile)
 	assert_null(offence,
 		"a named container is not prefixed with {{compose_project}}: %s"
