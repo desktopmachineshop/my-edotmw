@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.1
+
+[resource]
+script = ExtResource("1")
+id = &"sapping"
+display_name = "Sapping"
+description = "If a wall cannot be climbed or knocked down it can be gone under. Every army works this out eventually."
+line = &"sapping"
+civ = &"neutral"
+epoch = 4
+defining = true
+research_at = &"barracks"
+requires = Array[StringName]([&"breaking"])
+cost_food = 600
+cost_wood = 400
+cost_gold = 300
+cost_stone = 150
+research_time = 60.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

@@ -15,3 +15,4 @@ starting_stone = 60
 squad_cap_bonus = -6
 production_speed = 1.0
 gather_speed = 1.0
+epoch_names = Array[String](["Scattered Hill-Clans", "Thrall Levies", "Giants Walk to War", "Gatebreaker Broods", "The Old Blood Wakes"])

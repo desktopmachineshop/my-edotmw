@@ -1,0 +1,52 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"cavalry"
+field = &"move_speed"
+mode = "multiply"
+value = 1.08
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"bowriders"
+field = &"move_speed"
+mode = "multiply"
+value = 1.08
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"cavalry"
+field = &"attack_range"
+mode = "add"
+value = 0.5
+
+[sub_resource type="Resource" id="e3"]
+script = ExtResource("2")
+target = &"bowriders"
+field = &"attack_range"
+mode = "add"
+value = 0.5
+
+[resource]
+script = ExtResource("1")
+id = &"thornwood_long_stride"
+display_name = "Deerpaths"
+description = "Ways through the wood that were never cut and have always been there."
+line = &"long_stride"
+civ = &"thornwood"
+epoch = 3
+defining = false
+research_at = &"stables"
+requires = Array[StringName]([&"holding"])
+cost_food = 300
+cost_wood = 200
+cost_gold = 200
+cost_stone = 0
+research_time = 50.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2"), SubResource("e3")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

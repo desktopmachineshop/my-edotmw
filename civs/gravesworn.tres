@@ -15,3 +15,4 @@ starting_stone = 0
 squad_cap_bonus = 4
 production_speed = 1.15
 gather_speed = 1.0
+epoch_names = Array[String](["A Barrow Court", "Corpse Levies", "Bone Legions", "Carrion Engines", "The Court Rides Out"])

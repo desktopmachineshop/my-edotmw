@@ -77,6 +77,14 @@ var _ai_profiles := {}
 
 ## This player's civ. Never a hardcoded id — the roster is the authority,
 ## and no script may name a civ (D-046 criterion 3).
+## What each player has researched (`D-20260827-the-tree-is-the-ladder`).
+##
+## Rebuilt with the simulation, for the reason above `SquadSim.research`:
+## a research set that outlived a match would give the next one's player 0
+## the last one's army.
+var _research: ResearchState = ResearchState.new()
+
+
 func _civ_of(player: int) -> StringName:
 	if _civs.has(player):
 		return _civs[player]
@@ -483,6 +491,13 @@ func _build_world() -> void:
 		_match.ensure_seats_fit(_match.players_expected)
 	var space := _settings.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
+	# The tech tree's state lives with the WORLD, not with the server, so
+	# `_return_to_lobby` drops it with everything else and the next match
+	# starts at epoch 1 (`D-20260827-the-tree-is-the-ladder`). The
+	# building-desync incident recorded in `docs/status/sandbox.md` is
+	# exactly what a surviving per-player set would reproduce.
+	_research = ResearchState.new()
+	_sim.research = _research
 
 	# Terrain is real to the SIMULATION, not just to the renderer.
 	#
@@ -1196,6 +1211,11 @@ func _admit_player(peer, player: int) -> void:
 	_economy.credit(player, Economy.ResourceKind.STONE,
 		civ.starting_stone if civ != null else _config.starting_stone)
 	_send_wallet(peer, player)
+	# Which epoch this player is in and what they hold. Sent on JOIN as
+	# well as on change, because a client joining a match in progress
+	# (`--lobby=0`, a reconnect) would otherwise draw an epoch-1 build
+	# menu for a player four rungs up.
+	_send_tech_state(peer, player)
 	# Only the resources this player can currently SEE (D-061).
 	#
 	# This used to send every node on the map, once, to everybody — the
@@ -1524,6 +1544,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_cheat_regen_map(peer, data)
 			NetProtocol.C2S_ORDER_PRODUCE:
 				_handle_order_produce(peer, data)
+			NetProtocol.C2S_ORDER_RESEARCH:
+				_handle_order_research(peer, data)
 			NetProtocol.C2S_ORDER_GATHER:
 				_handle_order_gather(peer, data)
 			NetProtocol.C2S_ORDER_RALLY:
@@ -2137,6 +2159,11 @@ func _do_order_build(peer, data: PackedByteArray, replace: bool) -> void:
 		_notify(peer, "%s cannot build a %s" % [_sim.def_id_of(squad), def.display_name])
 		return
 
+	var unfounded := _found_refusal(def, _sim.owner_of(squad))
+	if unfounded != "":
+		_notify(peer, unfounded)
+		return
+
 	var cell := _sim.space.from_index(int(order["cell"]))
 	var refusal := _build_refusal(cell, def, _sim.owner_of(squad))
 	if refusal != "":
@@ -2234,6 +2261,11 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	var refusal := _build_refusal(cell, def, owner)
 	if refusal != "":
 		_notify(peer, refusal)
+		return
+
+	var unfounded := _found_refusal(def, owner)
+	if unfounded != "":
+		_notify(peer, unfounded)
 		return
 
 	# Re-checked on ARRIVAL too: a builder ordered from out of reach walks
@@ -2366,6 +2398,13 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 		_notify(peer, "Your people do not field %s" % archetype)
 		return
 
+	# The tech gate (`D-20260827-the-tree-is-the-ladder`). Empty
+	# `requires_tech` — every gatherer, general and levy in the roster —
+	# passes unconditionally, which is why the opening is unchanged.
+	if not _research.unlocked(player, def.requires_tech):
+		_notify(peer, "%s must be researched first" % _tech_name(player, def.requires_tech))
+		return
+
 	# One living general per player (D-20260819-a-general-holds-the-
 	# line) — checked at the production gate like every other refusal,
 	# and against the SIM, never a cached count (the D-038 lesson).
@@ -2391,6 +2430,136 @@ func _handle_order_produce(peer, data: PackedByteArray) -> void:
 	_buildings.enqueue(building, def, _match.instant_build,
 		_sim.civ_effects(player).production_time(def.build_time))
 	_send_wallet(peer, player)
+
+
+## Start researching a tech at a building (`D-20260827-the-tree-is-the-ladder`).
+##
+## Deliberately `_handle_order_produce`'s shape, gate for gate, because it
+## is the same act: the player owns the building, the building is the
+## right SITE for this tech, the player is allowed the tech, and the
+## player can pay. Payment is last and all-or-nothing, so a refused order
+## never leaves a part-spent wallet.
+##
+## The wire carried a LINE and the server resolves it against this
+## player's civ, so a client cannot name another civ's version of a tech
+## at all — D-046 criterion 4, structural rather than checked.
+func _handle_order_research(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null or not _match.is_running():
+		return
+
+	var order := NetProtocol.decode_order_research(data)
+	var building := BuildingSim.local_id(int(order["building"]))
+	if building < 0 or building >= _buildings.building_count():
+		return
+
+	var player := int(record["player"])
+	if _buildings.owner_of(building) != player:
+		push_error("server: player %d tried to research at a building it does not own" % player)
+		return
+
+	var civ := _civ_of(player)
+	var line := StringName(order["line"])
+	var tech := TechRoster.for_civ_line(civ, line)
+	if tech == null:
+		_notify(peer, "Your people have no such craft")
+		return
+
+	# Two separate refusals on purpose: "this is the wrong building" and
+	# "you may not have this yet" are different mistakes and a player who
+	# is told the wrong one goes looking in the wrong place.
+	if not _buildings.can_research(building, tech):
+		_notify(peer, "%s is not studied here" % tech.display_name)
+		return
+	var refusal := _research.can_research(player, civ, line)
+	if refusal != "":
+		_notify(peer, refusal)
+		return
+	if not _economy.try_spend(player, tech.cost_food, tech.cost_wood,
+			tech.cost_gold, tech.cost_stone):
+		_notify(peer, "Cannot afford %s" % tech.display_name)
+		return
+
+	# Time is resolved against the civ exactly as a unit's build time is
+	# (D-047, D-20260823) — a civ that trains fast also researches fast,
+	# through the one definition of that knob rather than a second copy.
+	_research.begin(player, line)
+	_buildings.enqueue_tech(building, tech, _match.instant_build,
+		_sim.civ_effects(player).production_time(tech.research_time))
+	_send_wallet(peer, player)
+	print("server: player %d began researching %s" % [player, tech.id])
+
+
+## What this player calls `line`, for a refusal message. Falls back to the
+## raw line so a message is never empty.
+func _tech_name(player: int, line: StringName) -> String:
+	var tech := TechRoster.for_civ_line(_civ_of(player), line)
+	return tech.display_name if tech != null else String(line)
+
+
+## Tell one player what they have researched and which epoch that puts
+## them in. Own state only — an enemy's research is what a scout is for.
+func _send_tech_state(peer, player: int) -> void:
+	peer.send(0, NetProtocol.encode_tech_state(
+		_research.epoch_of(player, _civ_of(player)), _research.lines_of(player),
+		_civ_of(player)),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Drain `SquadSim.completed_research` onto the wire.
+##
+## The SIMULATION grants the tech and re-points the army (that is a rule);
+## this only tells the owner (that is the wire). Called once per replicate
+## tick, beside the other per-tick publications.
+## The last epoch each player was TOLD they were in.
+##
+## An epoch change has no message of its own on the wire — it is derived
+## from the tech set both sides hold (`ResearchState.epoch_of`), which is
+## the point of the design. But a rung is the biggest thing that happens
+## to a player in ninety minutes and deriving it silently would leave the
+## client to notice on its own. This is the announcement, not the rule.
+var _epoch_announced := {}
+
+
+func _publish_research() -> void:
+	if _sim == null or _sim.completed_research.is_empty():
+		return
+	for finished in _sim.completed_research:
+		var who := int(finished["player"])
+		# The cap can have moved (a tech may raise `squad_cap_bonus`), and
+		# the HUD's number comes from WELCOME. Re-handing the civ keeps the
+		# refusal and the readout on one number, which is D-20260823's
+		# own rule for the same field.
+		_sim.civs[who] = _civ_effects_for(who)
+		var civ := _civ_of(who)
+		var now_epoch := _research.epoch_of(who, civ)
+		print("server: player %d researched %s (epoch %d)"
+			% [who, finished["line"], now_epoch])
+		var advanced := now_epoch > int(_epoch_announced.get(who, 1))
+		_epoch_announced[who] = now_epoch
+		# `_recipients()`, not `_clients` — sockets AND AI seats (D-051).
+		# An AI is a client with no socket and reasons off its own
+		# ClientState, so telling only the humans would leave every AI
+		# permanently believing it had researched nothing: it would
+		# re-offer the same tech forever, be refused as "already known",
+		# and never climb. #119's finding again — the handover nothing
+		# performs is the dangerous half.
+		var everyone := _recipients()
+		for peer in everyone:
+			if int(everyone[peer]["player"]) != who:
+				continue
+			_send_tech_state(peer, who)
+			# The epoch banner goes to HUMAN clients only. An AI reads
+			# `last_notice` to report refusals (D-054's instrument), and a
+			# congratulation landing in that field would be logged as a
+			# refused order.
+			if advanced and _clients.has(peer):
+				# In this civ's own words. `TechRoster.epoch_name` falls
+				# back to the EpochDef's, so a civ that names no rungs
+				# still reads sensibly rather than "Epoch 3".
+				_notify(peer, "Your people enter %s"
+					% TechRoster.epoch_name(civ, now_epoch))
+	_sim.completed_research = []
 
 
 ## Put a gatherer squad to work (D-028). The economy decides whether the
@@ -2619,6 +2788,31 @@ func _is_buildable(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> 
 ## has not been shown draws green and is then refused. Naming the reason
 ## makes the unrevealed node explain itself on the first click, which is
 ## cheaper and more honest than leaking where the nodes are.
+## Why `player` may not found `def` at all, ignoring WHERE — or "".
+##
+## Two rules, both new with the tech tree
+## (`D-20260827-a-research-site-is-a-building`): the def has to belong to
+## this player's civ, and its `requires_tech` has to be researched. Split
+## out from `_build_refusal` because that one answers "is this GROUND
+## usable" and takes no player in most of its call sites, while these two
+## are about the player and not the cell.
+##
+## Checked at the order gate AND on arrival. Techs only ever accumulate,
+## so the arrival check can never actually fire today — it is there for
+## `_finish_build`'s stated reason ("a builder walks, and the world moves
+## while it does"), which is the discipline that keeps the
+## consume-any-builder defect from coming back through a new door.
+func _found_refusal(def: BuildingDef, player: int) -> String:
+	if def == null:
+		return "No such building"
+	if def.civ != &"neutral" and def.civ != _civ_of(player):
+		return "%s is not something your people build" % def.display_name
+	if not _research.unlocked(player, def.requires_tech):
+		return "%s must be researched before a %s can be raised" \
+			% [_tech_name(player, def.requires_tech), def.display_name]
+	return ""
+
+
 func _build_refusal(cell: Vector2i, def: BuildingDef = null, owner: int = -1) -> String:
 	var index := _sim.space.index(cell)
 	if index < _passable.size() and _passable[index] == 0:
@@ -2950,6 +3144,11 @@ func _replicate() -> void:
 	# Buildings whose replicated state changed this tick. Taken once, out
 	# here, because take_dirty() clears — reading it inside the per-client
 	# loop would hand the change to the first client and nobody else.
+	# Research that completed this tick. Drained BEFORE the building state
+	# below, so a client that is about to be told its queue shortened has
+	# already been told why.
+	_publish_research()
+
 	var dirty_buildings := _buildings.take_dirty()
 	# Taken once, out here, because take_shape_dirty() CLEARS — reading it
 	# inside the per-client loop would tell the first client and nobody
@@ -3275,6 +3474,11 @@ func _return_to_lobby() -> void:
 	_sim = null
 	_buildings = null
 	_economy = null
+	# The tech tree goes with the world. A surviving research set would
+	# give the next match's player 0 the last match's army — the same
+	# shape as the 106 building desyncs `docs/status/sandbox.md` records,
+	# where `_return_to_lobby` dropped one baseline and not its sibling.
+	_research = ResearchState.new()
 	_passable = PackedByteArray()
 	_terrain = null
 	_spawn_points = []
@@ -3482,15 +3686,25 @@ func _hand_teams_to_sim() -> void:
 func _hand_civs_to_sim() -> void:
 	for seat in _match.seats:
 		var player := int(seat["player"])
-		_sim.civs[player] = CivRoster.effects_of(_civ_of(player))
+		_sim.civs[player] = _civ_effects_for(player)
 	for peer in _clients:
 		var player := int(_clients[peer]["player"])
-		_sim.civs[player] = CivRoster.effects_of(_civ_of(player))
+		_sim.civs[player] = _civ_effects_for(player)
 	var parts := []
 	for who in _sim.civs:
 		parts.append("%d=%s" % [int(who), String((_sim.civs[who] as CivDef).id)])
 	parts.sort()
 	print("server: SIM_CIVS %s" % (", ".join(parts) if not parts.is_empty() else "none"))
+
+
+## This player's civ knobs WITH their researched techs applied.
+##
+## One function, called from every handover site, because a tech that
+## raises `squad_cap_bonus` has to reach the same `CivDef` the refusal and
+## the HUD's cap readout both read — D-20260823's rule that a HUD saying
+## 40 while the server refuses at 44 is a rule the player cannot see.
+func _civ_effects_for(player: int) -> CivDef:
+	return _research.civ_def(player, CivRoster.effects_of(_civ_of(player)))
 
 
 ## EVERY peer that receives simulation state — sockets and AI seats alike.

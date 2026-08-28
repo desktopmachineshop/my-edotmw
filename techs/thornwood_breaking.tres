@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"archers"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.3
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"greatbow"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.3
+
+[resource]
+script = ExtResource("1")
+id = &"thornwood_breaking"
+display_name = "Sentinel Groves"
+description = "Stakes planted where a wall used to matter, and fletching dipped in slow fire."
+line = &"breaking"
+civ = &"thornwood"
+epoch = 4
+defining = true
+research_at = &"barracks"
+requires = Array[StringName]([&"masonry"])
+cost_food = 1200
+cost_wood = 800
+cost_gold = 600
+cost_stone = 250
+research_time = 120.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
