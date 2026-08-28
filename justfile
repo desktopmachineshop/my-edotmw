@@ -3203,25 +3203,13 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="" MAP="res://map
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-<<<<<<< HEAD
-                --map={{MAP}} --lobby=0 --players=0 \
-=======
-                --map=res://maps/ladder.tres --preset="${EDOTMW_PRESET:-}" \
-                --lobby=0 --players=0 \
->>>>>>> ed2a130 (chore(naval): thread EDOTMW_PRESET through the ladder harnesses too)
-                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --map={{MAP}} --preset="${EDOTMW_PRESET:-}" \n                --lobby=0 --players=0 \n                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-<<<<<<< HEAD
-                --map={{MAP}} --lobby=0 --players=0 \
-=======
-                --map=res://maps/ladder.tres --preset="${EDOTMW_PRESET:-}" \
-                --lobby=0 --players=0 \
->>>>>>> ed2a130 (chore(naval): thread EDOTMW_PRESET through the ladder harnesses too)
-                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --map={{MAP}} --preset="${EDOTMW_PRESET:-}" \n                --lobby=0 --players=0 \n                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?
         fi
