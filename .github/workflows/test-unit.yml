@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `bootstrap.ps1` is deliberately Windows-only (local dev is
       # Windows, D-014), so CI fetches its own `just` — from the SAME
@@ -73,7 +73,7 @@ jobs:
           echo "godot=$(tr -d '[:space:]' < .godot-version)" >> "$GITHUB_OUTPUT"
 
       - name: Cache tools/
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tools
           key: tools-${{ runner.os }}-just${{ steps.pins.outputs.just }}-godot${{ steps.pins.outputs.godot }}
@@ -107,7 +107,7 @@ jobs:
       # cache (M7's asset work) and the cache is not where that risk is
       # being reintroduced.
       - name: Cache the Godot import
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .godot
           key: godot-import-${{ runner.os }}-${{ steps.pins.outputs.godot }}-${{ hashFiles('project.godot', 'generated/**', '**/*.tres', '**/*.tscn', '**/*.gdshader', '**/*.gdshaderinc') }}
@@ -160,7 +160,7 @@ jobs:
 
       - name: Upload the log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-unit-log
           path: /tmp/test-unit.log

@@ -96,6 +96,26 @@ were observed by giving both workflows a temporary `pull_request:`
 trigger, which was removed before this branch was finished. **After
 merge, use `workflow_dispatch` — that is what it is there for.**
 
+### Observe the red on a SCRATCH branch, not on the PR branch
+
+Learned immediately, and at someone else's expense. Observing these four
+gates left four **deliberately red runs in this PR's own history**, and
+an automated watcher promptly reported the PR as "CI is failing" and
+linked run [33146995515] — which is gate 1's evidence, doing exactly what
+it was made to do. The PR was green at HEAD throughout.
+
+That will happen to **every** PR that follows this project's law, because
+the law requires producing a red run and CI history is per branch. So:
+
+> **Push perturbations to a throwaway branch** (`<your-branch>/observe`,
+> no PR), record the run URLs here, and let the PR branch carry only the
+> real work.
+
+A run URL is permanent and does not care which branch produced it, so the
+evidence is exactly as good and nobody has to explain a red badge to a
+robot. If you do observe on the PR branch anyway, say so in the PR body
+with the run ids, so a reviewer can tell intent from breakage.
+
 ## Four defects this exercise found in the pipeline itself
 
 Every one was invisible to a green badge and found only by insisting on
@@ -168,6 +188,22 @@ Measured rather than assumed, which was #223's substantive objection.
 Memory fits with room. **CPU did not**, and that is the half nobody had
 looked at. The revisit trigger for memory is ~1.6 GiB — `generated/` is
 what grows, so a new archetype's VAT is the event to watch.
+
+## Keeping the actions current
+
+The `actions/*` versions are deliberately on their current majors
+(`checkout@v7`, `cache@v6`, `upload-artifact@v7`). The first runs of this
+pipeline used `@v4` and every one of them printed:
+
+```
+Node.js 20 is deprecated. The following actions target Node.js 20 but are
+being forced to run on Node.js 24
+```
+
+A forced runtime is a deprecation with a date on it, and a brand-new
+pipeline shipping known future breakage is the sort of thing that later
+reads as "CI broke and nobody knows why". Bumped while the pipeline was
+still being watched, which is the cheapest moment it will ever be.
 
 ## Cost
 
