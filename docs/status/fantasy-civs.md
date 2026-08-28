@@ -14,7 +14,12 @@ Six things to know before touching any of it:
 
 - **The archetype vocabulary moved.** `militia` is `levy` now, and the
   roster adds `heavy`, `breaker`, `shades`, `greatbow`, `bowriders`,
-  `sellswords`, `engine`, `ram`, `bombard`. `barracks.produces` lists the
+  `sellswords`, `engine`, `ram`, `bombard` — and `harriers` since
+  2026-08-28 (#332), which was `skirmishers` until that one word covered
+  a javelin unit reaching 5.5 and a light melee unit reaching 1.9. The
+  design already called the melee one **Harriers** and its
+  `display_name` always said so; only the archetype and the def id
+  lagged. `skirmishers` keeps its classical meaning — the missile one. `barracks.produces` lists the
   union; a civ that does not field an archetype simply never resolves it
   (D-047), which is how the build menu already coped with legion having
   no cavalry. The sandbox spawn picker lists every archetype in the
