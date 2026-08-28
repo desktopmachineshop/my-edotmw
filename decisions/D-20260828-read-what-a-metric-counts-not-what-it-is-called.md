@@ -147,6 +147,15 @@ fix five instances and teach nothing.
 **A test.** Nothing can assert that a future reader checked a definition.
 Same reason the companion entry rejects one.
 
+## Related
+
+- `D-20260828-a-check-can-lie-in-four-ways.md` — the companion.
+- `D-20260828-you-are-most-dangerous-immediately-after-understanding.md`
+  — where `$?`-after-a-pipe belongs, and why it is NOT an instance here:
+  a specified status correctly named for something the reader did not
+  read is not a misnamed field, and this entry's remedy (document at the
+  declaration) has nothing to reach.
+
 ## Credit
 
 The observation and the pattern are worker 88's, from the naval chain's

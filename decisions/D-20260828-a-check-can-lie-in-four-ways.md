@@ -128,6 +128,9 @@ us. Worker 87 supplied the corollary below.
 ## Related
 
 - **D-022**'s audit block — the law this extends.
+- **D-20260828-you-are-most-dangerous-immediately-after-understanding**
+  — WHEN the lie tends to get written: inside a fix, by the person who
+  has just understood the mechanism.
 - **D-20260828-read-what-a-metric-counts-not-what-it-is-called** —
   the companion. A check built on a mislabelled metric inherits the lie
   while doing nothing wrong itself, and that family is NOT perturbable,
