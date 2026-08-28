@@ -546,6 +546,39 @@ worth knowing before hand-merging:
 Decisions taken by the orchestrator on conflicts this rehearsal surfaced.
 They override the per-PR table below.
 
+### #243 vs #324 — the formation grants (#309, issue #360)
+
+**#324 owns the set.** A make-main-green PR should not carry design; the
+dedicated PR with the decision entry and the art-tied per-unit reasoning
+does. Agreed by both authors 2026-08-28.
+
+**The resolution is TWO EXPLICIT DELETIONS plus one expected conflict —
+not "resolve the conflict #324's way".** That phrasing reaches one file of
+three: git conflicts only where both PRs touch the same line, and two of
+#243's four grants are in files #324 never opens, so they would survive
+silently and the merged result would be the UNION of five granted units
+rather than the considered three. `assert_gt(grants, 0)` passes at both,
+so green cannot tell them apart. (#243's author caught this; it is the
+declared-and-unread shape one level up.)
+
+| unit | #324 | #243 | conflicts? |
+|---|---|---|---|
+| `emberdeep_heavy` | `testudo` | `shield_wall` | **yes** → take #324 |
+| `gildedreach_spearmen` | `shield_wall` | `shield_wall` | no (identical) |
+| `emberdeep_levy` | `shield_wall` | — | no |
+| `gravesworn_spearmen` | — | `shield_wall` | no → **delete** |
+| `stoneblood_heavy` | — | `testudo` | no → **delete** |
+
+#243 drops **only** the last two, so it keeps two `shield_wall` grantees
+and stays green at its own merge point — no red window, and #324 need not
+move wave. Verified end to end: #243 with the two dropped is 5/5 on
+`test_fighting_styles`; merging #324 after conflicts on `emberdeep_heavy`
+alone; the final set is exactly #324's three.
+
+Worth knowing after it lands: the guard counts **`shield_wall` grantees
+only**, and there is no `testudo` grantee guard at all — testudo ends with
+exactly one grantee in the roster and nothing would notice if it lost it.
+
 ### #308 vs #343 — naval stage 2
 
 **#343 wins. #308 merges DESIGN ONLY.** #308 (worker 80, now inactive)
@@ -583,6 +616,18 @@ are #323. They do not collide by filename, so nothing will report it if
 #308's design and #343's code disagree. That is the D-058/D-065 family:
 a decision entry that describes code which is not there. Read them against
 what shipped before merging them.
+
+### #222 vs #257 — the building HP
+
+**Expected, and the only conflict inside the balance cluster.** #222 sets
+`town_centre` 2400 and `tower` 1250; #257 re-derives them to 1900 and 980
+because #266 and #218 together move a squad's break point from ~85%
+casualties to ~52%, which invalidates the numbers D-067 was measured
+against (#361). **Take #257's values.** Both files, one line each.
+
+The cluster is otherwise CLEAN from `main` in the published order — every
+conflict in the rehearsal came from #243 and waves 1-2, not from inside
+it.
 
 ## Per-PR result
 
