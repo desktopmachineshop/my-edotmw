@@ -109,6 +109,37 @@ a comment (`D-076's`) ends the quoting and awk reports `cmd. line:N:
 whose format string is split across two lines makes `just` itself fail on
 the em dash three lines below. Both notes are in the justfile now.
 
+**And the bot half was dead code until a load test said so.** The bots
+gathered **wood and nothing else** — not even food — which was fine while
+the only thing they bought was a barracks, and stopped being fine the
+moment they were asked to build a gate: `gate.tres` costs 45 **stone**.
+The first `test-load 4 300` came back **clean with `gate_orders=0
+gate_toggles=0`**, which is this issue's own defect class arriving inside
+the fix for it. One crew per pass is diverted to whatever the next
+purchase is short of, through the same `StaticDefence.scarcest_shortfall`
+the AI reads — one rule, two callers, and naval a third.
+
+Measured `test-load 4 300`, before and after that one line:
+
+| | before | after |
+|---|---|---|
+| `gate_orders` / `gate_toggles` | **0 / 0** | **7 / 6** |
+| desyncs | 0 of 1192 checks | 0 of 1196 |
+| `conceal_events` / `reveal_events` | 161 / 133 | 228 / 202 |
+| `casualties_applied` | 245 | 135 |
+| `military_peak` | 9 | 6 |
+| µs/squad | 116.34 at 46 squads | 140.61 at 38 squads |
+
+Both runs clean, every gate green. **The diverted crew is not free** and
+the table says so: fewer soldiers and fewer casualties in the same window,
+and the per-squad figure is quoted with its squad count as ever — 38
+against 46 squads is most of that difference, since per-tick fixed
+overhead lands in the per-squad number when squads are few (M1's standing
+caveat). Anything tuned against the old economy is measuring a slightly
+different one; that is the standing "when the opening changes, every
+timing tuned against the old one is stale" rule, and it is the price of
+`test-load` exercising two opcodes it had never touched.
+
 **Three defects in this change, each found by a real match rather than by
 a test:**
 

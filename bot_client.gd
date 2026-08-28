@@ -700,6 +700,8 @@ class VirtualClient:
 	## a move order would cancel the haul (D-034) every pass. One split, two
 	## halves, no squad in both.
 	func _put_gatherers_to_work() -> void:
+		# ONE crew may be diverted off wood per pass; see `_kind_wanted`.
+		var diverted := false
 		for squad in BotPatrol.assign(state.squads, _founding_squad)["workers"]:
 			if squad == _builder_squad:
 				continue  # walking to a building site; see `_builder_squad`
@@ -712,8 +714,11 @@ class VirtualClient:
 			var best := -1
 			var best_distance := 1 << 30
 			var here := state.squad_cell(squad, 0.0)
+			var wanted := _kind_wanted(diverted)
+			if wanted != Economy.ResourceKind.WOOD:
+				diverted = true
 			for cell in state.nodes:
-				if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+				if int(state.nodes[cell]) != wanted:
 					continue
 				var d := state.space.distance(here, state.space.from_index(int(cell)))
 				if d < best_distance:
@@ -724,6 +729,46 @@ class VirtualClient:
 			_gather_assigned[squad] = best
 			peer.send(0, NetProtocol.encode_order_gather(squad, best),
 				ENetPacketPeer.FLAG_RELIABLE)
+
+	## Which resource the next crew should be sent after (#337).
+	##
+	## WOOD unless something the bot wants to BUY is short of something
+	## else, and then exactly ONE crew is diverted per pass.
+	##
+	## The bots gathered wood and nothing else — not even food — which was
+	## fine while the only thing they bought was a barracks. It stopped
+	## being fine the moment they were asked to build a gate: `gate.tres`
+	## costs 45 STONE, so the gate was unaffordable forever and the bot
+	## half of #337 would have shipped as dead code exercising nothing.
+	## Measured before this: `test-load 4 300` came back clean with
+	## `gate_orders=0 gate_toggles=0`.
+	##
+	## That is the SAME root cause as the AI half, and it reuses the same
+	## shared function rather than a second copy of the rule
+	## (`StaticDefence.scarcest_shortfall`, which naval stage 7 also
+	## reads).
+	##
+	## ONE crew, and only while the purchase is unaffordable, because
+	## every timing in `docs/status/load-testing.md` is tuned against
+	## these bots gathering wood — this must move the economy as little as
+	## it can while still reaching the thing it has to exercise.
+	func _kind_wanted(already_diverted: bool) -> int:
+		if already_diverted:
+			return Economy.ResourceKind.WOOD
+		var owned: Array = []
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) == state.player and not bool(info["destroyed"]):
+				owned.append(String(info["def_id"]))
+		var next := BotBuildPlan.wanted_building(owned, &"gatherers")
+		if next == null:
+			next = BotBuildPlan.wanted_gate(owned, &"gatherers")
+		if next == null or BotBuildPlan.can_afford(state.wallet, next):
+			return Economy.ResourceKind.WOOD
+		var short := StaticDefence.scarcest_shortfall(
+			state.wallet, StaticDefence.cost_of(next))
+		return Economy.ResourceKind.WOOD if short < 0 else short
+
 
 	## Ask for a town hall, and keep asking until there IS one.
 	##
