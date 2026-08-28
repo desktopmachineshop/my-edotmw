@@ -321,3 +321,34 @@ func test_the_server_prints_the_topology_the_gate_reads() -> void:
 	var source := _read("res://server.gd")
 	assert_string_contains(source, "SPAWN_LANDMASSES=%d",
 		"server.gd must print the marker gate-check.sh naval keys its skip on")
+
+
+func test_the_naval_gate_reads_the_best_seat_not_the_last_one() -> void:
+	# A real isles run reported wants_navy=1 for seat 1000 and 0 for seat
+	# 1001, and the gate declared that NO seat wanted a navy — because
+	# `marker` takes the last occurrence, which is right for a marker
+	# printed once a match and silently wrong for one printed once a
+	# player. It would have masked the dock failure underneath with a
+	# #351 report that was not true, which is a gate lying in the
+	# direction of the defect it exists to find.
+	var server := _log("naval-two-seats",
+		"SPAWN_LANDMASSES=3 — 8 start(s)\n"
+		+ "AI_STATS player=1000 wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0,
+		"one seat crossing is a landing, whatever the other seat did")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_a_seat_that_wanted_a_navy_is_not_erased_by_a_seat_that_did_not() -> void:
+	# The same defect pointed at the ordered ladder rather than at the
+	# skip: the gate must name the leg the keenest seat stopped at, not
+	# the one the last-printed seat never started.
+	var server := _log("naval-wanted-no-dock",
+		"SPAWN_LANDMASSES=3 — 8 start(s)\n"
+		+ "AI_STATS player=1000 wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
