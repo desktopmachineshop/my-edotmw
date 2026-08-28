@@ -14,7 +14,7 @@ D-068's upkeep is still not built, and D-070's replacement rosters are
 still not authored.
 
 ```
-just test-unit tech          # 50 tests: 22 tree invariants, 28 effects
+just test-unit tech          # 51 tests: 22 tree invariants, 29 effects
 ```
 
 Eight things to know before touching any of it, and most are not about
