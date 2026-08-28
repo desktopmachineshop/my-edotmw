@@ -308,7 +308,24 @@ static func _resolve(archetype: StringName, civ: StringName) -> UnitDef:
 	# offers `warship` first and two civs field a `warboat` instead — so
 	# those two were handed a third civ's hull. (No civ is named here:
 	# `tests/test_civs.gd` scans this file for civ ids, D-046 criterion 3.)
-	if civ != &"":
+	# RANDOM is the ABSENCE of a choice, not a civ, so it is CIV-LESS for
+	# this purpose. Missing that cost three of four load-test bots their
+	# entire economy, and it was this narrowing that did it.
+	#
+	# `MatchState` seats a player with `civ = RANDOM`, and only
+	# `_on_match_started` resolves that. On the `--lobby=0` path every
+	# seat added AFTERWARDS still says "random" — which is every bot,
+	# since they connect after the match begins. `for_civ_archetype`
+	# answers null for "random", this returned null, `archetype_for`
+	# returned &"", and those bots never sent a single produce order.
+	#
+	# NOTHING WAS REFUSED, BECAUSE NOTHING WAS ASKED. The server log
+	# showed no production refusals at all, which is exactly what made it
+	# read as an economy fault rather than a lookup one. Measured on the
+	# merged tree with 4 bots: squads flatlined at 14 against `main`'s 42,
+	# and the three affected bots ended with ONE squad each — the general
+	# their opening crew had been spent founding a hall for.
+	if civ != &"" and civ != CivRoster.RANDOM:
 		return null
 	for candidate in UnitRoster.load_all():
 		if candidate.archetype == archetype:

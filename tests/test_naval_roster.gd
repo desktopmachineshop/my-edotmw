@@ -378,3 +378,77 @@ func test_the_screen_is_printed_so_a_reviewer_can_read_it() -> void:
 			row["id"], row["civ"], row["role"],
 			row["v"], row["rp"], row["vrp"], row["cap_per_rp"]])
 	assert_eq(_ships().size(), 10, "ten hulls")
+
+
+func test_an_unresolved_seat_still_resolves_a_unit() -> void:
+	# The bug this file's own narrowing caused, and the one that makes it
+	# worth a test rather than a comment.
+	#
+	# `_resolve` was narrowed here so that a caller naming a REAL civ is
+	# never handed another civ's hull (a dock offers `warship` first and
+	# two civs field a `warboat` instead). That is right. What it missed
+	# is that `CivRoster.RANDOM` is the ABSENCE of a choice, not a civ:
+	# `MatchState` seats a player with it and only `_on_match_started`
+	# resolves it, so on the `--lobby=0` path every seat added afterwards
+	# — every load-test bot, since they connect after the match begins —
+	# still said "random".
+	#
+	# The result was silent: `for_civ_archetype` answers null for
+	# "random", `_resolve` returned null, `archetype_for` returned &"",
+	# and the bot never SENT a produce order. Nothing was refused because
+	# nothing was asked, so the server log was clean and it read as an
+	# economy fault. Measured: squads flatlined at 14 against main's 42.
+	assert_null(UnitRoster.for_civ_archetype(CivRoster.RANDOM, &"gatherers"),
+		"fixture: 'random' must not name a civ, or this proves nothing")
+	assert_not_null(BotBuildPlan._resolve(&"gatherers", CivRoster.RANDOM),
+		"an unresolved seat must still resolve SOME unit to ask for — it is "
+		+ "civ-less, not civ'd")
+	assert_not_null(BotBuildPlan._resolve(&"gatherers", &""),
+		"and the genuinely civ-less caller must keep working")
+
+
+func test_a_caller_naming_a_real_civ_is_still_never_handed_another_civs_unit() -> void:
+	# The narrowing itself must survive the fix above: this is what stops
+	# a dock handing a warboat civ somebody else's warship.
+	for civ in CivRoster.ids():
+		for archetype in [&"warship", &"warboat", &"transport"]:
+			var resolved := BotBuildPlan._resolve(archetype, StringName(civ))
+			if resolved == null:
+				continue
+			assert_eq(resolved.civ, StringName(civ),
+				"%s asked for %s and must never be handed %s's" % [
+					civ, archetype, resolved.civ])
+
+
+func test_a_mid_match_seat_can_still_be_asked_what_to_build() -> void:
+	# The WHOLE CHAIN, on this branch alone — no union, no merge, no other
+	# worker's PR. 82 asked, fairly, whether a hand-reconciled union might
+	# itself have caused the production failure, and this answers that
+	# without another union run: the defect needs only THIS branch's
+	# narrowing plus `MatchState`'s own seating, both of which are here.
+	#
+	# `MatchState` seats a player with `civ = CivRoster.RANDOM` and only
+	# `_on_match_started` resolves it, so any player seated after the
+	# match begins — every load-test bot — asks with "random".
+	var state := MatchState.new()
+	state.add_player(1)
+	state.add_player(2)
+	# Seat 2 is the one that keeps the placeholder; seating resolves the
+	# first seat's Random through `civ_rng`. That asymmetry is why exactly
+	# one bot per match worked and the rest did not, which read as
+	# per-civ and was not.
+	var seat: Dictionary = state.seats[state.seat_of(2)]
+	assert_eq(StringName(seat["civ"]), CivRoster.RANDOM,
+		"fixture: a later seat must still hold the placeholder, or this "
+		+ "test is not about the case that broke")
+
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	assert_not_null(hall, "fixture: the town centre must exist")
+	assert_false(hall.produces.is_empty(), "fixture: and produce something")
+
+	var asked := BotBuildPlan.archetype_for(hall, StringName(seat["civ"]), 0)
+	assert_ne(asked, &"",
+		"a bot at an unresolved seat must still find something to ask its "
+		+ "town centre for — returning \"\" here is the whole defect: the "
+		+ "bot sends NO produce order at all, so the server refuses "
+		+ "nothing and the log shows no refusals to find")
