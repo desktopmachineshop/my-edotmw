@@ -2280,7 +2280,13 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# rather than at 0 progress. Cost is still charged above — instant
 	# build skips the WAIT, not the economy, so it stays useful for
 	# testing the economy itself.
-	var built := _buildings.add_building(def, owner, cell, _match.instant_build, squad, facing, offset)
+	# The OWNER'S civ raises it at its own pace (CivDef.build_speed,
+	# D-047, #270) — resolved HERE, exactly as the produce path already
+	# resolves CivDef.production_time, and banked on the building as real
+	# seconds so the bar a client draws matches the server.
+	var built := _buildings.add_building(def, owner, cell, _match.instant_build,
+		squad, facing, offset,
+		_sim.civ_effects(owner).construction_time(def.build_time))
 	_send_wallet(peer, owner)
 	_refresh_passability()
 
