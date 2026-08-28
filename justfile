@@ -412,7 +412,7 @@ package TARGET="windows-client": _import
 # It is also a rehearsal for steamcmd (#185) on purpose — same shape,
 # same versioning question, and cheaper to get wrong.
 [doc("Push a package to a private itch.io channel via butler (needs BUTLER_API_KEY)")]
-publish-itch TARGET="windows-client" PROJECT=env_var_or_default("EDOTMW_ITCH_PROJECT", ""):
+publish-itch TARGET="windows-client" PROJECT="":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh enum TARGET "{{TARGET}}" windows-client windows-server linux-server
@@ -428,7 +428,19 @@ publish-itch TARGET="windows-client" PROJECT=env_var_or_default("EDOTMW_ITCH_PRO
         echo "      Get one with: butler login" >&2
         exit 1
     fi
-    if [ -z "{{PROJECT}}" ]; then
+    # The env fallback is read HERE rather than as a `just` default
+    # expression. `tests/test_recipe_args.gd` scans recipe signatures for
+    # parameters that are not checked, and a default of the form
+    # `NAME=env_var_or_default(...)` parses as a parameter of its own —
+    # so the guard reported a bare `"")` as an unchecked argument. No
+    # other recipe here uses a function-call default, and matching the
+    # house style is cheaper than reshaping a shared guard around one
+    # unusual signature.
+    project="{{PROJECT}}"
+    if [ -z "$project" ]; then
+        project="${EDOTMW_ITCH_PROJECT:-}"
+    fi
+    if [ -z "$project" ]; then
         echo "FAIL: no itch project. Pass it, or set EDOTMW_ITCH_PROJECT." >&2
         echo "      It looks like: yourname/my-edotmw" >&2
         exit 1
@@ -443,9 +455,9 @@ publish-itch TARGET="windows-client" PROJECT=env_var_or_default("EDOTMW_ITCH_PRO
     # these off any public channel name a store page would offer
     # (D-087: M8 produces no public artifact).
     channel="alpha-{{TARGET}}"
-    echo "publish-itch: pushing $package to {{PROJECT}}:$channel as $version"
-    butler push "$package" "{{PROJECT}}:$channel" --userversion "$version"
-    butler status "{{PROJECT}}:$channel"
+    echo "publish-itch: pushing $package to $project:$channel as $version"
+    butler push "$package" "$project:$channel" --userversion "$version"
+    butler status "$project:$channel"
 
 # Fetch the PINNED engine's export templates into tools/.
 #
