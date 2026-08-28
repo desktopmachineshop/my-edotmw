@@ -107,7 +107,18 @@ const RE_RALLY_AT_SECONDS := 40.0
 const MIN_DISTINCT_COLOURS := 24
 
 var _host: ENetConnection
-var _peer: ENetPacketPeer
+## The other end of this client's connection. UNTYPED since #182,
+## because there are now two kinds: an `ENetPacketPeer` when joined over
+## a socket, and a `HostLink` when this player is hosting the match in
+## their own process (D-088).
+##
+## Everything this client asks of it is `send()` and `peer_disconnect*()`
+## — the shape `loopback_peer.gd` was built around — so the ~30 sites
+## that order a squad, produce a unit or set a formation are the same
+## code either way. That is the point: a host cannot be given a rule a
+## guest does not have, because there is no branch in which to give it
+## one.
+var _peer
 var _state := ClientState.new()
 var _connected := false
 
@@ -129,6 +140,26 @@ var _menu_last_endpoint := ""
 ## stays silent — so without a deadline a wrong address is a client that
 ## sits forever showing nothing, which is the reported shape of #162.
 var _connect_started_at := -1.0
+## The authoritative server running INSIDE this process, when this
+## player is hosting (D-088, #182), or null. Its lifetime is the match's:
+## created by Host, freed by `_return_to_menu`, which is D-088's accepted
+## consequence — host-quit kills the match for everyone in it.
+var _hosted_server: Node = null
+## AI seats a `--host=1` launch asks its own server for, before anybody
+## presses start. Zero — every interactive host — leaves the lobby exactly
+## as the Host button leaves it; `just test-host` uses it so a headless
+## host has opponents without a human to add them.
+## The port an in-process host binds. `DEFAULT_SERVER_PORT` for a player
+## hosting from the menu — one number to tell a friend — and overridden
+## by `--host-port` for the recipes, which are per-instance (D-095).
+var _host_port := DEFAULT_SERVER_PORT
+
+var _host_ai_wanted := 0
+## Whether `_drive_host_lobby` has already run. It is a ONE-SHOT: the
+## lobby it acts on stops existing the moment it presses start, and a
+## second pass would seat another N AI into the next lobby a return would
+## produce.
+var _host_lobby_driven := false
 ## Which dev instance launched this client (D-095), for the title bar.
 ## Read once in `_ready()` because the title is rewritten on every
 ## connection now, not just at startup.
@@ -320,7 +351,8 @@ func _ready() -> void:
 	# as a plausible number and the capture recipes photograph the wrong
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
-		["port", "lobby-ai", "lobby-preset-steps", "menu"])
+		["port", "lobby-ai", "lobby-preset-steps", "menu", "host", "host-ai",
+		"host-port"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
@@ -384,7 +416,26 @@ func _ready() -> void:
 	_build_loading_screen()
 
 	_build_main_menu()
-	if bool(target["connect"]):
+	# `--host=1` starts the in-process server and joins it, exactly as the
+	# menu's Host button does (#182). It exists so hosting can be driven
+	# headlessly — by `just test-host`, which points real bots at a real
+	# hosting client over a real socket, and by the alpha loop, where a
+	# tester's shortcut should not require them to click anything.
+	#
+	# Checked before autoconnect because the two are mutually exclusive
+	# and hosting is the more specific request: a launch that says both
+	# `--host=1` and `--address` is asking to host, and connecting
+	# somewhere else instead would be a plausible, entirely wrong answer.
+	if int(args.get("host", 0)) == 1:
+		_host_ai_wanted = int(args.get("host-ai", 0))
+		# Which port this host BINDS. A player never passes it — the menu
+		# hosts on the default so a friend can be told one number — but
+		# `just test-host` must, because D-095 gives every agent worktree
+		# its own port and a recipe that bound the shared 4433 could
+		# collide with another agent's server on the same laptop.
+		_host_port = int(args.get("host-port", DEFAULT_SERVER_PORT))
+		_host_match()
+	elif bool(target["connect"]):
 		_connect_to(String(target["address"]), int(target["port"]))
 	else:
 		_show_main_menu("")
@@ -444,10 +495,15 @@ func _process(delta: float) -> void:
 	# nothing at that address", so this is the only thing that can end a
 	# doomed attempt (#180).
 	_check_connect_timeout()
-	# Nothing below can run without a socket. Returning here rather than
-	# guarding each caller is what makes the menu a real state rather
+	# Nothing below can run without a CONNECTION. Returning here rather
+	# than guarding each caller is what makes the menu a real state rather
 	# than an overlay drawn on top of a client still pretending.
-	if _host == null:
+	#
+	# A hosting client has no ENet host of its own — the server it owns
+	# has one, and this client reaches it through the loopback (#182) — so
+	# the test is "is there a connection", not "is there a socket". Read
+	# as the latter, a host would tick its server and render nothing.
+	if _host == null and _hosted_server == null:
 		# A capture run must still END. `_finish_capture` is the only
 		# thing that quits, and a headless run whose server refused it or
 		# never answered would otherwise hang its recipe forever — a
@@ -510,6 +566,7 @@ func _process(delta: float) -> void:
 	# on its own (one shader uniform, no image work), so it does not need
 	# the throttle the expensive per-pixel redraw exists for.
 	_centre_minimap_crop_on_camera()
+	_drive_host_lobby()
 	_seat_capture_ai()
 	_refresh_chat()
 	_refresh_lobby()
@@ -9211,20 +9268,16 @@ func _build_main_menu() -> void:
 	join.pressed.connect(_on_menu_join_pressed)
 	column.add_child(join)
 
-	# HOST is drawn and DISABLED, and that is deliberate rather than
-	# unfinished. D-088's host runs the authoritative server in the host's
-	# own process, and `server.gd` currently ends its PROCESS when the last
-	# client leaves (D-075) - so hosting in-process is a lifecycle change,
-	# not a button, and it is #182. A control that silently did nothing is
-	# this project's oldest defect family (D-061); one that says what it is
-	# waiting for is not.
+	# HOST runs the authoritative server in THIS process (D-088, #182).
+	# It was disabled when #180 drew this screen, pointing at the ticket
+	# that would make it real; this is that ticket.
 	var host := _styled_button("Host a match", HudTheme.NEUTRAL)
-	host.disabled = true
-	host.tooltip_text = "Hosting from inside the game is not built yet (#182). Run a server and join it."
+	host.pressed.connect(_on_menu_host_pressed)
 	column.add_child(host)
 
 	var host_note := Label.new()
-	host_note.text = "Hosting from inside the game is not built yet — run a server and join it."
+	host_note.text = ("Hosting runs the match on this machine. Others join at your address on port %d."
+		% DEFAULT_SERVER_PORT)
 	host_note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
 	host_note.modulate = HudTheme.TEXT_GHOST
 	host_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -9262,6 +9315,52 @@ func _on_menu_join_pressed() -> void:
 			_menu_status.text = String(parsed["error"])
 		return
 	_connect_to(String(parsed["address"]), int(parsed["port"]))
+
+
+## Start the authoritative server in THIS process and join it (D-088,
+## #182).
+##
+## Not a second simulation. It is the same `server.gd` the dedicated
+## build runs, reached through composition: the node is configured, added
+## to the tree, and ticks itself on its own D-023 accumulator beside this
+## client's. A faster host-only variant would be `just profile`'s
+## blind spot with a new name — a workload with its own bugs, green while
+## the shipped one is broken.
+##
+## The host lands in the ORDINARY LOBBY as admin, because that is what a
+## host wants: pick the map, add AI, wait for a friend, press start. It
+## also means a remote player can join before the match begins, which is
+## the whole point of hosting rather than of a hotseat.
+func _host_match() -> void:
+	_close_connection()
+	_state.refusal = {}
+
+	var server: Node = load("res://server.gd").new()
+	# Its OWN configuration, in `CmdArgs.parse`'s shape. Not this
+	# process's command line: those arguments belong to the client, and
+	# `--port` among them would be read as "bind the port I wanted to
+	# connect to".
+	server.boot = {
+		"port": str(_host_port),
+		"lobby": "1",
+	}
+	server.set("_embedded", true)
+	# Before `add_child`, because `_ready()` runs on entering the tree and
+	# the seat has to exist by then — and because this is what hands back
+	# the object orders travel through.
+	_peer = server.seat_local_client(_state)
+	_hosted_server = server
+	add_child(server)
+
+	_connected = true
+	_connect_started_at = -1.0
+	_hide_main_menu()
+	_set_title("hosting :%d" % _host_port)
+	print("client: hosting on port %d — the server is in this process (D-088)" % _host_port)
+
+
+func _on_menu_host_pressed() -> void:
+	_host_match()
 
 
 ## Open a socket and start talking. Reached from `_ready()` when the
@@ -9306,6 +9405,16 @@ func _close_connection() -> void:
 	_peer = null
 	_connected = false
 	_connect_started_at = -1.0
+	# The match this player was HOSTING ends with their connection to it
+	# (D-088, accepted with eyes open: host-quit kills the match for
+	# everyone). `free()` rather than `queue_free()`, because the next
+	# line of a Host-then-Host sequence binds the same UDP port and a
+	# server still holding it would refuse — a deferred free is a race
+	# with the thing that replaces it.
+	if _hosted_server != null:
+		remove_child(_hosted_server)
+		_hosted_server.free()
+		_hosted_server = null
 
 
 ## Back to the menu, with a reason a player can read.
@@ -10534,6 +10643,37 @@ func _handle_lobby_input(event: InputEvent) -> bool:
 var _lobby_ai_wanted := 0
 var _lobby_preset_steps := 0
 var _lobby_ai_asked := false
+
+
+## Fill a headless host's lobby and start the match (#182).
+##
+## `--host-ai=N` only. An interactive host uses the lobby UI like anybody
+## else — this exists so `just test-host` can put a real hosting client
+## in front of real bots without a human to click Start, and so the alpha
+## loop can ship a shortcut that lands a tester in a match.
+##
+## Modelled on `_seat_capture_ai` below, including the gating, and the
+## gating is the part that matters: it waits until this client is
+## actually IN the lobby and actually the admin, rather than firing the
+## instant the server node is added. Loopback delivery is synchronous, so
+## acting immediately would work today and break the first time hosting
+## goes through anything that is not a function call — which is #184.
+##
+## Everything goes through the ordinary admin-gated lobby commands rather
+## than a private door. A host who could seat AI by a route a guest could
+## not is exactly the asymmetry D-051 refuses, and it would be invisible.
+func _drive_host_lobby() -> void:
+	if _host_lobby_driven or _host_ai_wanted <= 0 or _hosted_server == null:
+		return
+	if not (_state.in_lobby() and _state.is_admin()):
+		return
+	_host_lobby_driven = true
+	var civs := CivRoster.ids()
+	for i in range(_host_ai_wanted):
+		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
+		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)
+	_send_lobby(NetProtocol.LOBBY_START, 0, "")
+	print("client: hosting — seated %d AI and started the match" % _host_ai_wanted)
 
 
 func _seat_capture_ai() -> void:

@@ -958,6 +958,110 @@ menu-shot SECONDS="4" RESOLUTION="1280x720": _import
     echo "menu-shot: wrote $shot — $colours distinct colours, client exit $status (its match verdict does not apply here)"
     echo "menu-shot: LOOK AT IT"
 
+# In-process hosting, proved against REAL remote clients (#182, D-088).
+#
+# A hosting client is a client and a server in ONE process: the host's
+# own game reaches the simulation through the loopback peer D-051's AI
+# seats already use, and remote players arrive over the ordinary socket.
+# The interesting failure is therefore not "does it run" but "do the two
+# halves agree" — so this points real bots at a real hosting client and
+# reads the state-hash machinery on BOTH sides.
+#
+# NATIVE ONLY, for the same reason `run-client` is (D-014): the host is a
+# client. It runs headless — the point here is the wire and the tick, not
+# the picture — so it needs no GPU and opens no window.
+#
+# The host binds THIS INSTANCE's port (D-095), never the shared 4433: two
+# agents running this at once must not find each other's match.
+[doc("Prove in-process hosting: a hosting client, real bots joining it (#182)")]
+test-host N="2" DURATION="60" AI="1": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
+    bash recipe-arg.sh int AI "{{AI}}"
+    gate="$(bash host-gate.sh acquire heavy 'test-host' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    mkdir -p "{{artifacts_dir}}"
+    host_log="{{artifacts_dir}}/test-host-host.log"
+    bots_log="{{artifacts_dir}}/test-host-bots.log"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: test-host needs a native Godot (the host IS a client, D-014)." >&2
+        exit 1
+    fi
+    host_pid=""
+    cleanup () {
+        if [ -n "$host_pid" ]; then kill "$host_pid" 2>/dev/null || true; fi
+        bash host-gate.sh release "$gate"
+    }
+    trap cleanup EXIT INT TERM
+
+    # The host runs a little longer than the bots so it is still there to
+    # print its own verdict after they have gone.
+    host_seconds=$(( {{DURATION}} + 20 ))
+    "$godot" --headless --path . client.tscn --         --host=1 --host-port={{port}} --host-ai={{AI}}         --run-seconds="$host_seconds" > "$host_log" 2>&1 &
+    host_pid=$!
+
+    # Wait for the host to be LISTENING rather than sleeping a guess:
+    # world generation is tens of seconds on the shipped map, and a bot
+    # that connects before the socket exists fails for the wrong reason.
+    waited=0
+    until grep -q "server: listening on" "$host_log" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -gt 120 ]; then
+            echo "test-host: the host never started listening (see $host_log)" >&2
+            exit 1
+        fi
+    done
+    echo "test-host: host is listening on udp {{port}} after ${waited}s"
+
+    bots_status=0
+    "$godot" --headless --script bot_client.gd --         --clients={{N}} --duration={{DURATION}} --port={{port}}         > "$bots_log" 2>&1 || bots_status=$?
+
+    wait "$host_pid" || true
+    host_pid=""
+
+    fail=0
+    # 1. The server really did run inside the client.
+    if ! grep -q "the server is in this process" "$host_log"; then
+        echo "test-host: the client did not host in-process (see $host_log)" >&2
+        fail=1
+    fi
+    # 2. Remote clients really did join it over a socket — otherwise this
+    #    proves only that a host can play alone, which the loopback makes
+    #    true trivially.
+    if ! grep -qE "{{N}}/{{N}} bots connected" "$bots_log"; then
+        echo "test-host: not every bot connected to the host (see $bots_log)" >&2
+        fail=1
+    fi
+    # 3. Both sides agree, and the comparison ACTUALLY RAN: zero desyncs
+    #    over zero checks is nothing (the vacuous-pass rule).
+    for pair in "host:$host_log" "bots:$bots_log"; do
+        who="${pair%%:*}"; log="${pair#*:}"
+        checks="$(grep -oE '[0-9]+ state.hash checks|state_hash_checks=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        desyncs="$(grep -oE '[0-9]+ desyncs' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        if [ -z "${checks:-}" ] || [ "${checks:-0}" -lt 1 ]; then
+            echo "test-host: $who ran no state-hash comparisons — nothing was proved (see $log)" >&2
+            fail=1
+        fi
+        if [ -n "${desyncs:-}" ] && [ "$desyncs" -gt 0 ]; then
+            echo "test-host: $who reported $desyncs desync(s) (see $log)" >&2
+            fail=1
+        fi
+    done
+    if [ "$bots_status" -ne 0 ] && ! grep -q "VERDICT" "$bots_log"; then
+        echo "test-host: the bots exited with status $bots_status and no verdict (see $bots_log)" >&2
+        fail=1
+    fi
+
+    if [ "$fail" -ne 0 ]; then exit 1; fi
+    echo "test-host: clean — a hosting client and {{N}} remote client(s), no desyncs"
+    grep -E "server: final" "$host_log" || true
+    grep -E "client: state sync" "$host_log" || true
+    grep -E "VERDICT" "$bots_log" || true
+
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash
