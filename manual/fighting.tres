@@ -1,0 +1,56 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"fighting"
+title = "Fighting"
+summary = "Only the men in contact fight, so shape and facing decide the battle."
+body = "Only the men in CONTACT fight. A squad deals damage in proportion to how many
+of its soldiers are actually within reach of an enemy soldier — so the shape
+of a squad decides how much of it is in the battle at all.
+
+That makes frontage real. A wide line meets more of the enemy than a deep
+column of the same troops, and beats it. It also makes envelopment ordinary
+geometry rather than a special rule: come round a flank and more of your men
+are touching than of theirs.
+
+## Where a blow lands
+
+A hit from the flank costs {Combat.FLANK_MORALE_MULT} times the morale a
+frontal one does; from the rear, {Combat.REAR_MORALE_MULT} times. Your squads
+have a FACING and you can order it — dragging with the right button draws a
+line and faces it. Bracing a line is a defence. Getting behind somebody is an
+attack.
+
+Formations change what a squad SUFFERS from each direction, how much it takes
+from arrows, and how fast it walks. The numbers are on the Formations page.
+
+## Charging
+
+A charge is an attack-move at {SquadSim.CHARGE_SPEED_MULT} times speed, with a
+single blow at {Combat.CHARGE_IMPACT_MULT} times damage waiting at the end —
+and the charge is SPENT on that blow. Ordering a charge into something already in contact just
+gives you an attack-move, so there is no free impact for clicking again.
+
+Tired troops cannot charge. Below {SquadSim.CHARGE_MIN_FATIGUE} stamina a
+charge is refused, and a charge already running ends at
+{SquadSim.CHARGE_EXHAUST_FLOOR}. Sprinting, running and fighting drain
+stamina; standing still restores it. Charge, rest, charge has a price.
+
+## Ground
+
+Attacking downhill multiplies your damage by {Combat.DOWNHILL_MULT}, uphill
+by {Combat.UPHILL_MULT}. Take the high ground.
+
+## Standing orders
+
+A stance is a rule a squad keeps following without being told again.
+
+- GUARD holds position instead of chasing something that wanders past.
+- SKIRMISH backs a missile squad away from anything closing on it.
+- HOLD FIRE waits until you explicitly order an attack.
+- RUN moves faster and spends stamina to do it."
+sources = Array[String](["res://combat.gd", "res://squad_sim.gd", "res://decisions/D-20260819-only-men-in-contact-fight.md", "res://decisions/D-20260819-a-charge-is-spent-on-its-impact.md", "res://decisions/D-20260819-tired-men-fight-uphill.md", "res://decisions/D-20260819-stances-are-standing-orders.md"])
+stamp = "8fe3bd1db756fed203f9a7dae49d8e339cfadb6a253886299a6f02881c3c4330"

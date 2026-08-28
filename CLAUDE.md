@@ -578,6 +578,45 @@ civ_identity.gd          What a player is TOLD about a civ before they
                         declared-and-unread for six milestones, which is
                         why nobody noticed its cp1252 em dash arriving as
                         U+FFFD on every load (#214).
+manual.gd                THE in-game instructions manual (D-20260828,
+                        #305), menu -> Help and F1. Every page is one of
+                        two things and there is no third. GENERATED —
+                        rosters, stats, counters, costs, buildings,
+                        formations — is computed from the shipped .tres
+                        when the page OPENS, so there is no copy for the
+                        data to disagree with and nothing to rebuild;
+                        that is `TerrainGen.biome_color()`'s rule applied
+                        to text. STAMPED is prose that cannot be derived,
+                        under /manual as ManualPageDef. All-static and
+                        pure. Prose may write `{Combat.CONST}` and gets
+                        whatever combat.gd says — the same constant-map
+                        lookup controls_reference.gd uses for its build
+                        rows, so a page quoting a number quotes the real
+                        one. Markup is `## `, `- `, and a blank line;
+                        anything more would be a manual whose fit nobody
+                        could check.
+manual_page_def.gd       One hand-written page, and the STALENESS RULE.
+                        A page names the files it describes and carries a
+                        sha256 over them; `just build-manual` writes it,
+                        `tests/test_manual.gd` recomputes it, so a
+                        gameplay PR that moves a rule and forgets the page
+                        goes red. PER PAGE, never one manifest — a single
+                        hash would red every page on any gameplay change,
+                        and a guard that fires on things it has nothing to
+                        say about is one people learn to silence (#204).
+                        `.tres` and not `.md` because export_presets.cfg
+                        excludes *.md from every shipping build.
+civ_standing.gd          Where a civ stands against the rest of the
+                        shipped roster, MEASURED (D-20260828, #305).
+                        Every advantage and disadvantage in the manual is
+                        a comparison computed from the data: a knob
+                        against `CivDef.new()`'s default, an archetype
+                        against a count over /units, quality vs quantity
+                        against D-072's V and V/RP. Six sentences keyed by
+                        civ id would rot within two milestones AND break
+                        D-046 criterion 3 — so a seventh civ writes its
+                        own entry. A claim clears an 8% MARGIN rather than
+                        merely differing.
 unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads
@@ -1120,12 +1159,17 @@ Dev loop and tests:
   camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
   compass snaps back to north, right-click orders, ESC opens the game
   menu (D-063).
-- `just menu-shot [SECONDS] [RESOLUTION] [CONTROLS]` — a picture of the
-  PRE-CONNECTION menu (#180), through the docker software-GL image with
-  NO server running. Every other rendered check here is aimed at a
+- `just menu-shot [SECONDS] [RESOLUTION] [CONTROLS] [MANUAL]` — a picture
+  of the PRE-CONNECTION menu (#180), through the docker software-GL image
+  with NO server running. Every other rendered check here is aimed at a
   connected client, so nothing could look at this screen; its first two
   runs found two defects nothing else could. **Look at
-  `artifacts/main-menu.png`.**
+  `artifacts/main-menu.png`.** `CONTROLS=1` photographs the controls
+  screen instead (#282); `MANUAL=<page>` photographs one page of the
+  MANUAL (#305) — a page id rather than a flag, because "the manual" is a
+  dozen screens and a shot of the first says nothing about the ones with
+  tables on them. The recipe FAILS unless the client's `MANUAL page=`
+  marker names the page that was asked for.
 - `just test-client [SECONDS] [BOTS] [HOLD]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker

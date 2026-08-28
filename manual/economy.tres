@@ -1,0 +1,42 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"economy"
+title = "Resources and gathering"
+order = 80
+summary = "Four resources, and why the walk back is the part that costs you."
+body = "Four resources: FOOD, WOOD, GOLD and STONE. What each thing costs is on the
+Troops and Buildings pages.
+
+Gathering is a ROUND TRIP. A crew walks to a node, works it, fills up, walks
+back to a drop-off and unloads. So distance is income: a node across the map
+earns a fraction of what the same node beside your town does, and the
+difference is the walk, every trip, all match.
+
+A storehouse is a drop-off you can put anywhere. It is usually far cheaper
+than moving your economy to the resources.
+
+## Nodes run out
+
+Trees hold little and go quickly; gold and stone last a long time. When a
+crew works a tree out it retargets itself to the nearest surviving node of
+the SAME kind close by — it will never switch you from wood to food behind
+your back. When nothing of that kind is left in reach it stops, and a stopped
+crew is waiting for orders.
+
+## The ground says what grows on it
+
+Forests sit where it is wet, orchards through the middle, dry trees and palms
+on sand, and stone at the foot of mountains. Which means you can read where
+somebody's resources must be from terrain you have only glimpsed.
+
+## Casualties cut income
+
+A crew gathers per LIVING soldier. Raiding gatherers is not only denial while
+you are standing there — it is a permanent cut to their rate until the men
+are replaced."
+sources = Array[String](["res://economy.gd", "res://decisions/D-027.md", "res://decisions/D-087-forests-are-made-of-trees-biome.md", "res://buildings/storehouse.tres"])
+stamp = "b10e3c439306c9c6ce62a9036a2c474368d12cca236d6bac3716e61677540856"

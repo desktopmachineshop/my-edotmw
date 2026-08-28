@@ -1,0 +1,36 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"welcome"
+title = "What this is"
+order = 10
+summary = "Squads, a map with no edges, and who decides what."
+body = "You command an army of SQUADS. A squad is the thing you click, order and
+fight with — never an individual soldier. Every man in a squad walks where
+the squad walks and fights who the squad fights, and the survivors close up
+as casualties fall.
+
+Everything happens on one seamless map that WRAPS. Walk far enough east and
+you arrive from the west; the same north and south. There is no edge to back
+against and no corner to be cornered in, which means there is no safe flank
+anywhere on the map — only ground nobody has come round yet.
+
+## The server decides
+
+A match runs on a server, and the server is the authority on all of it: what
+your troops can see, whether an order is legal, who wins a fight. Your screen
+draws what it is told.
+
+That is why an order can be refused, and why a refusal explains itself in a
+line along the top. It is not the game failing — it is the authority
+answering, and the answer is usually worth reading.
+
+## Where to start
+
+\"Your first minutes\" is the opening in order. It is short, and the opening is
+the part of a match that is easiest to lose without noticing."
+sources = Array[String](["res://decisions/D-002.md", "res://decisions/D-005.md", "res://decisions/D-008.md"])
+stamp = "a07d0336862ea6e48601dfd8716722b6614883b6b7397b89875ee4f18e444358"

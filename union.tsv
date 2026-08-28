@@ -89,3 +89,6 @@
 295	ao/my-edotmw-79/onboarding	CONFLICT	civs/emberdeep.tres civs/gildedreach.tres civs/gravesworn.tres civs/stoneblood.tres civs/thornwood.tres civs/windmarch.tres 
 295	ao/my-edotmw-79/onboarding	CONFLICT-RESOLVED	all six civs/*.tres: additive (#295 signature_unit beside #336's knobs and #225's epoch_names); kept both. The 5-chain civs contention the merge plan predicted.
 300	ao/my-edotmw-79/opening-hint	CONFLICT	justfile 
+300	ao/my-edotmw-79/opening-hint	CONFLICT-RESOLVED	justfile: SECOND positional-signature divergence - test-client is RESOLUTION on one side and HOLD on the other. Keep-both would define the recipe twice and just refuses the file; combined into one signature.
+306	ao/my-edotmw-79/controls-screen	CLEAN	8
+320	ao/my-edotmw-79/manual	CONFLICT	client.gd decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md 
