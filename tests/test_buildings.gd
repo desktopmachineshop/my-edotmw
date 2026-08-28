@@ -457,7 +457,7 @@ const STARTING_TROOPS := [
 	&"gravesworn_levy", &"gravesworn_spearmen", &"gravesworn_shades",
 	&"thornwood_levy", &"thornwood_archers", &"thornwood_cavalry",
 	&"thornwood_greatbow",
-	&"windmarch_levy", &"windmarch_skirmishers", &"windmarch_cavalry",
+	&"windmarch_levy", &"windmarch_harriers", &"windmarch_cavalry",
 	&"windmarch_bowriders",
 	&"gildedreach_levy", &"gildedreach_spearmen", &"gildedreach_archers",
 	&"gildedreach_cavalry", &"gildedreach_sellswords",

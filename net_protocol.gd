@@ -87,6 +87,9 @@ const OPCODES := {
 	"S2C_SQUAD_CONCEAL": 6,
 	"S2C_BUILDING_INFO": 7,
 	"S2C_BUILDING_STATE_HASH": 8,
+	# #186/D-090, seat identity. 40 was free; see OPCODES_RESERVED for the
+	# three that had to move off 39.
+	"C2S_IDENTIFY": 40,
 	"C2S_ORDER_MOVE": 10,
 	"C2S_ORDER_STOP": 11,
 	"C2S_ORDER_ATTACK_MOVE": 12,
@@ -195,6 +198,20 @@ const C2S_CHEAT_SPAWN_BUILDING := OPCODES["C2S_CHEAT_SPAWN_BUILDING"]
 ## the D-075 return-to-lobby edge plus an immediate restart, driven from
 ## the sandbox panel (D-20260821-the-sandbox-panel-runs-the-world).
 const C2S_CHEAT_REGEN_MAP := OPCODES["C2S_CHEAT_REGEN_MAP"]
+
+## IDENTIFY (#186, D-090): the client says WHO it is, once, on connect.
+##
+## An opaque token — a platform id where one exists, a stable local one
+## otherwise. Nothing may parse it (see `player_identity.gd`), and a
+## client that never sends this is ANONYMOUS: it plays exactly as before
+## and simply cannot reclaim a seat. Every load-test bot is in that case,
+## which is deliberate — identity had to be addable without changing what
+## the existing estate does.
+##
+## Allocated through OPCODES (#374) rather than as a literal 40, which is
+## the whole point of that registry: two PRs picking "the next free
+## number" off main is how 39 came to be claimed four times.
+const C2S_IDENTIFY := OPCODES["C2S_IDENTIFY"]
 
 const S2C_WALLET := OPCODES["S2C_WALLET"]
 const S2C_NOTICE := OPCODES["S2C_NOTICE"]
@@ -333,6 +350,25 @@ static func decode_order_stop(data: PackedByteArray) -> Dictionary:
 	buf.get_u8()
 	return {"squad": buf.get_u32()}
 
+
+
+## IDENTIFY: bind this connection to a persistent identity (#186).
+static func encode_identify(token: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_IDENTIFY)
+	var bytes := token.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_identify(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"token": bytes.get_string_from_utf8()}
 
 ## ATTACK_MOVE: advance, but stop on contact (D-034).
 ##
