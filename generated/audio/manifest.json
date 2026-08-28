@@ -1,0 +1,18 @@
+{
+	"cues": [
+		"building_complete",
+		"building_destroyed",
+		"building_placed",
+		"combat_missile",
+		"combat_volley",
+		"defeat",
+		"match_start",
+		"order_attack",
+		"order_move",
+		"squad_broken",
+		"ui_click",
+		"victory"
+	],
+	"sample_rate": 22050,
+	"source_hash": "05c071d9ca456f69343ff97986949a33870d7a28090b683d2d42613b65ad74fe"
+}

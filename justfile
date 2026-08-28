@@ -717,6 +717,21 @@ gen-formation-icons: _import
     echo "look at {{artifacts_dir}}/formation-icons.png"
 
 
+[doc("Regenerate the placeholder sound effects into generated/audio")]
+build-audio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # NOT host-gated and needs NOTHING installed: `wave`, `math` and
+    # `struct` are the standard library, so unlike `build-assets` (a ~1 GB
+    # bpy wheel, blocked host-wide by an Application Control policy at the
+    # time of writing) this runs on a fresh clone. Audio has no such
+    # constraint and should not inherit one.
+    #
+    # Two runs must be byte-identical (D-081): fixed seeds, sorted
+    # iteration, no timestamps.
+    python audio/sfx.py
+    echo "audio: now run   {{just_executable()}} test-unit audio   to check the table still resolves"
+
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT=port:
     #!/usr/bin/env bash

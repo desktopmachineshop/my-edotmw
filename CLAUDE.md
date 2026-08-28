@@ -88,6 +88,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/server-memory.md
 
+@docs/status/audio.md
+
 ## What this project is
 
 A large-scale real-time strategy game, inspired by *Empires: Dawn of the
