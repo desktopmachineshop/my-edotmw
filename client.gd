@@ -3230,8 +3230,12 @@ func _nearby_node_discs(centre: Vector3, radius: float,
 		return out
 	var centre_cell := _state.space.world_to_cell(centre)
 	var cells := ceili(radius / (_state.space.hex_size * TorusSpace.SQRT_3)) + 1
-	for offset in TorusSpace.disk_offsets(mini(cells, 6)):
-		var cell := _state.space.index(centre_cell + offset)
+	# One call for the whole disk rather than one per cell (#325): at this
+	# radius that is sixty-one `index()` calls per drawn squad per frame,
+	# and a GDScript call costs more than the wrap arithmetic inside it
+	# (D-20260828-inside-the-derive-phase). Same cells, same order.
+	for cell in _state.space.disk_indices(
+			_state.space.index(centre_cell), mini(cells, 6)):
 		if not _state.nodes.has(cell):
 			continue
 		if worked_key == "n:%d" % cell:

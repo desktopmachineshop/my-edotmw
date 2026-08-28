@@ -114,6 +114,32 @@ func index(coord: Vector2i) -> int:
 	return posmod(coord.y, height) * width + posmod(coord.x, width)
 
 
+## Every cell index within `radius` of `cell_index`, wrapped.
+##
+## `disk_offsets` gives the OFFSETS and a caller then converts each to an
+## index — sixty-one `index()` calls per query at the radius the client's
+## tree lookup uses, once per drawn squad per frame. A GDScript call
+## costs 0.174 us on the hardware this was measured on
+## (D-20260828-inside-the-derive-phase), so at 630 drawn squads that is
+## most of the cost of the scan and none of its work.
+##
+## Same answer, one call: `index(origin + offset)` for each offset, in
+## the same order, so a caller swapping to this cannot change what it
+## finds — `test_torus_space.gd` holds the two to each other.
+##
+## Not cached, deliberately: the offsets are (they are translation
+## invariant, which is `disk_offsets`' whole point), but the INDICES
+## depend on where the disk is centred and a table per origin would be
+## the map over again.
+func disk_indices(cell_index: int, radius: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var origin := from_index(cell_index)
+	for offset in TorusSpace.disk_offsets(radius):
+		out.append(posmod(origin.y + offset.y, height) * width
+			+ posmod(origin.x + offset.x, width))
+	return out
+
+
 func from_index(i: int) -> Vector2i:
 	var wrapped := posmod(i, cell_count())
 	return Vector2i(wrapped % width, wrapped / width)
