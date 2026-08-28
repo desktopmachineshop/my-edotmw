@@ -75,6 +75,47 @@ Six things to know before touching any of it:
   quote which ROSTER. `test-load`'s CIVS_FIELDED gate is roster-agnostic
   (it parses the marker, not names) and unchanged.
 
+**And three of the roster's own rules were shipped absent, found only by
+the suite going red** (`D-20260828-a-guard-is-written-in-a-vocabulary-that-moves`,
+#215 with duplicates #202/#203/#211/#212, 2026-08-28). #191 landed the
+data and did not land the rest; `just test-unit` was red on `main` for a
+week and read as noise:
+
+- **`emberdeep_ram` could not attack anything.** `attack_range` 1.5
+  against a hex width of 1.73 floors to a radius of ZERO cells, so the
+  one unit whose design brief is cracking a building geometrically could
+  not reach one. It is 1.9 now — the roster's own melee reach, and still
+  the shortest in it. `docs/plans/fantasy-civs.md` specifies 1.5 and the
+  PLAN is what is wrong. **The schema default is 1.5 too**, so a new
+  `UnitDef` that does not set the field ships unable to fight; filed, not
+  fixed here.
+- **Nobody knew the shield wall.** #191 dropped every `formations` grant,
+  so D-20260819's two specials shipped reachable by no unit in the game.
+  Granted again by that decision's own rule — spearmen know the wall
+  (`gildedreach_spearmen`, `gravesworn_spearmen`) and the fortification
+  civ's heavy knows it too (`emberdeep_heavy`, the **Shieldwall
+  Vanguard**, whose design text is "the formation IS the silhouette");
+  `stoneblood_heavy` takes the testudo. A grant is opt-in — a client
+  button and a server allowance — so no default shape moved and PR #222's
+  re-derived D-067 numbers are undisturbed.
+- **The six per-civ gatherers were one stat block copied six times.**
+  Naming was done and differentiating was not, which is the shape this
+  project keeps rediscovering wearing a passing test (there IS a test
+  that each crew names its own civ, and it passed throughout). Each crew
+  now sits on its civ's axis — stoneblood few/tough, gravesworn ten
+  cheap diggers, windmarch fast with the biggest load, gildedreach the
+  best rate, emberdeep slow and hard, thornwood the reference — with
+  **steady-state throughput held to -4.6%/+9.5%** of what shipped, so
+  this differentiates six crews without re-balancing six economies. Both
+  shipped bands were respected rather than discovered afterwards: food
+  per head inside (1, 6) and a tree cleared in 45-75 s. The table is in
+  the decision.
+
+**Timings tuned against the old crews are stale**, per the standing rule
+— but only just: the throughput band is narrow on purpose, and squad
+sizes moved (5-10 against a flat 7), so an opening's LOOK changes more
+than its clock.
+
 **Deliberately not done:** epochs (M9's ladder is still design);
 per-civ walls/buildings; any strength ordering between the six — that is
 `just ai-ladder`'s job now that they exist, and the first run of it on

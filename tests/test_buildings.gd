@@ -913,20 +913,37 @@ func test_the_opening_general_outfights_basic_infantry() -> void:
 	# and an escort that lost to the cheapest melee unit would make settling
 	# a formality rather than a choice — a rush would simply walk in while
 	# the crew was mid-build.
+	# The cheapest melee unit is the `levy` archetype. It was `militia`
+	# until #191 renamed it, and this fixture kept asking for the old word
+	# — so `assert_not_null` failed first and all four claims below went
+	# unasserted for every civ. A fixture pinned to an archetype NAME is
+	# pinned to a vocabulary, and the vocabulary moved
+	# (docs/status/the-opening.md records the ORDERING variant of this).
 	for civ in CivRoster.ids():
 		var general: UnitDef = UnitRoster.for_civ_archetype(civ, &"general")
-		var militia: UnitDef = UnitRoster.for_civ_archetype(civ, &"militia")
+		var levy: UnitDef = UnitRoster.for_civ_archetype(civ, &"levy")
 		assert_not_null(general, "civ %s fields no general to open with" % civ)
-		assert_not_null(militia, "civ %s fields no militia to compare against" % civ)
-		if general == null or militia == null:
+		assert_not_null(levy, "civ %s fields no levy to compare against" % civ)
+		if general == null or levy == null:
 			continue
 
-		assert_gt(general.damage, militia.damage, "A general hits harder, man for man")
-		assert_gt(general.health, militia.health, "And is harder to kill")
-		assert_lt(general.rout_threshold, militia.rout_threshold,
-			"And holds his nerve longer — that is what the aura is about")
-		assert_lt(general.squad_size, militia.squad_size,
+		assert_gt(general.damage, levy.damage, "A general hits harder, man for man")
+		assert_gt(general.health, levy.health, "And is harder to kill")
+		assert_lt(general.squad_size, levy.squad_size,
 			"But there are few of them: this is a command party, not an army")
+
+		# Nerve, in the only form that is true of the whole roster. A
+		# FEARLESS civ (gravesworn: rout_threshold 0 everywhere, pinned by
+		# test_fearless.gd) has a general and a levy who both never rout,
+		# so "longer" is not a thing that can be said about them — and
+		# asserting `<` there would force one of the two to become
+		# routable, breaking a shipped civ identity to satisfy a fixture.
+		# So: never worse, and strictly better wherever nerve exists.
+		assert_lte(general.rout_threshold, levy.rout_threshold,
+			"A general never holds his nerve for LESS time than his levy")
+		if levy.rout_threshold > 0.0:
+			assert_lt(general.rout_threshold, levy.rout_threshold,
+				"And holds it longer — that is what the aura is about")
 
 
 # --- the shipped roster (D-010) ---------------------------------------

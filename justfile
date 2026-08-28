@@ -699,6 +699,13 @@ quick-test SEED="1337" SANDBOX="auto":
 gen-formation-icons: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    gate="$(bash host-gate.sh acquire medium 'gen-formation-icons' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
