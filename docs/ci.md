@@ -35,10 +35,17 @@ never run at all. The pipe returns *`tail`'s* status. That is the
 identical defect this workflow's `defaults.run.shell: bash` exists to fix
 — written up thirty lines above, by the same person, hours earlier — and
 it was not re-derived on sight. It was **recognised**: "exit 0, fine."
-An exit code whose *name* says the pipeline succeeded and whose *value*
-is the last element's status is
-`read-what-a-metric-counts-not-what-it-is-called` with a shell builtin in
-place of a game field.
+It is worth being exact about what kind of defect that is, because the
+obvious classification is the wrong one. `$?` after a pipeline is **not
+misnamed**: POSIX specifies that a pipeline's status *is* its last
+command's, so the value is precisely what it is documented to be. There is
+no declaration site that could have carried a better sentence and nothing
+was mislabelled — which is why this does not belong with the
+metric-name family, whose remedy is "document at the declaration" and
+cannot reach an instance with no declaration to fix.
+
+What failed was **reading**. The status was correct, was available, and
+was not consulted; it was recognised.
 
 ### `pipefail` is necessary and not sufficient
 
