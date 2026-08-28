@@ -161,6 +161,18 @@ class VirtualClient:
 	var wood_peak := 0
 	var military_peak := 0
 
+	## The most squads this bot ever HELD, against the terminal count the
+	## BOT line reports beside it.
+	##
+	## The two together are what separate "never produced a crew" from
+	## "produced one and lost it" — a terminal `squads=1` is equally
+	## consistent with both, and that ambiguity cost a diagnosis
+	## (#350: three bots ending at one squad, with no way to tell from
+	## the line whether they had ever had more). The server's periodic
+	## status line carries a FLEET total that answers it in aggregate,
+	## but a fleet total cannot see one bot losing while another gains.
+	var squads_peak := 0
+
 	## Raid orders actually issued. The verdict gates on this, because
 	## `raid_pool` was empty on every tick of every match and everything
 	## below it was unreachable — a load test cannot claim to have put two
@@ -344,6 +356,10 @@ class VirtualClient:
 		# be when the founder was the thing being miscounted.
 		var fighting := military_squads() if _founding_squad >= 0 else 0
 		military_peak = maxi(military_peak, fighting)
+		# Every squad, not just the fighting ones: the question this
+		# answers is about CREWS, which are the thing a stalled bot
+		# fails to produce.
+		squads_peak = maxi(squads_peak, state.squads.size())
 		if first_soldier_at < 0.0 and fighting > 0:
 			first_soldier_at = now
 
@@ -1208,9 +1224,9 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
-			vc.state.player, vc.state.squads.size(), vc.military_squads(),
-			vc.state.buildings.size(),
+		print("bot_client.gd: BOT player=%d squads=%d squads_peak=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
+			vc.state.player, vc.state.squads.size(), vc.squads_peak,
+			vc.military_squads(), vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
 			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at, vc.build_block])
