@@ -167,7 +167,7 @@ ambiguous from the cell alone.
 **Resolution: the UNIT decides its domain, the cell decides only whether
 the order is legal.**
 
-- `UnitDef.movement_domain` is `land` (default) or `water`.
+- `UnitDef.movement_domain` is `ground` (default) or `water`.
 - A water squad ordered to a land cell is **corrected to the nearest
   navigable cell** — the same shape as `_approachable`, which already
   corrects a destination rather than refusing an order, and which
@@ -641,7 +641,7 @@ count, the way D-076 measured the wall layer.
 
 ```gdscript
 # UnitDef
-@export_enum("land", "water") var movement_domain: String = "land"
+@export_enum("ground", "water") var movement_domain: String = "ground"
 @export var transport_capacity: int = 0
 ```
 

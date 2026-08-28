@@ -122,7 +122,16 @@ class_name UnitDef
 ## A STRING enum like `armour_class` and `formation_shape`, so a .tres
 ## reads as words. It is mapped to `SquadSim.DOMAIN_*` once, in
 ## `SquadSim.add_squad`.
-@export_enum("land", "water") var movement_domain: String = "land"
+##
+## The value is `"ground"`, not `"land"` (#367). This file said `"land"`
+## while two independent implementations and every shipped `.tres` said
+## `"ground"`, and the schema log recorded both because each chain
+## appended to it without seeing the other. `"ground"` wins on three
+## counts: it is what the data already is, it is the name the domain
+## constant already has (`DOMAIN_GROUND`), and §2.2 of the design's own
+## table uses it while §2.4 used `land` — so this file was internally
+## inconsistent as well as externally.
+@export_enum("ground", "water") var movement_domain: String = "ground"
 
 ## How many SQUADS this unit can carry
 ## (`D-20260828-a-carried-squad-is-cargo`). 0 — every land unit and every

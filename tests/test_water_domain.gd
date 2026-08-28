@@ -34,7 +34,7 @@ func _sim() -> SquadSim:
 	return SquadSim.new(_space(), CurveReplicator.new())
 
 
-func _unit(domain: String = "land") -> UnitDef:
+func _unit(domain: String = "ground") -> UnitDef:
 	var d := UnitDef.new()
 	d.id = &"test_unit"
 	d.archetype = &"levy"
@@ -83,7 +83,7 @@ func test_the_three_domains_are_distinct() -> void:
 ## the ambiguity.
 func test_a_squads_domain_comes_from_its_unit() -> void:
 	var sim := _sim()
-	var lander := sim.add_squad(_unit("land"), 1, Vector2i(4, 2))
+	var lander := sim.add_squad(_unit("ground"), 1, Vector2i(4, 2))
 	var ship := sim.add_squad(_unit("water"), 1, Vector2i(4, 12))
 	assert_eq(sim.tier_of(lander), SquadSim.DOMAIN_GROUND)
 	assert_eq(sim.tier_of(ship), SquadSim.DOMAIN_WATER)
@@ -92,11 +92,11 @@ func test_a_squads_domain_comes_from_its_unit() -> void:
 ## `movement_domain` defaults to land, so every unit that predates this
 ## feature — the whole shipped roster — is unaffected.
 func test_every_existing_unit_is_a_land_unit() -> void:
-	assert_eq(UnitDef.new().movement_domain, "land",
-		"the default must be land, or the shipped roster becomes a navy")
+	assert_eq(UnitDef.new().movement_domain, "ground",
+		"the default must be ground, or the shipped roster becomes a navy")
 	for def in UnitRoster.load_all():
-		assert_eq(def.movement_domain, "land",
-			"%s is not a land unit and nothing has authored a ship yet" % def.id)
+		assert_eq(def.movement_domain, "ground",
+			"%s is not a ground unit and nothing has authored a ship yet" % def.id)
 
 
 ## The empty-array default is CLOSED for water and OPEN for ground, and
@@ -160,7 +160,7 @@ func test_a_ship_moves_across_water() -> void:
 func test_a_land_squad_still_walks_with_a_sea_on_the_map() -> void:
 	var sim := _sim()
 	_coast(sim)
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(2, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(2, 2))
 	var target := Vector2i(24, 2)
 	sim.order_move(foot, target)
 	for _i in range(400):
@@ -176,7 +176,7 @@ func test_neither_domain_crosses_the_shoreline() -> void:
 	var sim := _sim()
 	_coast(sim)
 	var ship := sim.add_squad(_unit("water"), 1, Vector2i(8, 12))
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(8, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(8, 2))
 
 	sim.order_move(ship, Vector2i(8, 1))   # inland
 	sim.order_move(foot, Vector2i(8, 14))  # out to sea
@@ -195,7 +195,7 @@ func test_an_order_never_changes_a_squads_domain() -> void:
 	var sim := _sim()
 	_coast(sim)
 	var ship := sim.add_squad(_unit("water"), 1, Vector2i(8, 12))
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(8, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(8, 2))
 	sim.order_move(ship, Vector2i(8, 1))
 	sim.order_move(foot, Vector2i(8, 14))
 	for _i in range(50):
@@ -222,7 +222,7 @@ func test_the_water_layer_does_not_spend_the_ground_layers_budget() -> void:
 	sim.field_cells_per_tick = 64
 	sim.water_field_cells_per_tick = 64
 
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(2, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(2, 2))
 	var ship := sim.add_squad(_unit("water"), 1, Vector2i(2, 12))
 	sim.order_move(foot, Vector2i(28, 2))
 	sim.order_move(ship, Vector2i(28, 12))
@@ -243,7 +243,7 @@ func test_a_zero_water_budget_stalls_only_the_water_layer() -> void:
 	_coast(sim)
 	sim.water_field_cells_per_tick = 0
 
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(2, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(2, 2))
 	var ship := sim.add_squad(_unit("water"), 1, Vector2i(2, 12))
 	sim.order_move(foot, Vector2i(28, 2))
 	sim.order_move(ship, Vector2i(28, 12))
@@ -261,7 +261,7 @@ func test_a_zero_water_budget_stalls_only_the_water_layer() -> void:
 func test_set_navigable_flushes_only_the_naval_cache() -> void:
 	var sim := _sim()
 	var sea := _coast(sim)
-	var foot := sim.add_squad(_unit("land"), 1, Vector2i(2, 2))
+	var foot := sim.add_squad(_unit("ground"), 1, Vector2i(2, 2))
 	sim.order_move(foot, Vector2i(28, 2))
 	for _i in range(60):
 		sim.tick()
@@ -417,7 +417,7 @@ func test_a_naval_field_is_not_solved_against_land_belief() -> void:
 	# A lookout with a long sight, standing on the coast, so `absorb`
 	# folds the sea in front of it into this side's LAND belief as
 	# "blocked" — which is true, and must not reach the navy.
-	var lookout := _unit("land")
+	var lookout := _unit("ground")
 	lookout.vision_range = 14.0
 	sim.add_squad(lookout, 1, Vector2i(8, 7))
 	for _i in range(20):
@@ -454,3 +454,35 @@ func test_the_naval_budget_matches_the_ground_budget_by_decision() -> void:
 		"the naval and ground layers are bounded identically on purpose")
 	assert_ne(sim.water_field_cells_per_tick, sim.top_field_cells_per_tick,
 		"copying the wall-top budget would starve a field that covers a region")
+
+
+func test_the_default_movement_domain_is_inside_its_own_enum() -> void:
+	# #367: this field was declared `@export_enum("land", "water")` here and
+	# `("ground", "water")` in two other chains, and the schema log recorded
+	# both because each chain appended to it without seeing the other. A
+	# `.tres` authored against the losing spelling LOADS, is not in the
+	# enum, and reads as not-water — so the hull walks. That is exactly the
+	# failure a `.tres` schema exists to prevent.
+	#
+	# This is the guard that catches the NEXT one without either chain
+	# having to know about the other: whatever the enum says, the default
+	# must be a member of it. It fails on a typo, on a rename, and on a
+	# divergence, and it needs no cross-branch knowledge to do so.
+	var def := UnitDef.new()
+	var hint := ""
+	for property in def.get_property_list():
+		if String(property.get("name", "")) == "movement_domain":
+			hint = String(property.get("hint_string", ""))
+			break
+	assert_ne(hint, "", "movement_domain must be an exported enum")
+	var allowed := hint.split(",")
+	assert_true(allowed.has(def.movement_domain),
+		"the default %s is not one of %s" % [def.movement_domain, allowed])
+
+	# And the string must be the one `SquadSim` maps to its ground domain,
+	# or a squad built from a default def starts in the wrong world.
+	var space := TorusSpace.new(8, 4, 1.0)
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	var id := sim.add_squad(def, 1, Vector2i(1, 1))
+	assert_eq(sim.tier_of(id), SquadSim.DOMAIN_GROUND,
+		"a default unit must start on the ground")
