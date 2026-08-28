@@ -52,9 +52,33 @@ flavour:
   and the survivability to be the thing that does it.
 - **`gildedreach_spearmen`** get `shield_wall` too. Gildedreach's axis is
   economy AND FLEXIBILITY, and free-city spearmen drilling a shield wall
-  is the archetypal use of the thing. A second grantee also stops a
-  formation belonging to exactly one unit — which is how both went
-  missing in the first place.
+  is the archetypal use of the thing.
+
+**`testudo` ships with exactly ONE grantee, and that is accepted rather
+than overlooked** (raised on #324 against an earlier draft of this entry,
+which argued that "a second grantee stops a formation belonging to
+exactly one unit"). That argument was a PROXY for a guard I had not yet
+written, and it does not survive contact with two facts:
+
+- **The guard now does the job the proxy was standing in for.** The old
+  check named `shield_wall` alone, which is exactly why `testudo` went
+  unreachable through #191 with nothing going red. It iterates every
+  non-offered formation now, so `testudo` dropping to zero grantees fails
+  the suite whether or not a second unit holds it. Protection against a
+  roster rewrite is a test, not a spare grantee.
+- **A second grantee cannot be justified from the shipped models at the
+  same standard as the first.** `emberdeep_heavy`'s claim is specific:
+  D-20260826 gives it the plate knight with a **kite shield**, and a
+  testudo is a large shield locked overhead. The nearest candidate,
+  `gildedreach_sellswords`, wears the generated `heavy_infantry` model —
+  and `SoldierParams.shield` is a BOOLEAN. It does not distinguish a
+  kite shield from `militia`'s round one, so "it has a shield" is not
+  evidence it can form a testudo.
+
+Granting a second one anyway would be granting a formation for the
+guard's sake rather than the game's, which is the D-055 family inverted:
+data added so a check has something to find. One grantee is honest, and
+the check that matters is watching for zero.
 
 Emberdeep gets one of each rather than both of one: the civ's thesis is
 *fortification and siege*, and the two formations are precisely those two

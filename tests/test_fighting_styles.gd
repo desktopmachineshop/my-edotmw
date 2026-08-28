@@ -139,6 +139,24 @@ func test_granted_formations_exist_and_are_not_globally_offered() -> void:
 				grants += 1
 		if grants == 0:
 			ungranted.append(String(formation.id))
+	# Printed, not asserted: how MANY units hold each granted-only
+	# formation. The assertion below is the one that matters (zero is a
+	# formation no player can reach), but a drop from two holders to one
+	# is the state this whole entry is about and no number would show it.
+	# `testudo` ships at exactly one on purpose — see
+	# D-20260828-two-formations-that-belonged-to-nobody, which records why
+	# a second grantee cannot be justified from the shipped models and why
+	# THIS test, not a spare holder, is the protection.
+	for formation in FormationRoster.load_all():
+		if formation.offered:
+			continue
+		var holders := PackedStringArray()
+		for def in UnitRoster.load_all():
+			if def.formations.has(formation.id):
+				holders.append(String(def.id))
+		gut.p("  granted-only %s: %d holder(s) — %s" % [
+			formation.id, holders.size(), ", ".join(holders)])
+
 	assert_gt(checked, 0,
 		"no shipped formation is granted-only, so this check is vacuous — "
 		+ "either they all became offered or the roster stopped loading")
