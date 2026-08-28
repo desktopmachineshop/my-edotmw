@@ -101,6 +101,28 @@ diffed against what the AI could see. That set is what the server
 HASHES, and getting it wrong is exactly the 106-building-desync incident
 `docs/status/sandbox.md` records for `_return_to_lobby`.
 
+## The handover happens WITHIN A TICK, and that is not a detail
+
+D-090's own wording is "within a tick", and it turned out to be the only
+safe timing rather than a loose one.
+
+Seating the AI inline from `_on_disconnect` re-admits it, which
+broadcasts through `_recipients()` — and `_on_disconnect` runs from
+INSIDE the network service loop, where other peers may already be dead
+at the socket level with their own DISCONNECT events still unserviced.
+Broadcasting into that storm produced a wall of `Unable to send packet
+on channel 0, max channels: 0`.
+
+**`just test-load` caught it and the unit tests structurally could not**,
+because they have no sockets to race. The handover is queued and drained
+once per frame after the service loop, so every departure is processed
+before anything is sent — and a player who reconnects between dropping
+and the drain keeps their seat rather than having it handed away behind
+them.
+
+Verified on the wire: a clean `4 120` run reports **4 seat handovers, 0
+engine errors, 0 desyncs**.
+
 ## One production signature relaxed, and why it is not a test-driven weakening
 
 `_on_disconnect(peer: ENetPacketPeer)` is now `_on_disconnect(peer)`.
