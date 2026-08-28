@@ -79,12 +79,36 @@ and this section records why the rest is missing.
 The rule: perturb the thing the gate guards, watch it fail, restore.
 Recorded here because CI is exactly where this gets skipped.
 
-| # | gate | perturbation | observed | run |
-|---|---|---|---|---|
-| 1 | `just test-unit` fails the job | reintroduced #215's `militia` fixture in `tests/test_combat.gd` | `Failing Tests 1`, job **failure** | [33146995515] |
-| 2 | a dirty tree fails the job | appended a line to `project.godot` before the check | `test-unit` green, **"The tree is clean after a Godot recipe" failed** | [33147239818] |
-| 3 | the nightly's `test-load` verdict fails the job | ran it at **duration 20**, too short to reach the fog gates | `test-load: bots exited with status 1`, job **failure** | [33147951934] |
-| 4 | the weekly import canary catches an OOM | set the `test` service's `mem_limit` to **512m** | ``error: recipe `_import` failed with exit code 137`` — the exact signature of #223 | [33147430956] |
+| # | gate | perturbation | run |
+|---|---|---|---|
+| 1 | `just test-unit` fails the job | reintroduced #215's `militia` fixture in `tests/test_combat.gd` | [33146995515] |
+| 2 | a dirty tree fails the job | appended a line to `project.godot` before the check | [33147239818] |
+| 3 | the nightly's `test-load` verdict fails the job | ran it at **duration 20**, too short to reach the fog gates | [33147951934] |
+| 4 | the weekly import canary catches an OOM | set the `test` service's `mem_limit` to **512m** | [33147430956] |
+
+**What each one printed**, quoted rather than linked. A GitHub run log
+EXPIRES — 90 days by default, artifacts sooner — so a table of URLs is
+evidence with a timer on it, and the whole point of this section is that
+the evidence outlives the person who took it. The links are a
+convenience; the text below is the record.
+
+```text
+1  Failing Tests 1 / Passing Tests 1249, job conclusion: failure
+   [Failed]: Some civ should field the 'militia' archetype
+
+2  just test-unit: success
+   step "The tree is clean after a Godot recipe": failure
+   ::error::A Godot recipe left the working tree dirty —
+            see D-20260818-every-file-has-a-line-ending-rule
+   project.godot | 1 +
+
+3  test-load: bots exited with status 1
+     (see artifacts/test-load-bots.log)
+   error: recipe `test-load` failed with exit code 1
+
+4  error: recipe `_import` failed with exit code 137
+   ##[error]Process completed with exit code 137.
+```
 
 Gate 4 is worth reading twice: **the job built to catch #223 caught
 #223**, reproducing its exit code from a memory ceiling, on a runner, in
