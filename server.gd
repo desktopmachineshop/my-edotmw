@@ -613,6 +613,11 @@ func _process(delta: float) -> void:
 
 	_service_network()
 
+	# Every departure in this frame has now been processed, so a
+	# broadcast can no longer land on a socket whose disconnect was still
+	# queued behind it (#186).
+	_drain_ai_handovers()
+
 	# No world, no ticks. In lobby mode the simulation does not exist yet
 	# (D-049), and everything below this line assumes it does.
 	if _sim == null:
@@ -1196,6 +1201,19 @@ func _dismiss_ai_holding(player: int) -> void:
 ## D-20260817-an-ai-never-holds-the-lobby family: an AI that inherited a
 ## seat and changed its civ would field another civilisation's troops
 ## mid-match, with nothing failing.
+func _drain_ai_handovers() -> void:
+	if _pending_ai_handover.is_empty():
+		return
+	var pending: Array = _pending_ai_handover
+	_pending_ai_handover = []
+	for player in pending:
+		# A player who reconnected between dropping and this drain has
+		# their seat back already; handing it to an AI now would take it
+		# straight off them.
+		if _match.seat_is_reclaimable(int(player)):
+			_hand_seat_to_ai(int(player))
+
+
 func _hand_seat_to_ai(player: int) -> void:
 	if not _match.hand_seat_to_ai(player):
 		return
@@ -1218,10 +1236,29 @@ func _hand_seat_to_ai(player: int) -> void:
 ## this function touches anything ENet-specific. The annotation bought no
 ## safety and made the seat-handover path (#186) untestable without a
 ## socket.
+## Seats whose human has dropped and whose AI has not been seated yet
+## (#186). Drained once per frame, after the network service loop — see
+## `_on_disconnect` for why it cannot happen inline.
+var _pending_ai_handover := []
+
+
 func _on_disconnect(peer) -> void:
 	var record = _record_for(peer)
 	if record != null:
 		var player := int(record["player"])
+
+		# THE DEAD SOCKET LEAVES `_clients` FIRST, and that ordering is
+		# load-bearing rather than tidy. Seating an AI re-admits it
+		# (`_admit_player`), which broadcasts through `_recipients()` —
+		# and `_recipients()` is `_clients` plus the AI seats, so a peer
+		# still listed here is a socket every one of those sends tries to
+		# write to. `just test-load` caught it immediately: a wall of
+		# "ERROR: Peer not connected" and "Unable to send packet on
+		# channel 0, max channels: 0" from the moment the first bot left.
+		#
+		# The old code could erase afterwards because it only WIPED an
+		# army; nothing in that path sent anything to anybody.
+		_clients.erase(peer)
 
 		# There may be no world to leave. Since D-075 a client spends real
 		# time in the lobby — arriving before the first match and returning
@@ -1245,7 +1282,22 @@ func _on_disconnect(peer) -> void:
 			# ordinary no-living-squads rule. An AI-held seat is simply a
 			# seat that is still playing.
 			_match.mark_disconnected(player)
-			_hand_seat_to_ai(player)
+			# QUEUED, not seated here — "within a tick" is D-090's own
+			# wording and it is also the only safe moment.
+			#
+			# Seating inline re-admits the AI, which broadcasts through
+			# `_recipients()`; and `_on_disconnect` runs from INSIDE the
+			# network service loop, where other peers may already be dead
+			# at the socket level with their DISCONNECT events still
+			# unserviced. Broadcasting into that storm produced a wall of
+			# "Unable to send packet on channel 0, max channels: 0" —
+			# caught by `just test-load`, which is exactly the class of
+			# thing a unit test cannot see because it has no sockets to
+			# race.
+			#
+			# Draining after the loop means every departure has been
+			# processed before anything is sent.
+			_pending_ai_handover.append(player)
 		else:
 			# Gone from the lobby, so the seat goes too — otherwise it sits
 			# there forever as a player who will never arrive, and the admin
@@ -1253,7 +1305,9 @@ func _on_disconnect(peer) -> void:
 			# this and never called from anywhere but its own test.
 			_match.remove_human_seat(player)
 
-		print("server: player %d left (%d connected)" % [player, _clients.size() - 1])
+		print("server: player %d left (%d connected)" % [player, _clients.size()])
+	# Harmless when the branch above already did it; still needed for a
+	# peer with no record at all.
 	_clients.erase(peer)
 	if _clients.is_empty() and _sim != null and _sim.squad_count() > 0:
 		_print_summary("last client left")

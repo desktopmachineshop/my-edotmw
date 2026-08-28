@@ -202,6 +202,11 @@ func test_a_dropped_human_does_not_lose_their_army() -> void:
 	assert_gt(before, 0, "setup: the army exists")
 
 	server._on_disconnect(peer)
+	# "Within a tick" is D-090's own wording, and it is also the only safe
+	# moment: seating inline would broadcast from inside the network
+	# service loop, where other peers may already be dead with their
+	# disconnect events unserviced. The server drains this once a frame.
+	server._drain_ai_handovers()
 
 	assert_eq(server._sim.alive_of(0), before,
 		"the army must STAND — an AI holds the seat (D-090), it is not wiped")
@@ -231,6 +236,7 @@ func test_the_same_identity_reclaims_its_seat() -> void:
 	var def: UnitDef = UnitRoster.for_civ_archetype(&"emberdeep", &"levy")
 	server._sim.add_squad(def, 1, Vector2i(5, 5))
 	server._on_disconnect(first)
+	server._drain_ai_handovers()          # within a tick — see the note above
 
 	# A NEW connection, given a NEW provisional seat, as the real one is.
 	var second := FakePeer.new()
