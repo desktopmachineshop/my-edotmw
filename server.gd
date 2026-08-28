@@ -2916,9 +2916,15 @@ func _on_match_started() -> void:
 	# The world's concrete numbers, before anybody is admitted: a client
 	# has to be able to generate the SAME terrain, and it cannot do that
 	# from a preset name (D-049).
+	# _recipients(), for the reason in `_handle_chat` (#253). No live
+	# defect today — AI seats are created just below and get their own
+	# settings through `_admit_player` — but this is the same shape as the
+	# three drifts that HAVE cost something, and a broadcast that is
+	# correct only because of when it happens to run is one reordering
+	# away from being wrong.
 	var settings_packet := NetProtocol.encode_map_settings(_settings.to_dict())
-	for peer in _clients:
-		(peer as ENetPacketPeer).send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
+	for peer in _recipients():
+		peer.send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
 
 	for seat in _match.seats:
 		var player := int(seat["player"])
@@ -3169,9 +3175,19 @@ func _handle_chat(peer, data: PackedByteArray) -> void:
 		if seat >= 0:
 			speaker = String(_match.seats[seat]["name"])
 
+	# Through _recipients(), not _clients — the THIRD time this file has
+	# drifted from that rule (#253; _recipients' own doc records the other
+	# two). An AI seat never reading chat is why it survived; it stops
+	# being free the moment a non-socket peer is a HUMAN, which is what an
+	# in-process host is, and that player saw no chat at all including
+	# their own.
+	#
+	# No `as ENetPacketPeer` cast either: an AI seat is a LoopbackPeer, so
+	# the cast yields null and hands `.send` a null the moment anybody
+	# speaks. Every other broadcast calls `peer.send` directly.
 	var packet := NetProtocol.encode_chat(speaker, text)
-	for other in _clients:
-		(other as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+	for other in _recipients():
+		other.send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 	print("server: chat <%s> %s" % [speaker, text])
 
 
