@@ -1,3 +1,37 @@
+; THE NAVAL GATE'S MAP (#301, docs/plans/naval.md 6.2).
+;
+; WIDTH, HEIGHT AND min_spawn_spacing ARE MEASURED, NOT CHOSEN. The gate
+; skips unless the starts occupy more than one walkable component, so a
+; map that seats everyone on one island passes leg 1 having proved
+; nothing. Change any of the three and re-measure before trusting a run.
+;
+; What was swept, over 40-60 MATCH seeds (the seed regenerates the
+; terrain; sweeping spawn_seed instead measures placement within ONE
+; world and reports every size healthy - the first sweep did exactly
+; that and was wrong):
+;
+;   112x128 spacing 18  60/60 seated, 60/60 in one sea component,
+;                       2..8 landmasses, seats 0-3 NEVER share one  <-- shipped
+;   112x128 spacing 12  seats 0-3 share one island on some seeds
+;   112x128 spacing 22  same, over 60 seeds (a 20-seed run passed: luck)
+;   168x194 any spacing FAILS - the shipped map size is NOT safe here.
+;                       More islands exist, but the largest holds four
+;                       starts, so on some seeds all four bots begin
+;                       together and no landing is possible.
+;
+; SEATS 0-3 SPECIFICALLY, because `test-load 4` seats bots on 0-3 rather
+; than on a random four. A map whose eight starts span four islands can
+; still put the first four on one, and then the gate is vacuous for
+; exactly the run people execute.
+;
+; The spacing response is NON-MONOTONIC (placement is rejection
+; sampling), so this is a measured band and not a derived constant.
+; `tests/test_isles_map.gd` is what defends it.
+;
+; `preset` is load-bearing too: without it `--map=res://maps/isles.tres`
+; generates a CONTINENTS world at these dimensions - one landmass, and a
+; gate that passes green having tested nothing.
+
 [gd_resource type="Resource" script_class="MapConfig" load_steps=2 format=3]
 
 [ext_resource type="Script" path="res://map_config.gd" id="1_mapcfg"]
