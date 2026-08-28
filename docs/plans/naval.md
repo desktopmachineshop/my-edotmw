@@ -530,6 +530,158 @@ dependency graph is deliberately shallow: **1 → {2, 3} → {4, 5, 6, 8} →
 | **8** | **Presentation** | 2 | ship height at sea level; minimap check; selection over water | a rendered frame with ships on water, looked at |
 | **9** | **Maps** | 1, 7 | spawn placement over the water graph; `islands` back in the lobby | `islands` seats its full slot count with every start reachable |
 
+### 7.1 Interface contract — PINNED
+
+**These signatures are the contract three other workers are writing
+against. Stage 2 owns them; nobody else changes them without saying so.**
+Ruled by the orchestrator 2026-08-28 in response to this document's own
+sequencing note that stage 2's signatures should be agreed before it is
+written.
+
+#### The decoupling that lets stages 1, 2 and 3 run in parallel
+
+**Stage 2 never calls `TerrainGen`.** The navigability array is HANDED to
+the simulation exactly as passability already is:
+
+```gdscript
+# SquadSim - the input. Mirrors set_passable, including the cache flush.
+func set_navigable(p: PackedByteArray) -> void
+```
+
+So stage 1 produces the array, stage 2 consumes an argument, and the
+server wires the two together in whichever stage lands second. Neither
+worker edits the other's file, and stage 2 is testable with a
+hand-authored field before stage 1 exists at all — which is how
+`_passable` has always been testable.
+
+#### Domains
+
+```gdscript
+# SquadSim - three mutually exclusive values of the field formerly
+# meaning "tier". `tier_of(squad)` keeps its NAME (D-076's call sites
+# are not churned) and returns one of these.
+const DOMAIN_GROUND := 0
+const DOMAIN_WALL_TOP := 1
+const DOMAIN_WATER := 2
+```
+
+#### Passability dispatch, and the empty-array default per domain
+
+```gdscript
+func is_passable(cell: Vector2i, domain: int = DOMAIN_GROUND) -> bool
+```
+
+The defaults are **not** uniform, and each one has a reason that is
+already in the codebase:
+
+| domain | array | empty means | why |
+|---|---|---|---|
+| `DOMAIN_GROUND` | `_passable` | **open** | a bare `SquadSim` in a test is an open field; unchanged |
+| `DOMAIN_WALL_TOP` | `_passable_top` | **closed** | D-076: "no walkway exists at all"; most sims have no walls |
+| `DOMAIN_WATER` | `_navigable` | **closed** | same argument as wall-top: most sims have no sea, and "everything is navigable" would sail a ship across a test map that is meant to be a field |
+
+That last row also makes the domains **disjoint by construction in a
+terrain-less sim**: everything is land, nothing is water.
+
+#### Flow fields
+
+```gdscript
+# `domain` is the third parameter and defaults to DOMAIN_GROUND, so every
+# existing call site is unchanged.
+func _field_for(destination_index: int, knower: int,
+        domain: int = DOMAIN_GROUND) -> FlowField
+```
+
+| domain | cache | key | solved against | budget |
+|---|---|---|---|---|
+| ground | `_fields` | `(destination, side)` | `knowledge.believed_passable(side)` | `field_cells_per_tick` (D-040) |
+| wall-top | `_fields_top` | `destination` | `_passable_top` (ground truth) | `top_field_cells_per_tick` (D-076) |
+| **water** | `_fields_water` | **`(destination, side)`** | **`knowledge.believed_navigable(side)`** | **`water_field_cells_per_tick`** |
+
+**Water is keyed by SIDE and solved against BELIEF, like ground and
+unlike wall-top — and that is a decision, not a copy.**
+`D-20260818-pathing-knows-only-what-the-player-knows` deliberately leaves
+the wall-top tier omniscient, and states why: *"the wall-top tier
+(D-076), whose network is made of buildings a side put there itself."*
+Water is not that. **The obstacles at sea are LAND**, and an undiscovered
+island is exactly the thing belief exists to stop a side routing around.
+A ground-truth naval field would rebuild #96 in a second domain.
+
+So **stage 2 also owns extending `TerrainKnowledge`** with a second
+per-side array:
+
+```gdscript
+# TerrainKnowledge - mirrors believed_passable / believes_passable.
+func believed_navigable(group: int) -> PackedByteArray
+func believes_navigable(group: int, cell: int) -> bool
+# absorb() gains the second truth array; discover() gains a domain.
+```
+
+Optimism is unchanged and points the same way: **unknown reads
+NAVIGABLE**, so believed-navigable is a superset of truly-navigable and a
+side can only ever be refused a voyage that was genuinely impossible.
+
+#### The per-tick accounting
+
+```gdscript
+var water_field_cells_per_tick: int = <MEASURED - see below>
+var _fields_water := {}
+var _pending_fields_water: Array[Vector2i] = []
+var _field_cells_this_tick_water: int = 0   # reset at tick start
+```
+
+**The number is a measurement, not a copy of D-076's 1,024.** `islands`
+is 65-71% water, so on the map this feature exists for the naval layer
+solves over roughly twice the area the ground layer does — and it lands
+on a tick already at 204.5 ms against D-020's 100 ms at 1,000 squads
+(#105). Stage 2 ships a derived figure with its worst tick and squad
+count, the way D-076 measured the wall layer.
+
+#### Unit schema (D-010 log)
+
+```gdscript
+# UnitDef
+@export_enum("land", "water") var movement_domain: String = "land"
+@export var transport_capacity: int = 0
+```
+
+`movement_domain` is a STRING enum, matching `armour_class` and
+`formation_shape`, so a `.tres` reads as words rather than a magic
+integer. The mapping to `DOMAIN_*` happens once, in `SquadSim.add_squad`.
+
+#### Building schema (stage 3, pinned here so stage 3 need not wait)
+
+```gdscript
+# BuildingDef
+@export var needs_shore: bool = false
+```
+
+```gdscript
+# TerrainGen - stage 1's output, consumed by stages 2 and 3.
+func navigability(space: TorusSpace) -> PackedByteArray   # 1 iff elevation < sea_level
+func is_shore(space: TorusSpace, cell: Vector2i) -> bool  # passable land, >=1 navigable neighbour
+```
+
+`is_shore` walks `TorusSpace.disk_offsets(1)`, never `distance()` — the
+standing rule.
+
+#### Who owns what
+
+| symbol | owner |
+|---|---|
+| `TerrainGen.navigability`, `TerrainGen.is_shore`, water components | stage 1 |
+| `DOMAIN_*`, `set_navigable`, `is_passable` dispatch, `_fields_water`, `TerrainKnowledge` water belief, `UnitDef.movement_domain` | stage 2 |
+| `BuildingDef.needs_shore`, the shore refusal, the per-instance water cell, ship spawn into water | stage 3 |
+| `UnitDef.transport_capacity` (the field), cargo, the hops | stage 4 |
+| the ten ship `.tres` and `dock.tres` | stage 6 |
+
+**`transport_capacity` is declared by stage 2** (it is one line in the
+same schema edit) and **read by nobody until stage 4**, so stage 6 can
+author `.tres` files against it immediately. A field declared and unread
+is normally this project's most-repeated defect — it is deliberate here,
+it is bounded to two stages, and stage 4's exit criterion is what closes
+it.
+
 **Two sequencing notes for whoever schedules this.**
 
 Stage 2 is the long pole and everything downstream waits on its
