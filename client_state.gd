@@ -562,6 +562,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"facing": int(entry.get("facing", -1)),
 			"files": int(entry.get("files", 0)),
 			"stance": int(entry.get("stance", 0)),
+			"exploring": bool(entry.get("exploring", false)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -914,6 +915,14 @@ func stance_of(squad: int) -> int:
 	return int(composition[squad].get("stance", 0)) if composition.has(squad) else 0
 
 
+## Whether this squad is hunting fog (#120). Read off the wire rather than
+## remembered when the order was sent: the server owns the mode, and a
+## button lit from a local guess would keep claiming the squad was
+## exploring after a rout cancelled it.
+func is_exploring(squad: int) -> bool:
+	return bool(composition[squad].get("exploring", false)) if composition.has(squad) else false
+
+
 func facing_of(squad: int) -> int:
 	return int(composition[squad].get("facing", -1)) if composition.has(squad) else -1
 
@@ -1125,6 +1134,18 @@ func encode_stop(squad: int) -> PackedByteArray:
 	if not owns(squad):
 		return PackedByteArray()
 	return NetProtocol.encode_order_stop(squad)
+
+
+## Hunt fog until told to stop (#120). Carries no destination for the same
+## reason `encode_stop` does not: the destination is the server's to pick,
+## over and over, and picking it is the whole of what is being asked for.
+##
+## Ownership is checked HERE like every other order, so the GUI client and
+## the load-test bots get the same refusal from one place.
+func encode_explore(squad: int) -> PackedByteArray:
+	if not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_explore(squad)
 
 
 # --- lobby (D-048) ----------------------------------------------------
