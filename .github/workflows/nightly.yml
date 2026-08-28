@@ -25,6 +25,7 @@
 name: nightly
 
 on:
+  pull_request:   # TEMP to observe this workflow red
   schedule:
     # 03:00 UTC — after a working day, before the next one.
     - cron: "0 3 * * *"
@@ -120,7 +121,7 @@ jobs:
       - name: just test-load
         run: |
           set -euo pipefail
-          ./tools/just test-load 4 "${{ github.event.inputs.duration || '120' }}" 2>&1 | tee /tmp/test-load.log
+          ./tools/just test-load 4 20 2>&1  # TEMP: too short to reach the fog gates | tee /tmp/test-load.log
 
       # The verdict line and the phase breakdown into the summary, so
       # µs/squad is recorded per night WITH ITS SQUAD COUNT rather than

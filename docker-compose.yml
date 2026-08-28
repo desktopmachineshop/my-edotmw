@@ -99,4 +99,4 @@ services:
       - .:/work
       - ./.godot-container:/work/.godot
     restart: "no"
-    mem_limit: 2g
+    mem_limit: 512m
