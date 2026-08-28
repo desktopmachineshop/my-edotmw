@@ -65,6 +65,48 @@ answer**. `wood_peak` is not wrong about gathering; it is silent about
 it, and silence read as zero is what sent one worker hunting a starved
 economy that was not there.
 
+## A field and a reader's measurement are different objects
+
+Four of the five instances are FIELDS: somebody named them, and there is
+a declaration site to document. `grep -c` is not — it is a number the
+READER constructed with a tool, and there is nowhere to put a doc
+comment on it. So the defences differ, and confusing them sends people
+to rename something that has no name:
+
+- **a field** — say at the declaration what it counts, per above;
+- **a reader's measurement** — know what ONE OCCURRENCE LOOKS LIKE
+  before counting them. The seating warning emits two lines per firing,
+  so `grep -c` on it is events × 2 and no amount of naming fixes that.
+
+## One real exception: `buildings=` is two semantics under one label
+
+The rejection below covers four of the five. This one does not survive
+it, and it was found by going and looking rather than by argument
+(worker 88):
+
+```
+ai_player.gd:1067   AI_STATS ... buildings=%d   <- buildings_raised, what this seat PUT UP
+bot_client.gd:1211  BOT ...      buildings=%d   <- state.buildings.size(), what this bot KNOWS
+```
+
+**The same label, in two harness lines, meaning two different things** —
+one cumulative-and-owned, the other known-including-other-players'. A
+reader who learns the field from one line and applies it to the other is
+wrong, and neither declaration can warn them, because each is correct
+about itself.
+
+`justfile:2131` parses ` buildings=([0-9]+)` — **inside an `/AI_STATS/`
+block**, and nothing parses the BOT line's copy, so the collision is
+LATENT and not a live parsing defect. Stated precisely because the
+tempting overstatement ("a regex reads the wrong one") is not true today
+and would send somebody hunting a bug that is not there. What is true is
+that the block boundary is the only thing separating them.
+
+The narrow fix is the BOT line's LABEL — `buildings_known=` — and not
+`state.buildings`, which is correctly named for what it is. Not done
+here: it changes a harness output format, and every parser of that line
+wants checking first even though today there are none.
+
 ## Consequences
 
 - **A metric that crosses a boundary is read at the far side.** Same rule
@@ -96,8 +138,9 @@ economy that was not there.
 
 ## Rejected
 
-**Renaming the offenders.** Tempting and mostly wrong: `buildings` really
-is what the AI knows, and `wood_peak` really is a peak. The names are
+**Renaming the offenders — with one exception, above.** Tempting and
+mostly wrong: `AI_STATS`'s `buildings` really is what that seat raised,
+and `wood_peak` really is a peak. The names are
 defensible; the failure was reading them without checking. A rename would
 fix five instances and teach nothing.
 
