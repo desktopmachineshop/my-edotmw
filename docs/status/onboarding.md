@@ -142,3 +142,82 @@ Five things to know:
 #284**, immediately beneath this in the stack. Deliberately not
 duplicated: two sources of truth for "what should I do first" is the pair
 the one-list rule exists to prevent.
+
+---
+
+## The manual is generated, or it is stamped (#305)
+
+`D-20260828-the-manual-is-generated-or-it-is-stamped`, 2026-08-28. The
+owner's directive: an in-game instructions manual at **menu → Help**,
+with the full civ rosters and each civ's specific advantages and
+disadvantages — and the rule that **any future gameplay change keeps it
+up to date**.
+
+```
+just build-manual                       # re-stamp the prose pages
+just build-manual verify                # report, change nothing
+just menu-shot 5 1280x720 0 troops      # -> artifacts/manual-troops.png
+```
+
+Twelve pages. **F1** opens it in a match; both menus have a Help button
+beside Controls.
+
+Seven things to know:
+
+- **Every page is derived or stamped, and there is no third kind.**
+  Rosters, stats, counters, costs, buildings, formations and each civ's
+  advantages are computed from the shipped `.tres` **when the page is
+  opened**, so there is no copy for the data to disagree with and nothing
+  to rebuild. Prose — what fog is, how morale works, what wins a match —
+  is `/manual/*.tres`, each page naming the files it describes and
+  carrying a sha256 over them. A gameplay PR that moves a rule and
+  forgets the page goes RED in `just test-unit`.
+- **The stamp is PER PAGE.** `generated/manifest.json` holds one hash
+  over all of `art/`, and that is right for a bake — one atomic
+  operation, one run. A manual is not: the fog page is not invalidated by
+  a unit stat change. One hash would red every page on any gameplay PR,
+  and **a guard that fires on things it has nothing to say about is a
+  guard people learn to silence** (#204). A per-page stamp names the page
+  to re-read. It is also the D-095 lesson — a central manifest is a file
+  every parallel branch edits.
+- **A civ's advantages are MEASURED.** `civ_standing.gd` computes every
+  claim as a comparison: "Trains 15% faster than standard" from
+  `production_speed` against the schema default; "The only civ that
+  fields bombard and ram" from a count over `/units`; quality/quantity
+  from D-072's V and V/RP against the roster median; "Its troops never
+  rout" from the morale fields. **No `.gd` names a civ** and the existing
+  D-046 criterion 3 test is what keeps that honest — six sentences keyed
+  by id would have made a seventh civ a code change. A claim clears an 8%
+  **margin** rather than merely differing, or the page trains its reader
+  to skip it.
+- **Prose that quotes a number quotes the real one.** A page writes
+  `{Combat.CHAIN_ROUT_MORALE_LOSS}` and gets whatever `combat.gd` says —
+  the same constant-map lookup `controls_reference.gd` uses for its build
+  rows. The stamp would catch that drift; this makes the common case
+  unable to drift.
+- **Prose is `.tres`, not `.md`, and that was measured.**
+  `export_presets.cfg` excludes `*.md` from every shipping build, so a
+  Markdown manual would be in the checkout and **absent from the game**.
+- **Adding a page is a file.** A prose page is a `.tres` dropped in
+  `/manual`; a generated page is one registry entry and one function.
+  Naval (#301) and the tech tree (#206) each land as one of those.
+- **Writing it found #309, which is the third defect this batch found by
+  writing something down.** `shield_wall` and `testudo` ship with full
+  directional stats, are implemented and tested, and **no player can
+  order either**: both are `offered = false` and no shipped unit grants
+  them. The grants lived on `legion_heavy` and `northmen_spearmen`, and
+  `af9c3f4` (#191) replaced all 43 unit files. The formations page says
+  *"Not granted to any troops"*, because it reports what a player can DO
+  rather than what exists — omitting the rows would have hidden the one
+  fact that makes it useful. Filed, not fixed: which civ should have them
+  is a design call. After #302 (found enumerating the controls) and #214
+  (found putting `CivDef.summary` on screen).
+
+**And #282's fit guard fired on the very next change.** A fifth control
+group for the manual's key took the controls screen to **731 px against a
+720-high window**. It is at **705** now — which is the OPTIMUM, not a
+near miss: two contiguous columns over 31 rows cannot balance better than
+15/16, and the tall column is one group that is dealt whole. The next row
+added reds it, and the answer is to let a group break across columns
+rather than to raise the budget. That is written into `client.gd` at the
+split so nobody weakens the test instead.
