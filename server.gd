@@ -1209,6 +1209,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_stop(peer, data)
 			NetProtocol.C2S_ORDER_ATTACK_MOVE:
 				_handle_order_attack_move(peer, data)
+			NetProtocol.C2S_ORDER_EXPLORE:
+				_handle_order_explore(peer, data)
 			NetProtocol.C2S_ORDER_BUILD:
 				_handle_order_build(peer, data)
 			NetProtocol.C2S_ORDER_BUILD_QUEUE:
@@ -1319,6 +1321,25 @@ func _handle_order_attack_move(peer, data: PackedByteArray) -> void:
 		return
 	_pending_builds.erase(squad)
 	_sim.order_attack_move(squad, _sim.space.from_index(int(order["destination"])))
+
+
+## Explore (#120): hunt fog until told to stop.
+##
+## Validated through `_validated_squad` like every other squad order —
+## same ownership, same match-running check, same liveness — so a
+## hand-crafted packet can start no scouting a button could not. The
+## order carries no destination: choosing one, repeatedly, is what the
+## server is being asked to do, and it does it from the asking side's own
+## explored set (see `SquadSim._pick_explore_destination`).
+func _handle_order_explore(peer, data: PackedByteArray) -> void:
+	var order := NetProtocol.decode_order_explore(data)
+	var squad := _validated_squad(peer, int(order["squad"]))
+	if squad < 0:
+		return
+	# A builder told to go scouting has been told to stop building, the
+	# same as any other order that moves it.
+	_pending_builds.erase(squad)
+	_sim.order_explore(squad)
 
 
 ## A charge (D-20260819-a-charge-is-spent-on-its-impact) — validated like
