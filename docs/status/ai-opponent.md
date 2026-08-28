@@ -70,6 +70,23 @@ AI fixture seats its AI on team 0, which is explicitly not a team
 else (#119). A profile-vs-profile win rate says nothing about how a
 profile plays beside an ally.
 
+**The three profiles, in their own words.** These lived in
+`AiProfileDef.summary` and were read by nothing — the lobby has no
+per-seat difficulty control to show them on, so the field was deleted and
+the text moved here (D-20260828-a-summary-is-shown-or-it-is-deleted,
+#214). They come back as data, with a reader, in the same commit that
+adds that control.
+
+- **Cautious** — builds an economy well past the point of comfort, fields
+  an army slowly, and sends it in twos. Something to learn the game
+  against, and it still plays by every rule you do.
+- **Balanced** — the opponent this game shipped with. Switches to
+  soldiers once its economy is staffed and attacks with whatever is
+  standing.
+- **Relentless** — cuts its economy short, ramps hard, and masses before
+  it moves. It sees no more of the map than you do; it just stops
+  gathering sooner.
+
 **Still not built** (the increments are in the decision, in order):
 per-seat selection in the lobby beside civ and team; the behaviour half
 of #93 — defence, target selection by weakness, composition off the

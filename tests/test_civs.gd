@@ -282,3 +282,44 @@ func test_an_old_replay_without_seats_is_still_readable() -> void:
 	var replay := ReplayLog.read(path)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	assert_gt(int(replay["records"].size()), 0, "A replay with no seats record should still read")
+
+
+# --- a civ's pitch is SHOWN (#214) ------------------------------------
+
+func test_every_shipped_civ_has_a_pitch_worth_showing() -> void:
+	# `CivDef.summary` is player-facing text now
+	# (D-20260828-a-summary-is-shown-or-it-is-deleted), so it is held to
+	# the standard player-facing text is held to — including being real
+	# UTF-8, which all six were not (#231; `test_data_encoding.gd` is the
+	# general guard, this is the one that reads the STRING).
+	var seen := 0
+	for id in CivRoster.ids():
+		var def := CivRoster.by_id(id)
+		assert_not_null(def, "civ %s must load" % id)
+		assert_ne(def.summary.strip_edges(), "",
+			"civ %s tells a player nothing about itself" % id)
+		assert_false(def.summary.contains("�"),
+			"civ %s's pitch contains a replacement character — its file is not UTF-8" % id)
+		seen += 1
+	assert_gt(seen, 1, "there must be civs to check, or this proves nothing")
+
+
+func test_the_lobby_actually_reads_a_civs_pitch() -> void:
+	# The caller-exists scan (D-106's pattern), and the ONLY check that
+	# could have caught #214: every assertion above passes with the field
+	# shown nowhere, which is exactly the state it shipped in for a
+	# milestone. A field kept "for the lobby" that the lobby has never
+	# shown is what teaches the next reader to distrust the next comment.
+	var source := FileAccess.get_file_as_string("res://client.gd")
+	assert_ne(source, "", "Setup: client.gd should be readable")
+	var code := ""
+	for line in source.split("\n"):
+		if not line.strip_edges().begins_with("#"):
+			code += line + "\n"
+	assert_true(code.contains("def.summary"),
+		"nothing in client.gd reads CivDef.summary")
+	assert_true(code.contains("_civ_summary("),
+		"and nothing calls the helper that would put it on screen")
+	# On the control a civ is CHOSEN with, not merely computed somewhere.
+	assert_true(code.contains("set_item_tooltip(") or code.contains("picker.tooltip_text"),
+		"the pitch is computed and never attached to the civ picker")
