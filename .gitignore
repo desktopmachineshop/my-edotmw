@@ -1,5 +1,7 @@
-# Portable toolchain (Godot, just) — fetched by bootstrap, never committed
-tools/
+# Portable toolchain (Godot, just) — fetched by bootstrap, never committed.
+# Anchored to the repo root: an unanchored tools/ also swallowed
+# .claude/skills/*/tools/, which is committed content.
+/tools/
 
 # Godot import cache
 .godot/
