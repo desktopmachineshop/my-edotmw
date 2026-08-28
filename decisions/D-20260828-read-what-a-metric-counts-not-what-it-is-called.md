@@ -39,6 +39,32 @@ always plausible: two workers independently reported a warning "twice",
 and it had fired once. A count that is silently doubled looks exactly
 like a count.
 
+## The defence is at the DEFINITION site, not the reading site
+
+The companion entry's four modes are all defended by PERTURBATION —
+break the thing a check guards and watch it go red. **That defence does
+nothing here**, and the reason is worth stating: perturbing `wood_peak`
+just changes `wood_peak`. The metric is correct. There is nothing to
+break.
+
+So the defence is to say, where the field is DECLARED, what it counts —
+in units, and **including the case where the obvious reading fails**:
+
+```
+wood_peak    the highest wallet[WOOD] ever observed — which for a bot
+             that FOUNDS is its opening bank, because it spends 150
+             first and never exceeds the start. Cannot distinguish
+             "never gathered" from "gathered less than the opening".
+buildings    buildings KNOWN, including other players'. Not owned.
+squads_peak  read against an opening of TWO — a crew AND a general.
+```
+
+The third line is what a definition owes its reader: not what the field
+is, which the name already claims, but **which question it cannot
+answer**. `wood_peak` is not wrong about gathering; it is silent about
+it, and silence read as zero is what sent one worker hunting a starved
+economy that was not there.
+
 ## Consequences
 
 - **A metric that crosses a boundary is read at the far side.** Same rule
