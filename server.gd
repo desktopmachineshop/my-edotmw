@@ -1424,6 +1424,105 @@ func _all_squad_ids() -> Array:
 	return ids
 
 
+## The client says WHO it is (#186, D-090).
+##
+## Sent once on connect, and it may RECLAIM a seat: if this identity
+## already holds one whose human is absent, the peer is re-pointed at
+## that seat and the AI holding it stands down. That is repossession —
+## "identified by SteamID, not connection", because the per-connection
+## ownership cache was already this project's bug once (D-038).
+##
+## There is no timeout. D-090 is explicit that the AI holding the seat IS
+## the grace mechanism, indefinitely.
+func _handle_identify(peer, data: PackedByteArray) -> void:
+	var record = _record_for(peer)
+	if record == null:
+		return
+	var token := PlayerIdentity.normalise(String(NetProtocol.decode_identify(data)["token"]))
+	if token == PlayerIdentity.ANONYMOUS:
+		# Not an error. A client that declines to identify plays exactly
+		# as it did before identity existed and simply cannot be
+		# repossessed — which is every load-test bot, deliberately.
+		return
+
+	var mine := int(record["player"])
+	var held := _match.seat_for_identity(token)
+	if held < 0 or held == mine:
+		_match.bind_identity(mine, token)
+		return
+	if not _match.seat_is_reclaimable(held):
+		# Somebody is already sitting there. Refusing is the only safe
+		# answer: an identity is not a password, it arrives from an
+		# untrusted client (D-002), and handing over an OCCUPIED seat on
+		# the strength of one would be an impersonation bug rather than a
+		# reconnection feature.
+		_notify(peer, "That seat is in use")
+		return
+
+	_reclaim_seat(peer, mine, held)
+
+
+## Repossess `held` for the connection that just identified as its owner.
+##
+## The provisional seat this peer was given on connect is discarded: it
+## was minted before anybody knew who was arriving, which is exactly why
+## `_on_connect` cannot be the place identity is decided.
+func _reclaim_seat(peer, provisional: int, held: int) -> void:
+	_dismiss_ai_holding(held)
+	_match.remove_human_seat(provisional)
+	if _sim != null:
+		_sim.replicator.forget_client(provisional)
+	_clients[peer] = {"player": held, "visible": {}}
+	_match.reclaim_seat(held)
+	# A fresh join, which is the whole reason rejoin is cheap: D-025's
+	# reveal semantics already define how ANY client learns current state
+	# — horizon-clipped curves, sent fresh, no synthetic catch-up. The
+	# building baseline is cleared with `visible` above so the
+	# ever-revealed set (D-030) is replayed rather than diffed against a
+	# seat the AI was holding; that set is what the server HASHES, and it
+	# is the trap D-090 names by name.
+	_admit_player(peer, held)
+	print("server: player %d reclaimed their seat (was provisional %d)" % [held, provisional])
+
+
+## Take the AI off a seat its owner has come back to.
+func _dismiss_ai_holding(player: int) -> void:
+	for peer in _ai_clients.keys():
+		if int(_ai_clients[peer]["player"]) != player:
+			continue
+		_ai_clients.erase(peer)
+		if _sim != null:
+			_sim.replicator.forget_client(player)
+		break
+	for i in range(_ai_players.size() - 1, -1, -1):
+		if _ai_players[i].player == player:
+			_ai_players.remove_at(i)
+
+
+## A human dropped: the seat passes to an AI, and the army stands
+## (D-090, superseding D-033's wipe-on-disconnect for humans).
+##
+## The AI comes up with the seat's CIV and TEAM intact. #186 names that
+## as the mislabel one wrong writer away, and it is the
+## D-20260817-an-ai-never-holds-the-lobby family: an AI that inherited a
+## seat and changed its civ would field another civilisation's troops
+## mid-match, with nothing failing.
+func _hand_seat_to_ai(player: int) -> void:
+	if not _match.hand_seat_to_ai(player):
+		return
+	var civ := _civ_of(player)
+	var brain := AiPlayer.new(player, civ)
+	brain.economy_only = _match.ai_economy_only
+	var peer := LoopbackPeer.new(brain.state)
+	brain.send = func(packet: PackedByteArray) -> void:
+		_dispatch(peer, packet)
+	_civs[player] = civ
+	_ai_clients[peer] = {"player": player, "visible": {}}
+	_ai_players.append(brain)
+	_admit_player(peer, player)
+	print("server: player %d disconnected — an AI holds the seat (%s)" % [player, civ])
+
+
 ## `peer` is untyped for the same reason `_admit_connection`'s is:
 ## nothing here is ENet-specific — it is a dictionary key and a client
 ## record — and a rule that can only be reached through a real UDP
@@ -1474,6 +1573,23 @@ func _on_disconnect(peer) -> void:
 				_refresh_passability()
 				print("server: razed %d abandoned building(s) of player %d" % [
 					razed.size(), player])
+
+			# D-090's REPOSSESSION IS DEFERRED, and this is the site it
+			# will land on (#186, ruling on #356). Under D-090 a dropped
+			# seat is taken by an AI and reclaimed on return, which
+			# supersedes the wipe above — but #292/#318 is landed, guarded
+			# seven ways in tests/test_disconnect_elimination.gd, and
+			# fixed an OBSERVED rage-quit stall, so it wins today.
+			#
+			# `MatchState.hand_seat_to_ai` and `reclaim_seat` therefore
+			# ship WITHOUT their production call site. That is deliberate
+			# and it is the thing this comment exists to prevent being
+			# silent: they are exercised end to end by
+			# tests/test_seat_identity.gd, and the day M8 wires D-090 here,
+			# #292/#318's seven guards are re-derived — which that entry
+			# already predicts, because a seat that keeps playing makes
+			# "the remaining player wins rather than running to the cap"
+			# false by design.
 		else:
 			# Gone from the lobby, so the seat goes too — otherwise it sits
 			# there forever as a player who will never arrive, and the admin
@@ -1560,6 +1676,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_order_attack_move(peer, data)
 			NetProtocol.C2S_ORDER_EXPLORE:
 				_handle_order_explore(peer, data)
+			NetProtocol.C2S_IDENTIFY:
+				_handle_identify(peer, data)
 			NetProtocol.C2S_ORDER_BUILD:
 				_handle_order_build(peer, data)
 			NetProtocol.C2S_ORDER_BUILD_QUEUE:
