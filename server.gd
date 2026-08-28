@@ -450,6 +450,22 @@ func _ready() -> void:
 func _build_world() -> void:
 	if _sim != null:
 		return
+	# The world is generated for the players who will be IN it (#276).
+	#
+	# HERE rather than at the call site, because there are two: `_ready()`
+	# on the `--lobby=0` path, which builds before the `--ai=N` seating
+	# loop has run, and match start on the lobby path, which builds after
+	# everyone is seated. Deriving at one of them would have left the
+	# other wrong, and it was the lobbyless one that was — six AI on a map
+	# authored for four sampled FOUR starting positions, silently, and
+	# seats 4 and 5 were placed on seats 0 and 1 by `spawn_index_in`'s
+	# modulo.
+	#
+	# `expect_seats` takes the larger of what is expected and what is
+	# already seated and never shrinks the map, so putting it on the
+	# shared path cannot disturb the lobby's own derivation.
+	if _match != null:
+		_match.ensure_seats_fit(_match.players_expected)
 	var space := _settings.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
 
@@ -762,7 +778,7 @@ func _print_summary(reason: String) -> void:
 	# another one, because it needs conditions of its own (#111).
 	print(_memory_line(OS.get_static_memory_usage(), OS.get_static_memory_peak_usage()))
 
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d attack_moves_resumed=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
@@ -771,6 +787,12 @@ func _print_summary(reason: String) -> void:
 		_sim.vision_rebuilds,
 		float(_worst_tick_usec) / 1000.0,
 		_sim.field_waits,
+		# ZERO in a match with fighting in it means D-034's halt is
+		# permanent again (#249) — the counter exists to say so, and a
+		# counter nothing prints is the declared-and-unread defect this
+		# project keeps paying for, which would be an unusually poor way
+		# to instrument a fix for exactly that family.
+		_sim.attack_moves_resumed,
 	])
 	print("server: transport — peak RTT %.1fms, peak loss %.3f%%, min throttle %.2f of 1.00, all reliable on channel 0" % [
 		_peak_rtt_ms, _peak_loss_fraction * 100.0,
@@ -3145,9 +3167,15 @@ func _on_match_started() -> void:
 	# The world's concrete numbers, before anybody is admitted: a client
 	# has to be able to generate the SAME terrain, and it cannot do that
 	# from a preset name (D-049).
+	# _recipients(), for the reason in `_handle_chat` (#253). No live
+	# defect today — AI seats are created just below and get their own
+	# settings through `_admit_player` — but this is the same shape as the
+	# three drifts that HAVE cost something, and a broadcast that is
+	# correct only because of when it happens to run is one reordering
+	# away from being wrong.
 	var settings_packet := NetProtocol.encode_map_settings(_settings.to_dict())
-	for peer in _clients:
-		(peer as ENetPacketPeer).send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
+	for peer in _recipients():
+		peer.send(0, settings_packet, ENetPacketPeer.FLAG_RELIABLE)
 
 	for seat in _match.seats:
 		var player := int(seat["player"])
@@ -3398,9 +3426,19 @@ func _handle_chat(peer, data: PackedByteArray) -> void:
 		if seat >= 0:
 			speaker = String(_match.seats[seat]["name"])
 
+	# Through _recipients(), not _clients — the THIRD time this file has
+	# drifted from that rule (#253; _recipients' own doc records the other
+	# two). An AI seat never reading chat is why it survived; it stops
+	# being free the moment a non-socket peer is a HUMAN, which is what an
+	# in-process host is, and that player saw no chat at all including
+	# their own.
+	#
+	# No `as ENetPacketPeer` cast either: an AI seat is a LoopbackPeer, so
+	# the cast yields null and hands `.send` a null the moment anybody
+	# speaks. Every other broadcast calls `peer.send` directly.
 	var packet := NetProtocol.encode_chat(speaker, text)
-	for other in _clients:
-		(other as ENetPacketPeer).send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
+	for other in _recipients():
+		other.send(0, packet, ENetPacketPeer.FLAG_RELIABLE)
 	print("server: chat <%s> %s" % [speaker, text])
 
 
