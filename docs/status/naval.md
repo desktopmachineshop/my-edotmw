@@ -137,6 +137,36 @@ Five things to know:
   this**: a naval map needs its water to close, or `islands` will seat
   starts that are reachable on foot.
 
+**And the predicate deadlocked, which is why #351 has TWO causes.**
+`needs_ships` asked "does my landmass hold a known enemy building?" — and
+an AI cannot LEARN of an enemy across water without crossing, or cross
+before it has learned. Found by worker 88 on the integrated tree, and
+measured before concluding: on the default map the four seats land on
+3-4 DIFFERENT islands, so placement was fine and `wants_navy` was still 0
+with `enemy_buildings_seen=0` on all eight seat-matches.
+
+It was designed in. This file argued at length that "knowing of no enemy
+is not a reason to build a navy", which is right for a land map and is
+its own exact mirror on a water one — the predicate could not tell "I
+have cleared my island" from "I have never left my beach", and those
+want opposite answers.
+
+There are THREE states now, not two: an enemy on my landmass (fight on
+foot), an enemy off it (sail), and nobody known — which splits on whether
+the AI has LOOKED. Having scouted and found nobody, with substantial land
+it cannot walk to, is not ignorance; it is having run out of world.
+`min_spawn_landmass` decides "substantial" (D-104's own number, reused),
+because generated maps are full of islets and every one of them would
+otherwise be a reason to build a dock.
+
+**And a dock was being built with no naval intent at all.**
+`_wanted_buildings()` returns every def a gatherer may build, so seats
+with `wants_navy=0 ships_peak=0` reported `docks=1`. The wasted wood is
+the small half: §6.2's vacuity ladder gates FIRST on "no dock was ever
+built", so a dock nobody meant would carry the gate past its first leg
+and make it name the WRONG one. Excluded by `needs_shore` rather than by
+id, so the next shore building inherits the rule.
+
 **Found on the way, filed not fixed:** seven shipped `.tres` files are
 not UTF-8, so every Godot run prints twelve parse warnings (#338).
 

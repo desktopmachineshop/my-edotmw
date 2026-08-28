@@ -349,3 +349,117 @@ func test_the_default_profile_still_sails() -> void:
 	# same argument AiProfileDef.new()'s other schema defaults make.
 	assert_gt(AiProfileDef.new().naval_commitment, 0.0,
 		"a profile that forgot the field must still put to sea")
+
+
+# --- the deadlock 88 found on the integrated tree (#351) ----------------
+
+func test_an_ai_that_has_cleared_its_island_wants_ships() -> void:
+	# THE defect, and it was designed in. The predicate asked "does my
+	# landmass hold a known enemy building?" — and an AI cannot LEARN of
+	# an enemy across water without crossing, or cross before it has
+	# learned. Measured by 88 on the integrated tree: on the default map
+	# the four seats land on 3-4 different islands, placement is fine, and
+	# `wants_navy=0` with `enemy_buildings_seen=0` on all eight
+	# seat-matches.
+	#
+	# The predicate could not tell "I have cleared my island" from "I have
+	# never left my beach". Those want opposite answers, and it gave both
+	# of them the same one.
+	var space := _space()
+	var world := _two_islands(space)
+	var sizes: PackedInt32Array = MapConfig.walkable_components(
+		space, world["passable"])["sizes"]
+	var home := space.index(Vector2i(3, 5))
+
+	assert_true(AiNaval.needs_ships(world["labels"], home, [], true, sizes, 8),
+		"an AI that has scouted, knows of no enemy, and can see land it cannot "
+		+ "walk to has run out of world — that is what a navy is for")
+
+
+func test_an_ai_that_has_not_scouted_still_does_not_build_a_navy() -> void:
+	# The original guard, which must survive the fix. "I have seen
+	# nothing, so there must be an ocean between us" is how an AI on an
+	# ordinary land map talks itself into a fleet before it has looked.
+	var space := _space()
+	var world := _two_islands(space)
+	var sizes: PackedInt32Array = MapConfig.walkable_components(
+		space, world["passable"])["sizes"]
+	assert_false(AiNaval.needs_ships(world["labels"], space.index(Vector2i(3, 5)),
+			[], false, sizes, 8),
+		"an AI that has not looked yet must not conclude anything from its ignorance")
+
+
+func test_a_cleared_island_with_nowhere_to_sail_wants_nothing() -> void:
+	# The other half of the same question: having run out of world is only
+	# a reason if there IS another world. On one landmass this is a land
+	# map with a slow scout, not an archipelago.
+	var space := _space()
+	var labels := _one_island(space)
+	var sizes: PackedInt32Array = MapConfig.walkable_components(
+		space, _all_land(space))["sizes"]
+	assert_false(AiNaval.needs_ships(labels, space.index(Vector2i(3, 5)),
+			[], true, sizes, 8),
+		"there is nowhere a boat could take this army that its feet cannot")
+
+
+func test_a_rock_is_not_a_reason_to_build_a_navy() -> void:
+	# `min_landmass` is D-104's own definition of enough ground for a
+	# start (`MapConfig.min_spawn_landmass`), reused rather than restated.
+	# Without it a single stray islet — and generated maps are full of
+	# them — is "land I cannot reach on foot", and every AI on every map
+	# builds a dock.
+	var space := _space()
+	var world := _two_islands(space)
+	var sizes: PackedInt32Array = MapConfig.walkable_components(
+		space, world["passable"])["sizes"]
+	var home := space.index(Vector2i(3, 5))
+	assert_false(AiNaval.needs_ships(world["labels"], home, [], true, sizes, 100000),
+		"no landmass on this map is worth sailing to at that threshold")
+
+
+func test_a_known_enemy_still_decides_it_either_way() -> void:
+	# Knowledge outranks exhaustion. Once the AI has actually SEEN an
+	# enemy, where they are is a better answer than where they might be —
+	# in both directions, and neither depends on having scouted.
+	var space := _space()
+	var world := _two_islands(space)
+	var sizes: PackedInt32Array = MapConfig.walkable_components(
+		space, world["passable"])["sizes"]
+	var home := space.index(Vector2i(3, 5))
+	assert_true(AiNaval.needs_ships(world["labels"], home,
+			[space.index(Vector2i(15, 5))], false, sizes, 8),
+		"an enemy seen across water is a reason even before scouting is done")
+	assert_false(AiNaval.needs_ships(world["labels"], home,
+			[space.index(Vector2i(5, 8))], true, sizes, 8),
+		"and an enemy on my own island is a reason NOT to, however much I have looked")
+
+
+func _all_land(space: TorusSpace) -> PackedByteArray:
+	var passable := PackedByteArray()
+	passable.resize(space.cell_count())
+	passable.fill(1)
+	return passable
+
+
+# --- a dock is built with naval intent, or not at all ------------------
+
+func test_the_ordinary_building_list_does_not_include_a_dock() -> void:
+	# 88 measured `docks=1` on a seat with `wants_navy=0` and
+	# `ships_peak=0`: `_wanted_buildings()` returns every buildable def,
+	# so a dock was raised as ordinary infrastructure with no naval intent
+	# at all.
+	#
+	# That matters beyond the wasted wood. §6.2's vacuity ladder gates
+	# FIRST on "no dock was ever built", so a dock nobody meant to build
+	# would carry the gate past its first leg and report the wrong one —
+	# a check that lies about WHICH thing broke is worse than one that
+	# only says something did.
+	var source := FileAccess.get_file_as_string("res://ai_player.gd")
+	assert_false(source.is_empty(), "could not read ai_player.gd to scan it")
+	var at := source.find("func _wanted_buildings")
+	assert_gt(at, 0, "there must be a _wanted_buildings to scan")
+	var body := source.substr(at, source.find("\nfunc ", at + 10) - at)
+	assert_true(body.contains("needs_shore") or body.contains("dock"),
+		"_wanted_buildings must exclude shore buildings — the naval investment "
+		+ "raises the dock, and a dock raised without naval intent breaks the gate's "
+		+ "first leg")
