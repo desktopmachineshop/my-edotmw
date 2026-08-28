@@ -136,7 +136,8 @@ static func _worthwhile_land_elsewhere(land_labels: PackedInt32Array,
 ## transport that puts to sea with no destination is an army removed from
 ## the match by its own side.
 static func landing_target(space: TorusSpace, land_labels: PackedInt32Array,
-		home: int, enemy_cells: Array) -> int:
+		home: int, enemy_cells: Array,
+		land_sizes := PackedInt32Array(), min_landmass: int = 0) -> int:
 	var mine := component_of(land_labels, home)
 	var best := -1
 	var best_distance := 0
@@ -144,6 +145,51 @@ static func landing_target(space: TorusSpace, land_labels: PackedInt32Array,
 	for cell in enemy_cells:
 		var index := int(cell)
 		if component_of(land_labels, index) == mine:
+			continue
+		var d := space.distance(origin, space.from_index(index))
+		if best == -1 or d < best_distance or (d == best_distance and index < best):
+			best = index
+			best_distance = d
+	if best >= 0:
+		return best
+
+	# NOBODY KNOWN, AND THAT IS A REASON TO SAIL RATHER THAN A REASON TO
+	# STAY. `needs_ships` has three states, and its third — I have looked,
+	# found nobody, and there is worthwhile land I cannot walk to — is
+	# satisfied precisely when `enemy_cells` is EMPTY. Serving only the
+	# known-enemy case left that AI boarding a transport with nowhere to
+	# go: the header above warns that "a transport that puts to sea with
+	# no destination is an army removed from the match by its own side",
+	# and an AI sailing because it had run out of world walked straight
+	# into it. Measured at a 1200 s cap on maps/isles.tres: docks=1,
+	# ships_peak=2, embarks=1, landings=0, stuck on `naval_step=landing`.
+	#
+	# So it sails to FIND OUT — the nearest cell of the nearest landmass
+	# it cannot walk to and that is big enough to hold a base. That is the
+	# same set `_worthwhile_land_elsewhere` says yes to, so the AI lands
+	# exactly where its own reason for sailing pointed.
+	return _nearest_worthwhile_landfall(
+		space, land_labels, land_sizes, mine, min_landmass, origin)
+
+
+## The nearest cell on a landmass this side cannot walk to and that could
+## hold a base.
+##
+## Deterministic on ties by cell index, like the enemy scan above, so a
+## replay puts the same army on the same beach.
+static func _nearest_worthwhile_landfall(space: TorusSpace,
+		land_labels: PackedInt32Array, land_sizes: PackedInt32Array,
+		mine: int, min_landmass: int, origin: Vector2i) -> int:
+	var best := -1
+	var best_distance := 0
+	for index in range(land_labels.size()):
+		var label := land_labels[index]
+		if label < 0 or label == mine:
+			continue
+		# An unknown size does not qualify, for the same reason it does
+		# not in `_worthwhile_land_elsewhere`: a caller that forgot the
+		# sizes must get "nowhere to go", never "anywhere will do".
+		if label >= land_sizes.size() or land_sizes[label] < min_landmass:
 			continue
 		var d := space.distance(origin, space.from_index(index))
 		if best == -1 or d < best_distance or (d == best_distance and index < best):

@@ -610,3 +610,87 @@ func _read_file(path: String) -> String:
 	var text := handle.get_as_text()
 	handle.close()
 	return text
+
+
+func test_an_ai_that_has_run_out_of_world_has_somewhere_to_sail() -> void:
+	# THE FIFTH DEFECT, and it was created by my own #351 fix.
+	#
+	# `needs_ships` has three states, and the third — I have looked, found
+	# nobody, and there is worthwhile land I cannot walk to — is satisfied
+	# precisely when `enemy_cells` is EMPTY. `landing_target` served only
+	# the known-enemy case and returned -1, so `_put_ashore` returned at
+	# its first line and the AI boarded a transport with nowhere to go.
+	#
+	# `landing_target`'s own header warned about exactly this: "a
+	# transport that puts to sea with no destination is an army removed
+	# from the match by its own side". Adding a reason to sail that the
+	# target function could not serve walked straight into it.
+	#
+	# Measured at a 1200 s cap on maps/isles.tres before the fix: docks=1,
+	# ships_peak=2, embarks=1, landings=0, naval_step=landing.
+	var space := TorusSpace.new(24, 12)
+	var labels := PackedInt32Array()
+	labels.resize(space.cell_count())
+	labels.fill(-1)
+	var sizes := PackedInt32Array([200, 200])
+	# Home island on the left, a worthwhile one on the right.
+	for r in range(space.height):
+		for q in range(0, 6):
+			labels[space.index(Vector2i(q, r))] = 0
+		for q in range(14, 20):
+			labels[space.index(Vector2i(q, r))] = 1
+	var home := space.index(Vector2i(2, 6))
+
+	var target := AiNaval.landing_target(space, labels, home, [], sizes, 96)
+	assert_gte(target, 0,
+		"an AI sailing because it has run out of world must have a "
+		+ "destination — otherwise it boards a hull and sits there")
+	assert_eq(AiNaval.component_of(labels, target), 1,
+		"and the destination is the landmass it cannot walk to")
+
+
+func test_a_rock_is_not_a_landfall_either() -> void:
+	# The mirror, so the fallback cannot become "sail anywhere". The same
+	# min_spawn_landmass filter that decides whether to sail decides where
+	# to land, or the AI would cross to an islet it had already ruled out
+	# as a reason for going.
+	var space := TorusSpace.new(24, 12)
+	var labels := PackedInt32Array()
+	labels.resize(space.cell_count())
+	labels.fill(-1)
+	var sizes := PackedInt32Array([200, 4])
+	for r in range(space.height):
+		for q in range(0, 6):
+			labels[space.index(Vector2i(q, r))] = 0
+	for q in range(14, 18):
+		labels[space.index(Vector2i(q, 6))] = 1
+	var home := space.index(Vector2i(2, 6))
+
+	assert_eq(AiNaval.landing_target(space, labels, home, [], sizes, 96), -1,
+		"a four-cell rock is not worth a crossing, and saying -1 keeps "
+		+ "the army at home rather than on a hull going nowhere")
+
+
+func test_a_known_enemy_still_outranks_the_exploring_fallback() -> void:
+	# Order matters: knowing where somebody IS beats guessing where they
+	# might be, and the fallback must not steal a target from the case it
+	# was added beside.
+	var space := TorusSpace.new(24, 12)
+	var labels := PackedInt32Array()
+	labels.resize(space.cell_count())
+	labels.fill(-1)
+	var sizes := PackedInt32Array([200, 200, 200])
+	for r in range(space.height):
+		for q in range(0, 6):
+			labels[space.index(Vector2i(q, r))] = 0
+		for q in range(8, 12):
+			labels[space.index(Vector2i(q, r))] = 1
+		for q in range(16, 20):
+			labels[space.index(Vector2i(q, r))] = 2
+	var home := space.index(Vector2i(2, 6))
+	var enemy := space.index(Vector2i(17, 6))
+
+	assert_eq(AiNaval.landing_target(space, labels, home, [enemy], sizes, 96),
+		enemy,
+		"a known enemy is the target even when a nearer unknown landmass "
+		+ "exists — the fallback is for when nobody is known at all")

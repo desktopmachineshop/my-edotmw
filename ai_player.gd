@@ -1065,7 +1065,12 @@ func _go_to_sea() -> void:
 		naval_step = "none"
 		return
 
-	var target := AiNaval.landing_target(state.space, _land_labels, home, enemies)
+	# The sizes and the floor go with it: with no enemy known, the target
+	# is the nearest landmass worth crossing to, and "worth" is D-104's
+	# min_spawn_landmass — the same number `needs_ships` decided on.
+	var target := AiNaval.landing_target(state.space, _land_labels, home,
+		enemies, _land_sizes,
+		int(state.map_settings.get("min_spawn_landmass", 0)))
 	var steps := AiNaval.steps(
 		func(): return docks > 0,
 		func(): _raise_dock(),
