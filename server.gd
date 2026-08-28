@@ -514,9 +514,9 @@ func _build_world() -> void:
 	# draws these too, and the last time each side built its own sampler
 	# the preview marked twenty starts of which none were real.
 	var spawn_config := _settings.to_spawn_config()
-	_spawn_points = spawn_config.spawn_points(_passable)
+	_spawn_points = spawn_config.spawn_points(_passable, _navigable)
 
-	var seating := spawn_config.validate_spawns(_passable)
+	var seating := spawn_config.validate_spawns(_passable, _navigable)
 	if seating != "":
 		# Not fatal: a short-seated map still plays, players just share
 		# starts. Fatal would take down a running server over a map tuning
