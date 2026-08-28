@@ -264,3 +264,29 @@ func test_both_sides_ask_the_spawn_question_with_the_water_graph() -> void:
 		var tail := code.substr(at, 220)
 		assert_true(tail.contains("navigab"),
 			"%s calls spawn_points without the water graph" % path)
+
+
+# --- "islands back in the lobby" ---------------------------------------
+
+func test_islands_is_offered_in_the_lobby() -> void:
+	# The cut-list's last row, and the design's §9: the preset becomes
+	# visible on the day it becomes playable.
+	#
+	# On THIS branch it never left. `TerrainPreset.playable` is worker 80's
+	# retirement mechanism (PR #299,
+	# D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross) and it
+	# is not in this tree, so there is no bool here to flip — `islands` is
+	# in `TerrainPresetRoster.ids()`, which is the one list both the lobby
+	# picker and the server's preset channel cycle.
+	#
+	# THIS TEST IS THE INTERLOCK. If #299 lands first and retires the
+	# preset, this goes red — which is exactly the signal wanted, because
+	# by then the seating and reachability below have made it playable and
+	# the flip is one line. A comment could not do that.
+	var offered := TerrainPresetRoster.ids()
+	assert_true(offered.has(&"islands"),
+		"islands must be selectable — naval stage 9 is what makes it playable")
+	# And it is offered because it is OFFERABLE, not by accident: the rows
+	# above prove the same preset seats its full slot count with every
+	# start reachable.
+	assert_gt(offered.size(), 1, "Setup: there are presets to choose between")
