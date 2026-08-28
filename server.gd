@@ -450,6 +450,22 @@ func _ready() -> void:
 func _build_world() -> void:
 	if _sim != null:
 		return
+	# The world is generated for the players who will be IN it (#276).
+	#
+	# HERE rather than at the call site, because there are two: `_ready()`
+	# on the `--lobby=0` path, which builds before the `--ai=N` seating
+	# loop has run, and match start on the lobby path, which builds after
+	# everyone is seated. Deriving at one of them would have left the
+	# other wrong, and it was the lobbyless one that was — six AI on a map
+	# authored for four sampled FOUR starting positions, silently, and
+	# seats 4 and 5 were placed on seats 0 and 1 by `spawn_index_in`'s
+	# modulo.
+	#
+	# `expect_seats` takes the larger of what is expected and what is
+	# already seated and never shrinks the map, so putting it on the
+	# shared path cannot disturb the lobby's own derivation.
+	if _match != null:
+		_match.ensure_seats_fit(_match.players_expected)
 	var space := _settings.to_space()
 	_sim = SquadSim.new(space, CurveReplicator.new())
 
