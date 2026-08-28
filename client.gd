@@ -529,9 +529,14 @@ func _finish_capture() -> void:
 		# otherwise the capture races rendering and yields an empty image.
 		await RenderingServer.frame_post_draw
 		image = get_viewport().get_texture().get_image()
-		var directory := _screenshot_path.get_base_dir()
-		if directory != "" and not DirAccess.dir_exists_absolute(directory):
-			DirAccess.make_dir_recursive_absolute(directory)
+		# `res://` is read-only in an exported build (#201); the identity
+		# in a checkout, so `--screenshot=res://artifacts/client-frame.png`
+		# still lands where `just test-client` looks for it.
+		_screenshot_path = ArtifactPath.resolve(_screenshot_path)
+		var dir_error := ArtifactPath.ensure_dir_for(_screenshot_path)
+		if dir_error != OK:
+			push_error("client: could not create %s (error %d)"
+				% [_screenshot_path.get_base_dir(), dir_error])
 		if image.save_png(_screenshot_path) == OK:
 			print("client: wrote %s (%dx%d)" % [
 				_screenshot_path, image.get_width(), image.get_height()])
