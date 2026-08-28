@@ -124,6 +124,17 @@ class_name AiProfileDef
 @export var food_floor: int = 180
 @export var wood_floor: int = 200
 
+## How many FIELDS this opponent wants standing
+## (D-20260828-food-is-grown-not-only-found). Unlike the floors above this
+## IS a difficulty axis, and for the reason that decision is about: a farm
+## is a one-time wood cost bought against perpetual food, so how many an
+## opponent is willing to fund is exactly the long-game ambition that
+## separates the easy end of the ladder from the hard end.
+##
+## A farm is the only building an AI wants more than one of, which is why
+## `_wanted_count` exists rather than `_owned_building_count(id) > 0`.
+@export var farms_wanted: int = 4
+
 
 ## Returns "" if valid, else the reason. Called at load, so a broken
 ## profile fails loudly rather than producing an opponent that quietly
@@ -144,6 +155,8 @@ func validate() -> String:
 		return "ai profile %s re-orders its army every think" % id
 	if food_floor < 0 or wood_floor < 0:
 		return "ai profile %s has a negative resource floor" % id
+	if farms_wanted < 0:
+		return "ai profile %s wants a negative number of fields" % id
 	return ""
 
 

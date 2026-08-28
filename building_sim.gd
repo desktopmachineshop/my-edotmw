@@ -445,6 +445,14 @@ func blocking_cells() -> PackedInt32Array:
 			continue
 		if _defs[i].footprint_radius == 0 and _progress[i] < 1.0:
 			continue
+		# A FIELD is ground, not a wall (D-20260828-food-is-grown-not-only-
+		# found). A crew is ordered onto a farm the way it is ordered onto a
+		# forest, and `Economy` decides it has arrived by comparing its cell
+		# with the work cell — so a farm that blocked its own cell would be
+		# a building nobody could ever work. This is the only reader of
+		# `blocks_movement`, and every def but the farm keeps the default.
+		if not _defs[i].blocks_movement:
+			continue
 		out.append_array(span_cells(i))
 	return out
 

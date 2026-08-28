@@ -73,6 +73,24 @@ var _hauls := {}
 ## nothing in the simulation reads it back.
 var _depleted := []
 
+## The RENEWABLE half of the ledger
+## (D-20260828-food-is-grown-not-only-found): cell index -> { "kind": int,
+## "stock": float, "capacity": int, "regrow": float }.
+##
+## A farm is a work site a crew is ordered onto exactly as it is ordered
+## onto a forest — the difference is that its stock GROWS rather than only
+## running down, so a match's economy is a rate rather than a fixed pile.
+##
+## Deliberately NOT in `nodes`. A node is ground the map generator placed
+## and the wire reveals; a farm is a BUILDING, already replicated and
+## already fog-gated knowledge (D-030), so putting it here would put a
+## forest's worth of tree visuals on top of somebody's field and add a
+## wire message for a fact both sides already hold.
+##
+## DERIVED from the buildings by `sync_farms`, never accumulated — see
+## that function for why.
+var farms := {}
+
 
 func _init(p_space: TorusSpace = null) -> void:
 	space = p_space if p_space != null else TorusSpace.new()
@@ -462,6 +480,131 @@ func kind_at(cell_index: int) -> int:
 	return int(nodes[cell_index]["kind"]) if nodes.has(cell_index) else -1
 
 
+## Which resource a building of this type GROWS, or -1
+## (D-20260828-food-is-grown-not-only-found). The one translation from
+## `BuildingDef.grows` to `ResourceKind`, so nothing else has to know the
+## field is spelled as a string.
+static func grows_kind(def: BuildingDef) -> int:
+	if def == null:
+		return -1
+	match def.grows:
+		"food":
+			return ResourceKind.FOOD
+		"wood":
+			return ResourceKind.WOOD
+		"gold":
+			return ResourceKind.GOLD
+		"stone":
+			return ResourceKind.STONE
+		_:
+			return -1
+
+
+## Rebuild the farm registry from the buildings that are actually standing.
+##
+## DERIVED rather than hooked onto construction, and that is the load-
+## bearing choice. A building becomes complete down several paths — an
+## ordinary build finishing, the sandbox's instant build, an in-place
+## upgrade, `Scenario.apply_player` — and a hook has to be remembered at
+## every one of them. #119's finding is that the handover nothing performs
+## is the dangerous half, so this asks the buildings instead: whatever is
+## living and complete and grows something IS a farm, and nothing else is.
+##
+## Stock already grown SURVIVES a resync (the same field, still standing,
+## has not stopped growing because something else was built) while a razed
+## farm's entry does not — its crew then finds no work site and retargets
+## or is released, exactly as it does at a worked-out tree.
+##
+## Called from `server._buildings_changed()`, beside `_refresh_passability()`,
+## because both answer the identical question: the set of living buildings
+## changed. O(buildings), and only when one is raised or lost.
+func sync_farms(buildings: BuildingSim) -> void:
+	if buildings == null:
+		farms.clear()
+		return
+	var live := {}
+	for i in range(buildings.building_count()):
+		if buildings.is_destroyed(i) or not buildings.is_complete(i):
+			continue
+		var def := buildings.def_of(i)
+		var kind := grows_kind(def)
+		if kind < 0 or def.grow_per_second <= 0.0:
+			continue
+		var cell := buildings.cell_index_of(i)
+		live[cell] = true
+		if farms.has(cell) and int(farms[cell]["kind"]) == kind:
+			farms[cell]["capacity"] = def.grow_capacity
+			farms[cell]["regrow"] = def.grow_per_second
+			farms[cell]["owner"] = buildings.owner_of(i)
+			continue
+		farms[cell] = {
+			"kind": kind,
+			"stock": 0.0,
+			"capacity": def.grow_capacity,
+			"regrow": def.grow_per_second,
+			"owner": buildings.owner_of(i),
+		}
+	for cell in farms.keys():
+		if not live.has(cell):
+			farms.erase(cell)
+
+
+func has_farm(cell_index: int) -> bool:
+	return farms.has(cell_index)
+
+
+func farm_count() -> int:
+	return farms.size()
+
+
+## Whole units a crew could carry off this farm right now. Floored, because
+## `carrying` is an integer count of things — the part-grown remainder stays
+## in the ground.
+func farm_stock(cell_index: int) -> int:
+	if not farms.has(cell_index):
+		return 0
+	return int(floor(float(farms[cell_index]["stock"])))
+
+
+## Is this cell somewhere a crew can be put to work — a node or a farm?
+## THE question `order_gather`, the haul cycle and `_retarget` all ask;
+## `has_node` alone would silently make every farm unworkable.
+func is_work_site(cell_index: int) -> bool:
+	return has_node(cell_index) or has_farm(cell_index)
+
+
+## What working this cell yields, or -1. A farm wins the tie because a
+## node may not be founded under a building in the first place
+## (`server._can_build_at`), so the two cannot genuinely overlap.
+func work_kind_at(cell_index: int) -> int:
+	if farms.has(cell_index):
+		return int(farms[cell_index]["kind"])
+	return kind_at(cell_index)
+
+
+## Who owns the farm at this cell, or -1 for a natural node (nobody owns a
+## forest) and for a cell holding nothing.
+func farm_owner(cell_index: int) -> int:
+	return int(farms[cell_index]["owner"]) if farms.has(cell_index) else -1
+
+
+## May this SQUAD be put to work here?
+##
+## A node is unowned ground and anyone may work it — that is D-028 and it
+## does not change. A FARM is a building somebody paid for, so it is
+## worked by its owner and, per D-050's shared front, by an ally. Without
+## this an enemy crew could stand in your fields and haul your harvest
+## home, which is a mechanic nobody decided on.
+func may_work(sim: SquadSim, squad: int, cell_index: int) -> bool:
+	if not is_work_site(cell_index):
+		return false
+	var owner := farm_owner(cell_index)
+	if owner < 0:
+		return true
+	var who := sim.owner_of(squad)
+	return owner == who or sim.are_allied(owner, who)
+
+
 ## Wallets are PRIVATE (D-028): replicated to their owner and nobody else.
 ## Knowing an opponent's stockpile tells you what they are about to field,
 ## which is the same class of knowledge D-003's horizon clipping and
@@ -505,13 +648,13 @@ func order_gather(sim: SquadSim, squad: int, cell_index: int) -> bool:
 	var def := sim.def_of(squad)
 	if def == null or def.carry_capacity <= 0:
 		return false
-	if not has_node(cell_index):
+	if not may_work(sim, squad, cell_index):
 		return false
 	_hauls[squad] = {
 		"node": cell_index,
 		"phase": Phase.TO_NODE,
 		"carrying": 0,
-		"kind": kind_at(cell_index),
+		"kind": work_kind_at(cell_index),
 	}
 	sim.force_move(squad, space.from_index(cell_index))
 	return true
@@ -541,6 +684,16 @@ func phase_of(squad: int) -> int:
 func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 	var changed := {}
 
+	# The renewable half, first: a field grows whether or not anybody is
+	# standing in it (D-20260828-food-is-grown-not-only-found), so a crew
+	# away hauling is not wasting its farm's rate. Capped at `capacity`,
+	# which is what stops "leave it alone all match" being a strategy.
+	# O(farms) — a handful per player, nothing like the node dictionary.
+	for cell in farms:
+		var farm: Dictionary = farms[cell]
+		farm["stock"] = minf(float(farm["stock"]) + float(farm["regrow"]) * dt,
+			float(farm["capacity"]))
+
 	for squad in _hauls.keys():
 		if squad >= sim.squad_count() or sim.alive_of(squad) <= 0:
 			_hauls.erase(squad)
@@ -556,7 +709,7 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 				# Another crew may have finished the tree while this one was
 				# still walking to it — retarget en route rather than letting
 				# the crew arrive at a stump and stand there.
-				if not has_node(int(haul["node"])):
+				if not is_work_site(int(haul["node"])):
 					if not _retarget(sim, squad, haul):
 						_hauls.erase(squad)
 						continue
@@ -587,7 +740,7 @@ func tick(sim: SquadSim, buildings: BuildingSim, dt: float) -> Array:
 func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 		dt: float, buildings: BuildingSim) -> void:
 	var cell := int(haul["node"])
-	if not has_node(cell):
+	if not is_work_site(cell):
 		# Worked out. With trees a minute deep a crew retires one every
 		# haul cycle or so, and making the player re-issue the same order
 		# per tree would be pure micro tax — so the crew walks itself to
@@ -619,20 +772,40 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 	var whole := int(floor(float(haul["fraction"])))
 	if whole <= 0:
 		return
-	haul["fraction"] = float(haul["fraction"]) - float(whole)
 
-	var taken := mini(whole, remaining_at(cell))
+	# A FARM is rate-limited by the ground rather than by the crew
+	# (D-20260828-food-is-grown-not-only-found): a crew takes whatever has
+	# grown, which is normally less than it could carry off. That is the
+	# mechanism, not a shortfall — the steady state per farm is its own
+	# regrow rate however many crews stand on it.
+	var farmed := has_farm(cell)
+	var available := farm_stock(cell) if farmed else remaining_at(cell)
+	var taken := mini(whole, available)
 	taken = mini(taken, def.carry_capacity - int(haul["carrying"]))
 	if taken <= 0:
+		# The crew did the work and there was nothing to take yet. Keep its
+		# part-done unit — spending it here is a silent yield cut, and on a
+		# farm it happens every few ticks by construction — but never let it
+		# bank more than one, or a crew standing in an unworked field for a
+		# minute would strip it the instant a whole unit appears.
+		haul["fraction"] = minf(float(haul["fraction"]), 1.0)
 		return
 
-	nodes[cell]["remaining"] = remaining_at(cell) - taken
+	# Only the labour that actually moved something is spent.
+	haul["fraction"] = float(haul["fraction"]) - float(taken)
 	haul["carrying"] = int(haul["carrying"]) + taken
-	if remaining_at(cell) <= 0:
-		# The tree comes down. The entry stays in `nodes` (a depleted cell
-		# is still not a place to start another node) — this list is how
-		# the server learns to tell clients about the felling.
-		_depleted.append(cell)
+
+	if farmed:
+		farms[cell]["stock"] = float(farms[cell]["stock"]) - float(taken)
+	else:
+		nodes[cell]["remaining"] = remaining_at(cell) - taken
+		if remaining_at(cell) <= 0:
+			# The tree comes down. The entry stays in `nodes` (a depleted
+			# cell is still not a place to start another node) — this list
+			# is how the server learns to tell clients about the felling.
+			# A farm never appears here: it is a building, and the client
+			# already draws it and already learns when it is razed.
+			_depleted.append(cell)
 
 	if int(haul["carrying"]) >= def.carry_capacity:
 		var drop_off := _nearest_drop_off(sim, buildings, sim.owner_of(squad),
@@ -659,7 +832,7 @@ func _try_unload(sim: SquadSim, squad: int, haul: Dictionary,
 
 	# Straight back out to the node, if there is anything left in it —
 	# or to the nearest surviving tree of the same kind if not.
-	if has_node(int(haul["node"])):
+	if is_work_site(int(haul["node"])):
 		haul["phase"] = Phase.TO_NODE
 		sim.force_move(squad, space.from_index(int(haul["node"])))
 	elif not _retarget(sim, squad, haul):
@@ -680,7 +853,13 @@ func _retarget(sim: SquadSim, squad: int, haul: Dictionary) -> bool:
 	var kind := int(haul["kind"])
 	for offset in TorusSpace.disk_offsets(RETARGET_RADIUS):
 		var cell := space.index(from + offset)
-		if has_node(cell) and kind_at(cell) == kind:
+		# Farms count as work sites here too: a crew whose field is razed
+		# steps to the next one exactly as a crew whose tree comes down
+		# steps to the next tree, and farms are built in groups. Through
+		# `may_work`, so a retarget cannot walk a crew into an enemy's
+		# fields — a rule the ORDER path enforces is not enforced until
+		# every path that assigns a work site asks the same question.
+		if may_work(sim, squad, cell) and work_kind_at(cell) == kind:
 			haul["node"] = cell
 			haul["phase"] = Phase.TO_NODE
 			sim.force_move(squad, space.from_index(cell))
