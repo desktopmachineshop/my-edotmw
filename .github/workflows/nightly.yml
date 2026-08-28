@@ -25,7 +25,6 @@
 name: nightly
 
 on:
-  pull_request:   # TEMP to observe this workflow red
   schedule:
     # 03:00 UTC — after a working day, before the next one.
     - cron: "0 3 * * *"

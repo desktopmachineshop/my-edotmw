@@ -16,7 +16,6 @@
 name: docker-estate
 
 on:
-  pull_request:   # TEMP to observe this workflow red
   schedule:
     # Mondays 04:00 UTC — a break found on Monday costs the week, not the
     # weekend.
