@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_warship"
+display_name = "Bone Skiff"
+civ = &"gravesworn"
+archetype = &"warship"
+squad_size = 8
+health = 90.0
+damage = 9.0
+move_speed = 4.6
+attack_range = 5.0
+attack_interval = 1.6
+armour_class = "infantry"
+rout_threshold = 0.0
+morale_loss_per_casualty = 0.0
+movement_domain = "water"
+mesh_primitive = "hull"
+mesh_color = Color(0.72, 0.74, 0.62, 1)
+cost_food = 30
+cost_wood = 45
+cost_gold = 0
+cost_stone = 0
+build_time = 14.0
+cost = 75
