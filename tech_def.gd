@@ -10,10 +10,13 @@ extends Resource
 ## ## The `line` / `civ` split IS `UnitDef`'s `archetype` / `civ` split
 ##
 ## A `TechDef` is ONE CIV'S VERSION of a line, the way a `UnitDef` is one
-## civ's version of an archetype. `siegecraft` is one line and four files:
-## Stoneblood calls it *Quarried Heads*, Gravesworn *Grave-tar Payloads*,
-## Gildedreach *Engineers' Retainer*, Emberdeep *Runeforged Charges* —
-## one schema field, four `.tres`, and the same mechanical knob.
+## civ's version of an archetype. `siegecraft` is one line and four files
+## — the giant-kin call it *Quarried Heads*, the deathless court *Grave-tar
+## Payloads*, the free cities *Engineers' Retainer*, the deep holds
+## *Runeforged Charges*. One schema field, four `.tres`, the same
+## mechanical knob, and no script the wiser: `tests/test_civs.gd` forbids
+## naming a civ id even in a comment, which is why the folks above are
+## described rather than named. `docs/plans/tech-tree.md` has the table.
 ##
 ## A `civ = neutral` tech is the shared TRUNK: one file, every civ
 ## researches it, same name for everybody. A per-civ tech SHADOWS the
@@ -30,8 +33,9 @@ extends Resource
 ## are in epoch N+1. D-069's advance gate was a payment, and a payment has
 ## exactly one decision in it — the tree gives a rung an interior.
 
-## File-unique, e.g. `emberdeep_the_shieldwall`. Nothing references this;
-## everything references `line`.
+## File-unique — by convention `<civ>_<line>` for a per-civ tech and just
+## the line for a trunk one. Nothing references this; everything
+## references `line`.
 @export var id: StringName
 
 ## What a player reads. The in-world name, in this civ's own words.
@@ -72,8 +76,8 @@ extends Resource
 
 ## Prerequisite LINES. Acyclic and reachable-from-nothing for every civ —
 ## also a test, because the first draft of the tree had a real cycle in
-## it (Windmarch's epoch-2 arc tech was researched at a building that
-## required the epoch-2 arc tech).
+## it: one civ's epoch-2 arc tech was researched at a building that
+## required that same tech.
 @export var requires: Array[StringName] = []
 
 @export var cost_food: int = 0

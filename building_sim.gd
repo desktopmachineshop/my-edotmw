@@ -582,8 +582,8 @@ func archetype_of(building: int) -> StringName:
 ## it names that civ or is neutral. Before the research sites every def
 ## was neutral, so `all_defs()` was the answer and four callers used it
 ## directly — the AI, the client's build menu, the placement ghost and the
-## tests. Each of those now has to ask this instead, or a Thornwood player
-## is offered a Deep Forge.
+## tests. Each of those now has to ask this instead, or a player is
+## offered a research site their own people do not build.
 static func defs_for_civ(civ: StringName) -> Array[BuildingDef]:
 	var out: Array[BuildingDef] = []
 	for def in all_defs():
