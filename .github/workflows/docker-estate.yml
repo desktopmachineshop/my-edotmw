@@ -45,6 +45,12 @@ permissions:
 
 env:
   EDOTMW_NO_GATE: "1"
+  # A GitHub-hosted runner has TWO CPUs and docker refuses a service that
+  # asks for more, so `just up` cannot start at the compose default of 4.
+  # This is the CPU half of #223's runner-sizing question; the memory half
+  # is measured and fits.
+  EDOTMW_CPUS_SERVER: "2"
+  EDOTMW_CPUS_BOTS: "2"
   # Explicit rather than relying on the default, so this workflow says
   # what it is testing in the one place somebody will read.
   EDOTMW_RUNTIME: docker
