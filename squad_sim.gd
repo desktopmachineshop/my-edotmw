@@ -1030,7 +1030,7 @@ func _separate_arrivals() -> void:
 	# there first and swap places forever.
 	for i in settling:
 		var cell := _cell[i]
-		if _crowded(held, space.from_index(cell), i, widest):
+		if _crowded(held, space.from_index(cell), i):
 			var spot := _free_cell_near(space.from_index(cell), i, held, widest)
 			if spot != space.from_index(cell):
 				cell = space.index(spot)
@@ -1053,8 +1053,34 @@ func _hold_ground(held: Dictionary, cell: int, squad: int) -> void:
 ## on the board — rather than testing every squad, which is the
 ## radius-scan defect this project has now hit five times (vision,
 ## UnitRoster.by_id, terrain noise, the building scan).
-func _crowded(held: Dictionary, cell: Vector2i, asking: int, widest: int) -> bool:
-	for offset in TorusSpace.disk_offsets(footprint_cells(asking) + widest):
+## The largest clearance any pair can require, in cells.
+##
+## The scan radii below are derived from THIS rather than from a
+## footprint, and that is the whole point: a squad can only be blocked by
+## something within `_clearance` of it, so looking further is work that
+## cannot change the answer.
+##
+## It was looking a great deal further. `_clearance` was footprint-based
+## when separation landed (#104), and the scans were sized to match —
+## `footprint_cells(asking) + widest`, which for two line squads is a
+## disk of about 469 cells. `D-20260821-a-fight-loosens-a-formation` then
+## reverted the rule to D-060's flat ONE cell and the radii derived from
+## it were not re-read. Seven cells can matter and 469 were being walked,
+## for every settled squad, every tick.
+##
+## Exactly this project's most-repeated shape: a rule that was correct
+## when written, depending on a thing that later changed, with nothing
+## failing — the answer was never wrong, only expensive.
+##
+## `tests/test_separation_scan.gd` asserts this bounds `_clearance` over
+## the shipped roster, so making clearance variable again cannot silently
+## under-scan.
+func _clearance_bound() -> int:
+	return 1
+
+
+func _crowded(held: Dictionary, cell: Vector2i, asking: int) -> bool:
+	for offset in TorusSpace.disk_offsets(_clearance_bound()):
 		var index := space.index(cell + offset)
 		if not held.has(index):
 			continue
@@ -1117,7 +1143,11 @@ func _free_cell_near(cell: Vector2i, asking: int, held: Dictionary,
 	var reach := mini(SEPARATION_MAX_RINGS, (radius + widest) * SEPARATION_SEARCH)
 
 	var neighbours := []
-	for offset in TorusSpace.disk_offsets(reach + widest):
+	# `reach + _clearance_bound()`, not `reach + widest`: a candidate is
+	# within `reach` of `cell`, and a squad can only block it from within
+	# `_clearance` of that candidate. Anything further out is gathered and
+	# then never able to match the test below.
+	for offset in TorusSpace.disk_offsets(reach + _clearance_bound()):
 		var index := space.index(cell + offset)
 		if not held.has(index):
 			continue
