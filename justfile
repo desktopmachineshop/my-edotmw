@@ -1728,7 +1728,7 @@ scenarios: _import
 # direction is to lengthen the run rather than to weaken the check.
 # didn't complain (D-022's standing rule).
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3": _import
+test-client SECONDS="90" BOTS="3" HOLD="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -1774,6 +1774,7 @@ test-client SECONDS="90" BOTS="3": _import
         --audio-driver Dummy \
         --resolution 1280x720 \
         -- --address=server --run-seconds={{SECONDS}} \
+        --hold-opening={{HOLD}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
 
