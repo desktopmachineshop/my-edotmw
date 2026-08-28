@@ -80,6 +80,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m8-export.md
 
+@docs/status/m8-steam-depot.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md

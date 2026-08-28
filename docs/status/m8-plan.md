@@ -1,6 +1,15 @@
 **M8's first rung is BUILT as of 2026-08-27** — `just export`
 produces the shipping builds (D-094 criterion 1, #178); see
-`docs/status/m8-export.md`. Everything else below is still planning.
+`docs/status/m8-export.md`.
+
+**Its second rung is built up to the credential, as of 2026-08-28** —
+`just steam-upload` validates the whole depot configuration and generates
+Steam's build scripts from that export, without a credential, without
+steamcmd and without a network (D-094 criterion 2, #185); see
+`docs/status/m8-steam-depot.md`. The `live` half is written and has
+**never been run against Steam**, because the app id it needs comes from
+a partner account that does not exist yet. Everything else below is still
+planning.
 
 **M8 (Steam) is otherwise PLANNED but NOT BUILT** — the planning session ran on
 2026-08-14 and produced **D-087 through D-094**, closing every question
