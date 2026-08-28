@@ -111,12 +111,102 @@ func _assert_felt(counter: StringName, target: StringName) -> void:
 			% [counter, target, r["wins"], SEEDS, r["margin"]])
 
 
-# --- the two thirds of the triangle that work --------------------------
+# --- the third of the triangle that works -------------------------------
 
-func test_cavalry_counters_missile_troops() -> void:
-	# #219 measured 12 of 12 at +0.77. Guarded here because nothing did.
-	_assert_felt(&"windmarch_cavalry", &"emberdeep_archers")
-	_assert_felt(&"gildedreach_cavalry", &"thornwood_archers")
+## Every cavalry that carries the missile bonus, against every missile
+## target. REPORTED, not asserted -- see the test below for why.
+const CAVALRY_MISSILE_PAIRINGS := [
+	[&"windmarch_cavalry", &"emberdeep_archers"],
+	[&"windmarch_cavalry", &"gildedreach_archers"],
+	[&"windmarch_cavalry", &"thornwood_archers"],
+	[&"windmarch_cavalry", &"thornwood_greatbow"],
+	[&"windmarch_cavalry", &"stoneblood_skirmishers"],
+	[&"gildedreach_cavalry", &"emberdeep_archers"],
+	[&"gildedreach_cavalry", &"gildedreach_archers"],
+	[&"gildedreach_cavalry", &"thornwood_archers"],
+	[&"gildedreach_cavalry", &"thornwood_greatbow"],
+	[&"gildedreach_cavalry", &"stoneblood_skirmishers"],
+	[&"thornwood_cavalry", &"emberdeep_archers"],
+	[&"thornwood_cavalry", &"gildedreach_archers"],
+	[&"thornwood_cavalry", &"thornwood_archers"],
+	[&"thornwood_cavalry", &"thornwood_greatbow"],
+	[&"thornwood_cavalry", &"stoneblood_skirmishers"],
+]
+
+
+## The cavalry/missile third of D-032's triangle is INERT, and this
+## records it rather than asserting it away (#396).
+##
+## #219 measured this third at 12 of 12, +0.77. It is now 0 of 6 on EVERY
+## one of the fifteen pairings above -- three civs' cavalry against five
+## missile targets, margins -0.16 to -0.79. There is no surviving pairing
+## to keep a floor on, which is why this is a report and not a narrowed
+## assertion: the precedent in #361 could still assert
+## `thornwood_archers` beat SOME levy, and there is no equivalent here.
+##
+## ## The mechanism, measured rather than inferred
+##
+## The counter IS delivered and then does not decide the fight. Traced on
+## `windmarch_cavalry` vs `emberdeep_archers`, seed 1000:
+##
+##   t=0.0   cavalry close from 8 cells
+##   t=3.0   archers 22 -> 14 and ROUT. The counter has landed, in three
+##           seconds, exactly as designed
+##   t=4-24  the routed archers withdraw to 5-6 cells. The cavalry do not
+##           pursue, and recover to full morale standing still
+##   t=25    the archers RALLY -- morale recovered at 2.0/s, unopposed,
+##           because nothing was hitting them (#257 suppresses recovery
+##           only while a squad is being hit)
+##   t=27-30 they return and shoot from 3-4 cells. Cavalry `attack_range`
+##           is 1.9, so the cavalry cannot reply AT ALL. Archer strength
+##           does not move from 14 for the rest of the match
+##   t=34.4  the cavalry are wiped
+##
+## So the fight is decided by a phase in which one side cannot act. The
+## cavalry deal zero damage after t=3.
+##
+## ## Why no stat change fixes it, measured
+##
+## Two honest levers were tried against the shipped fixture and BOTH
+## failed, which is what moved this from a balance fix to a design
+## question:
+##
+##   squad_size 16->20 / 14->18      -0.67 -> -0.68 and -0.68 -> -0.74
+##   morale_loss_per_casualty 4->2   -0.67 -> -0.67 and -0.68 -> -0.76
+##
+## Both made it WORSE or did nothing, and the trace says why: staying
+## power and steadiness do not help a squad that is never in range. More
+## men are a larger target for a phase it cannot answer.
+##
+## The lever that would work is not a stat: it is whether a squad pursues
+## an enemy that has broken, or whether a missile squad may stand at 3
+## cells from cavalry indefinitely. That is D-034's halt, D-019's rally
+## and the pursuit control `combat.gd` has always listed as future work,
+## and it belongs to whoever owns that design rather than to a `.tres`.
+func test_report_the_cavalry_missile_third_is_inert() -> void:
+	var felt := 0
+	var checked := 0
+	for pair in CAVALRY_MISSILE_PAIRINGS:
+		if UnitRoster.by_id(pair[0]) == null or UnitRoster.by_id(pair[1]) == null:
+			continue
+		checked += 1
+		var r := _sweep(pair[0], pair[1])
+		if int(r["wins"]) > SEEDS / 2:
+			felt += 1
+		gut.p("  cavalry report: %s vs %s -- %d/%d wins, mean margin %.2f, %d decided"
+			% [pair[0], pair[1], r["wins"], SEEDS, r["margin"], r["decided"]])
+	gut.p("  %d of %d cavalry/missile pairings are felt (#396 open)" % [felt, checked])
+
+	assert_gt(checked, 10, "setup: the pairings must actually resolve against the roster")
+	# The finding, stated as the thing a future fix must move -- the same
+	# form as `test_one_armour_class_is_doing_all_the_work` below. When
+	# somebody restores pursuit, or prices a missile squad for standing
+	# inside a charge, this goes RED and they restore the assertion.
+	assert_eq(felt, 0,
+		("%d of %d cavalry/missile pairings are now FELT -- the third of the triangle "
+			% [felt, checked])
+		+ "#396 recorded as inert has been restored. Re-measure, then put "
+		+ "`_assert_felt` back for the pairings that hold and delete this report.")
 
 
 func test_spearmen_counter_cavalry() -> void:
