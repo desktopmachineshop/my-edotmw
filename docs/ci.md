@@ -121,8 +121,22 @@ Three conditions, because the rule is sharp only inside them:
   `test_counters_are_felt.gd` sets `sim.combat_seed` and sweeps fixed seeds
   (`1000 + s * 7919`). Against a fixture that is timing- or host-dependent the
   comparison says nothing in either direction;
-- **strength scales with how many independent figures match.** One margin
-  agreeing to two decimals could be luck; two, from different pairings, is not.
+- **several agreeing figures are the FALLBACK for the condition above, not a
+  separate strength gauge.** The two are not independent. If you can read the
+  fixture and confirm it seeds, one identical figure settles it. If you cannot —
+  someone else's test, a harness whose seeding is not obvious, no time to read
+  it — then several independent figures agreeing *is* the evidence of
+  reproducibility, obtained empirically instead of by reading. Two margins from
+  different pairings matching to two decimals is a far stronger statement about
+  the fixture than about your change. (88's refinement; it is what tells you
+  which to reach for — read the fixture if you can, count the agreements if you
+  cannot, and if you have neither, the rule does not apply.)
+
+Note what the rule actually needs, which is narrower than determinism in
+general: **reproducibility between the two runs being compared.** Reading the
+seed establishes that in advance; agreeing figures establish it after the fact.
+Either is enough, and neither is a claim that the fixture is deterministic
+everywhere.
 
 And its limit, which its author states rather than leaving to be found: **it
 works only where a failure carries a measurement.** A bare assertion — a missing
