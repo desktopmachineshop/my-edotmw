@@ -32,6 +32,23 @@ class_name CivDef
 ## knows what they are picking.
 @export_multiline var summary: String = ""
 
+## The ARCHETYPE this civ is known for — the one unit a player picking it
+## should be told about (#283). Shown in the lobby beside `summary`.
+##
+## An archetype, never a def id, for the reason D-047 gives about
+## everything else on the wire: `barracks.produces` lists archetypes and
+## the roster resolves one per civ, so naming a def here would be a
+## second way of saying which unit a civ fields, free to disagree with
+## the first. `UnitRoster.for_civ_archetype(id, signature_unit)` is how
+## it is read, and `tests/test_civ_identity.gd` fails if any civ's
+## signature does not resolve to a real unit of that civ — so this
+## cannot rot into a name nobody fields.
+##
+## Empty is legal and means "no signature", which is what a civ added
+## tomorrow says until somebody decides. The lobby simply shows nothing
+## rather than an apology.
+@export var signature_unit: StringName = &""
+
 ## The civ's colour, used for its swatch and emblem in the lobby.
 ## Data, like everything else about a civ — a new .tres brings its own
 ## identity and no script learns a new name (D-046 criterion 3).

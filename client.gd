@@ -8686,6 +8686,10 @@ var _lobby_seat_scroll: ScrollContainer
 var _lobby_seat_list: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
+## What the civ this player picked actually is (#283) — its own one-line
+## pitch and the unit it is known for. Empty on Random, which is a real
+## choice and has nothing true to say about itself yet.
+var _lobby_civ_identity: Label
 var _map_rows: VBoxContainer
 var _map_preview: TextureRect
 var _map_blurb: Label
@@ -10367,6 +10371,22 @@ func _build_lobby_ui() -> void:
 	_start_button.pressed.connect(_on_start_pressed)
 	actions.add_child(_start_button)
 
+	# What the civ THIS player has chosen actually is (#283). Six civs
+	# sit on six distinct mechanical axes and the lobby showed names
+	# only — `CivDef.summary` has promised "a one-line pitch for the
+	# lobby" since the field existed and nothing read it, which is how it
+	# sat cp1252-corrupted for six milestones (#214).
+	#
+	# The player's OWN seat, not every seat: this is the choice they are
+	# making, and a line under all twenty-four would cost the seat list
+	# the height LobbyLayout gives it. Every other seat's civ is on its
+	# picker as a tooltip.
+	_lobby_civ_identity = Label.new()
+	_lobby_civ_identity.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_lobby_civ_identity.modulate = HudTheme.TEXT_DIM
+	_lobby_civ_identity.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_lobby_civ_identity)
+
 	_lobby_help = Label.new()
 	_lobby_help.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 	_lobby_help.modulate = HudTheme.TEXT_GHOST
@@ -10450,6 +10470,55 @@ func _civ_colour(civ: String) -> Color:
 	return def.colour if def != null else HudTheme.TEXT_DIM
 
 
+## Say what the civ in THIS player's seat is, under the seat list.
+##
+## Everything here is derived from the `.tres` through `CivIdentity`, so
+## a seventh civ is a file and this function never learns a name (D-046
+## criterion 3).
+func _refresh_civ_identity(seats: Array) -> void:
+	if _lobby_civ_identity == null:
+		return
+	var mine := _state.my_seat()
+	if mine < 0 or mine >= seats.size():
+		_lobby_civ_identity.text = ""
+		return
+	var chosen := StringName(seats[mine].get("civ", ""))
+	if chosen == CivRoster.RANDOM or chosen == &"":
+		# Random is a real choice (D-048) and resolves to nothing until
+		# the match starts. Saying so beats saying nothing, because the
+		# blank would read as a missing feature.
+		_lobby_civ_identity.text = "Random — your civilisation is drawn when the match starts."
+		return
+	var shown := CivIdentity.describe(CivRoster.by_id(chosen))
+	var summary := String(shown["summary"])
+	var signature := String(shown["signature"])
+	if summary.is_empty() and signature.is_empty():
+		_lobby_civ_identity.text = ""
+		return
+	if signature.is_empty():
+		_lobby_civ_identity.text = summary
+		return
+	_lobby_civ_identity.text = "%s\nSignature unit: %s" % [summary, signature]
+
+
+## The one-line form for a seat's civ picker, shown on hover. Every OTHER
+## seat's civ is readable this way without giving twenty-four rows a
+## second line each.
+func _civ_tooltip(civ: String) -> String:
+	var id := StringName(civ)
+	if id == CivRoster.RANDOM:
+		return "Drawn when the match starts."
+	var def := CivRoster.by_id(id)
+	if def == null:
+		return ""
+	var shown := CivIdentity.describe(def)
+	var signature := String(shown["signature"])
+	var headline := CivIdentity.headline(String(shown["summary"]))
+	if signature.is_empty():
+		return headline
+	return "%s\nSignature unit: %s" % [headline, signature]
+
+
 func _civ_label(civ: String) -> String:
 	if StringName(civ) == CivRoster.RANDOM:
 		return "Random"
@@ -10495,6 +10564,8 @@ func _refresh_lobby() -> void:
 	_add_ai_button.disabled = not admin
 	_start_button.disabled = not admin or seats.size() < 2
 	_start_button.text = "Start match" if admin else "Waiting for host"
+
+	_refresh_civ_identity(seats)
 
 	if admin:
 		_lobby_help.text = "Click a civilisation to change it. Only you can seat AI players and start the match."
@@ -10932,6 +11003,9 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	for c in choices:
 		picker.add_item(_civ_label(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	# What THIS seat picked, on hover — so every seat's civ is readable
+	# without giving each row a second line (#283).
+	picker.tooltip_text = _civ_tooltip(String(civ))
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)
@@ -11278,6 +11352,14 @@ func _seat_capture_ai() -> void:
 		return
 	_lobby_ai_asked = true
 	var civs := CivRoster.ids()
+	# The capture's OWN seat takes a real civ rather than staying on
+	# Random (#283). Random is the one state in which the identity line
+	# has nothing to say about a civilisation, so a lobby screenshot left
+	# on it photographs the least informative version of the screen —
+	# the same "aim the instrument at the thing" rule `gen-terrain-shot`
+	# and `gen-forest-preview` exist under.
+	if not civs.is_empty():
+		_send_lobby(NetProtocol.LOBBY_SET_CIV, _state.my_seat(), String(civs[0]))
 	for i in range(_lobby_ai_wanted):
 		# Spread the AI across civs rather than leaving them all Random,
 		# so the capture shows what a mixed lobby looks like.

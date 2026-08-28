@@ -92,6 +92,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/transport-seam.md
 
+@docs/status/onboarding.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md
@@ -550,6 +552,16 @@ unit_def.gd             UnitDef schema — extend fields here when a new
                         knobs EVERY civ has — never a per-civ branch, and
                         a test fails if any .gd file names a civ at all.
 civ_def.gd              CivDef schema; civ_roster.gd loads them.
+civ_identity.gd          What a player is TOLD about a civ before they
+                        pick it (D-20260828, #283) — its one-line pitch
+                        and its signature unit, both from the .tres.
+                        All-static and pure. `signature_unit` is an
+                        ARCHETYPE (D-047), so a civ naming one it does
+                        not field advertises NOTHING rather than somebody
+                        else's troops. `CivDef.summary` was
+                        declared-and-unread for six milestones, which is
+                        why nobody noticed its cp1252 em dash arriving as
+                        U+FFFD on every load (#214).
 unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads
