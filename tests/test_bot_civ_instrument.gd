@@ -147,3 +147,49 @@ func test_admission_settles_the_civ() -> void:
 	assert_true(body.contains("_settle_civ("),
 		"_admit_player must settle the civ, or a mid-match seat is still "
 		+ "admitted with an unresolved one")
+
+
+func test_the_client_actually_LEARNS_the_civ_through_the_wire() -> void:
+	# #376's core, closed end to end rather than by reading.
+	#
+	# `docs/status/load-testing.md` has recorded "a bot never learns its
+	# own civ" for milestones, and the settling above is only half an
+	# answer: writing the seat proves nothing about whether the fact
+	# REACHES a client. That is the D-058/D-065 family in as many words —
+	# *a decision entry saying a field is replicated is not evidence that
+	# it is* — and the cure named there is to open the encoder and look.
+	#
+	# So this encodes the real lobby packet from the settled seats,
+	# decodes it, and asks `ClientState.civ_of` the question a bot asks.
+	var server := _server()
+	_seat(server, 1, CivRoster.RANDOM)
+	server._settle_civ(1)
+	var expected := StringName(_seat_civ(server, 1))
+	assert_not_null(CivRoster.by_id(expected), "fixture: a real civ was settled")
+
+	var packet := NetProtocol.encode_lobby(
+		server._match.admin_player, server._match.scoreboard())
+	var state := ClientState.new()
+	state.player = 1
+	state.lobby = NetProtocol.decode_lobby(packet)
+
+	assert_eq(state.civ_of(1), expected,
+		"a client must learn the civ the server resolved for it — this is "
+		+ "the whole of 'a bot never learns its own civ'")
+
+
+func test_without_settling_the_client_learns_nothing() -> void:
+	# The same path with the fix absent, so the test above cannot pass
+	# for a reason unrelated to settling. An unresolved seat travels as
+	# the placeholder and the client is no wiser.
+	var server := _server()
+	_seat(server, 1, CivRoster.RANDOM)
+
+	var packet := NetProtocol.encode_lobby(
+		server._match.admin_player, server._match.scoreboard())
+	var state := ClientState.new()
+	state.player = 1
+	state.lobby = NetProtocol.decode_lobby(packet)
+
+	assert_null(CivRoster.by_id(state.civ_of(1)),
+		"fixture: without settling, what reaches the client names no civ")
