@@ -71,3 +71,61 @@ this roster is the number to take next; and bodies for the other five
 civs — the supplied stylised ELF in the owner's batch is presumably a
 thornwood body and waits for a rig rather than shipping as a second
 T-posing placeholder.
+
+**The levies are sidegrades now, and the reason they could not be one by
+tuning is the interesting part**
+(`D-20260828-a-levy-is-a-sidegrade-and-a-duel-is-not-the-test`, #267,
+2026-08-28). Every civ's levy was strictly ranked — as filed, 14 of 15
+pairings 6-0 with 13 of them leaving no survivors, so the civ you picked
+decided the fight. It is **1 of 15 now, and 13 pairings are dead even**.
+
+Five things to know before touching a levy:
+
+- **#267's own numbers were stale, and its named mechanism was the wrong
+  one.** Re-measured on the #334 base (armour class is a role) the sweep
+  was already down to 2 of 15 — reclassifying windmarch's levy from
+  `cavalry` to `infantry` fixed most of it, because the counter triangle
+  had been firing on a levy for being flavoured as horse. And the
+  frontage cap #267 blames is real but mild: measured off
+  `Engagement.contact_count`, a levy gets **100% of its men into contact
+  up to n=40, 92% at n=48**.
+- **A 5% edge in squad power is a clean sweep**, measured in a mirror
+  with a single field changed: `damage` x1.10 scores 12-0. `V² =
+  n²·(damage/interval)·health` is exactly Lanchester's square-law
+  strength for a fight where everyone is engaged, and it compounds — the
+  side one rounding puts a man ahead pulls away and never comes back.
+  **So levies cannot be made sidegrades by moving numbers closer
+  together**; that only makes the sweep noisier. They are held inside a
+  band on BOTH power and power-per-resource (3.6% and 2.6%), and their
+  identity lives on axes a duel cannot see.
+- **No other field in `UnitDef` is worth 8% of V.** Reach 1.9 -> 2.6 is
+  worth +21 men, and an 8% damage cut wipes that out completely (0-8, and
+  the three reach settings return identical margins). `move_speed` scores
+  6-6 doubled — correctly, since it is spent choosing whether to fight.
+  That is why reach and speed are safe to carry FLAVOUR (a dwarf's hand
+  axe is short, a sylvan glaive long) and useless as balance levers.
+- **Quantity means bodies per squad, not a discount.** Gravesworn's levy
+  went 32 -> 47 food: at 32 it led power-per-resource by 50%, which is
+  not an identity. It keeps its 48 men, its `sparse` block and its
+  fearlessness. **Every levy cost moved** (windmarch 38 -> 47, thornwood
+  40 -> 46, stoneblood 50 -> 46, emberdeep 48 -> 46, gildedreach 45 ->
+  46), so any ladder or load-test timing taken before this was measured
+  against a different price list — this page's own "quote which ROSTER"
+  rule. The opening is unaffected: a town hall costs WOOD.
+- **One sweep survives on purpose and it is a counter, not a tier.**
+  Stoneblood's narrow, very tough block beats gravesworn's sparse horde
+  12-0 at **any** power — measured at V 662 and V 734 it is 0-12 both
+  times, while that same increase sweeps the other four 12-0. It is a
+  shape matchup, so raising gravesworn cannot fix it and was not tried.
+
+**The structural cause is filed as #346 and is NOT fixed here.** While a
+5% edge sweeps, "equal power, difference elsewhere" is forced rather than
+chosen, and no unit anywhere in the roster can carry genuinely trading
+strengths. Damping it is an amendment to D-024 and the owner's call.
+
+**A/B on the same host, 4 bots 120 s, driven manually** (`test-load`
+cannot start a server under `EDOTMW_RUNTIME=native` — #223): base
+**209.15 µs/squad at 33 squads**, branch **213.31 at 33 squads**, combat
+93.73 vs 94.63, 0 desyncs and 0 dropped ticks both sides. The absolutes
+are high because the host was loaded throughout; the delta is the
+trustworthy column, and it is noise.
