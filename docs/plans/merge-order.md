@@ -55,6 +55,10 @@ and #340 on 17. Two of the three have to be dropped or reduced to a delta.
 
 ### 1.3 One decision id, two different documents
 
+> **RULED 2026-08-28 (orchestrator): #343 wins, #308 merges design-only.**
+> The full resolution, including two colliding files the ruling did not name,
+> is in the Rulings section of the rehearsal log at the end of this file.
+
 `decisions/D-20260828-water-is-a-second-movement-domain.md` exists on three
 branches: #343 and #340 are identical at 9,039 bytes, and **#308's is a
 different document at 9,436 bytes**. The project's rule is one file per decision
@@ -452,13 +456,13 @@ against that branch to see the combined tree.
 | merged clean | **43** |
 | conflicted and resolved | **29** |
 | already contained in the tree | **2** |
-| could not be merged (rival implementation) | **1** |
+| could not be merged (rival implementation) | **0** |
 | red on its own branch, not a merge issue | **1** |
 
 `just test-unit` went **22 failures on `main` -> 63 on the merged tree**
-(2,004 tests). Sixty-five distinct test names failed (a few fail in more than one
-script): **37 of them are the known native-runtime shell-out gap** (docker/bash
-recipes, #223) and **28 are real**. The load test on the merged tree: **VERDICT ok, 4/4 bots, 0 desyncs over 480 state-hash checks, 0
+(2,004 tests). Of those 63, **37 are the known native-runtime shell-out gap**
+(docker/bash recipes, #223) and 26 are real. `just test-load` equivalent on the
+merged tree: **VERDICT ok, 4/4 bots, 0 desyncs over 480 state-hash checks, 0
 dropped ticks, 0 ticks over D-020's budget**, and all three `gate-check.sh`
 comparisons green.
 
@@ -537,6 +541,49 @@ worth knowing before hand-merging:
   `_server_endpoint`, so the connection-lost screen (#162) would name an empty
   server and **nothing would fail**.
 
+## Rulings
+
+Decisions taken by the orchestrator on conflicts this rehearsal surfaced.
+They override the per-PR table below.
+
+### #308 vs #343 — naval stage 2
+
+**#343 wins. #308 merges DESIGN ONLY.** #308 (worker 80, now inactive)
+carries a second stage-2 water-domain implementation against #343's, which
+the rest of the naval chain is built on, including an add/add on a
+`decisions/` path. Ruled 2026-08-28; worker 88 is commenting it on #308.
+
+**Delete on merge** — the four the ruling names:
+
+- `squad_sim.gd` (collides with 5 naval branches)
+- `terrain_knowledge.gd` (no filename collision, but it is #308's water
+  plumbing and has no caller once the rest goes)
+- `tests/test_water_domain.gd` + `.uid` (same — it tests deleted code)
+- `decisions/D-20260828-water-is-a-second-movement-domain.md` (add/add
+  against #343; #343's and #340's copies are byte-identical at 9,039 bytes
+  and #308's is a different 9,436-byte document)
+
+**And two more the ruling does not name, confirmed colliding here:**
+
+- `unit_def.gd` — #308 adds its own naval fields, and so do
+  naval-2/3/4/6/7. Left in, it is a second rival implementation one layer
+  down from the one being removed.
+- #308's naval entry in `decisions/D-010.md` — the schema log for the
+  fields above, which should go with them. The rest of that file is an
+  ordinary additive conflict (5 naval branches append to it); keep both.
+
+**Survives, beyond `docs/plans/naval.md`:** `docs/status/naval-plan.md` and
+its `CLAUDE.md` import line, plus three design entries that collide with
+nothing — `a-carried-squad-is-cargo`, `a-dock-stands-on-a-shore` and
+`a-map-a-player-can-pick-is-a-map-an-army-can-cross`.
+
+**One thing to check when merging, not a ruling:** two of those surviving
+entries describe subjects the chain IMPLEMENTS — cargo is #333 and docks
+are #323. They do not collide by filename, so nothing will report it if
+#308's design and #343's code disagree. That is the D-058/D-065 family:
+a decision entry that describes code which is not there. Read them against
+what shipped before merging them.
+
 ## Per-PR result
 
 | PR | branch | result | notes |
@@ -613,7 +660,7 @@ worth knowing before hand-merging:
 | #342 | `ao/my-edotmw-81/naval-7-ai-and-bots` | CONFLICT-RESOLVED | ai_player.gd: AI_STATS extended a THIRD time (ladder #225, fortify #348, naval #342) - format string and arg array hand-merged again. ai_profile.gd and gate-check.sh additive. |
 | #327 | `ao/my-edotmw-81/naval-5-shoreline-combat` | ALREADY |  |
 | #314 | `ao/my-edotmw-88/naval-6-content` | ALREADY |  |
-| #308 | `ao/my-edotmw-80/naval-design` | INCOMPATIBLE-NOT-MERGED | RIVAL IMPLEMENTATION of naval stage 2. HEAD already has #343's water domain (DOMAIN_GROUND/WALL_TOP/WATER, CORRECTION_RADIUS); #308 brings its own. 13 conflict hunks in squad_sim.gd, 4 in terrain_knowledge.gd, plus a whole-file conflict on decisions/D-20260828-water-is-a-second-movement-domain.md (identical on #343/#340 at 9039 bytes, DIFFERENT on #308 at 9436). Merge aborted - #308 and #343 must not both land. |
+| #308 | `ao/my-edotmw-80/naval-design` | RULED-DESIGN-ONLY | ORCHESTRATOR RULING 2026-08-28: #343 wins stage 2. #308 merges DESIGN ONLY. Delete on merge: squad_sim.gd, terrain_knowledge.gd, tests/test_water_domain.gd(+.uid), decisions/D-20260828-water-is-a-second-movement-domain.md (add/add against #343), and -- NOT in the ruling as worded but confirmed colliding -- unit_def.gd (rival naval fields, collides with 5 naval branches) and #308's naval entry in decisions/D-010.md. Survives: docs/plans/naval.md, docs/status/naval-plan.md + its CLAUDE.md import, and the three design entries a-carried-squad-is-cargo / a-dock-stands-on-a-shore / a-map-a-player-can-pick-is-a-map-an-army-can-cross. |
 | #340 | `ao/my-edotmw-87/naval-8-presentation` | CONFLICT-RESOLVED | docs/status/naval.md additive. justfile: a keep-both INTERLEAVED two distinct recipes (gen-seam-shot from #234 and gen-naval-shot from #340) into one broken body - just refused the file; had to lift #340's recipe out whole and append it. CORRECTION to the merge plan: naval stages 1/3/4 ARE genuine ancestors of #340, so it is NOT a duplicate of the naval chain - once that chain is merged first, #340 costs two trivial conflicts. Only stage 2 (#343) is not an ancestor. |
 
 **bench_render.gd (HAND-MERGE-REQUIRED):** NO mechanical merge of bench_render.gd compiles: my-edotmw-83 (#339/#341 host budgets) and my-edotmw-87 (#250-#331 render attribution) both restructure it, renaming variables (target) and changing _detail_for()'s signature. Keeping both sides gives 3 parse errors. Rehearsal took the 87 chain's file wholesale, LOSING #341's host-budget bench work.

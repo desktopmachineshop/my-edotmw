@@ -13,7 +13,8 @@ for line in io.open('rehearsal.tsv', encoding='utf-8', newline=''):
     rows.append(parts[:4])
 
 # One status per PR: a later, more specific row wins.
-RANK = {'CLEAN': 0, 'ALREADY': 0, 'CONFLICT': 1, 'CONFLICT-RESOLVED': 2,
+RANK = {'RULED-DESIGN-ONLY': 4,
+        'CLEAN': 0, 'ALREADY': 0, 'CONFLICT': 1, 'CONFLICT-RESOLVED': 2,
         'HAND-MERGE-REQUIRED': 3, 'INCOMPATIBLE-NOT-MERGED': 3,
         'SINGLE-PR-RED': 3, 'MISSING': 3}
 best = {}
@@ -131,6 +132,39 @@ w('  feature is gone: #239 and then #264 each deleted the site where #232 assign
 w('  `_server_endpoint`, so the connection-lost screen (#162) would name an empty\n')
 w('  server and **nothing would fail**.\n\n')
 
+w('## Rulings\n\n')
+w('Decisions taken by the orchestrator on conflicts this rehearsal surfaced.\n')
+w('They override the per-PR table below.\n\n')
+w('### #308 vs #343 — naval stage 2\n\n')
+w('**#343 wins. #308 merges DESIGN ONLY.** #308 (worker 80, now inactive)\n')
+w("carries a second stage-2 water-domain implementation against #343's, which\n")
+w('the rest of the naval chain is built on, including an add/add on a\n')
+w('`decisions/` path. Ruled 2026-08-28; worker 88 is commenting it on #308.\n\n')
+w('**Delete on merge** — the four the ruling names:\n\n')
+w('- `squad_sim.gd` (collides with 5 naval branches)\n')
+w("- `terrain_knowledge.gd` (no filename collision, but it is #308's water\n")
+w('  plumbing and has no caller once the rest goes)\n')
+w('- `tests/test_water_domain.gd` + `.uid` (same — it tests deleted code)\n')
+w('- `decisions/D-20260828-water-is-a-second-movement-domain.md` (add/add\n')
+w("  against #343; #343's and #340's copies are byte-identical at 9,039 bytes\n")
+w("  and #308's is a different 9,436-byte document)\n\n")
+w('**And two more the ruling does not name, confirmed colliding here:**\n\n')
+w('- `unit_def.gd` — #308 adds its own naval fields, and so do\n')
+w('  naval-2/3/4/6/7. Left in, it is a second rival implementation one layer\n')
+w('  down from the one being removed.\n')
+w("- #308's naval entry in `decisions/D-010.md` — the schema log for the\n")
+w('  fields above, which should go with them. The rest of that file is an\n')
+w('  ordinary additive conflict (5 naval branches append to it); keep both.\n\n')
+w('**Survives, beyond `docs/plans/naval.md`:** `docs/status/naval-plan.md` and\n')
+w('its `CLAUDE.md` import line, plus three design entries that collide with\n')
+w('nothing — `a-carried-squad-is-cargo`, `a-dock-stands-on-a-shore` and\n')
+w('`a-map-a-player-can-pick-is-a-map-an-army-can-cross`.\n\n')
+w('**One thing to check when merging, not a ruling:** two of those surviving\n')
+w('entries describe subjects the chain IMPLEMENTS — cargo is #333 and docks\n')
+w('are #323. They do not collide by filename, so nothing will report it if\n')
+w("#308's design and #343's code disagree. That is the D-058/D-065 family:\n")
+w('a decision entry that describes code which is not there. Read them against\n')
+w('what shipped before merging them.\n\n')
 w('## Per-PR result\n\n')
 w('| PR | branch | result | notes |\n|---|---|---|---|\n')
 for pr in order:
