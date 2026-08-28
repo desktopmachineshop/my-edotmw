@@ -871,6 +871,14 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
+- `just profile [ONLY]` — the scale sweep, and since #304 a **steady-state
+  per-phase tick ladder at 120 squads** (`ONLY=ladder`) with a knob per
+  suspect and a `control` row that states the instrument's own noise
+  floor. **Read the control row before believing any small difference**:
+  this host drifts up to 2x between runs minutes apart. It is what
+  attributed M6's long-standing 40.8 -> ~77 debt
+  (`D-20260828-the-m6-rise-has-a-name`) — to combat and separation, and
+  NOT to civs, teams or the economy, none of which is measurable at all.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
   781 tests across 51 scripts, measured 2026-08-17)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
