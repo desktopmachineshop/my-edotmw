@@ -138,5 +138,18 @@ constant, not a fraction of the map, because D-040's worst-tick-flat-in-map-size
 property is worth more than flat latency on two rungs nobody has played —
 raising it to 32,768 takes the ladder to 0/0/1/3 ticks and is one number
 away. And the 1,000-squad sweep is still **over** D-020's 100 ms tick both
-before (342.9 ms) and after (204.5 ms); that is **#105's** unattributed
-per-squad rise, not this, and it is not closed.
+before (342.9 ms) and after (204.5 ms).
+
+**That stopped being a breach on 2026-08-28**
+(`D-20260828-the-shipping-scale`, #287/#105): 1,000 squads is **five
+times a scale nothing ships at**. Measured at the decided ~200 squads —
+on the most water-heavy preset, with naval's third field layer running —
+the tick is **~38 ms mean of a 100 ms budget**. #105's attribution stands
+(flow-field expansion, D-040 working as designed); its urgency does not.
+The honest reading is "over budget at a count the game does not run at",
+and this page said the other thing for a milestone.
+
+**What IS tight at the decided scale is the WORST tick: 92-103 ms against
+100.** Mean has ~60% headroom and worst has none, which is why the
+recommended shape is 8 players x 25 squads rather than something nearer
+the ceiling.

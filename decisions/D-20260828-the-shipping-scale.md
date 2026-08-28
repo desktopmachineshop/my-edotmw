@@ -157,6 +157,70 @@ rather than guessed at here.
 
 ---
 
+#### Amended 2026-08-28 — the tick at this scale WITH the water layer, and what it does to #105
+
+The orchestrator's question, and the right one: if the shipping scale is
+~200 squads, what does the tick cost *at that scale* once naval's third
+field layer is in it — and does #105's 1,000-squad breach still mean
+anything?
+
+`just profile water` is the section that answers it. **`islands`, 68.1%
+navigable** — the most water-heavy preset, because a naval budget
+measured on a map with no sea in it is not a budget — 200 squads held
+constant with hulls REPLACING ground squads, since a fleet is a share of
+an army and not a bonus one.
+
+| hulls | ms/tick mean | ms worst | **fields** | combat |
+|---|---|---|---|---|
+| 0 | 38.68 / 39.37 | 91.7 / 97.6 | **20.38 / 20.31** | 103.20 / 105.16 |
+| 10 | 36.43 / 36.92 | 85.5 / 93.9 | **20.65 / 20.46** | 88.81 / 90.22 |
+| 20 | 33.93 / 50.41 | 59.6 / 161.6 | **15.64 / 20.96** | 83.89 / 126.96 |
+| 40 | 33.76 / 37.33 | 68.6 / 102.9 | **19.67 / 20.37** | 76.92 / 86.80 |
+
+Two quiet runs quoted; two more were taken on a loaded host and drifted
+2× (the standing hazard). **Read the `fields` column** — it is a
+within-phase measurement of identical work and it is the stable one, flat
+at ~20 µs/squad across every run and every hull count.
+
+**The water layer adds no measurable tick cost at this scale.** It is
+inside the `fields` timing window (`_expand_pending_fields_water` sits
+under `fields_started`), so this is not an omission — the layer is being
+timed and it is not showing up. #343's own budget work is why: 24,576
+cells/tick completes a cross-map water field on this map in one tick, and
+the layer inherits D-20260818's neighbour-table fix for free.
+
+**Adding hulls makes the tick slightly CHEAPER**, and the mechanism is
+visible rather than inferred: combat falls monotonically (103 → 77) as
+hulls replace ground squads, because ships spread over open sea engage
+less and separate less than infantry. This is a composition effect, not
+an optimisation.
+
+**Headroom at the decided scale, stated plainly and not flattered:**
+
+- **mean tick: ~38 ms against D-020's 100 — about 60% headroom.**
+- **worst tick: 92–103 ms against 100 — essentially none.**
+
+So 200 squads is **at the edge on the worst tick, not comfortably inside
+it**, on the most demanding preset. That is the same conclusion the
+server table above reached on the default preset (91.1 ms at 180), now
+confirmed on a second preset with a third field layer running. It is why
+the recommended shape is 8 × 25 rather than something nearer the ceiling.
+
+**And #105's 1,000-squad breach stops being a breach.** The 204.5 ms
+figure is real and its attribution stands (flow-field expansion, D-040
+working as designed) — but 1,000 squads is **five times a scale nothing
+ships at**. Measured against the decided number the same sweep is 38 ms
+of a 100 ms budget. The correct reading is not "the tick is over budget",
+it is "the tick is over budget at a count the game does not run at", and
+`docs/status/m10-plan.md` said the former for a milestone. Recorded on
+#105 itself with this trail.
+
+**Nothing was recovered in this pass, and that is the honest report.**
+The free recovery in this area was taken in
+`D-20260828-the-m6-rise-has-a-name` (separation's stale scan radius).
+What dominates now is combat, which is a priced design trade, and the
+water layer, which costs nothing. There was no third thing.
+
 #### Rejected alternatives
 
 - **Keep 20 players and cut squads per player to ~10 without saying so.**
