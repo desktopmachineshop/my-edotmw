@@ -792,6 +792,30 @@ func _health_step(health: float, full: float) -> int:
 	return int(floor(clampf(health / full, 0.0, 1.0) * HEALTH_REPLICATION_STEPS))
 
 
+## Raze everything `player` owns. Returns the LOCAL ids destroyed, so the
+## caller replicates them exactly as it replicates a razing by an enemy.
+##
+## `SquadSim.eliminate_player`'s sibling, and it exists because that one
+## alone is not enough: D-033's defeat rule is "no living squads AND no
+## living buildings", so wiping only the army leaves a player standing
+## with a town centre and the match unable to end. Measured on the
+## disconnect path, which has that gap today (#292) — after the wipe,
+## `squads=0 buildings=1 eliminated=false phase=RUNNING`.
+##
+## Goes through `damage()` rather than setting `_destroyed` directly, so
+## there is ONE way a building dies: the health step, the dirty flag and
+## the replication that follows are the same ones a razing by an army
+## produces, and a client needs no new handling to see it happen.
+func eliminate_player(player: int) -> Array:
+	var destroyed := []
+	for i in range(_destroyed.size()):
+		if _destroyed[i] == 1 or _owner[i] != player:
+			continue
+		if damage(i, INF):
+			destroyed.append(i)
+	return destroyed
+
+
 func living_building_count(player: int) -> int:
 	var n := 0
 	for i in range(_cell.size()):

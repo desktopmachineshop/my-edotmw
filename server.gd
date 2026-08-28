@@ -1319,6 +1319,8 @@ func _dispatch(peer, data: PackedByteArray) -> void:
 				_handle_lobby_command(peer, data)
 			NetProtocol.C2S_LEAVE_MATCH:
 				_handle_leave_match(peer)
+			NetProtocol.C2S_SURRENDER:
+				_handle_surrender(peer)
 			_:
 				push_error("server: unknown opcode %d from a client" % opcode)
 
@@ -2909,6 +2911,53 @@ func _handle_lobby_command(peer, data: PackedByteArray) -> void:
 ## same path a human does (D-051), which is the point — but "end the match
 ## everyone is playing" is not an order about its own army, and an AI
 ## deciding it has had enough would be a rule nobody wrote.
+## A player concedes (D-20260828-a-player-may-concede).
+##
+## Razes everything they own and lets D-033's ordinary defeat rule notice
+## on the next tick. That is the whole design: surrender is a CAUSE of
+## defeat, not a second definition of it, so nothing downstream —
+## `standing_of`, the D-102 scoreboard, `_check_victory`'s team clause,
+## MATCH_ELIMINATED, MATCH_OVER, MATCH_RESULT — learns a new concept.
+##
+## Squads AND buildings, and the second half is not optional: the defeat
+## rule is an AND, so a conceding player whose town centre still stood
+## would not be eliminated and the surrender would do nothing. The
+## disconnect path has exactly that gap today (#292).
+##
+## Who is conceding comes from the connection, never from the packet — a
+## client that named a player could surrender on somebody else's behalf.
+func _handle_surrender(peer) -> void:
+	var record = _record_for(peer)
+	if record == null:
+		return
+	if not _match.is_running():
+		# Refusals say why (D-034). Silence here would look exactly like
+		# a button that does nothing, which is the interface defect family
+		# D-061 was written about.
+		_notify(peer, "There is no match to surrender")
+		return
+	var player := int(record["player"])
+	if _match.is_eliminated(player):
+		_notify(peer, "You are already out of this match")
+		return
+
+	# Structured marker, not prose: a harness reading the log must be able
+	# to tell a match that was CONCEDED from one that was fought out, and
+	# `just ai-ladder` reports on exactly this line's neighbours.
+	print("server: MATCH_SURRENDER player=%d" % player)
+
+	_pending_events.append_array(_sim.eliminate_player(player))
+	var razed := _buildings.eliminate_player(player) if _buildings != null else []
+	if not razed.is_empty():
+		# Rubble is walkable again — the same refresh the tick does when
+		# an army razes something. Without it the flow field keeps routing
+		# around a base that is no longer there.
+		_refresh_passability()
+
+	for other in _clients:
+		_notify(other, "Player %d has surrendered" % player)
+
+
 func _handle_leave_match(peer) -> void:
 	if not _clients.has(peer):
 		return

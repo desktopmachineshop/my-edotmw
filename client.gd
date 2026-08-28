@@ -1921,6 +1921,10 @@ var _menu_button: Button = null
 ## The in-game menu, and the settings pane inside it. Its own CanvasLayer
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
+## The two-press surrender guard (D-20260828-a-player-may-concede): the
+## first press swaps one button for the other, the second sends.
+var _surrender_button: Button = null
+var _surrender_confirm: Button = null
 var _settings_panel: Control = null
 ## The player scoreboard (D-102), a sibling of the settings pane inside
 ## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
@@ -8704,6 +8708,26 @@ func _build_game_menu() -> void:
 	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
 	column.add_child(save)
 
+	# Conceding is NOT leaving, and the two sit next to each other so the
+	# difference is visible (D-20260828-a-player-may-concede). Surrender
+	# ends YOUR match and leaves you watching; Leave match ends the match
+	# for everyone and returns to the lobby.
+	#
+	# It asks first. A concession is irreversible and one misclick from
+	# the Resume button, and the server deliberately does not arbitrate
+	# whether a player meant it — that would be a second round trip for a
+	# decision already made, so the confirmation belongs here.
+	_surrender_button = _styled_button("Surrender", HudTheme.DANGER)
+	_surrender_button.tooltip_text = "Concede the match. Your army and buildings are lost."
+	_surrender_button.pressed.connect(_on_surrender_pressed)
+	column.add_child(_surrender_button)
+
+	_surrender_confirm = _styled_button("Surrender — are you sure?", HudTheme.DANGER)
+	_surrender_confirm.tooltip_text = "This cannot be undone."
+	_surrender_confirm.visible = false
+	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
+	column.add_child(_surrender_confirm)
+
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
 	to_lobby.pressed.connect(_on_leave_match_pressed)
@@ -8948,6 +8972,7 @@ func _toggle_game_menu() -> void:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
 	if not _game_menu_layer.visible:
+		_disarm_surrender()
 		if _settings_panel != null:
 			_settings_panel.visible = false
 		if _scoreboard_panel != null:
@@ -9005,6 +9030,39 @@ func _on_hud_auto_toggled(automatic: bool) -> void:
 ## reappears because `_state.in_lobby()` is true again. Nothing here has
 ## to draw a lobby, and nothing here decides a match is over — a client
 ## that could would be a client that decides for everyone (D-002).
+## First press ARMS the concession; the second sends it.
+##
+## Two buttons rather than a modal, because the game menu is already a
+## column of buttons and a modal would be a second dialogue system for one
+## question. The armed button says what it is: a player who came here for
+## Resume and misclicked sees a question, not a lost match.
+func _on_surrender_pressed() -> void:
+	if _surrender_confirm == null:
+		return
+	_surrender_confirm.visible = true
+	if _surrender_button != null:
+		_surrender_button.visible = false
+
+
+func _on_surrender_confirmed() -> void:
+	_disarm_surrender()
+	_toggle_game_menu()
+	print("client: surrendering")
+	if _peer != null and _connected:
+		_peer.send(0, NetProtocol.encode_surrender(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Put the confirmation away again. Called when the menu closes, so a
+## player who armed it, changed their mind and pressed ESC does not find
+## it still armed the next time they open the menu — which would turn a
+## deliberate two-press guard into a single press at the worst moment.
+func _disarm_surrender() -> void:
+	if _surrender_confirm != null:
+		_surrender_confirm.visible = false
+	if _surrender_button != null:
+		_surrender_button.visible = true
+
+
 func _on_leave_match_pressed() -> void:
 	_toggle_game_menu()
 	print("client: leaving match")
