@@ -1022,6 +1022,95 @@ func passability(space: TorusSpace) -> PackedByteArray:
 	return out
 
 
+## Where a SHIP may float — the water domain's answer to `passability`
+## (naval plan §2.1, stage 1).
+##
+## `navigable[i] = 1 iff elevation(i) < sea_level`, derived from the same
+## replicated `MapSettings` numbers both sides of the wire already hold
+## (D-049). Nothing new crosses the wire, and client and server compute
+## byte-identical arrays for the same reason they already agree about
+## `passability`.
+##
+## ## Why a SEPARATE array rather than a third value in `passability`
+##
+## D-076 kept its wall-top field cache separate and the reasoning carries
+## over exactly: `_passable` has many readers and every one of them means
+## LAND. A tri-state array would be read by all of them, and the ones that
+## did not learn the third value would not fail — they would quietly treat
+## open water as walkable ground, which is the declared-and-misread shape
+## this project keeps paying for.
+##
+## ## All water is navigable in v1
+##
+## `DEEP_WATER` is a biome and an appearance, not a draft rule. A
+## shallow/deep distinction doubles the field count and the transition
+## surface to buy a mechanic nothing else asks for yet; it is the water
+## domain's named revisit trigger instead.
+##
+## ## What this and `passability` do and do not guarantee together
+##
+## They are **disjoint**: `passability` returns 0 for every cell below
+## `sea_level` (see `_slope_passable`), and `_carve_ramps` never carves
+## water — an island is not a plateau — so no cell is ever both.
+## `tests/test_water_graph.gd` asserts that on every shipped preset,
+## after carving.
+##
+## They do **not** union to the whole map, and it matters that this is
+## said rather than assumed: land too steep to walk is in neither. What
+## partitions the map is the DOMAIN — `navigable` is exactly the water
+## half and its complement is exactly the land half — and passability is a
+## rule WITHIN land about which of it you may stand on. A ship is refused
+## a steep hill because it is land, not because it is unnavigable water.
+func navigability(space: TorusSpace) -> PackedByteArray:
+	var field := elevation_field(space)
+	var out := PackedByteArray()
+	out.resize(space.cell_count())
+	for i in range(space.cell_count()):
+		out[i] = 1 if field[i] < sea_level else 0
+	return out
+
+
+## A shore cell: passable LAND with at least one navigable neighbour
+## (naval plan §4.1).
+##
+## Where a dock may stand, and the only place a domain transition can
+## happen. Static and pure — it needs no terrain generator, only the two
+## fields and the lattice — so the placement rule stage 3 hangs off it is
+## testable without generating a world.
+##
+## **Both arrays are arguments** rather than read from anywhere, because
+## which passability a caller means is a real question with two answers:
+## `TerrainGen.passability` is the GROUND, while `SquadSim._passable` has
+## living buildings stamped out of it. A dock placement asks about the
+## ground; a squad asking where it may stand asks the other. Handing the
+## choice to the caller is the same discipline `terrain_knowledge.gd`
+## imposed on flow fields after they were solved against ground truth for
+## six milestones.
+##
+## Wrap-aware for free: `TorusSpace.neighbor_table` is the one definition
+## of who borders whom, and it normalises (D-008). A shore on the seam is
+## a shore.
+static func is_shore(space: TorusSpace, passable: PackedByteArray,
+		navigable: PackedByteArray, cell_index: int) -> bool:
+	if cell_index < 0 or cell_index >= space.cell_count():
+		return false
+	if cell_index >= passable.size() or passable[cell_index] == 0:
+		return false
+	# A cell that is itself navigable cannot be a shore, and asserting
+	# that here rather than trusting disjointness costs one comparison:
+	# `is_shore` is handed arrays by callers, and a caller that passes
+	# the same array twice would otherwise get every water cell back as
+	# a legal dock site.
+	if cell_index < navigable.size() and navigable[cell_index] != 0:
+		return false
+	var table := space.neighbor_table()
+	for d in range(6):
+		var n := table[cell_index * 6 + d]
+		if n < navigable.size() and navigable[n] != 0:
+			return true
+	return false
+
+
 ## The per-cell slope rule over a completed elevation field: walkable
 ## unless under water or standing more than `max_slope` world units above
 ## some neighbour (both clamped up to sea level, so a seabed's depth never

@@ -1,0 +1,14 @@
+"appbuild"
+{
+	"appid" "480"
+	"desc" "my-edotmw 0.1.0-alpha"
+	"buildoutput" "C:\Users\dmaso\.ao\data\worktrees\my-edotmw\my-edotmw-81\build\steam\output"
+	"contentroot" "C:\Users\dmaso\AppData\Local\Temp\w81steam2"
+	"setlive" "alpha"
+	"preview" "0"
+	"local" ""
+	"depots"
+	{
+		"481" "C:\Users\dmaso\.ao\data\worktrees\my-edotmw\my-edotmw-81\build\steam\depot_build_481.vdf"
+	}
+}
