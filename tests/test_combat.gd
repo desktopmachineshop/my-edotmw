@@ -240,7 +240,7 @@ func test_shipped_roster_has_a_real_counter_triangle() -> void:
 	# `levy`, not `militia`: #191 moved the base-infantry archetype's name
 	# and this guard kept asking for the old one, so the triangle it exists
 	# to assert went unchecked for the whole pivot.
-	for expected in ["militia", "archers", "spearmen", "cavalry"]:
+	for expected in ["levy", "archers", "spearmen", "cavalry"]:
 		assert_true(by_archetype.has(expected),
 			"Some civ should field the '%s' archetype" % expected)
 
