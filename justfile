@@ -308,6 +308,145 @@ bootstrap:
     chmod +x "$target"
     echo "OK: Godot {{godot_version}} installed at $target"
 
+# Wrap an exported build into the thing a tester actually downloads
+# (#183). One zip, named for the build inside it.
+#
+# The name carries the version because a tester's Downloads folder is
+# where mixed builds are BORN: "my-edotmw.zip" twice is two files called
+# "my-edotmw (1).zip", and the resulting desync report ends in "you were
+# on last week's build". #179's handshake catches that at the join now —
+# this is the half that stops it happening.
+#
+# The version comes from the one place it is written down (D-20260827),
+# and the archive's entries are written in SORTED order so two packages
+# of one build do not differ merely because a filesystem enumerated
+# differently. It is NOT claimed to be byte-identical run to run — a zip
+# stores mtimes — which is why the recipe prints a sha256 for whoever is
+# about to hand it to somebody: the checksum you quote is the checksum of
+# the file you send, not of a rebuild.
+[doc("Zip an exported build for a tester (TARGET: windows-client|linux-server)")]
+package TARGET="windows-client": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" windows-client windows-server linux-server
+    # Host admission gate (D-20260818): this runs Godot over a 100+ MB
+    # build, and `tests/test_host_budget.gd` is what caught it not
+    # declaring a class — a recipe that can start while the machine has
+    # nothing left is what that gate exists to stop.
+    gate="$(bash host-gate.sh acquire medium 'package' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    version="{{build_version}}"
+    if [ -z "$version" ]; then
+        echo "FAIL: project.godot has no application/config/version — see build_version.gd" >&2
+        exit 1
+    fi
+    case "{{TARGET}}" in
+        windows-client)  dir="{{build_dir}}/windows" ;;
+        windows-server)  dir="{{build_dir}}/windows-server" ;;
+        linux-server)    dir="{{build_dir}}/linux-server" ;;
+    esac
+    if [ ! -d "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+        echo "FAIL: nothing exported at $dir — run: {{just_executable()}} export {{TARGET}}" >&2
+        exit 1
+    fi
+    mkdir -p "{{build_dir}}/packages"
+    name="my-edotmw-{{TARGET}}-$version"
+    out="{{build_dir}}/packages/$name.zip"
+    rm -f "$out"
+    # The README travels WITH the build, because a tester who downloaded a
+    # zip six weeks ago has no repo to look anything up in and the
+    # instructions have to be in the same folder as the thing they are
+    # about. docs/alpha/testers.md is the one copy; this is a copy of it,
+    # made at package time so it cannot go stale on its own.
+    staging="{{build_dir}}/packages/.$name"
+    rm -rf "$staging"
+    mkdir -p "$staging"
+    cp -r "$dir"/. "$staging/"
+    cp docs/alpha/testers.md "$staging/README.txt"
+    # Packed by GODOT, not by `zip`. `zip` is not on Git Bash's PATH on
+    # Windows and `Compress-Archive` is PowerShell-only; adding either as
+    # a dependency would break the promise that a fresh clone needs
+    # nothing but ./bootstrap.ps1. The engine is already pinned (D-001)
+    # and is the same binary that produced the build being packed.
+    #
+    # Paths from INSIDE the staging directory, so the archive opens as
+    # the build itself rather than as a folder a tester has to descend
+    # into.
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: packaging needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    "$godot" --headless --path . --script package_zip.gd -- \
+        --dir="$staging" --out="$out"
+    rm -rf "$staging"
+    if [ ! -s "$out" ]; then
+        echo "FAIL: no package was written at $out" >&2
+        exit 1
+    fi
+    echo "package: $out"
+    # `sha256sum` prefixes the digest with a backslash when the path it
+    # was given contains one, which every Windows path does — strip it,
+    # or the checksum quoted to a tester does not match the one they
+    # compute.
+    echo "package: $(du -h "$out" | cut -f1), sha256 $(sha256sum "$out" | cut -d' ' -f1 | sed 's|^\\||')"
+    echo "package: version $version — hand this to a tester with docs/alpha/testers.md"
+
+# Push a package to a PRIVATE itch.io channel via butler (#183).
+#
+# **This recipe has never been run against a real target.** It needs an
+# itch.io account, a project, and a butler API key, none of which exist in
+# a worktree — so what is verified here is the half that CAN be: it
+# refuses, loudly and specifically, when butler or the key is missing,
+# which is the state every automated context is in. The push itself is
+# the human remainder, and the PR that added this says so.
+#
+# It exists as a recipe rather than as a line in the runbook because the
+# invocation is the part that is easy to get wrong: the channel name is
+# what itch uses to decide "is this the same product", and the `--userversion`
+# is what makes a tester's client able to say which build it has. Both
+# come from the one version (D-20260827) rather than from whoever is
+# typing.
+#
+# It is also a rehearsal for steamcmd (#185) on purpose — same shape,
+# same versioning question, and cheaper to get wrong.
+[doc("Push a package to a private itch.io channel via butler (needs BUTLER_API_KEY)")]
+publish-itch TARGET="windows-client" PROJECT=env_var_or_default("EDOTMW_ITCH_PROJECT", ""):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" windows-client windows-server linux-server
+    if ! command -v butler >/dev/null 2>&1; then
+        echo "FAIL: butler is not on PATH." >&2
+        echo "      It is itch.io's uploader: https://itch.io/docs/butler/" >&2
+        echo "      Nothing here installs it — it is a personal tool with a personal key," >&2
+        echo "      the same reason blender-path.sh finds Blender rather than fetching it." >&2
+        exit 1
+    fi
+    if [ -z "${BUTLER_API_KEY:-}" ]; then
+        echo "FAIL: BUTLER_API_KEY is not set — butler cannot authenticate." >&2
+        echo "      Get one with: butler login" >&2
+        exit 1
+    fi
+    if [ -z "{{PROJECT}}" ]; then
+        echo "FAIL: no itch project. Pass it, or set EDOTMW_ITCH_PROJECT." >&2
+        echo "      It looks like: yourname/my-edotmw" >&2
+        exit 1
+    fi
+    version="{{build_version}}"
+    package="{{build_dir}}/packages/my-edotmw-{{TARGET}}-$version.zip"
+    if [ ! -s "$package" ]; then
+        echo "FAIL: no package at $package — run: {{just_executable()}} package {{TARGET}}" >&2
+        exit 1
+    fi
+    # The channel is the PRODUCT identity on itch, and `alpha-` keeps
+    # these off any public channel name a store page would offer
+    # (D-087: M8 produces no public artifact).
+    channel="alpha-{{TARGET}}"
+    echo "publish-itch: pushing $package to {{PROJECT}}:$channel as $version"
+    butler push "$package" "{{PROJECT}}:$channel" --userversion "$version"
+    butler status "{{PROJECT}}:$channel"
+
 # Fetch the PINNED engine's export templates into tools/.
 #
 # Separate from `bootstrap` for the same reason `bootstrap-art` is: it is
