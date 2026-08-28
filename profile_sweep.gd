@@ -58,6 +58,15 @@ func _initialize() -> void:
 		_derive_sweep(config)
 	if only == "" or only == "ladder":
 		_tick_ladder(config)
+	if only == "" or only == "scale":
+		# `--counts=150,180,210` brackets a budget crossing without paying
+		# for the whole sweep again. Empty is the shipped ladder.
+		var raw := String(args.get("counts", ""))
+		var counts := []
+		for piece in raw.split(",", false):
+			if piece.is_valid_int():
+				counts.append(piece.to_int())
+		_scale_ladder(config, counts if not counts.is_empty() else SCALE_COUNTS)
 	quit(0)
 
 
@@ -104,14 +113,14 @@ const LADDER_WARMUP := 120
 const LADDER_TICKS := 200
 const LADDER_PLAYERS := 4
 
-## One rally per five squads. The count sweep above uses eight for any
-## count, which at 120 squads puts fifteen squads on one cell — and
+## Squads per rally point. The count sweep above uses eight rally points
+## at ANY count, which at 120 squads puts fifteen squads on one cell — and
 ## separation then spends its whole budget shoving them outward past each
 ## other. Measured: 51-70 us/squad of separation against the 5-8 a real
 ## `just test-load` run reports. That is a pathological workload, not a
 ## defect, and a ladder built on it would attribute host noise and pile-up
 ## to whichever knob happened to be off.
-const LADDER_RALLY_POINTS := 24
+const LADDER_SQUADS_PER_RALLY := 5
 
 ## Interleaved repeats, and the ladder reports the MINIMUM of them.
 ##
@@ -137,7 +146,8 @@ const LADDER_PASSES := 7
 ## both are deterministic, both are expensive, and rebuilding them thirty
 ## times would put their variance inside the measurement.
 func _ladder_run(space: TorusSpace, passable: PackedByteArray,
-		terrain: TerrainGen, nodes: Dictionary, off: String) -> Dictionary:
+		terrain: TerrainGen, nodes: Dictionary, off: String,
+		squads: int = LADDER_SQUADS) -> Dictionary:
 	# `control` is the shipped configuration under another name — the
 	# noise-floor row. Nothing below may branch on it.
 	if off == "control":
@@ -174,7 +184,7 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	var defs := UnitRoster.load_all()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 0xF00D
-	for i in range(LADDER_SQUADS):
+	for i in range(squads):
 		sim.add_squad(defs[i % defs.size()], 1 + (i % LADDER_PLAYERS), Vector2i(
 			rng.randi_range(0, space.width - 1),
 			rng.randi_range(0, space.height - 1)))
@@ -189,8 +199,13 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 					rng.randi_range(0, space.width - 1),
 					rng.randi_range(0, space.height - 1)), true)
 
+	# One rally per five squads at every count, so the sweep varies the
+	# COUNT and not the crowding — a fixed rally list would pile five
+	# times as many squads onto each point at 480 as at 60 and measure
+	# separation instead of scale.
+	var rally_points := maxi(4, squads / LADDER_SQUADS_PER_RALLY)
 	var rallies := []
-	for r in range(LADDER_RALLY_POINTS):
+	for r in range(rally_points):
 		rallies.append(Vector2i(
 			rng.randi_range(0, space.width - 1),
 			rng.randi_range(0, space.height - 1)))
@@ -200,7 +215,7 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	for tick in range(LADDER_WARMUP):
 		if tick % MOVE_EVERY_TICKS == 0:
 			for squad in range(sim.squad_count()):
-				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+				sim.order_move(squad, rallies[squad % rally_points])
 		sim.tick()
 
 	var keys := ["tick", "fields", "curves", "vision", "combat", "buildings",
@@ -213,11 +228,11 @@ func _ladder_run(space: TorusSpace, passable: PackedByteArray,
 	for tick in range(LADDER_TICKS):
 		if tick % MOVE_EVERY_TICKS == 0:
 			for squad in range(sim.squad_count()):
-				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+				sim.order_move(squad, rallies[squad % rally_points])
 		sim.tick()
 		worst = maxi(worst, sim.last_tick_usec)
 
-	var updates := float(LADDER_TICKS * LADDER_SQUADS)
+	var updates := float(LADDER_TICKS * squads)
 	var out := {"worst_ms": float(worst) / 1000.0}
 	for key in keys:
 		out[key] = float(int(sim.get("total_%s_usec" % key)) - int(before[key])) / updates
@@ -313,6 +328,58 @@ func _tick_ladder(config: MapConfig) -> void:
 			row["tick"], row["fields"], row["curves"], row["vision"],
 			row["combat"], row["buildings"], row["production"], row["economy"],
 			row["separation"], row["other"], row["worst_ms"]])
+
+
+## Squad counts the scale ladder walks, looking for where D-020's 100 ms
+## tick runs out (#287).
+##
+## The count sweep at the top of this file already walks 100/250/500/1000
+## — on a BARE simulation. This walks the same question on the world the
+## server actually builds, which is the whole reason the tick ladder
+## exists: a count that fits in the budget without teams, buildings, an
+## economy or combat between four sides is not a count that fits.
+const SCALE_COUNTS := [60, 120, 240, 480]
+
+## Fewer passes than the bisection: this is looking for a budget crossing
+## measured in tens of milliseconds, not a knob difference measured in
+## single microseconds, so the noise floor that matters here is much
+## coarser and three interleaved passes buy enough.
+const SCALE_PASSES := 3
+
+
+## Where the tick budget runs out, on the world the server builds
+## (#287, and D-20260818-battle-quality-outranks-player-count's exit
+## criterion 8).
+##
+## Reports MEAN tick milliseconds and WORST, because D-020's budget is
+## about a tick being late and a mean that fits while the worst does not
+## is a stutter a player feels. Worst is the honest column.
+func _scale_ladder(config: MapConfig, counts: Array = SCALE_COUNTS) -> void:
+	var space := config.to_space()
+	var terrain := TerrainGen.new()
+	terrain.noise_seed = 1337
+	var passable := terrain.passability(space)
+	var template := Economy.new(space)
+	template.generate(terrain, 1)
+
+	print("profile: --- scale ladder, shipped world, %d ticks after %d warm-up, best of %d ---"
+		% [LADDER_TICKS, LADDER_WARMUP, SCALE_PASSES])
+	print("profile: squads,us_per_squad,ms_per_tick,ms_worst,fields,curves,vision,combat,buildings,separation")
+
+	var best := {}
+	for _pass in range(SCALE_PASSES):
+		for count in counts:
+			var row := _ladder_run(space, passable, terrain, template.nodes, "", int(count))
+			if not best.has(count) or float(row["tick"]) < float(best[count]["tick"]):
+				best[count] = row
+	for count in counts:
+		var row: Dictionary = best[count]
+		# us/squad x squads x 1 tick = us per tick.
+		var ms_per_tick := float(row["tick"]) * float(count) / 1000.0
+		print("profile: %d,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f" % [
+			int(count), row["tick"], ms_per_tick, row["worst_ms"],
+			row["fields"], row["curves"], row["vision"], row["combat"],
+			row["buildings"], row["separation"]])
 
 
 ## Client-side derivation cost — D-006's other half.

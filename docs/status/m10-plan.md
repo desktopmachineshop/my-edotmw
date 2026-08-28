@@ -1,3 +1,22 @@
+**The scale TARGET is measured as of 2026-08-28**
+(`decisions/D-20260828-the-shipping-scale.md`, #287), and it re-scopes
+everything on this page: **~200 squads / ~3,100 soldiers**, recommended
+as 8 players x 25 squads, superseding D-018's 1,000 / 40,000. Both
+budgets land there from opposite directions — D-020's 100 ms **worst**
+tick crosses between 180 and 240 squads (`just profile scale`), and
+30 fps on Intel Iris Xe crosses at ~200 (`just bench-render`, two
+passes). **The budget is a TOTAL**, so `squad_cap` should be derived from
+the seat count rather than being 40 for everybody; at 40 the lobby's own
+24-seat ceiling is 960 squads, nearly five times what the tick holds.
+
+Two consequences for what is written below. **The 1,000-squad sweep being
+over budget (204.5 ms) stops being a shipping problem** and becomes a
+headroom question, because nothing ships at 1,000 squads — #105's
+attribution stands, its urgency does not. And **the host pays BOTH
+budgets** (D-088 runs the server in-process inside a player's client),
+which nothing has ever measured; that is #339 and it may be the binding
+constraint.
+
 ## M10 (scale optimisation) — PLANNED, not built
 
 The map ladder moved up a rung on 2026-08-17 so the zoom cap could stop
