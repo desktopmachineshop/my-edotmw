@@ -37,13 +37,18 @@ Seven things to know:
   is general: naval's docks are another building whose price is not food,
   so stage 7 inherits it rather than rediscovering it.
 - **The decision is shared with naval stage 7; the geometry is not.**
-  `static_defence.gd` answers "is now the moment to spend on something
-  that cannot chase anybody?" and **names no wall, gate, dock or ship** —
-  a source scan in `tests/test_static_defence.gd` enforces it, because
+  `ai_investment.gd` answers "is now the moment to spend on something I
+  have not got?" and **names no wall, gate, tower, dock, ship or shore**
+  — a source scan in `tests/test_ai_investment.gd` enforces it, because
   that is not something a behavioural test can see. `wall_plan.gd` is the
-  half that knows what a wall is. Stage 7 was not started when this
-  landed (it depends on stages 4, 5 and 6), so the interface is pinned in
-  the decision entry and in the PR body, the way 86/87 agreed CI.
+  half that knows what a wall is, and `ai_naval.gd` is the half that
+  knows what water is.
+  **That sharing is real as of #365 and was not when this landed:** stage
+  7 had been written in parallel with its own copy, and
+  `D-20260828-one-ai-investment.md` is the third-party reconciliation —
+  one file, both callers, with the case/threshold split that neither
+  original had. `static_defence.gd` is gone; every function and every
+  measurement below is unchanged inside it.
 - **A screen, not a ring, and that is arithmetic.** A ring at radius 5 is
   30 cells — **900 wood and 1,200 stone** at the shipped price. An arc
   across the approach is five segments at 150 wood and 200 stone, and it
@@ -116,7 +121,7 @@ moment they were asked to build a gate: `gate.tres` costs 45 **stone**.
 The first `test-load 4 300` came back **clean with `gate_orders=0
 gate_toggles=0`**, which is this issue's own defect class arriving inside
 the fix for it. One crew per pass is diverted to whatever the next
-purchase is short of, through the same `StaticDefence.scarcest_shortfall`
+purchase is short of, through the same `AiInvestment.scarcest_shortfall`
 the AI reads — one rule, two callers, and naval a third.
 
 Measured `test-load 4 300`, before and after that one line:

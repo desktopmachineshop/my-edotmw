@@ -142,7 +142,7 @@ static func wanted_count(def: BuildingDef) -> int:
 ## edit here (D-047).
 ##
 ## Ordered only AFTER something that trains is standing, so it can never
-## outbid the barracks — the same precondition `StaticDefence` applies to
+## outbid the barracks — the same precondition `AiInvestment` applies to
 ## the AI, for the same reason.
 static func wanted_gate(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
 	var trains := false

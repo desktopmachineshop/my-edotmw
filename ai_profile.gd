@@ -167,12 +167,12 @@ class_name AiProfileDef
 ## that cannot chase anybody: walls, gates, a tower (#337).
 ##
 ## 1.0 fortifies at the first sign of a threat; 0.0 never fortifies at
-## all. `StaticDefence.wants_to_invest` reads it as `pressure >= 1.0 -
+## all. `AiInvestment.wants_to_invest` reads it as `case >= 1.0 -
 ## appetite`, which is monotone in both and statable in one sentence.
 ##
 ## A genuine difficulty axis, unlike the floors above, and it is safe to
 ## be one — which is the test `ai_profile.gd` applies to every candidate
-## knob. It CANNOT starve an opening: `StaticDefence.pressure` returns 0
+## knob. It CANNOT starve an opening: `AiInvestment.threat_pressure` returns 0
 ## until something that trains is standing, so no appetite buys a wall
 ## before the barracks; and `can_afford_with_reserve` holds back a share
 ## of the economy's own floors on top of the price. The worst a wrong

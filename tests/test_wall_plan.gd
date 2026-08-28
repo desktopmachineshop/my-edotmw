@@ -2,7 +2,7 @@ extends GutTest
 
 ## Guards #337's geometry: WHERE a wall goes.
 ##
-## `static_defence.gd` decides whether to fortify and is shared with naval
+## `ai_investment.gd` decides whether to fortify and is shared with naval
 ## stage 7; this is the half that knows what a wall is. All-static and
 ## pure, so the part with the interesting failure mode — a screen laid
 ## across the seam, a wall that walls its owner in — is testable without a
@@ -212,9 +212,9 @@ func test_a_defensive_tower_is_the_one_that_shoots() -> void:
 
 func test_no_script_in_this_pair_names_a_shipped_building() -> void:
 	# The same rule D-046 criterion 3 applies to civs, applied to the wall
-	# family: `wall_plan.gd` and `static_defence.gd` decide by FIELD, so a
+	# family: `wall_plan.gd` and `ai_investment.gd` decide by FIELD, so a
 	# civ shipping its own rampart is picked up with no edit.
-	for path in ["res://wall_plan.gd", "res://static_defence.gd"]:
+	for path in ["res://wall_plan.gd", "res://ai_investment.gd"]:
 		var handle := FileAccess.open(path, FileAccess.READ)
 		assert_not_null(handle, "%s must be readable" % path)
 		if handle == null:
