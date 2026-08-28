@@ -103,3 +103,5 @@
 271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT-RESOLVED	CLAUDE.md import list + justfile doctor block, both additive; kept both.
 303	ao/my-edotmw-81/issue-288-report-a-problem	CONFLICT	client.gd 
 246	ao/my-edotmw-88/renewable-food	CONFLICT	client.gd 
+303	ao/my-edotmw-81/issue-288-report-a-problem	CONFLICT-RESOLVED	client.gd: two PRs adding buttons to the same ESC menu column (#297 Surrender, #303 Report a problem); additive.
+246	ao/my-edotmw-88/renewable-food	CONFLICT	ai/balanced.tres ai/cautious.tres ai/relentless.tres bot_build_plan.gd bot_client.gd civs/emberdeep.tres civs/gildedreach.tres civs/gravesworn.tres civs/stoneblood.tres civs/thornwood.tres civs/windmarch.tres client.gd decisions/D-010.md 

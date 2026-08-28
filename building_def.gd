@@ -85,6 +85,38 @@ class_name BuildingDef
 ## adding a drop-off never means editing the economy.
 @export var is_drop_off: bool = false
 
+## Which resource a complete, living building of this type GROWS, or
+## "none" (D-20260828-food-is-grown-not-only-found). A growing building is
+## a work site an ordinary gatherer crew is ordered onto exactly as it is
+## ordered onto a forest — the whole D-028 haul cycle, unchanged.
+##
+## Named as a resource KIND rather than a `grows_food` flag because the
+## same three fields answer "a renewable of any kind": a later woodlot or
+## quarry is a .tres file and no code, which is the difference between
+## this and a market (deferred, see the decision).
+@export_enum("none", "food", "wood", "gold", "stone") var grows: String = "none"
+
+## How much grown stock this building banks while nobody is working it, so
+## a fresh farm yields IMMEDIATELY (a crew takes whatever has grown, not
+## whatever has filled) and a farm left alone while its crew hauls is not
+## wasting its rate. Read by `Economy.sync_farms`.
+@export var grow_capacity: int = 0
+
+## Units of `grows` per second. This is the number that matters: a farm
+## does not add STOCK to the map, it adds INCOME, which is the only kind
+## of quantity D-068's per-second upkeep can be paid out of. The steady
+## state per building is this rate no matter how many crews stand on it —
+## more income is more farms, not more workers on one square.
+@export var grow_per_second: float = 0.0
+
+## Whether this building's cells block ground movement
+## (`BuildingSim.blocking_cells`). True for everything that has ever
+## existed here; false only for a field, which a crew has to be able to
+## STAND on — `Economy` decides a crew has arrived by comparing its cell
+## with the work cell, so a farm that blocked its own cell could never be
+## worked.
+@export var blocks_movement: bool = true
+
 ## What this building can produce, as UnitDef ids. Empty means it produces
 ## nothing.
 @export var produces: Array[StringName] = []

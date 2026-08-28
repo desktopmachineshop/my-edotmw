@@ -43,10 +43,6 @@ class_name AiProfileDef
 @export var id: StringName
 @export var display_name: String = ""
 
-## Flavour for the lobby, so a player choosing an opponent knows what
-## they are picking. Not mechanics.
-@export_multiline var summary: String = ""
-
 ## Where this sits in a list a player is shown, easiest first. Sorted on,
 ## so the roster's order is the file's business rather than the UI's.
 @export var order: int = 0
@@ -140,6 +136,17 @@ class_name AiProfileDef
 @export var food_floor: int = 180
 @export var wood_floor: int = 200
 
+## How many FIELDS this opponent wants standing
+## (D-20260828-food-is-grown-not-only-found). Unlike the floors above this
+## IS a difficulty axis, and for the reason that decision is about: a farm
+## is a one-time wood cost bought against perpetual food, so how many an
+## opponent is willing to fund is exactly the long-game ambition that
+## separates the easy end of the ladder from the hard end.
+##
+## A farm is the only building an AI wants more than one of, which is why
+## `_wanted_count` exists rather than `_owned_building_count(id) > 0`.
+@export var farms_wanted: int = 4
+
 
 ## How much of a CASE this opponent needs before it spends on something
 ## that cannot chase anybody: walls, gates, a tower (#337).
@@ -186,6 +193,8 @@ func validate() -> String:
 		return "ai profile %s re-orders its army every think" % id
 	if food_floor < 0 or wood_floor < 0:
 		return "ai profile %s has a negative resource floor" % id
+	if farms_wanted < 0:
+		return "ai profile %s wants a negative number of fields" % id
 	return ""
 
 
