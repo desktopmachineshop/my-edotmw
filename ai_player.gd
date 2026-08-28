@@ -230,6 +230,23 @@ func _wanted_buildings() -> Array:
 		# A building behind a tech is not a building it can want yet.
 		if not state.has_tech(def.requires_tech):
 			continue
+		# A shore building is raised by the NAVAL INVESTMENT or not at
+		# all (`_raise_dock`). This list is indiscriminate — every def a
+		# gatherer may build, in cost order — so a dock was going up as
+		# ordinary infrastructure on seats that had never wanted a navy
+		# (#351: `docks=1` beside `wants_navy=0 ships_peak=0`).
+		#
+		# The wasted wood is the small half. §6.2's vacuity ladder gates
+		# FIRST on "no dock was ever built", so a dock nobody meant would
+		# carry the gate past its first leg and make it name the WRONG
+		# one — and a check that lies about which thing broke is worse
+		# than one that only says something did.
+		#
+		# By `needs_shore` rather than by id, so the next shore building
+		# inherits the rule instead of rediscovering it (D-047: no script
+		# names a civ; the same reasoning applies to naming a def).
+		if def.needs_shore:
+			continue
 		if def.produces.size() > 0:
 			military.append(def)
 		else:
@@ -1425,7 +1442,21 @@ var landings: int = 0
 ## is how a zero says WHICH.
 var naval_step := "none"
 
+## How many scouting legs count as having LOOKED at your own island.
+##
+## Not a difficulty knob: it bounds a FAILURE (concluding something from
+## ignorance), and D-20260818-ai-profiles-are-data keeps those as
+## constants for the reason `FOUND_RETRY` and `UNREACHABLE_AFTER` are —
+## a difficulty able to make an AI never explore is a way to ship a
+## broken opponent by data entry.
+##
+## Three, because `_scout_for_resources` expands its radius by 5 cells a
+## leg from 6, so three legs have swept ~21 cells around home — more than
+## `min_spawn_landmass`'s 96-cell disc is wide.
+const SCOUTED_ENOUGH_LEGS := 3
+
 var _land_labels := PackedInt32Array()
+var _land_sizes := PackedInt32Array()
 var _navigable := PackedByteArray()
 var _terrain_key := ""
 ## Squads already ordered aboard, so the AI does not re-order them every
@@ -1448,7 +1479,17 @@ func _go_to_sea() -> void:
 
 	var home := state.space.index(state.spawn_cell_of(player))
 	var enemies := _known_enemy_cells()
-	wants_navy = AiNaval.needs_ships(_land_labels, home, enemies)
+	# `_scout_leg` is the AI's own scouting progress — the answer to "have
+	# I looked", which is what separates having cleared an island from
+	# never having left the beach (#351). A clock would answer "has it
+	# been a while", which is the #69/#84 rule about legs being events.
+	#
+	# `min_spawn_landmass` is D-104's definition of enough ground for a
+	# start, read off the map this client was told about rather than
+	# restated here.
+	var looked := _scout_leg >= SCOUTED_ENOUGH_LEGS
+	wants_navy = AiNaval.needs_ships(_land_labels, home, enemies, looked,
+		_land_sizes, int(state.map_settings.get("min_spawn_landmass", 0)))
 	docks = _owned_building_count(&"dock")
 	ships_peak = maxi(ships_peak, _hulls().size())
 	if not AiInvestment.should_invest(wants_navy, profile.naval_commitment):
@@ -1491,7 +1532,12 @@ func _refresh_naval_terrain() -> void:
 	var terrain := MapSettings.from_dict(state.map_settings).to_terrain()
 	var passable := terrain.passability(state.space)
 	_navigable = terrain.navigability(state.space)
-	_land_labels = MapConfig.walkable_components(state.space, passable)["labels"]
+	var components := MapConfig.walkable_components(state.space, passable)
+	_land_labels = components["labels"]
+	# The SIZES too, because "is there land I cannot walk to" is only a
+	# reason when that land is worth going to — a stray islet is not, and
+	# generated maps are full of them.
+	_land_sizes = components["sizes"]
 	_terrain_key = key
 
 

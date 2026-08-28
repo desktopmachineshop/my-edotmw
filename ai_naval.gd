@@ -44,30 +44,78 @@ static func component_of(labels: PackedInt32Array, cell_index: int) -> int:
 	return labels[cell_index]
 
 
-## Whether every enemy thing this AI KNOWS ABOUT is off its own landmass.
+## Whether this AI has a reason to put an army on a boat.
 ##
-## `home` is the AI's own start cell; `enemy_cells` are the cells of
-## enemy buildings and spawns it has been told about. Land components
-## come from `MapConfig.walkable_components` over the same passability
-## the ground layer uses.
+## `home` is its own start cell; `enemy_cells` are the cells of enemy
+## buildings it has been TOLD about. Land components come from
+## `MapConfig.walkable_components` over the same passability the ground
+## layer uses.
 ##
-## **Returns false when it knows of no enemy at all**, and that is the
-## load-bearing case rather than an edge one. "I have seen nothing, so
-## there must be an ocean between us" is how an AI on a perfectly
-## ordinary land map would talk itself into a navy before it had scouted
-## — and it would then read as an AI that does nothing for two minutes.
-## No knowledge is not evidence of separation.
+## THREE states, not two, and conflating the last two is the defect this
+## function shipped with (#351, found by worker 88 on the integrated
+## tree):
+##
+## 1. **A known enemy on my landmass** — fight them on foot. No.
+## 2. **A known enemy off it** — that is what a navy is for. Yes.
+## 3. **No known enemy at all** — and here the first version said "no",
+##    on the argument that ignorance is not evidence of separation. That
+##    is right for a land map and creates its exact MIRROR on a water
+##    one: an AI cannot LEARN of an enemy across water without crossing,
+##    and would not cross until it had learned. Measured on the default
+##    map: four seats on 3-4 different islands, placement working, and
+##    `wants_navy=0` with `enemy_buildings_seen=0` on every seat-match.
+##
+## So state 3 splits on whether the AI has LOOKED. Having scouted and
+## found nobody, with substantial land it cannot walk to, is not
+## ignorance — it is having run out of world, which is a different fact
+## and wants the opposite answer.
+##
+## `has_scouted` is the AI's own scouting progress, not a clock: the
+## question is "have I looked", and a timeout would answer "has it been a
+## while" (the #69/#84 rule — legs are events).
+##
+## `min_landmass` is `MapConfig.min_spawn_landmass` — D-104's own
+## definition of enough ground to be worth anything — reused rather than
+## restated. Without it a single stray islet counts as "land I cannot
+## reach", and generated maps are full of them, so every AI on every map
+## would build a dock.
 static func needs_ships(land_labels: PackedInt32Array, home: int,
-		enemy_cells: Array) -> bool:
-	if enemy_cells.is_empty():
-		return false
+		enemy_cells: Array, has_scouted: bool = false,
+		land_sizes := PackedInt32Array(), min_landmass: int = 0) -> bool:
 	var mine := component_of(land_labels, home)
 	if mine < 0:
 		return false
-	for cell in enemy_cells:
-		if component_of(land_labels, int(cell)) == mine:
-			return false
-	return true
+
+	# Knowledge outranks exhaustion: once the AI has SEEN an enemy, where
+	# they are is a better answer than where they might be — in both
+	# directions, and neither depends on having finished scouting.
+	if not enemy_cells.is_empty():
+		for cell in enemy_cells:
+			if component_of(land_labels, int(cell)) == mine:
+				return false
+		return true
+
+	# Nobody known. Ignorance decides nothing; exhausted search does.
+	if not has_scouted:
+		return false
+	return _worthwhile_land_elsewhere(land_labels, land_sizes, mine, min_landmass)
+
+
+## Is there a landmass I cannot walk to that is big enough to matter?
+##
+## Land only: `walkable_components` leaves an impassable cell unlabelled,
+## so any label at all is ground somebody could stand on.
+static func _worthwhile_land_elsewhere(land_labels: PackedInt32Array,
+		land_sizes: PackedInt32Array, mine: int, min_landmass: int) -> bool:
+	var seen := {}
+	for index in range(land_labels.size()):
+		var label := land_labels[index]
+		if label < 0 or label == mine or seen.has(label):
+			continue
+		seen[label] = true
+		if label >= land_sizes.size() or land_sizes[label] >= min_landmass:
+			return true
+	return false
 
 
 ## Where to put an army ashore: the known enemy cell whose own landmass
