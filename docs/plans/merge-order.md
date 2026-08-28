@@ -471,12 +471,40 @@ merged tree: **VERDICT ok, 4/4 bots, 0 desyncs over 480 state-hash checks, 0
 dropped ticks, 0 ticks over D-020's budget**, and all three `gate-check.sh`
 comparisons green.
 
-**One number to look at: the merged tree fielded 11 squads where the same run
-on single-PR trees fielded 32-34**, at 448.28 us/squad against ~160-213 at
-32-34 squads. Per-squad cost is quoted with its squad count as always, and a
-low count inflates it — but 11 squads is itself the signal. Farms, techs, civ
-knobs and the new levy costs all change the economy, and stacked they change
-it a lot. Nothing failed; the match is simply a different match.
+**The merged tree fielded 11 squads where single-PR trees fielded 32-34, and
+that was a DEFECT, not the union playing differently.** An earlier version of
+this page guessed it was farms, techs, civ knobs and levy costs stacking; it
+was none of them. Cause found by #88 (#376): a load-test bot never sent a
+produce order AT ALL — not refused, never asked, which is why no server log
+ever showed a production refusal. `MatchState` seats a player with
+`civ = random` and only `_on_match_started` resolves it; under `--lobby=0` a
+bot connects AFTER the match begins, so its seat still reads `random`,
+`for_civ_archetype` answers null, and `BotBuildPlan._resolve` treated
+`random` as a real civ instead of falling back. Production was skipped
+silently for the whole match.
+
+**Re-measured on this rehearsal tree with the root fix (#380) merged in**,
+same host and method:
+
+| tree | squads | duration | squads/s | `nodes_felled` |
+|---|---|---|---|---|
+| single-PR baseline | 33 | 129.2 s | 0.255 | ~15-20 |
+| union (as rehearsed) | 11 | 129.2 s | **0.085** | 3 |
+| union + #380 | 22 | 142.3 s | **0.155** | 16 |
+
+Casualties 37 -> 69, 0 desyncs over 476 state-hash checks, 0 dropped ticks,
+0 ticks over budget. A residual gap to baseline remains and is NOT attributed
+here — do not read 0.155 as "fixed", only as "most of it was this".
+
+**The lesson worth carrying is about the instrument.** `build=` names the
+CHEAPEST thing a bot currently wants, so a bot with no economy reports the
+cheapest want it cannot afford. That made the farm look causal: remove farms
+and the same dead bot reports `cannot afford barracks` instead, which is
+exactly what a HEALTHY tree reports for an entirely different reason. **The
+label discriminates cost, not health** — I ran a five-run A/B off that
+reading, correctly excluded the balance cluster and #246, and still had the
+wrong candidate. `nodes_felled` collapsing to 3 was the same defect wearing a
+second face: with no crews there is nothing to fell.
 
 ## Five real incompatibilities, all filed
 
