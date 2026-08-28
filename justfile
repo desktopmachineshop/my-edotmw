@@ -2000,7 +2000,7 @@ profile ONLY="" COUNTS="": _import
 # import, global class_names do not resolve and it dies with parse errors
 # naming unrelated lines.
 [doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
-bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESET="" HULLS="0":
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESET="" HULLS="0" ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
@@ -2026,7 +2026,11 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESE
         exit 1
     fi
     "$godot" --headless --path . --import
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} --host={{HOST}} --preset="{{PRESET}}" --hulls={{HULLS}}
+    # ARGS is the attribution channel (#229): --clamp=0, --sampler=0,
+    # --copies=0, --cells_wide=84 --cells_high=96. Empty by default, so a
+    # bare `just bench-render` measures the shipping client exactly as it
+    # always did and every number ever quoted stays comparable.
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} --host={{HOST}} --preset="{{PRESET}}" --hulls={{HULLS}} {{ARGS}}
 
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #

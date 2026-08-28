@@ -53,3 +53,9 @@
 369	ao/my-edotmw-79/decisions-ahead	CONFLICT	decisions/D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross.md decisions/D-20260828-a-sound-is-a-cosmetic-you-must-be-able-to-see.md decisions/D-20260828-artifacts-are-written-where-the-build-can-write.md decisions/D-20260828-two-formations-that-belonged-to-nobody.md 
 369	ao/my-edotmw-79/decisions-ahead	CONFLICT-RESOLVED	4 add/add on decisions/*.md - #369 lands 69 entries AHEAD of their code and so ships copies of entries their owning PRs also add. Kept the OWNING PR's version in every case: verified #369's copy of the formations entry predates its testudo amendment, so ours is the newer text.
 225	ao/my-edotmw-83/tech-tree	CONFLICT	bot_client.gd buildings/barracks.tres civ_def.gd decisions/D-20260827-the-tree-is-the-ladder.md net_protocol.gd units/windmarch_harriers.tres 
+225	ao/my-edotmw-83/tech-tree	CONFLICT-RESOLVED	6 files. net_protocol.gd: moved C2S_ORDER_RESEARCH/S2C_TECH_STATE from OPCODES_RESERVED into OPCODES per #374's rule. civ_def.gd + bot_client.gd additive. barracks.tres: kept HEAD's 15-archetype produces list (#356's vocabulary is the superset). units/windmarch_harriers.tres: RENAME vs EDIT - #356 renamed skirmishers->harriers, #225 added requires_tech to the old name; kept BOTH the rename and the tech gate.
+296	ao/my-edotmw-83/ladder-and-pacing	CLEAN	12
+319	ao/my-edotmw-83/tick-ladder	CLEAN	7
+341	ao/my-edotmw-83/shipping-scale	CLEAN	6
+358	ao/my-edotmw-83/owner-decisions	CLEAN	1
+250	ao/my-edotmw-87/render-cost-attribution	CONFLICT	bench_render.gd decisions/D-20260828-every-microsecond-of-a-frame-has-a-phase.md justfile 

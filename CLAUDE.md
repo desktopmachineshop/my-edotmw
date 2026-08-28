@@ -88,6 +88,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m10-plan.md
 
+@docs/status/client-render.md
+
 @docs/status/server-memory.md
 
 @docs/status/audio.md
