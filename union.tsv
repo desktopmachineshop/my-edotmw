@@ -25,3 +25,11 @@
 255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT	docs/status/ai-opponent.md docs/status/playtests-2026-08.md 
 255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT-RESOLVED	two status docs appended by several PRs; kept both.
 322	ao/my-edotmw-81/issue-292-disconnect-eliminates	CONFLICT	docs/status/playtests-2026-08.md server.gd 
+322	ao/my-edotmw-81/issue-292-disconnect-eliminates	STRUCTURAL-CONFLICT	server.gd disconnect handler: #356/#186 (D-090) hands the seat to an AI with the army STANDING, explicitly superseding D-033's wipe; #322 (#292) WIPES the army and razes the buildings so _check_victory fires. Opposite policies for one event. Took D-090 (the newer design, and M8's plan of record). #322's eliminate_player machinery is left in place for genuine elimination. FILED.
+385	ao/my-edotmw-87/bot-squads-peak	CLEAN	1
+221	ao/my-edotmw-82/lod-hysteresis	CLEAN	6
+252	ao/my-edotmw-82/d067-garrison	CLEAN	3
+260	ao/my-edotmw-82/d072-screen	CLEAN	3
+261	ao/my-edotmw-82/counters-are-felt	CLEAN	3
+321	ao/my-edotmw-82/civ-can-open	CLEAN	3
+330	ao/my-edotmw-82/gatherers-differ	CONFLICT	units/emberdeep_gatherers.tres units/gildedreach_gatherers.tres units/gravesworn_gatherers.tres units/stoneblood_gatherers.tres units/thornwood_gatherers.tres units/windmarch_gatherers.tres 
