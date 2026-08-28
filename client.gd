@@ -194,7 +194,10 @@ const FOG_INTERVAL := 0.25
 ## concerned. Not zero: a curve sampled either side of a keyframe produces a
 ## little numerical drift, and a squad that flickered between idle and walk on
 ## that drift would twitch.
-const MOVING_SPEED_EPSILON := 0.15
+## One definition, in `squad_render.gd` beside the code that reads it —
+## the constant was here while the pipeline that consulted it moved out
+## (#240).
+const MOVING_SPEED_EPSILON := SquadRender.MOVING_SPEED_EPSILON
 
 ## Which LOD tier each squad was drawn at last frame — the MEMORY
 ## `RenderCull.detail_tier`'s hysteresis band needs, and the client's only
@@ -1239,100 +1242,16 @@ func _refresh_squads() -> void:
 		# pairing against men the enemy is not drawing would aim strikes
 		# at empty ground.
 		var doing := _activity_for(squad_id)
-		var dueling: bool = int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
-			and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0
-		var paired := PackedInt32Array()
 		var enemy_transforms: Array[Transform3D] = []
-		if dueling:
+		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
+				and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0:
+			# The opponent squad is derived at THIS squad's detail tier —
+			# the two are adjacent, and pairing against men the enemy is
+			# not drawing would aim strikes at empty ground. It needs
+			# `ClientState`, so it is gathered here and handed over.
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
-			dueling = not enemy_transforms.is_empty()
-		elif (doing.has("ring_centre") or doing.has("rect_centre")) \
-				and not transforms.is_empty():
-			# A STATIC target (D-20260820-men-gather-round-what-they-
-			# strike): perimeter points stand in for the duel's
-			# defenders, dealt ONE PER MAN so the squad wraps the target
-			# instead of piling onto the near arc. A building is a BOX
-			# and gets its rectangle (second amendment); a tree keeps
-			# the ring. Everything downstream — engage's bounds, the
-			# strike, the easing — is the same pipeline a melee runs.
-			var ring: Array[Transform3D]
-			if doing.has("rect_centre"):
-				ring = Engagement.rect_points(doing["rect_centre"],
-					(doing["rect_half"] as Vector2)
-						+ Vector2(Engagement.CONTACT_GAP, Engagement.CONTACT_GAP),
-					float(doing["rect_yaw"]), transforms.size())
-			else:
-				ring = Engagement.ring_points(doing["ring_centre"],
-					float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
-					transforms.size())
-			var men := PackedVector3Array()
-			men.resize(transforms.size())
-			for i in range(transforms.size()):
-				men[i] = transforms[i].origin
-			# The deal HOLDS while the target and the strength hold
-			# (D-20260821): recomputing it every frame hopped every
-			# man's mark along the wall as his slot drifted.
-			var deal_key: String = str(doing.get("target_key", "")) 				+ "|" + str(transforms.size())
-			var cached: Dictionary = _static_deal.get(squad_id, {})
-			if String(cached.get("key", "")) == deal_key:
-				paired = cached["paired"]
-			else:
-				var ring_positions := PackedVector3Array()
-				ring_positions.resize(ring.size())
-				for i in range(ring.size()):
-					ring_positions[i] = ring[i].origin
-				paired = SoldierMotion.assign(ring_positions, transforms)
-				_static_deal[squad_id] = {"key": deal_key, "paired": paired}
-			enemy_transforms = ring
-			dueling = true
-		if dueling and not transforms.is_empty():
-			# The torus tax (Engagement's own note): an enemy engaged
-			# across the seam derives a whole map away in canonical
-			# coordinates, and unaligned the duel would pair every man
-			# with a phantom on the far side of the world.
-			enemy_transforms = Engagement.shifted(enemy_transforms,
-				Engagement.aligning_offset(transforms[0].origin,
-					enemy_transforms[0].origin, offsets))
-			var surround := doing.has("rect_centre") or doing.has("ring_centre")
-			if paired.is_empty():
-				paired = CosmeticDuel.opponents(transforms, enemy_transforms)
-			# A static target grants the SURROUND budget (D-20260820,
-			# third amendment): a building does not hit back, so men may
-			# leave formation properly to wrap it — "they hold formation
-			# too hard" was the owner's exact reading of the tight melee
-			# bound applied to a siege.
-			transforms = CosmeticDuel.engage(
-				transforms, enemy_transforms, paired, _state.terrain_sampler,
-				SURROUND_STEP if surround else Engagement.MAX_STEP)
 
-		# No drawn man stands inside a building (D-20260820, third
-		# amendment): slots clamp against terrain only, so a line's slots
-		# can land inside a footprint — projected out to the nearest face
-		# here, BEFORE easing, so men walk out rather than popping.
-		if not transforms.is_empty():
-			var boxes := _nearby_building_boxes(centre, world_radius + 6.0)
-			# Trees are obstacles for drawn men too (D-20260821, amended):
-			# a marching line filters around a wood man by man and the
-			# velocity clamp walks each one back to his slot beyond it.
-			# A crew's OWN worked node is exempt — standing at the tree
-			# is the job.
-			var discs := _nearby_node_discs(centre, world_radius,
-				String(doing.get("target_key", "")))
-			if not boxes.is_empty() or not discs.is_empty():
-				for i in range(transforms.size()):
-					var pushed := transforms[i]
-					for box in boxes:
-						pushed.origin = Engagement.push_out_of_box(
-							pushed.origin, box["centre"], box["half"], box["yaw"])
-					for disc in discs:
-						pushed.origin = Engagement.push_out_of_disc(
-							pushed.origin, disc["centre"], disc["radius"])
-					transforms[i] = pushed
-
-		# Eased so soldiers walk to their slots when the squad turns
-		# instead of the whole block snapping round (D-059), then decorated
-		# with sway, footfall and whatever the squad is visibly doing.
 		# Foreign drawn men within overlap range (previous frame's — one
 		# frame of lag), so OUR men adjust to THEIRS individually
 		# (D-20260821) instead of squads snapping apart. Two bounds keep
@@ -1349,63 +1268,64 @@ func _refresh_squads() -> void:
 				if other_id == squad_id:
 					continue
 				var record: Dictionary = _drawn_cache[other_id]
-				if (record["centre"] as Vector3).distance_to(own_at) 						> world_radius + float(record["radius"]) + 1.0:
+				if (record["centre"] as Vector3).distance_to(own_at) \
+						> world_radius + float(record["radius"]) + 1.0:
 					continue
 				var men: PackedVector3Array = record["men"]
 				for k in range(men.size()):
-					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
+					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() \
+							<= world_radius + 1.0:
 						neighbours.append(men[k])
-		# The speed cap is MAIN's `_pursuit_speed_of` (1.35x this unit's
-		# walk) rather than the local sprint computation this branch
-		# carried: same knob, one shared definition with two callers, and
-		# it sits BELOW the squad's sprint, so "a man may rise to the
-		# squad's sprint to catch up, but no faster" still holds.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta,
-			_pursuit_speed_of(squad_id), neighbours)
-		var drawn_men := PackedVector3Array()
-		drawn_men.resize(eased.size())
-		for i in range(eased.size()):
-			drawn_men[i] = eased[i].origin
-		_drawn_cache[squad_id] = {"men": drawn_men,
+
+		# Everything from here to the MultiMesh is `SquadRender.frame`
+		# (#240) — the duel pass, the static-target deal, the building and
+		# tree push-outs, the easing, the decoration and the clip. It was
+		# inline here, which meant `bench_render.gd` measured a client
+		# missing all of it while its own comment claimed otherwise. One
+		# definition, called by both, so the benchmark cannot drift from
+		# the client again.
+		var drawn_render := SquadRender.frame({
+			"transforms": transforms,
+			"doing": doing,
+			"enemy_transforms": enemy_transforms,
+			"deal": _static_deal.get(squad_id, {}),
+			"offsets": offsets,
+			"boxes": _nearby_building_boxes(centre, world_radius + 6.0),
+			"discs": _nearby_node_discs(centre, world_radius,
+				String(doing.get("target_key", ""))),
+			"terrain_sampler": _state.terrain_sampler,
+			"motion": _motion,
+			"squad_id": squad_id,
+			"delta": _frame_delta,
+			"now": _now,
+			# The REAL speed, not a literal 1.0 — which is what sat here
+			# and is why every standing squad in every match bobbed on the
+			# spot. `footfall_bob`'s own doc says speed scales the bob "so
+			# a stationary squad stops bobbing", `test_formation.gd`
+			# asserts exactly that of the function, and this caller then
+			# handed it a constant. The D-061 family: the mechanism correct
+			# and tested, the one live call site feeding it the wrong
+			# input.
+			"speed": speed,
+			# The speed cap is `_pursuit_speed_of` (1.35x this unit's walk),
+			# which sits BELOW the squad's sprint, so "a man may rise to
+			# the squad's sprint to catch up, but no faster" still holds.
+			"pursuit_speed": _pursuit_speed_of(squad_id),
+			"neighbours": neighbours,
+			"routed": _state.routed_of(squad_id),
+			"model_id": _model_id_of(squad_id),
+			"surround_step": SURROUND_STEP,
+		})
+		var decorated: Array[Transform3D] = drawn_render["transforms"]
+		_static_deal[squad_id] = drawn_render["deal"]
+		_drawn_cache[squad_id] = {"men": drawn_render["drawn_men"],
 			"centre": centre + offset, "radius": world_radius}
-		# The REAL speed, not a literal 1.0 — which is what sat here and is
-		# why every standing squad in every match bobbed on the spot.
-		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
-		# squad stops bobbing", `test_formation.gd` asserts exactly that of
-		# the function, and this caller then handed it a constant. The D-061
-		# family: the mechanism correct and tested, the one live call site
-		# feeding it the wrong input. Noticed only when an authored model
-		# with a real VAT idle clip made the extra whole-body bounce read as
-		# a defect instead of as capsule-era "life".
-		# A model that draws its own work stroke takes NO cosmetic lunge or
-		# sway — see `CosmeticDuel.strike_decorate`. Only the WORKING case
-		# can have one: a soldier's `attack` clip is a stroke at an enemy,
-		# not at the tree he is standing on.
-		var self_animated := int(doing["activity"]) == CosmeticOffset.Activity.WORKING \
-			and UnitMesh.animates_work(_model_id_of(squad_id))
-		var decorated := CosmeticDuel.strike_decorate(
-				eased, enemy_transforms, paired, _now, speed,
-				0.0 if self_animated else float(doing["swing"])) if dueling \
-			else CosmeticOffset.decorate_activity(
-				eased, _now, speed, int(doing["activity"]), doing["toward"],
-				float(doing["swing"]))
 		unit.set_slot_transforms(decorated)
 
-		# Which clip these soldiers play (D-065). Derived from state the
-		# client already holds — the curve gives speed, `_activity_for` gives
-		# fighting, `routed_of` gives the rout — so nothing is sent for it and
-		# every client agrees by construction, the same shape as D-052's
-		# colour. Writes into the MultiMesh only when the clip or the rate
-		# actually changes; the per-frame cost here is a comparison.
-		var clip := AnimationState.clip_for(
-			_state.routed_of(squad_id),
-			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
-			speed > MOVING_SPEED_EPSILON,
-			int(doing["working"]))
 		# Per-man cadence from the motion layer's own measurements
 		# (D-20260824): each drawn man strides at the pace HE moves, not
 		# the squad's — the squad speed is the fallback inside.
-		unit.set_clip_data(int(squad_id), clip, speed,
+		unit.set_clip_data(int(squad_id), int(drawn_render["clip"]), speed,
 			_motion.speeds(squad_id))
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
