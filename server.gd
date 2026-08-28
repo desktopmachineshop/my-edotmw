@@ -944,12 +944,73 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 ## ownership read from the sim rather than a per-connection copy.
 ## `peer` is deliberately untyped: it is an ENetPacketPeer for a human
 ## and a LoopbackPeer for an AI seat (D-051), and both answer send().
+## Record the civ this player is ACTUALLY playing, where the server AND
+## every client read it from.
+##
+## `_civ_of` has always been total: with nothing recorded it falls back to
+## `all[(player - 1) % all.size()]`, and THAT is the answer the server
+## resolves rosters, costs and knobs against. Nothing ever wrote it down.
+##
+## A player seated after the match began misses `_on_match_started`'s
+## resolve loop entirely — every `test-load` bot, and a human joining a
+## `--lobby=0` server (every `quick-test`). Their seat still said
+## "Random" while the server had long since picked for them, so
+## `ClientState.civ_of` answered `""` forever and the two sides disagreed
+## about the player's own civilisation with nothing able to notice: the
+## server trains from `_civ_of`, and the client only ever DISPLAYS a civ.
+##
+## The VALUE is unchanged by design — this records exactly what `_civ_of`
+## already returned, so no troops, stockpiles or D-047 knobs move and
+## every measurement taken before it stays comparable. What changes is
+## that the fact reaches the wire, which is what makes a harness able to
+## report which civ actually played (#376). Same class as #224: the
+## instrument was reporting something it did not know.
+##
+## Order matters and is not defensive. An already-recorded civ wins,
+## because `_on_match_started` and `_seat_ai` are authoritative. A seat
+## naming a REAL civ wins next — an AI dealt a civ at construction must
+## never be overwritten by a modulo on its player id, which is the exact
+## defect `_seat_ai`'s own comment records. Only then the fallback.
+func _settle_civ(player: int) -> void:
+	if _civs.has(player):
+		_align_seat_civ(player, _civs[player])
+		return
+	var index := _match.seat_of(player)
+	if index >= 0:
+		var seated := StringName(_match.seats[index].get("civ", ""))
+		var real := seated != &"" and seated != CivRoster.RANDOM
+		if real and CivRoster.by_id(seated) != null:
+			_civs[player] = seated
+			return
+	var civ := _civ_of(player)
+	if civ == &"":
+		return
+	_civs[player] = civ
+	_align_seat_civ(player, civ)
+
+
+## The seat is what `_match.scoreboard()` sends, and so what
+## `ClientState.civ_of` reads. Written directly rather than through
+## `MatchState.set_civ`, which is deliberately LOBBY-ONLY (a player may
+## not change civ mid-match) — this is not a choice being made, it is a
+## choice already made being written where it can be seen.
+func _align_seat_civ(player: int, civ: StringName) -> void:
+	var index := _match.seat_of(player)
+	if index >= 0:
+		_match.seats[index]["civ"] = civ
+
+
 func _admit_player(peer, player: int) -> void:
 	# This player's civ into the simulation BEFORE the welcome below,
 	# because the welcome carries their squad cap and the cap is the civ's
 	# (#158). On the `--lobby=0` path a human is seated and admitted long
 	# after the match began, so the match-start handover cannot be the only
 	# one — see `_hand_civs_to_sim`.
+	#
+	# And SETTLE it first, so the seat list sent below carries the civ the
+	# server is about to resolve this player's roster against, rather than
+	# the "Random" a mid-match seat still holds.
+	_settle_civ(player)
 	_hand_civs_to_sim()
 
 	# The world's concrete numbers FIRST, because the client cannot build
