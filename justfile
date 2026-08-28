@@ -239,6 +239,14 @@ doctor:
     echo
     echo "GodotSteam pin: {{godotsteam_version}} (for Godot {{godot_version}}) — platform.gd decides availability at runtime"
     echo "note: absent Steam costs Steam features (relay, lobbies, invites), never the game (D-093)"
+    # --- Steam depot (#185, D-094 criterion 2) -------------------------
+    # Reported, never required, exactly like the art tooling above: none
+    # of it is needed to run, test or play the game, and an app id does
+    # not exist until the owner has a partner account. Printed so that
+    # "why did steam-upload refuse" is answered where people already
+    # look rather than by reading a script.
+    echo
+    bash steam-depot.sh plan | sed 's/^/steam: /'
 
     # --- host budget (D-20260818) -------------------------------------
     # Reported, never enforced here: doctor's job is to say what the
@@ -582,6 +590,82 @@ export TARGET="all":
         do_export "Linux Server" "{{build_dir}}/linux-server/my-edotmw-server.x86_64"
     fi
     echo "OK: exported my-edotmw $version into {{build_dir}}"
+
+# Push the exported build to a private Steam branch (#185, D-094
+# criterion 2).
+#
+# DRY BY DEFAULT, and that is the safety property rather than a
+# convenience: an upload is outward-facing and cannot be taken back from
+# a worktree, so `live` has to be typed. MODE is POSITIONAL like every
+# other recipe argument (D-20260817-recipe-args-are-positional) and goes
+# through recipe-arg.sh, so `just steam-upload MODE=live` is refused
+# loudly rather than silently binding a string.
+#
+#   just steam-upload           validate + generate the VDFs, send nothing
+#   just steam-upload live      the above, then steamcmd
+#
+# Every RULE lives in steam-depot.sh, not here, for the reason
+# recipe-arg.sh and gate-check.sh do: the test estate cannot reach a
+# recipe body, and `tests/test_steam_depot.gd` watches each of those
+# rules fail. This recipe only decides whether to authenticate.
+#
+# Not host-gated: the gate rations MEMORY (D-20260818) and an upload is
+# network-bound. `just export`, which this depends on and does not run
+# for you, is gated.
+[doc("Upload the exported build to a private Steam branch (dry run unless MODE=live)")]
+steam-upload MODE="dry":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum MODE "{{MODE}}" dry live
+
+    # Validation first, always, and identically in both modes: a dry run
+    # that checked less than a live one would be a rehearsal of a
+    # different performance.
+    bash steam-depot.sh validate
+    bash steam-depot.sh plan
+
+    app_vdf="$(bash steam-depot.sh vdf "{{build_dir}}/steam")"
+
+    if [ "{{MODE}}" = "dry" ]; then
+        echo
+        echo "DRY RUN — nothing was sent, and no credential was read."
+        echo "  app build script: $app_vdf"
+        echo "  a live run would then execute:"
+        echo "      steamcmd +login \$EDOTMW_STEAM_USER +run_app_build $app_vdf +quit"
+        echo "  re-run as: {{just_executable()}} steam-upload live"
+        exit 0
+    fi
+
+    # --- the credential seam ------------------------------------------
+    # Everything above this line is exercised by the dry run and by the
+    # tests. Everything below needs a Steamworks account that does not
+    # exist yet (#185: "the recipe can only be finished against a real
+    # app id"), so it is written, refuses loudly, and has NOT been run
+    # against Steam by anybody. Say so when you first do.
+    steamcmd="$(bash steam-depot.sh find-steamcmd || true)"
+    if [ -z "$steamcmd" ]; then
+        echo "FAIL: no steamcmd. Set EDOTMW_STEAMCMD or put it on PATH." >&2
+        echo "      This repo does not install it — see steam-depot.sh's header for why." >&2
+        exit 1
+    fi
+    if [ -z "${EDOTMW_STEAM_USER:-}" ]; then
+        echo "FAIL: EDOTMW_STEAM_USER is not set, so there is nobody to upload as." >&2
+        echo "      See docs/status/m8-steam-depot.md — the password is NOT an env var;" >&2
+        echo "      log in once interactively so steamcmd caches the Steam Guard sentry." >&2
+        exit 1
+    fi
+
+    echo
+    echo "steam-upload: LIVE — uploading as $EDOTMW_STEAM_USER"
+    # The password is deliberately absent. Steam Guard makes an unattended
+    # password login fail anyway on a machine that has not been trusted,
+    # and the working practice is a cached sentry from one interactive
+    # login — so a password here would be a secret in a process list that
+    # does not even remove the prompt.
+    "$steamcmd" +login "$EDOTMW_STEAM_USER" +run_app_build "$app_vdf" +quit
+    echo "OK: submitted. The build is on the branch but Steam decides when it is live —"
+    echo "    check the Builds page on the partner site."
+
 
 # Start the server detached (docker runtime only — native has no
 # persistent 'up' state, use run-server directly).

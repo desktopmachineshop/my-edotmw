@@ -95,6 +95,7 @@ and measurements belong in the decision entry that took them.
 @docs/status/transport-seam.md
 
 @docs/status/onboarding.md
+@docs/status/m8-steam-depot.md
 
 @docs/status/civ-knobs.md
 

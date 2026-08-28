@@ -94,3 +94,9 @@
 320	ao/my-edotmw-79/manual	CONFLICT	client.gd decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md 
 320	ao/my-edotmw-79/manual	CONFLICT-RESOLVED	client.gd additive keyboard-letter registry block; decisions file add/add with #369's ahead-of-code copy, kept the owning PR's.
 348	ao/my-edotmw-79/ai-fortifies	CONFLICT	ai_player.gd bot_client.gd 
+348	ao/my-edotmw-79/ai-fortifies	CONFLICT-RESOLVED	ai_player.gd AI_STATS and bot_client.gd VERDICT: each is ONE format string plus ONE argument array extended by several PRs (#225 techs, #348 gates, #213 refused, #248 scenario). Every pair conflicts and no keep-ours/keep-theirs rule works; tails hand-merged. Also a real semantic merge in the AI building loop (#225 per-civ + tech filter, #348 wall/damage exclusion - both needed).
+357	ao/my-edotmw-79/gap-assessment-2	CLEAN	1
+371	ao/my-edotmw-87/ai-investment	CONFLICT	ai_player.gd ai_profile.gd client_state.gd decisions/D-010.md decisions/D-20260828-an-ai-invests-in-what-it-cannot-walk-to.md docs/status/playtests-2026-08.md docs/status/spawns.md net_protocol.gd server.gd squad_sim.gd 
+371	ao/my-edotmw-87/ai-investment	REORDERED	declares base #348 but has the NAVAL CHAIN as ancestors (naval-1/3/4) and carries the cargo wire field; 81 files vs #348. Moved to wave 9, after naval, so it does not pre-empt the chain's own SQUAD_INFO extension. Same shape as #340 and #357.
+375	ao/my-edotmw-79/manual-naval	REORDERED	stacked on #371; moved with it to wave 9.
+271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT	CLAUDE.md justfile 
