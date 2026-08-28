@@ -102,7 +102,7 @@ func update(now: float) -> void:
 	_report_refusals()
 	_forget_dead_assignments()
 	_drop_unreachable_assignments()
-	_scout_for_resources()
+	_scout_for_what_it_lacks()
 	_found_town()
 	_raise_buildings()
 	_train()
@@ -554,18 +554,36 @@ func _put_gatherers_to_work() -> void:
 const SCOUT_LEG_SECONDS := 25.0
 
 
-func _scout_for_resources() -> void:
+func _scout_for_what_it_lacks() -> void:
 	if state.space == null or not state.welcomed:
 		return
 
-	# Only if something it needs has never been seen. Once a node of that
-	# kind is known, ordinary gathering takes over and this stops.
+	# TWO reasons to walk somewhere new, and the second one is why this
+	# is not called `_scout_for_resources` any more.
+	#
+	# A missing RESOURCE was the original trigger, and it stops the moment
+	# a node of each needed kind has been seen — which is right for the
+	# economy and made `_scout_leg` a measure of HUNGER rather than of
+	# looking. #351's naval question reads that counter to answer "have I
+	# searched", and on a rich island an AI satisfied its economy in two
+	# legs and never scouted again: 3 buildings, 29 squads, `scout_legs=2`
+	# after ten minutes, and so it never concluded it had run out of
+	# world. The predicate was right and the number under it did not mean
+	# what its name said.
+	#
+	# A missing ENEMY is the second, and it makes the counter honest: an
+	# AI that does not know where anybody is has something to look for,
+	# whatever its wallet says. It stops at `SCOUTED_ENOUGH_LEGS` rather
+	# than running forever, because past that point the answer is "I have
+	# looked and there is nobody here" — which is exactly what
+	# `AiNaval.needs_ships` is waiting to hear.
 	var missing := -1
 	for kind in _kinds_below_floor():
 		if _nearest_known_of_kind(kind) < 0:
 			missing = kind
 			break
-	if missing < 0:
+	var unfound_enemy := _known_enemy_cells().is_empty() 		and _scout_leg < SCOUTED_ENOUGH_LEGS
+	if missing < 0 and not unfound_enemy:
 		_resource_scout = -1
 		return
 
@@ -975,7 +993,7 @@ var naval_step := "none"
 ## a difficulty able to make an AI never explore is a way to ship a
 ## broken opponent by data entry.
 ##
-## Three, because `_scout_for_resources` expands its radius by 5 cells a
+## Three, because `_scout_for_what_it_lacks` expands its radius by 5 cells a
 ## leg from 6, so three legs have swept ~21 cells around home — more than
 ## `min_spawn_landmass`'s 96-cell disc is wide.
 const SCOUTED_ENOUGH_LEGS := 3

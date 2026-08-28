@@ -56,6 +56,24 @@ marker() {
     grep -oE "$1=[0-9]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 || true
 }
 
+# The LARGEST value of a key across the whole log, for keys that are
+# reported PER SEAT.
+#
+# `marker` takes the last occurrence, which is right for a marker printed
+# once a match and silently wrong for one printed once a player: it reads
+# whichever seat happened to print last. Measured on a real isles run —
+# seat 1000 reported `wants_navy=1` and seat 1001 `wants_navy=0`, and the
+# gate declared that no seat wanted a navy, which would have masked the
+# dock failure underneath it with a #351 report that was not true.
+#
+# The naval legs all ask "did ANY seat get this far", so the max is the
+# question. A per-seat gate is a different and harder one — a seat that
+# sailed while another never launched is not a failure, it is one AI
+# playing better than the other.
+marker_max() {
+    grep -oE "$1=[0-9]+" "$2" 2>/dev/null | cut -d= -f2         | sort -n | tail -1 || true
+}
+
 # Two markers had to be found for a comparison to have happened at all.
 # Names the one that is missing rather than both candidates: a marker
 # absent from the SERVER log and one absent from the clients' log are
@@ -89,7 +107,7 @@ case "$check" in
     # is that distinction, which is why the AI reports it.
     naval)
         [ "$#" -eq 1 ] || usage
-        wanted="$(marker wants_navy "$1")"
+        wanted="$(marker_max wants_navy "$1")"
         if [ -z "$wanted" ]; then
             echo "gate-check(naval): no AI reported wants_navy — no seat ran the naval question at all" >&2
             exit 1
@@ -121,7 +139,7 @@ case "$check" in
         for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
             key="${leg%%:*}"
             why="${leg#*:}"
-            got="$(marker "$key" "$1")"
+            got="$(marker_max "$key" "$1")"
             if [ -z "$got" ]; then
                 echo "gate-check(naval): the server log has no $key at all — the AI is not reporting its naval legs" >&2
                 exit 1
@@ -131,7 +149,7 @@ case "$check" in
                 exit 1
             fi
         done
-        echo "gate-check(naval): a landing happened — docks=$(marker docks "$1") ships_peak=$(marker ships_peak "$1") embarks=$(marker embarks "$1") landings=$(marker landings "$1")"
+        echo "gate-check(naval): a landing happened — docks=$(marker_max docks "$1") ships_peak=$(marker_max ships_peak "$1") embarks=$(marker_max embarks "$1") landings=$(marker_max landings "$1")"
         exit 0
         ;;
 
