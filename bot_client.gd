@@ -171,6 +171,24 @@ class VirtualClient:
 	## the line whether they had ever had more). The server's periodic
 	## status line carries a FLEET total that answers it in aggregate,
 	## but a fleet total cannot see one bot losing while another gains.
+	##
+	## ## Reading it: THE OPENING IS TWO, not one
+	##
+	## A player opens with a crew AND a general
+	## (D-20260823-the-opening-is-a-crew-and-a-general), and founding
+	## CONSUMES the crew. So the peak of a bot that founded and then did
+	## nothing is 2, not 1, and the drop to 1 is by design rather than a
+	## loss:
+	##
+	##     peak 2, squads 1, military_peak 1   founded, produced nothing since
+	##     peak 2, squads 2, build="no hall"   never founded, crew still standing
+	##     peak > 2                            production happened at least once
+	##
+	## Worth stating in the file rather than in a review comment: the
+	## natural reading of "peak 2, now 1" is a combat loss, and it is not.
+	## That misreading has already been written down once as
+	## "peak 1 is a complete diagnosis" and had to be corrected after it
+	## had been quoted onward.
 	var squads_peak := 0
 
 	## Raid orders actually issued. The verdict gates on this, because
