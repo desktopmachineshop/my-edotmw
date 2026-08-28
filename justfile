@@ -792,13 +792,24 @@ run-bots N DURATION="-1": _import
     gate="$(bash host-gate.sh acquire heavy 'run-bots' $$)"
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    # The bots are told which SCENARIO is being played, if any, so their
+    # verdict can be scoped to what that scenario actually contains
+    # (#230). `test-scenario` already exports EDOTMW_SCENARIO for the
+    # server; empty means a real opening, which is what `test-load` and a
+    # bare `just run-bots` are, and nothing about the run changes there.
+    #
+    # The bots do not act on it — it reaches the VERDICT only. A scenario
+    # that places no buildings cannot satisfy a buildings gate however
+    # healthy the run is, and failing every run identically is not a
+    # check.
+    scenario="${EDOTMW_SCENARIO:-}"
     if [ "{{runtime}}" = "docker" ]; then
         # In-network: the bots reach this project's server as "server:4433",
         # so no host port is involved (D-095).
-        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}}
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --scenario="$scenario"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}}
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}} --scenario="$scenario"
     fi
 
 # GUT unit tests, headless. Imports the project first so global
@@ -1042,7 +1053,29 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     #    anything HARDER to satisfy mid-game than during the opening —
     #    armies are in reach, so more of the board is visible — which is
     #    what makes it worth asserting on the loop that actually runs.
-    bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    #
+    #    The peak-knowledge comparison is asked only of a scenario that
+    #    can answer it (#230). `fog-squads` says even the MOST-INFORMED
+    #    client knew fewer squads than the server simulated, at every
+    #    moment — and a scenario whose armies all converge has a moment
+    #    when somebody has seen everything. `clash` is that scenario by
+    #    construction, and it is declared so in its own `.tres` rather
+    #    than named here, so a new scenario is covered the day it is
+    #    written.
+    #
+    #    NOT SILENT. gate-check.sh's own header is explicit that "a
+    #    comparison that silently skips is the vacuous pass D-022's audit
+    #    was written against", so the skip is printed with its reason —
+    #    and `fog-nodes` still runs, so fog is asserted here either way,
+    #    as are the conceal/reveal events the bots' own verdict gates on.
+    if grep -q "proves_fog_gating=false" "$server_log"; then
+        echo "gate-check(fog-squads): SKIPPED — scenario '{{SCENARIO}}' declares it cannot prove"
+        echo "  peak fog gating: its armies converge, so the best-informed client ends up"
+        echo "  having seen every squad. Fog is still asserted by fog-nodes below and by the"
+        echo "  bots' own conceal/reveal gates. See #230 and scenario_def.gd."
+    else
+        bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    fi
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
 
