@@ -3107,4 +3107,10 @@ func reapply_research(player: int) -> void:
 			continue
 		var resolved := resolved_def(base, player)
 		_defs[i] = resolved
-		_speed[i] = _cells_per_second(resolved)
+		# Through `march_rate`, exactly as `add_squad` does (#270). Writing
+		# the bare `_cells_per_second` here would have made completing ANY
+		# research silently strip the civ's march bonus from every squad
+		# that player owns — two writers of one cached value, which is the
+		# D-058/D-065 family, and it arrived from a REBASE rather than
+		# from either change being wrong on its own.
+		_speed[i] = civ_effects(player).march_rate(_cells_per_second(resolved))
