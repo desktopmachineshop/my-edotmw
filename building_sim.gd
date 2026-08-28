@@ -228,6 +228,7 @@ func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
 	_angle.append(_angle_from_facing(def, _facing[id]))
 	_offset_x.append(offset.x)
 	_offset_z.append(offset.y)
+	_water_cell.append(-1)
 	return id
 
 
@@ -397,6 +398,42 @@ func set_gate_mode(building: int, mode: int) -> void:
 ## question.
 func facing_of(building: int) -> int:
 	return _facing[building]
+
+
+## Where this building's ships appear and its transports wait, as a cell
+## INDEX, or -1 for anything that is not a dock (naval stage 3, §4.1).
+##
+## PER INSTANCE, and that is the whole point: a `BuildingDef` is one
+## resource shared by every dock on the map, so a water side carried by
+## the def would give them all the same one. Exactly the reasoning D-076
+## gives for the access tower's door, which is why this sits beside it and
+## is set the same way — by the caller that has the terrain, at placement.
+##
+## Deriving it on demand from the navigable array was the alternative and
+## would need no handover at all, which is a real advantage; it is not
+## taken because the design specifies a stored per-instance value and a
+## stage is not the place to overturn that. The handover is guarded
+## instead: a test drives `server._finish_build` and asserts a completed
+## shore building has one.
+var _water_cell := PackedInt32Array()
+
+
+func water_cell_of(building: int) -> int:
+	if building < 0 or building >= _water_cell.size():
+		return -1
+	return _water_cell[building]
+
+
+## Set at placement by the caller that knows the coastline. Refuses to
+## put a water side on a building whose def does not ask for one, so the
+## field cannot quietly acquire a second meaning.
+func set_water_cell(building: int, cell: int) -> void:
+	if building < 0 or building >= _water_cell.size():
+		return
+	if not _defs[building].needs_shore:
+		return
+	_water_cell[building] = cell
+	_dirty[building] = true
 
 
 ## The chosen door facing for an access tower, or -1 if `building` is not

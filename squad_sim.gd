@@ -413,6 +413,28 @@ func _retry_deferred_orders() -> void:
 ## Tier-1 counterpart of `set_passable` (D-076) — same reasoning, scoped
 ## to the wall-top network: any cached tier-1 field was solved against the
 ## old set of walkway cells and must be dropped, not just left to expire.
+## Which cells are WATER (naval stage 1, §2.1). Held here so ship
+## production can place a hull in the sea; it is NOT a movement domain
+## yet — naval stage 2 is what gives `_tier` its third value and solves
+## fields against this array.
+##
+## Deliberately no field invalidation, unlike `set_passable`: nothing
+## paths on it today, so there is nothing cached to throw away. When
+## stage 2 lands, this is the setter that grows one.
+var _navigable := PackedByteArray()
+
+
+func set_navigable(p: PackedByteArray) -> void:
+	_navigable = p
+
+
+func is_navigable(cell: Vector2i) -> bool:
+	if _navigable.is_empty():
+		return false
+	var index := space.index(cell)
+	return index < _navigable.size() and _navigable[index] != 0
+
+
 func set_passable_top(p: PackedByteArray) -> void:
 	_passable_top = p
 	_fields_top.clear()
@@ -1122,7 +1144,21 @@ func is_passable(cell: Vector2i, tier: int = 0) -> bool:
 ## fixed order and the improvement test is strict, so ties resolve to the
 ## earlier candidate and server and replay agree about where a unit
 ## appeared.
-func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
+func _spawn_cell_near(buildings: BuildingSim, building: int,
+		produced: UnitDef = null) -> Vector2i:
+	# A HULL is launched, not marched out (naval stage 3, §4.2). Same walk,
+	# same determinism argument, different array — seeded from the dock's
+	# own water cell rather than from its land cell, because that is the
+	# side the water is on.
+	#
+	# It cannot move yet: giving `_tier` its third value and solving fields
+	# over `_navigable` is naval stage 2. Stage 3's claim is only that a
+	# hull APPEARS in water, which is what makes stage 2 something that can
+	# be looked at rather than inferred.
+	if produced != null and produced.movement_domain == "water":
+		var launched := _launch_cell_near(buildings, building)
+		if launched.x >= 0:
+			return launched
 	var home := buildings.cell_of(building)
 	var rally := buildings.rally_of(building)
 	var best := Vector2i.ZERO
@@ -1151,6 +1187,35 @@ func _spawn_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
 	# Hemmed in on every side: put them at the door anyway rather than
 	# losing a squad somebody paid for.
 	return space.normalize(home + Vector2i(2, 0))
+
+
+## The water cell a new hull is launched onto, or (-1, -1) if this
+## building has no water side or every cell around it is taken.
+##
+## Nearest-first from the dock's OWN water cell (D-067 sorted
+## `disk_offsets` for this), so two hulls launched together do not stack
+## and a replay launches them in the same order.
+func _launch_cell_near(buildings: BuildingSim, building: int) -> Vector2i:
+	var water := buildings.water_cell_of(building)
+	if water < 0 or _navigable.is_empty():
+		return Vector2i(-1, -1)
+	var from := space.from_index(water)
+	for offset in TorusSpace.disk_offsets(3):
+		var candidate := space.normalize(from + offset)
+		if not is_navigable(candidate):
+			continue
+		# Not on top of another hull. Land squads are not consulted: a
+		# land squad cannot be standing on water in the first place.
+		var taken := false
+		for other in range(_alive.size()):
+			if _alive[other] > 0 and _cell[other] == space.index(candidate):
+				taken = true
+				break
+		if not taken:
+			return candidate
+	# Every berth full: launch at the dock's own water cell rather than
+	# losing a hull somebody paid for, the same call the land path makes.
+	return from
 
 
 ## Issue a player move order (see the class-level docs below for the full
@@ -2449,7 +2514,7 @@ func tick() -> void:
 			# centre, which is INSIDE the box drawn on top of it, because a
 			# building's mesh is wider than a hex. Units appeared standing
 			# in the wall of the thing that made them.
-			var door := _spawn_cell_near(buildings, at)
+			var door := _spawn_cell_near(buildings, at, produced)
 			var spawned := add_squad(produced, buildings.owner_of(at), door)
 			var rally := buildings.rally_of(at)
 			if rally != door:
