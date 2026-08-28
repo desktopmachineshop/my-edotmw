@@ -166,3 +166,47 @@ func test_the_client_hands_over_the_field_it_draws_from() -> void:
 		assert_true(text.contains("terrain_surface"),
 			("%s must hand ClientState the surface field, or every drawn "
 			+ "man pays for his cell twice (#245)") % path)
+
+
+# --- the pull, split from the test (D-20260828-the-clamp-stays-per-man) ---
+
+func test_the_pull_alone_equals_the_test_plus_the_pull() -> void:
+	# The bulk path derives a man's cell for his HEIGHT, so it knows he is
+	# blocked before it asks — and used to ask anyway, at a whole cell
+	# derivation per clamped man. The split must be exactly equivalent for
+	# the case it is used in, and `grounded_offset` must still behave for
+	# every other caller.
+	var world := _world()
+	var space: TorusSpace = world["space"]
+	var passable: PackedByteArray = world["passable"]
+	var blocked_men := 0
+	var clear_men := 0
+	for cell_index in range(0, space.cell_count(), 3):
+		var centre := space.to_world(space.from_index(cell_index))
+		for slot in range(24):
+			var local := Formation.slot_offset("line", slot, 24, 1.0, 0)
+			var offset := Vector3(local.x, 0.0, local.y)
+			var full := Formation.grounded_offset(centre, offset, space, passable)
+			if full == offset:
+				clear_men += 1
+				continue
+			blocked_men += 1
+			assert_eq(Formation.pulled_onto_passable(centre, offset, space, passable),
+				full, "a blocked man is pulled to the same place either way")
+	assert_gt(blocked_men, 100, "the sweep found men over water or rock")
+	assert_gt(clear_men, 100, "and men on open ground, or it proves nothing")
+	gut.p("pull compared on %d blocked men against %d clear" % [blocked_men, clear_men])
+
+
+func test_a_man_on_open_ground_keeps_his_whole_offset() -> void:
+	# The clamp is an INPUT, not remembered state (D-006): the same call
+	# gives the same answer forever, and a man back on open ground gets
+	# his full offset again with no memory of having been pushed.
+	var space := TorusSpace.new(16, 8, 1.0)
+	var open := PackedByteArray()
+	open.resize(space.cell_count())
+	open.fill(1)
+	var offset := Vector3(2.5, 0.0, -1.5)
+	assert_eq(Formation.grounded_offset(Vector3.ZERO, offset, space, open), offset)
+	assert_eq(Formation.grounded_offset(Vector3.ZERO, offset, space,
+		PackedByteArray()), offset, "no terrain means fully open")

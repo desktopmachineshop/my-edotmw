@@ -145,6 +145,19 @@ replaces with the clamp firing on 3,134 of them — and the FIRST version
 was not, because it packed `(height, passable)` into a `Vector2`, which
 is float32. A packed return value is a silent cast.
 
-**Left as a decision rather than patched**: the clamp's own per-soldier
-cost (#244 — #97's entry names the per-squad footprint alternative, and
-it moves where men stand).
+**#244 is answered, and the answer is NO** (`D-20260828-the-clamp-stays-per-man`).
+The per-squad footprint test #97 named is not taken, because #245 moved
+the premise: re-measured after it, the clamp is **15.6% of derivation
+(74.4 → 62.8 ms), about 3% of the client's real frame**, against the 30%
+of a phase it was filed as. Most of what #244 measured was never the
+clamp — it was the clamp and the sampler each finding the same hex. What
+is left is the men actually over water or rock: on the shipped map
+**23.1% of cells are blocked and 9.0% of drawn men are clamped**, and
+that ratio is the assumption the decision rests on. Alternatives were
+weighed and refused in the entry, including one that would have made a
+drawn man's POSITION depend on the camera. The one change taken is
+exactly equivalent, could not be measured above this host's noise, and
+says so.
+
+**The trade to look at instead is #262**: the quadratic jostle gather is
+152 ms of a 387 ms frame — 39% against the clamp's 3%.
