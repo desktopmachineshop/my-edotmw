@@ -129,6 +129,32 @@ wants checking first even though today there are none.
   `scout_legs=0` agreeing on a shape no single one of them could have
   established — and each of the three had a plausible innocent reading on
   its own.
+- **And two numbers that AGREE can be about different things — amendment,
+  2026-08-28.** Agreement of totals is not agreement of sets. **Publish
+  and compare the DECOMPOSITION; a count alone cannot be checked against
+  another count.**
+
+  Worker 88 took a baseline of **1249 tests / 22 failing** and compared it
+  against #212's properly-qualified figure for `main` at `cc2f4c6` —
+  **1249 / 22**. Identical. At least three of theirs were their own
+  untracked harnesses, verified by those failures disappearing when the
+  file did, so their 22 could not be #212's 22: they were missing some of
+  main's real failures and carrying some of their own, and the totals
+  agreed by coincidence.
+
+  So a wrong claim was *corroborated* by a correct, properly-qualified
+  published one. That is worse than failing to check, because the check
+  was performed and returned agreement — and agreement is what
+  verification looks like. What could have caught it is already in #212:
+  it publishes a decomposition (11 native-gap, 11 real) beside the count,
+  and only the decomposition can be compared to a set.
+
+  The companion rule, from the same incident: **a baseline claim states
+  its branch, its sha and that the worktree was clean, or it is a claim
+  about somebody's laptop.** #212 states all three. Two workers dropped a
+  different one each on the same evening — one ran a merged working tree
+  and called it `main`, the other ran `main` with untracked files still
+  in it.
 - **When quoting a number, quote its frame.** The estate already requires
   a µs figure with its squad count and a ladder result with its cap. Add:
   a log's numbers with the duration that log claims, and a pid with the
