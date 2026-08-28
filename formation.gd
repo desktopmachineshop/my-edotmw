@@ -478,6 +478,21 @@ static func grounded_offset(centre: Vector3, offset: Vector3, space: TorusSpace,
 		passable: PackedByteArray) -> Vector3:
 	if passable.is_empty() or _stands_on_passable(centre + offset, space, passable):
 		return offset
+	return pulled_onto_passable(centre, offset, space, passable)
+
+
+## The pull, for a caller that has ALREADY established this man is over
+## ground his squad could not walk on
+## (D-20260828-the-clamp-stays-per-man).
+##
+## Split from the test above rather than given a flag, because the bulk
+## derivation path derives the man's cell for his HEIGHT and therefore
+## knows the answer before it asks: re-testing it was one whole
+## `world_to_axial` + `round_axial` + `index` per clamped man, which on
+## the shipped map is one man in eleven. Every other caller still goes
+## through `grounded_offset` and gets exactly what it always got.
+static func pulled_onto_passable(centre: Vector3, offset: Vector3,
+		space: TorusSpace, passable: PackedByteArray) -> Vector3:
 	for step in range(PASSABLE_PULL_STEPS - 1, 0, -1):
 		var pulled := offset * (float(step) / float(PASSABLE_PULL_STEPS))
 		if _stands_on_passable(centre + pulled, space, passable):
@@ -751,7 +766,7 @@ static func soldier_transforms_sampled(
 				# to be slow in. Clamped BEFORE the height is read, so he
 				# takes the height of the ground he ends up on rather than
 				# of the cliff he was briefly aimed at.
-				offset = grounded_offset(centre, offset, space, passable)
+				offset = pulled_onto_passable(centre, offset, space, passable)
 				origin_one = centre + offset
 				fractional = space.world_to_axial(origin_one)
 				cell = space.round_axial(fractional)
