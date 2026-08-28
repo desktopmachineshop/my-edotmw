@@ -557,6 +557,28 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# somewhere odd". Not hashed — it is a display fact, and the
 		# positions it produces are replicated as ordinary curves.
 		buf.put_u8(1 if bool(entry.get("exploring", false)) else 0)
+		# What this squad is CARRYING (naval stage 4, §3.1). An addition to
+		# an existing message, never a new one — the same "extend the
+		# curve/info path, never duplicate it" rule D-003 and D-025 are
+		# built on.
+		#
+		# Cargo is not in the world: it has no cell, no curve and no
+		# formation, and it is excluded from `visible_to` on BOTH sides so
+		# the composition hashes agree by construction (D-099's lesson,
+		# which cost a real desync when a client counted its own ghosts).
+		# The owner still sees their army because it rides here, as a
+		# property of the CARRIER.
+		#
+		# Empty for every squad that is not a transport, and for every
+		# squad that predates this — a zero count costs four bytes and
+		# keeps one encoder rather than two.
+		var cargo: Array = entry.get("cargo", [])
+		buf.put_u32(cargo.size())
+		for rider in cargo:
+			var rider_id := String(rider["def_id"]).to_utf8_buffer()
+			buf.put_u16(rider_id.size())
+			buf.put_data(rider_id)
+			buf.put_u32(int(rider["alive"]))
 	return buf.data_array
 
 
@@ -579,17 +601,32 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 		var owner := buf.get_u32()
 		var tier := int(buf.get_u8())
 		var facing_wire := buf.get_u16()
+		var files := int(buf.get_u8())
+		var stance := int(buf.get_u8())
+		# Written between `stance` and the cargo block, so read there too.
+		var exploring := buf.get_u8() == 1
+		# Read in the SAME ORDER it was written and unconditionally, so a
+		# transport's cargo cannot desynchronise the rest of the batch —
+		# every field after a variable-length one shares that fate, which
+		# is why the count is always present even when it is zero.
+		var cargo := []
+		var riders := buf.get_u32()
+		for _r in range(riders):
+			var rider_length := buf.get_u16()
+			var rider_bytes: PackedByteArray = buf.get_data(rider_length)[1]
+			cargo.append({
+				"def_id": rider_bytes.get_string_from_utf8(),
+				"alive": int(buf.get_u32()),
+			})
 		out.append({
 			"id": id, "def_id": def_id, "alive": alive,
 			"shape": shape_bytes.get_string_from_utf8(), "owner": owner,
 			"tier": tier,
 			"facing": -1 if facing_wire == 0xFFFF else facing_wire,
-			"files": int(buf.get_u8()),
-			"stance": int(buf.get_u8()),
-			# Read INSIDE the literal like the two above it — GDScript
-			# evaluates dictionary values in source order, which is what
-			# keeps these three aligned with the encoder's three writes.
-			"exploring": buf.get_u8() == 1,
+			"files": files,
+			"stance": stance,
+			"exploring": exploring,
+			"cargo": cargo,
 		})
 	return out
 
