@@ -172,11 +172,11 @@ func test_a_levy_pairing_is_not_a_sweep_when_it_is_actually_played() -> void:
 	assert_gt(even[0], 0, "windmarch's levy swept gildedreach's in every fight")
 	assert_gt(even[1], 0, "gildedreach's levy swept windmarch's in every fight")
 
-	var rigged := _play_pairing(1.0)
-	gut.p("control: gildedreach at double damage %d - %d (of 6)" % [
+	var rigged := _play_pairing(2.0)
+	gut.p("control: gildedreach at TRIPLE damage %d - %d (of 6)" % [
 		rigged[0], rigged[1]])
 	assert_eq(rigged[1], 0,
-		"CONTROL FAILED: doubling one levy's damage did not sweep, so this " +
+		"CONTROL FAILED: tripling one levy's damage did not sweep, so this " +
 		"fixture cannot see an imbalance and the even result above is worth " +
 		"nothing")
 
@@ -184,6 +184,13 @@ func test_a_levy_pairing_is_not_a_sweep_when_it_is_actually_played() -> void:
 ## Plays gildedreach's levy against windmarch's, three seeds, both sides,
 ## and returns [gildedreach wins, windmarch wins]. `buff` adds that
 ## fraction to gildedreach's damage — 0.0 for the shipped defs.
+##
+## The control needs x3, not the x2 it needed when this was written. #266's
+## morale scaling and #218's suppression both make a fight END sooner and
+## less decisively (measured in D-20260828-a-fight-is-decided-by-two-percent:
+## they move the sweep threshold from ~2% to ~10-20%), so a doubled squad no
+## longer wipes its opposite number every time. That the constant had to MOVE
+## is the control doing its job.
 func _play_pairing(buff: float) -> Array[int]:
 	var wins := 0
 	var losses := 0
