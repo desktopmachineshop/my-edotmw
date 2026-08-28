@@ -118,8 +118,20 @@ jobs:
       # client under Mesa's software rasteriser and check the frame.
       # D-014's 2026-07-29 amendment is why this does not contradict "the
       # client cannot be containerized".
+      # 180s, not the recipe's default 90. The verdict gates on
+      # `conceal_events > 0`, which needs a bot to wander out of vision —
+      # that happens on the MATCH's clock while the capture window is
+      # fixed wall clock, so anything slowing the client's start eats the
+      # margin. A hosted runner has TWO CPUs against the dev laptop's
+      # sixteen, and at 90s it reported `conceal_events=0 reveal_events=0`
+      # here while passing locally.
+      #
+      # Lengthening the run rather than weakening the check is the honest
+      # direction and the one this project already took when the tooled
+      # gatherer pushed the same gate over its margin (60 -> 90). This is
+      # that rule applied to the HARDWARE rather than to an asset.
       - name: just test-client
-        run: ./tools/just test-client 2>&1 | tee /tmp/test-client.log
+        run: ./tools/just test-client 180 2>&1 | tee /tmp/test-client.log
 
       # D-014's teardown requirement, tightened per-instance by D-095: a
       # recipe must not leave containers behind. On an ephemeral runner
