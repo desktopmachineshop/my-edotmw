@@ -1439,6 +1439,27 @@ static func encode_leave_match() -> PackedByteArray:
 	return buf.data_array
 
 
+## SURRENDER (D-20260828-a-player-may-concede). "I have lost this match."
+##
+## Deliberately NOT the same thing as C2S_LEAVE_MATCH above, which is "I
+## am done with this match". A player who concedes stays connected and
+## watching; a player who leaves goes back to the lobby. Folding the two
+## together would mean the only way to admit defeat is to stop watching
+## it.
+##
+## No payload, for the same reason leaving has none: who is conceding is
+## read from the connection it arrived on. A client that named its own
+## player id could surrender on somebody else's behalf, which is the one
+## thing a concession must never allow.
+const C2S_SURRENDER := 39
+
+
+static func encode_surrender() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_SURRENDER)
+	return buf.data_array
+
+
 static func encode_lobby_command(action: int, seat: int, civ: String) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_LOBBY)
