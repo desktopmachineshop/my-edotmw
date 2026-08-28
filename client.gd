@@ -9461,18 +9461,25 @@ func _build_controls_screen() -> void:
 	# next time.
 	#
 	# It fired on the very next change (#305 added a Reference group for
-	# the manual's key) at 731 px against 720, and the screen is now at
-	# **705 of 720** — which is the OPTIMUM for this layout, not a near
-	# miss. Two contiguous columns over 31 rows cannot balance better than
-	# 15/16, and the tall column is one group ("Building and training",
-	# nine buildings and five units) that cannot be split because a group
-	# is dealt whole.
+	# the manual's key) at 731 px against 720, and the split was rebuilt
+	# to put the screen at 705.
 	#
-	# So the next row added reds the test, and the answer will not be a
-	# bigger budget. It is to let a GROUP break across columns, repeating
-	# its title — which is how a printed reference does it, and which
-	# balances at 18/18 however lopsided the groups are. Roughly ten lines
-	# here; deliberately not written until something needs it.
+	# An earlier version of this comment then predicted that the NEXT row
+	# added would red it again, reasoning that 705 of 720 was the OPTIMUM:
+	# two contiguous columns over 31 rows cannot balance better than
+	# 15/16, and the tall column is one group dealt whole.
+	#
+	# That prediction is measured FALSE. #363 put `farm` on O and freed
+	# the gather key, adding two rows, and the screen went 705 -> 684.
+	# Adding a row can MOVE the split point, and the better balance on the
+	# far side of it more than pays for the row. The 15/16 bound was true
+	# of 31 rows and said nothing about 33.
+	#
+	# So the honest statement is narrower: it fits today with room, the
+	# TEST measures that rather than anyone predicting it, and the fix if
+	# it ever does red is to let a GROUP break across columns, repeating
+	# its title — how a printed reference does it. Roughly ten lines here;
+	# still not written, because nothing needs it.
 	var groups := ControlsReference.groups()
 	var total_rows := 0
 	for group in groups:

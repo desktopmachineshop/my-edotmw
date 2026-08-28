@@ -215,9 +215,18 @@ Seven things to know:
 
 **And #282's fit guard fired on the very next change.** A fifth control
 group for the manual's key took the controls screen to **731 px against a
-720-high window**. It is at **705** now — which is the OPTIMUM, not a
-near miss: two contiguous columns over 31 rows cannot balance better than
-15/16, and the tall column is one group that is dealt whole. The next row
-added reds it, and the answer is to let a group break across columns
-rather than to raise the budget. That is written into `client.gd` at the
-split so nobody weakens the test instead.
+720-high window**; rebuilding the split put it at **705**.
+
+**The prediction that came with that number is measured false, and it is
+worth saying so.** It read: 705 is the OPTIMUM, two contiguous columns
+over 31 rows cannot balance better than 15/16, so the next row reds it.
+#363 then put `farm` on `O` and freed the gather key — two more rows —
+and the screen went **705 -> 684**. Adding a row can MOVE the split
+point, and the better balance on the far side of it more than pays for
+the row. The 15/16 bound was true of 31 rows and said nothing about 33.
+
+The narrower, true statement: it fits with room, **the test measures that
+rather than anyone predicting it**, and if it ever does red the fix is to
+let a group break across columns rather than raise the budget. Corrected
+in `client.gd` at the split as well, so the code does not keep asserting
+the wrong thing.

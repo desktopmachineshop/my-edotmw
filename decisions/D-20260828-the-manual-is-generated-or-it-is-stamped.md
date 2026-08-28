@@ -164,12 +164,20 @@ argument for this ticket that has nothing to do with players.
 
 **And the #282 fit guard fired on the very next change.** Adding a fifth
 control group for the manual's key took the controls screen to **731 px
-against a 720-high window**; it is at **705** now, which is the OPTIMUM
-rather than a near miss — two contiguous columns over 31 rows cannot
-balance better than 15/16, and the tall column is one group that cannot
-be split. The next row added will red it, and the answer will be to let a
-group break across columns, not to raise the budget. Written into
-`client.gd` at the split so the next person does not weaken the test.
+against a 720-high window**; rebuilding the split put it at **705**.
+
+**Amended 2026-08-28.** That number came with a prediction — 705 is the
+OPTIMUM, two contiguous columns over 31 rows cannot balance better than
+15/16, so the next row reds it — and **the prediction is measured
+false**. #363's key re-allocation put `farm` on `O` and freed the gather
+key, adding two rows, and the screen went **705 -> 684**: adding a row
+can MOVE the split point, and the better balance on the far side of it
+more than pays for the row. The bound was true of 31 rows and said
+nothing about 33. The narrower true statement is that it fits with room,
+the TEST measures that rather than anyone predicting it, and the fix if
+it ever reds is to let a group break across columns rather than raise the
+budget. Corrected in `client.gd` at the split, so the code does not keep
+asserting the wrong thing.
 
 ---
 
