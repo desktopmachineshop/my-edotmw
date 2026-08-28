@@ -464,17 +464,54 @@ class VirtualClient:
 	## `AI_STATS` makes, and the reason #123's `raid_orders` became a gate.
 	var techs_ordered: int = 0
 
-	func _issue_research() -> void:
-		if _order_ticks % 4 != 0:
-			return
+	## The cheapest tech this bot could start and has not asked for yet, or
+	## null. One definition, so the banking rule below and the order above
+	## can never disagree about which tech is "next".
+	func _next_tech() -> TechDef:
 		var civ := state.civ_of(state.player)
 		var candidates := state.research_view().available(state.player, civ)
+		candidates = candidates.filter(
+			func(t): return not _research_ordered.has((t as TechDef).line))
 		if candidates.is_empty():
-			return
+			return null
 		candidates.sort_custom(func(a: TechDef, b: TechDef) -> bool:
 			if a.resource_points() != b.resource_points():
 				return a.resource_points() < b.resource_points()
 			return a.id < b.id)
+		return candidates[0]
+
+
+	## Hold the purse shut until the next tech is paid for.
+	##
+	## Without this the bots research NOTHING, measured twice: `4 300` and
+	## `4 480` both came back `VERDICT ok` with `techs_ordered=0`. It is
+	## STRUCTURAL rather than a duration problem — a bot enqueues at every
+	## building every other tick, so its wallet never simultaneously holds
+	## one tech's cost, however long the run is. That is the whole reason
+	## the counter was added before this rule was.
+	##
+	## Bounded three ways, because a load instrument that starves itself is
+	## worse than one that skips a code path:
+	##
+	## - only after THREE hauling crews, or a bot that just spent its
+	##   opening crew founding a hall would bank instead of training the
+	##   gatherers that earn the money — a deadlock, not a delay;
+	## - only for the first two techs, so the load profile is perturbed
+	##   early and briefly rather than for the whole run;
+	## - and never when there is nothing to bank FOR.
+	func _banking_for_research() -> bool:
+		if techs_ordered >= 2 or _hauling_crew_count() < 3:
+			return false
+		var next := _next_tech()
+		return next != null and not _can_afford_tech(next)
+
+
+	func _issue_research() -> void:
+		if _order_ticks % 4 != 0:
+			return
+		var candidates := [_next_tech()] if _next_tech() != null else []
+		if candidates.is_empty():
+			return
 		for wire_id in state.buildings:
 			var info: Dictionary = state.buildings[wire_id]
 			if int(info["owner"]) != state.player or bool(info["destroyed"]):
@@ -493,9 +530,7 @@ class VirtualClient:
 			var here := BuildingSim.archetype_of_def(def)
 			for tech in candidates:
 				var t := tech as TechDef
-				if t.research_at != here or _research_ordered.has(t.line):
-					continue
-				if not _can_afford_tech(t):
+				if t.research_at != here or not _can_afford_tech(t):
 					continue
 				peer.send(0, NetProtocol.encode_order_research(
 					int(wire_id), String(t.line)), ENetPacketPeer.FLAG_RELIABLE)
@@ -514,6 +549,10 @@ class VirtualClient:
 	func _issue_production() -> void:
 		_issue_research()
 		if _order_ticks % 2 != 0:
+			return
+		# Research before troops, briefly and early — see
+		# `_banking_for_research`.
+		if _banking_for_research():
 			return
 		var crews := _hauling_crew_count()
 		for wire_id in state.buildings:
