@@ -173,10 +173,14 @@ class VirtualClient:
 	## trajectory, which a bot log does not have.
 	##
 	## READ IT AGAINST THE OPENING SIZE, which is TWO — a gatherer crew
-	## AND a general since D-20260823. Without that the readings inverts:
-	## `squads_peak = 2` looks like "had two, lost one", which sounds like
-	## combat losses, when it is the crew being CONSUMED founding the town
-	## hall, by design.
+	## AND a general since D-20260823.
+	##
+	## The natural reading of "peak 2, now 1" is a COMBAT LOSS, and it is
+	## not: it is the crew being CONSUMED founding the town hall, by
+	## design. Naming the wrong meaning the eye reaches for first is
+	## worth more here than the table below, because the table is only
+	## consulted by somebody who already suspects they are misreading it
+	## (phrasing from worker 87, who ran the counter and hit this).
 	##
 	##   peak 2 / end 1 / military 1        founded, and produced nothing since
 	##   peak 2 / end 2 / build='no hall'   never founded, crew still standing (#247)
