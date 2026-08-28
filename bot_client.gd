@@ -1041,6 +1041,11 @@ var _finished := false
 
 
 func _initialize() -> void:
+	# Which build this is, first line (#178) — see server.gd's copy. The
+	# bots share net_protocol.gd with both, so a load-test log that does
+	# not say the same version as the server it ran against is the one
+	# thing that would explain an otherwise impossible desync.
+	print(BuildVersion.banner("bots"))
 	var args := CmdArgs.parse(OS.get_cmdline_user_args())
 	# A load test measured with the wrong number of bots is worse than one
 	# that did not run: `int()` strips non-digits, so a mistyped --clients

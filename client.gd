@@ -295,6 +295,8 @@ var _trained_at := 0.0
 
 
 func _ready() -> void:
+	# Which build this is, first line (#178) — see server.gd's copy.
+	print(BuildVersion.banner("client"))
 	var args := CmdArgs.parse(OS.get_cmdline_user_args())
 	# Same refusal the server makes (D-20260817-recipe-args-are-positional):
 	# `int()` strips non-digits, so a mistyped --port or --lobby-ai reads
