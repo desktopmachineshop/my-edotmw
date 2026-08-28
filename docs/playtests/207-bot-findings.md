@@ -467,7 +467,7 @@ refusal lines separate the two causes cleanly:
   (*"a refused founding retries elsewhere"*: `_found_town` re-sent the
   same refused cell for the whole match). Not re-filed.
 - `Cannot afford a Town Centre` — **every one of these belongs to a
-  gravesworn seat**, and gravesworn founded in **0 of the 5 seats** it
+  gravesworn seat**, and gravesworn founded in **0 of the 4 seats** it
   was dealt across the four matches. That is #275, and it is a civ
   property rather than a harness one.
 

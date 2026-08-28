@@ -870,3 +870,140 @@ server: AI_UNREACHABLE player=1001 gave up on node 895
 server: AI_UNREACHABLE player=1003 gave up on node 115
 server: tick=1800 time=180.0s squads=73 clients=0 sent=1570936B fields=236 us/squad=100.28 (fields=0.06 curves=6.15 vision=19.13 combat=54.79 buildings=7.40 production=0.51 economy=5.53 separation=6.24 other=0.99)
 server: AI_UNREACHABLE player=1003 gave up on node 490
+server: AI_UNREACHABLE player=1003 gave up on node 399
+server: AI_UNREACHABLE player=1000 gave up on node 1902
+server: AI_UNREACHABLE player=1003 gave up on node 490
+server: AI_UNREACHABLE player=1003 gave up on node 482
+server: tick=1900 time=190.0s squads=76 clients=0 sent=1764316B fields=247 us/squad=104.88 (fields=0.06 curves=6.32 vision=18.82 combat=59.83 buildings=7.42 production=0.48 economy=5.41 separation=6.06 other=0.97)
+server: AI_REFUSED player=1000 — Moving to build a Town Centre
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: tick=2000 time=200.0s squads=79 clients=0 sent=1891812B fields=267 us/squad=104.29 (fields=0.06 curves=6.30 vision=18.61 combat=59.78 buildings=7.43 production=0.48 economy=5.23 separation=5.93 other=0.95)
+server: AI_BUILD player=1000 barracks at (19, 42)
+server: player 1000 began barracks at (19, 42)
+server: AI_REFUSED player=1000 — Moving to build a Barracks
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: AI_UNREACHABLE player=1003 gave up on node 482
+server: AI_REFUSED player=1000 — Moving to build a Town Centre
+server: AI_UNREACHABLE player=1003 gave up on node 491
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: tick=2100 time=210.0s squads=81 clients=0 sent=2070032B fields=293 us/squad=103.31 (fields=0.05 curves=6.42 vision=18.71 combat=57.93 buildings=7.47 production=0.47 economy=5.45 separation=6.31 other=0.95)
+server: AI_UNREACHABLE player=1003 gave up on node 534
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: AI_UNREACHABLE player=1003 gave up on node 534
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1001 gave up on node 970
+server: AI_UNREACHABLE player=1003 gave up on node 157
+server: MATCH_ELIMINATED player=1000
+server: tick=2200 time=220.0s squads=83 clients=0 sent=2319672B fields=313 us/squad=102.96 (fields=0.05 curves=6.51 vision=18.50 combat=58.09 buildings=7.38 production=0.45 economy=5.42 separation=6.05 other=0.95)
+server: AI_UNREACHABLE player=1003 gave up on node 534
+server: AI_UNREACHABLE player=1003 gave up on node 482
+server: AI_UNREACHABLE player=1003 gave up on node 534
+server: AI_UNREACHABLE player=1003 gave up on node 523
+server: tick=2300 time=230.0s squads=87 clients=0 sent=2484580B fields=340 us/squad=97.03 (fields=0.05 curves=6.42 vision=17.56 combat=54.15 buildings=7.05 production=0.44 economy=5.09 separation=5.80 other=0.92)
+server: MATCH_ELIMINATED player=1002
+server: AI_UNREACHABLE player=1003 gave up on node 487
+server: tick=2400 time=240.0s squads=91 clients=0 sent=2627428B fields=348 us/squad=91.86 (fields=0.05 curves=6.49 vision=16.89 combat=50.48 buildings=6.76 production=0.42 economy=4.82 separation=5.46 other=0.90)
+server: AI_UNREACHABLE player=1003 gave up on node 1919
+server: AI_UNREACHABLE player=1003 gave up on node 523
+server: AI_UNREACHABLE player=1003 gave up on node 534
+server: AI_UNREACHABLE player=1003 gave up on node 1919
+server: tick=2500 time=250.0s squads=95 clients=0 sent=2897440B fields=373 us/squad=87.59 (fields=0.05 curves=6.55 vision=16.24 combat=47.66 buildings=6.45 production=0.40 economy=4.61 separation=5.14 other=0.88)
+server: AI_UNREACHABLE player=1003 gave up on node 614
+server: AI_UNREACHABLE player=1003 gave up on node 1919
+server: AI_UNREACHABLE player=1003 gave up on node 614
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_UNREACHABLE player=1001 gave up on node 963
+server: AI_UNREACHABLE player=1001 gave up on node 963
+server: AI_UNREACHABLE player=1001 gave up on node 963
+server: AI_UNREACHABLE player=1003 gave up on node 1919
+server: tick=2600 time=260.0s squads=98 clients=0 sent=3136776B fields=398 us/squad=84.13 (fields=0.05 curves=6.52 vision=15.81 combat=45.17 buildings=6.16 production=0.39 economy=4.44 separation=5.12 other=0.87)
+server: AI_UNREACHABLE player=1003 gave up on node 614
+server: tick=2700 time=270.0s squads=103 clients=0 sent=3375380B fields=423 us/squad=79.90 (fields=0.04 curves=6.40 vision=15.09 combat=42.63 buildings=5.81 production=0.37 economy=4.20 separation=4.90 other=0.84)
+server: AI_UNREACHABLE player=1003 gave up on node 1917
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: tick=2800 time=280.0s squads=109 clients=0 sent=3587228B fields=459 us/squad=76.56 (fields=0.04 curves=6.15 vision=14.14 combat=41.59 buildings=5.42 production=0.35 economy=3.89 separation=4.54 other=0.79)
+server: AI_UNREACHABLE player=1003 gave up on node 1918
+server: AI_UNREACHABLE player=1003 gave up on node 1918
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_UNREACHABLE player=1003 gave up on node 1918
+server: tick=2900 time=290.0s squads=115 clients=0 sent=3812680B fields=491 us/squad=75.75 (fields=0.04 curves=5.93 vision=13.38 combat=42.48 buildings=5.16 production=0.34 economy=3.72 separation=4.28 other=0.75)
+server: AI_UNREACHABLE player=1001 gave up on node 608
+server: AI_REFUSED player=1001 — Moving to build a Town Centre
+server: AI_UNREACHABLE player=1001 gave up on node 1900
+server: AI_UNREACHABLE player=1001 gave up on node 1900
+server: AI_UNREACHABLE player=1001 gave up on node 1900
+server: tick=3000 time=300.0s squads=119 clients=0 sent=4008652B fields=529 us/squad=75.75 (fields=0.04 curves=5.87 vision=12.93 combat=43.42 buildings=5.03 production=0.34 economy=3.59 separation=4.15 other=0.73)
+server: AI_REFUSED player=1003 — Moving to build a Town Centre
+server: AI_BUILD player=1001 barracks at (4, 1)
+server: player 1001 began barracks at (4, 1)
+server: AI_REFUSED player=1001 — Moving to build a Barracks
+server: tick=3100 time=310.0s squads=120 clients=0 sent=4118724B fields=553 us/squad=75.16 (fields=0.04 curves=5.90 vision=12.80 combat=42.55 buildings=4.96 production=0.34 economy=3.51 separation=4.68 other=0.72)
+server: AI_REFUSED player=1001 — Moving to build a Town Centre
+server: AI_UNREACHABLE player=1001 gave up on node 609
+server: AI_UNREACHABLE player=1001 gave up on node 609
+server: tick=3200 time=320.0s squads=121 clients=0 sent=4279496B fields=561 us/squad=73.47 (fields=0.04 curves=5.92 vision=12.55 combat=41.46 buildings=4.86 production=0.34 economy=3.40 separation=4.54 other=0.71)
+server: AI_UNREACHABLE player=1003 gave up on node 1831
+server: AI_UNREACHABLE player=1001 gave up on node 609
+server: AI_UNREACHABLE player=1003 gave up on node 1831
+server: AI_UNREACHABLE player=1001 gave up on node 609
+server: AI_UNREACHABLE player=1001 gave up on node 610
+server: AI_UNREACHABLE player=1003 gave up on node 1830
+server: tick=3300 time=330.0s squads=123 clients=0 sent=4405440B fields=575 us/squad=72.39 (fields=0.03 curves=5.86 vision=12.27 combat=41.11 buildings=4.71 production=0.33 economy=3.26 separation=4.45 other=0.70)
+server: AI_UNREACHABLE player=1001 gave up on node 136
+server: tick=3400 time=340.0s squads=123 clients=0 sent=4437632B fields=595 us/squad=72.13 (fields=0.03 curves=5.86 vision=12.23 combat=40.37 buildings=4.62 production=0.32 economy=3.20 separation=5.10 other=0.70)
+server: tick=3500 time=350.0s squads=123 clients=0 sent=4477652B fields=597 us/squad=70.94 (fields=0.03 curves=5.84 vision=12.04 combat=39.37 buildings=4.53 production=0.31 economy=3.13 separation=5.29 other=0.70)
+server: AI_UNREACHABLE player=1001 gave up on node 477
+server: AI_UNREACHABLE player=1001 gave up on node 477
+server: tick=3600 time=360.0s squads=123 clients=0 sent=4519068B fields=598 us/squad=70.19 (fields=0.03 curves=5.87 vision=11.93 combat=38.50 buildings=4.47 production=0.30 economy=3.07 separation=5.62 other=0.69)
+server: AI_UNREACHABLE player=1003 gave up on node 1824
+server: AI_UNREACHABLE player=1001 gave up on node 477
+server: AI_UNREACHABLE player=1003 gave up on node 1824
+server: AI_UNREACHABLE player=1001 gave up on node 477
+server: AI_UNREACHABLE player=1001 gave up on node 476
+server: AI_UNREACHABLE player=1003 gave up on node 1824
+server: tick=3700 time=370.0s squads=123 clients=0 sent=4562964B fields=602 us/squad=69.67 (fields=0.03 curves=5.94 vision=11.89 combat=37.65 buildings=4.43 production=0.30 economy=3.05 separation=5.99 other=0.69)
+server: AI_UNREACHABLE player=1001 gave up on node 52
+server: tick=3800 time=380.0s squads=123 clients=0 sent=4606388B fields=605 us/squad=69.56 (fields=0.03 curves=6.03 vision=11.91 combat=36.91 buildings=4.41 production=0.29 economy=3.02 separation=6.55 other=0.69)
+server: tick=3900 time=390.0s squads=123 clients=0 sent=4661296B fields=606 us/squad=68.96 (fields=0.03 curves=6.13 vision=11.83 combat=36.13 buildings=4.36 production=0.29 economy=2.98 separation=6.81 other=0.69)
+server: AI_UNREACHABLE player=1001 gave up on node 433
+server: AI_UNREACHABLE player=1001 gave up on node 433
+server: tick=4000 time=400.0s squads=123 clients=0 sent=4735612B fields=609 us/squad=68.07 (fields=0.03 curves=6.14 vision=11.70 combat=35.35 buildings=4.30 production=0.28 economy=2.92 separation=6.94 other=0.68)
+server: AI_UNREACHABLE player=1003 gave up on node 1866
+server: AI_UNREACHABLE player=1001 gave up on node 433
+server: AI_UNREACHABLE player=1003 gave up on node 1866
+server: AI_UNREACHABLE player=1001 gave up on node 433
+server: AI_UNREACHABLE player=1001 gave up on node 433
+server: tick=4100 time=410.0s squads=123 clients=0 sent=4803896B fields=611 us/squad=67.26 (fields=0.03 curves=6.15 vision=11.55 combat=34.63 buildings=4.24 production=0.28 economy=2.87 separation=7.11 other=0.68)
+server: AI_UNREACHABLE player=1001 gave up on node 1903
+server: tick=4200 time=420.0s squads=123 clients=0 sent=4844620B fields=615 us/squad=66.92 (fields=0.03 curves=6.17 vision=11.49 combat=34.03 buildings=4.20 production=0.27 economy=2.83 separation=7.49 other=0.67)
+server: reached 420.0s, stopping
+server: bandwidth — 11535 B/client/s over 1 client(s), budget_overruns=0
+server: MEMORY 45.3 MB static, 64.0 MB peak — 4 player(s), 123 squad(s), 42x48 = 2016 cells
+server: final (shutdown) — ticks=4200 time=420.0s squads=123 bytes=4844620 packets=69299 fields=615 curves_rebuilt=13817 dropped_ticks=0 us/squad=66.92 (fields=0.03 curves=6.17 vision=11.49 combat=34.03 buildings=4.20 production=0.27 economy=2.83 separation=7.49 other=0.67) vision_rebuilds=1401 worst_tick=69.8ms field_waits=0
+server: transport — peak RTT 0.0ms, peak loss 0.000%, min throttle 1.00 of 1.00, all reliable on channel 0
+server: CIVS_FIELDED 2 of 6 — gildedreach=121, gravesworn=2
+server: AI_STATS player=1000 civ=gildedreach profile=balanced team=0 squads_peak=15 workers_peak=14 buildings=2 enemy_buildings_seen=3 allies_seen=0 ally_objectives=0 attacks=0 first_attack=-1.0 first_attack_soldiers=0 peak_stockpile=549 peak_food=250 peak_wood=440 substituted=0 unreachable=18 scout_legs=0 afford_refusals=1 cap_refusals=0
+server: AI_STATS player=1001 civ=gildedreach profile=balanced team=0 squads_peak=24 workers_peak=16 buildings=2 enemy_buildings_seen=2 allies_seen=0 ally_objectives=0 attacks=24 first_attack=136.8 first_attack_soldiers=38 peak_stockpile=931 peak_food=521 peak_wood=350 substituted=0 unreachable=73 scout_legs=0 afford_refusals=0 cap_refusals=0
+server: AI_STATS player=1002 civ=gravesworn profile=balanced team=0 squads_peak=2 workers_peak=1 buildings=0 enemy_buildings_seen=2 allies_seen=0 ally_objectives=0 attacks=0 first_attack=-1.0 first_attack_soldiers=0 peak_stockpile=440 peak_food=280 peak_wood=140 substituted=0 unreachable=0 scout_legs=0 afford_refusals=0 cap_refusals=0
+server: AI_STATS player=1003 civ=gildedreach profile=balanced team=0 squads_peak=25 workers_peak=16 buildings=2 enemy_buildings_seen=2 allies_seen=0 ally_objectives=0 attacks=34 first_attack=139.0 first_attack_soldiers=38 peak_stockpile=903 peak_food=268 peak_wood=575 substituted=0 unreachable=70 scout_legs=0 afford_refusals=1 cap_refusals=0
+server: MATCH_RESULT winner=-1 team=0 phase=1
+server: ticks over D-020's 100ms budget: 0 of 4200, worst 69.8ms at tick 1274
+server: FOG_TOTAL_SQUADS=123
+server: FOG_TOTAL_NODES=382
+server: wrote 14332 replay records
