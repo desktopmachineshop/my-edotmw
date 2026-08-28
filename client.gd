@@ -3144,6 +3144,11 @@ var _drawn := DrawnIndex.new()
 ## exists to prevent exactly this.
 var _building_scan: Array = []
 var _building_scan_at := -1.0
+## The same buildings, bucketed by position (#325). `_nearby_building_boxes`
+## walked the whole scan per drawn squad and paid an `aligning_offset` on
+## every entry — one millisecond per building per frame at 630 drawn
+## squads, measured, and buildings only ever accumulate (D-030).
+var _building_index := WorldIndex.new()
 
 
 func _refresh_building_scan() -> void:
@@ -3151,6 +3156,7 @@ func _refresh_building_scan() -> void:
 		return
 	_building_scan_at = _now
 	_building_scan = []
+	_building_index.begin()
 	if _state.space == null:
 		return
 	for id in _state.buildings:
@@ -3166,15 +3172,24 @@ func _refresh_building_scan() -> void:
 		else:
 			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
 			half = Vector2(span, span)
+		var reach := maxf(half.x, half.y)
+		var cell := int(info.get("cell", 0))
 		_building_scan.append({
 			"id": int(id),
-			"at": _state.space.to_world(
-				_state.space.from_index(int(info.get("cell", 0)))),
+			"at": _state.space.to_world(_state.space.from_index(cell)),
 			"half": half,
 			"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0))),
 			"owner": int(info.get("owner", -1)),
-			"reach": maxf(half.x, half.y),
+			"reach": reach,
+			"cell": cell,
 		})
+		# Bucketed as it is resolved, so the per-squad lookup below is a
+		# neighbourhood scan rather than a walk of every building the
+		# match has ever shown this client (#325). Once per frame, beside
+		# the scan it indexes — a second pass would be a second thing to
+		# keep in step.
+		_building_index.put(_building_scan[-1]["at"],
+			_building_scan.size() - 1, reach)
 
 
 ## How far a drawn man's centre must stay from a TRUNK, scaled by that
@@ -3260,8 +3275,15 @@ func _node_cell_discs(cell: int) -> Array:
 func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
 	_refresh_building_scan()
 	var out := []
+	if _state.space == null:
+		return out
 	var offsets := _state.space.lattice_offsets()
-	for entry in _building_scan:
+	# Candidates from the cell index, then EXACTLY the test this function
+	# always applied (#325). The index narrows; it does not decide, so the
+	# set is unchanged and `test_cell_index.gd` holds it to that against
+	# the walk it replaces.
+	for which in _building_index.near(centre, search):
+		var entry: Dictionary = _building_scan[which]
 		var at: Vector3 = entry["at"]
 		at += Engagement.aligning_offset(centre, at, offsets)
 		if Vector2(at.x - centre.x, at.z - centre.z).length() \
@@ -3285,7 +3307,13 @@ func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 	var best := {}
 	var best_d := INF
 	var offsets := _state.space.lattice_offsets()
-	for entry in _building_scan:
+	# Through the index, exactly as `_nearby_building_boxes` above (#325):
+	# this walked every known building too, once per squad looking for a
+	# target, and buildings only ever accumulate. Same candidates, same
+	# test, same answer — the index narrows, the test below decides, and
+	# ties still break on the nearest because the test is unchanged.
+	for which in _building_index.near(here, reach + 0.4):
+		var entry: Dictionary = _building_scan[which]
 		if int(entry["owner"]) == mine:
 			continue
 		var centre: Vector3 = entry["at"]

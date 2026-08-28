@@ -1,0 +1,139 @@
+### D-20260828 · 2026-08-28 · Accepted — a squad looks up its buildings, it does not walk the match
+
+**Decision:** the client's two building lookups —
+`_nearby_building_boxes` (which men are pushed out of) and
+`_building_box_near` (which enemy building a melee squad wraps) — take
+their candidates from `WorldIndex`, a coarse world grid rebuilt with the
+building scan once per frame. Each then applies **exactly the test it
+always applied**, so the set is unchanged and only how it is found
+differs.
+
+`bench_render.gd` indexes identically, because #240's whole point is that
+the benchmark runs the client's code rather than a copy of it.
+
+## What it cost, and the knob that showed it
+
+Continuing the standing performance directive after
+`D-20260828-inside-the-derive-phase`. The decoration phase is the
+frame's largest, so it was attributed the same way — and its `gather`
+half split into parts:
+
+| at 1,000 squads / 630 drawn | ms/frame |
+|---|---|
+| tree discs | 22.22 |
+| **building boxes** | **15.57** |
+| jostle | 11.53 |
+| opponent derivation | 10.75 |
+| activity + speed (residual) | 7.10 |
+
+The boxes line looked ordinary until the benchmark was given a
+`--buildings=` knob and asked how it SCALES. On the shipped map, Intel
+Iris Xe, 60 frames:
+
+| buildings | 12 | 60 | 200 |
+|---|---|---|---|
+| box lookup | 12.94 ms | 59.50 ms | **199.19 ms** |
+| per building | 1.08 | 0.99 | 1.00 |
+
+**One millisecond per building per frame**, dead linear, while every
+other part of the gather stayed flat (enemy 9.0 → 9.9, discs 18.3 → 20.4,
+jostle 9.6 → 11.1).
+
+That is worse than #262's jostle, because **buildings are the one thing
+in a match that only ever accumulates**: D-030 makes a building known
+forever once seen, a wall is one building PER CELL (D-076), and nothing
+is ever removed from `_building_scan`. Two hundred buildings — an
+ordinary count once anyone builds a wall — spent more of the frame
+finding buildings than doing everything else put together.
+
+## What it costs now
+
+Interleaved, same instrument, same session, 200 buildings, 1,000 squads:
+
+| pass | walk | index | |
+|---|---|---|---|
+| 1 | 265.85 ms | **36.48 ms** | **7.3x** |
+| 2 | 250.35 ms | **40.90 ms** | **6.1x** |
+
+`discs` — the control, untouched — stayed at 28.28 → 21.98 and
+25.48 → 25.14 across the same pairs. And the scaling is no longer linear:
+12.94 / 59.50 / 199.19 becomes **6.75 / 9.01 / 17.07** at 12 / 60 / 200,
+so the twelve-building case is *cheaper* too.
+
+## Why a world grid and NOT `TorusSpace.disk_offsets` — measured, not argued
+
+The standing rule is to reach for `disk_offsets` before `distance()`, and
+**a cell-disk index was written first**, on exactly that reasoning: a
+building is at a cell, the client already derives its position from
+`space.from_index(info.cell)`, so the cell is the natural key and the
+seam handles itself.
+
+**It measured ten times worse than the walk it replaced** — 12.94 ms to
+131.82 ms at twelve buildings. The reason is arithmetic. The query reach
+is `SQUAD_CULL_RADIUS + 6` plus the widest building, about fourteen world
+units, and a cell is 1.73 across: that is a disk of **469 cells** scanned
+per squad per frame to find twelve buildings.
+
+So the rule earns a boundary, and it is worth stating plainly:
+
+> **`disk_offsets` is for avoiding a `distance()` per candidate over a
+> radius of a FEW CELLS. It is not for finding sparse things over a
+> radius of many.**
+
+It remains right for `_nearby_node_discs` (radius 4, and node cells are
+dense enough that most of the disk hits). It is wrong here, and the
+bucket width in `WorldIndex` is chosen from the query's own reach so a
+lookup is a 3x3 neighbourhood whatever the radius — which is what
+`drawn_index.gd` does, one phase over, for the same reason.
+
+This is the third index in three changes and they do not share code on
+purpose: `DrawnIndex` holds per-soldier positions in lattice-copy space
+and does the per-man test itself; `WorldIndex` holds payloads and only
+narrows. The shape is the same; the contents, the coordinate systems and
+the callers are not.
+
+## Two bugs the test caught before the measurement did
+
+Both in the first `WorldIndex`, both found by comparing against the walk
+rather than by looking at the answer:
+
+- **Entering a thing into every bucket it reaches into returns it
+  several times**, when the query's neighbourhood overlaps more than one
+  of them. The big-building case reported `[0, 0, 0, 0, 0, 0]` against
+  `[0]`.
+- **And it does not help anyway.** The caller's test is "within my search
+  plus ITS extent", which is a question about the CENTRE — so the query
+  has to widen by the widest entry's reach regardless. One bucket per
+  entry, `_widest` remembered, span widened at query time.
+
+## Consequences
+
+- **`_building_box_near` is indexed too.** It walked the same scan, once
+  per squad looking for a target, and the same argument applies. Its test
+  is a strict subset of the same superset property, and the nearest-wins
+  tiebreak is untouched because the test is untouched.
+- **Nothing a player sees changes.** Same buildings, same order of
+  preference, same push-outs. `tests/test_world_index.gd` asserts the set
+  against a reimplementation of the walk over three spreads and 900
+  probes, with a vacuity check that somebody is in range.
+- **The costs are counted, not timed** — candidates returned per query
+  (28 of 60 buildings, 34 of 240) and per frame (849 / 3,924 / 12,820 at
+  12 / 60 / 200 against the walk's 2,400 / 12,000 / 40,000). A wall-clock
+  assertion on a shared host goes red with nothing wrong (D-106's
+  amendment); the milliseconds above are quoted from interleaved pairs
+  and gate nothing.
+- **`bench-render` gained `--buildings=` and `--nodes=`**, defaulting to
+  what it dressed the ground with before, so every earlier number stays
+  comparable. They exist because "how does this scale with what a match
+  has built" is a question only the benchmark can answer, and it is the
+  question that turned an ordinary-looking 15 ms line into a 200 ms one.
+
+## Revisit trigger
+
+The `discs` line, which is now the largest in the gather at 22 ms and is
+a 61-cell disk scan per drawn squad — the case where `disk_offsets` is
+still the right table, so the lever there is the scan's own constant
+rather than its shape. And the opponent derivation at 10.75 ms, which is
+a second full derivation of a squad usually derived already this frame;
+memoising it per frame is a candidate, and it is a cache of a pure
+function within one pass rather than state that survives frames.

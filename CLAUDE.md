@@ -583,6 +583,21 @@ bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         PHASES with a residual, and the MIX that produced
                         it — a frame with nothing fighting prices no
                         duels.
+world_index.gd           Things at WORLD positions, bucketed so "what is
+                        near me" is a neighbourhood scan
+                        (D-20260828-a-squad-looks-up-its-buildings, #325).
+                        The client's building lookups walked EVERY known
+                        building per drawn squad per frame — one
+                        millisecond per building, measured, and buildings
+                        only ever accumulate (D-030, D-076). A cell-disk
+                        index was tried first, because `disk_offsets`
+                        before `distance()` is the standing rule, and
+                        measured TEN TIMES WORSE: a fourteen-unit reach
+                        on a 1.73-unit cell pitch is a 469-cell disk.
+                        So the rule has a boundary — `disk_offsets` is
+                        for a radius of a FEW CELLS, not for sparse
+                        things over many. The index NARROWS; every caller
+                        still applies the test it always applied.
 drawn_index.gd           Where every squad's men were DRAWN last frame,
                         indexed so the cross-squad jostle finds its
                         neighbours without walking the match
