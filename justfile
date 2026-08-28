@@ -1842,6 +1842,57 @@ gen-terrain-shot HEIGHT="14": _import
         exit 1
     fi
 
+# A rendered picture of SHIPS ON WATER, framed on a coastline.
+#
+# Naval stage 8's exit criterion (`docs/plans/naval.md` §7): "a rendered frame
+# with ships on water, looked at". Every existing instrument frames somewhere a
+# hull cannot be — `gen-terrain-shot` prefers a mountain and draws no units,
+# `gen-model-preview` uses a studio plane with no sea, `gen-forest-preview`
+# frames a wood, and `test-client` aims at a spawn (walkable by construction).
+#
+# So this frames the busiest piece of coast on the map, with a shipped warship
+# afloat and a land squad ashore beside it — the contrast is the check: a hull
+# riding a hand's breadth too high is invisible on its own and obvious next to
+# something standing on the ground.
+#
+# Real path throughout: a `/units` def with `movement_domain = "water"`, a
+# `PrimitiveUnit`, and `Formation.soldier_transforms_sampled` with the same
+# `water_height` `ClientState` passes.
+#
+# Software-rasterised, so it needs no GPU and says nothing about speed.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render ships on water, framed on a coast, to artifacts/naval-godot.png")]
+gen-naval-shot HEIGHT="9" SEABED="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    bash recipe-arg.sh num SEABED "{{SEABED}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    gate="$(bash host-gate.sh acquire medium 'gen-naval-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-naval-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/naval-godot.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path .             --rendering-method gl_compatibility --resolution 1400x900             naval_shot.tscn -- --height={{HEIGHT}} --seabed={{SEABED}}
+    else
+        "$godot" --path . --rendering-method gl_compatibility             --resolution 1400x900 naval_shot.tscn -- --height={{HEIGHT}}             --seabed={{SEABED}}
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-naval-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
+
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #
 # Drives the simulation directly at 100/250/500/1000 squads rather than
@@ -1885,7 +1936,7 @@ profile: _import
 # import, global class_names do not resolve and it dies with parse errors
 # naming unrelated lines.
 [doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
-bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
@@ -1904,7 +1955,94 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
         exit 1
     fi
     "$godot" --headless --path . --import
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}
+    # ARGS is the attribution channel (#229): --clamp=0, --sampler=0,
+    # --copies=0, --cells_wide=84 --cells_high=96. Empty by default, so a
+    # bare `just bench-render` measures the shipping client exactly as it
+    # always did and every number ever quoted stays comparable.
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} {{ARGS}}
+
+# Is the recorded render baseline about THIS tree? (#286)
+#
+# Seconds, headless, no GPU — so it can run on every pull request, which
+# is the point: it cannot tell you the client got slower, and it CAN tell
+# you that nobody has measured since the map, the roster, the built
+# assets or the render path last moved. That absence is what let #229 be
+# a 3x regression found months later by a human playing the game.
+#
+# STRICT=1 exits non-zero when the baseline is stale. Off by default: a
+# stale baseline is news, not a fault, and a check that fails every PR
+# touching formation.gd is a check that gets muted (D-022's audit block
+# from the other direction). The nightly job is where STRICT belongs.
+[doc("Is bench/baseline.json about this map, roster, assets and render path?")]
+bench-stale STRICT="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int STRICT "{{STRICT}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # It only reads files and hashes them, but it starts a Godot process to
+    # do it, and the rule `tests/test_host_budget.gd` enforces is
+    # structural for exactly the reason the cheap case tempts you to skip
+    # it: the gap is always the recipe nobody remembered.
+    gate="$(bash host-gate.sh acquire medium 'bench-stale' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    "$godot" --headless --path . --script bench_check.gd --         --stale --strict={{STRICT}}
+
+# Run the render benchmark and compare it against the recorded baseline.
+#
+# NATIVE and needs a real GPU, exactly like `bench-render` — the numbers
+# are only meaningful on hardware somebody can name (D-014, D-044
+# criterion 2).
+#
+# GATES ON COUNTS, never on milliseconds. Given the same map, roster and
+# render path a run draws the same men at the same LOD in the same draw
+# calls every time; a millisecond is a statement about the host, and this
+# project has already gone red on a wall-clock gate with nothing wrong
+# (D-106's amendment). Times are printed with their deltas and decide
+# nothing.
+[doc("Run bench-render and compare it against the recorded baseline (#286)")]
+bench-check COUNTS="250,1000" FRAMES="90" STRICT="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int FRAMES "{{FRAMES}}"
+    bash recipe-arg.sh int STRICT "{{STRICT}}"
+    gate="$(bash host-gate.sh acquire gpu 'bench-check' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: bench-check needs a native Godot with a GPU (D-014)." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --json=res://artifacts/bench-latest.json
+    "$godot" --headless --path . --script bench_check.gd --         --run=res://artifacts/bench-latest.json --strict={{STRICT}}
+
+# Record the render baseline `bench-check` compares against (#286).
+#
+# A deliberate, human act: it overwrites a committed file with numbers
+# from THIS machine, and the file names the adapter they came from. Never
+# run it to make a red check green without reading what moved first — a
+# baseline re-recorded on a regression is how the mechanism becomes a
+# rubber stamp.
+[doc("Record bench/baseline.json from this machine (names its adapter)")]
+bench-record COUNTS="250,1000" FRAMES="90": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int FRAMES "{{FRAMES}}"
+    gate="$(bash host-gate.sh acquire gpu 'bench-record' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: bench-record needs a native Godot with a GPU (D-014)." >&2
+        exit 1
+    fi
+    mkdir -p bench "{{artifacts_dir}}"
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --json=res://bench/baseline.json
+    echo "recorded bench/baseline.json — COMMIT IT, and say in the message"
+    echo "what hardware it came from (the file names the adapter)."
 
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #

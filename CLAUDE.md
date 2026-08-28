@@ -88,6 +88,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m10-plan.md
 
+@docs/status/client-render.md
+
 @docs/status/server-memory.md
 
 ## What this project is
@@ -521,6 +523,16 @@ forest_preview.gd        The same idea again for WOODS (D-108), framed on
                         obvious at eye height. Real Economy.generate, real
                         trees_for, real batching; nothing it draws is its
                         own idea of a forest.
+naval_shot.gd            And again for SHIPS ON WATER (naval stage 8),
+                        framed on the busiest piece of coast with a hull
+                        against the beach, a hull in open water and a
+                        squad ashore. Real /units defs, real
+                        `Formation.soldier_transforms_sampled` with the
+                        water plane, drawn at every lattice copy. The
+                        shore is ranked by HEIGHT first: ranked by water
+                        sides it frames the flattest sandbar on the map,
+                        which is a picture of two squads at the same
+                        height proving nothing.
 
 --- tooling ---
 justfile                 The full command vocabulary for local dev,
@@ -592,7 +604,73 @@ scenario_world.gd        A complete headless world for a GUT test, in one
                         second one.
 /scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
-                        needs a real GPU, and prints which one.
+                        needs a real GPU, and prints which one. Runs the
+                        client's OWN render pipeline through
+                        `squad_render.gd` (D-20260828), because for a
+                        milestone it did not and said it did: every frame
+                        time recorded in that window was a floor for a
+                        client nobody was timing. Reports the frame in
+                        PHASES with a residual, and the MIX that produced
+                        it — a frame with nothing fighting prices no
+                        duels.
+world_index.gd           Things at WORLD positions, bucketed so "what is
+                        near me" is a neighbourhood scan
+                        (D-20260828-a-squad-looks-up-its-buildings, #325).
+                        The client's building lookups walked EVERY known
+                        building per drawn squad per frame — one
+                        millisecond per building, measured, and buildings
+                        only ever accumulate (D-030, D-076). A cell-disk
+                        index was tried first, because `disk_offsets`
+                        before `distance()` is the standing rule, and
+                        measured TEN TIMES WORSE: a fourteen-unit reach
+                        on a 1.73-unit cell pitch is a 469-cell disk.
+                        So the rule has a boundary — `disk_offsets` is
+                        for a radius of a FEW CELLS, not for sparse
+                        things over many. The index NARROWS; every caller
+                        still applies the test it always applied.
+drawn_index.gd           Where every squad's men were DRAWN last frame,
+                        indexed so the cross-squad jostle finds its
+                        neighbours without walking the match
+                        (D-20260828-the-jostle-looks-where-the-men-are,
+                        #262). The walk it replaces was QUADRATIC in
+                        drawn squads — 152 ms of a 387 ms frame at 630 of
+                        them — and it fired for STANDING squads, i.e.
+                        once the battle started. A uniform grid over
+                        WORLD positions, deliberately NOT a torus disk
+                        scan: these are lattice COPIES (D-20260818), and
+                        normalising them would merge what the renderer
+                        keeps separate. Per-soldier render state, legal
+                        under D-006 clause 2 as amended, bounded by the
+                        squads drawn (`begin` empties it every frame) and
+                        readable only by a drawing surface — a test scans
+                        for that.
+bench_baseline.gd        The RECORDED render baseline and what a fresh
+                        run may differ from it by (D-20260828, #286).
+                        COUNTS gate — soldiers, drawn men, drawn squads,
+                        draw calls are deterministic given the map,
+                        roster, viewport and render path. MILLISECONDS
+                        report and decide nothing: three recordings gave
+                        identical counts while the wall clock moved 13%.
+                        A FINGERPRINT (map, roster, generated manifest,
+                        Godot version, and the SOURCE of the render path)
+                        separates "re-record" from "regression", because
+                        a check that calls a roster change a fault is a
+                        check that gets muted. All-static and pure, so
+                        the arithmetic that decides pass/fail is testable
+                        without the GPU the measurement needs.
+                        `just bench-stale` is the per-PR half and needs
+                        no GPU at all.
+squad_render.gd          THE per-squad render pipeline: duels, the
+                        static-target deal, the building and tree
+                        push-outs, the survivor easing, the decoration
+                        and the clip. One definition, called by client.gd
+                        and by the benchmark that claims to measure it
+                        (D-20260828, #240) — a harness cannot drift from
+                        a client whose function it runs. All-static and
+                        pure over its inputs, except the `SoldierMotion`
+                        the caller owns and passes in: D-006's amended
+                        clause 2 puts the eased per-soldier positions
+                        there and nowhere else.
 terrain_preview.gd       Headless terrain preview + chunk profiling. The
                         PNG is a TOP-DOWN biome map, so it can show a
                         palette drifting and cannot show how the ground
@@ -948,6 +1026,12 @@ Dev loop and tests:
   and files for a milestone with every number healthy, and neither
   existing instrument could show it: `gen-terrain-preview`'s PNG is
   top-down with no trees in it, and `test-client` points at a spawn.
+- `just gen-naval-shot [HEIGHT] [SEABED]` — a RENDERED picture of SHIPS
+  ON WATER, framed on a coastline, with a land squad ashore for contrast.
+  Software-rasterised, no GPU. **Look at `artifacts/naval-godot.png`.**
+  `SEABED=1` derives the hulls the pre-stage-8 way and prints what that
+  costs (a hull inshore rides 0.055 up the beach) — the difference is a
+  NUMBER and is not visible in the frame, which the recipe says out loud.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running

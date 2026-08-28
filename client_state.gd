@@ -983,6 +983,41 @@ func _sampler_for(squad: int, now: float) -> Callable:
 	return func(x, z): return base.call(x, z) + bump
 
 
+## The movement domain a squad occupies, as `tier_of` reports it.
+##
+## ALIASES of the simulation's own constants, not copies of their values.
+## `SquadSim` owns them (`docs/plans/naval.md` §7.1) and the number rides
+## SQUAD_INFO's tier byte, so the two sides agreeing is a wire obligation
+## — and two literals free to drift is the defect family this project
+## keeps finding. `client.gd` already reads `SquadSim.STANCE_*` the same
+## way, for the same reason.
+const DOMAIN_GROUND := SquadSim.DOMAIN_GROUND
+const DOMAIN_WALL_TOP := SquadSim.DOMAIN_WALL_TOP
+const DOMAIN_WATER := SquadSim.DOMAIN_WATER
+
+
+## Where the sea is drawn, in world units, or NAN when this client has no
+## map yet.
+##
+## `TerrainGen.build_fields` clamps every vertex of a water cell up to
+## `sea_level` before scaling, so this is exactly the height the sea
+## surface is MESHED at — one expression, derived from the replicated
+## settings both sides generate from, rather than a constant that would
+## drift from the ground the moment a preset moved.
+func water_plane_height() -> float:
+	if map_settings.is_empty():
+		return NAN
+	var settings := MapSettings.from_dict(map_settings)
+	return settings.sea_level * settings.height_scale
+
+
+## The water plane for a squad that is ON it, NAN for one that is not.
+func _water_height_for(squad: int) -> float:
+	if tier_of(squad) != DOMAIN_WATER:
+		return NAN
+	return water_plane_height()
+
+
 ## The map's TERRAIN passability, one byte per cell, 1 where a squad could
 ## walk (#97). Empty until the client has built its terrain, which means
 ## "fully open" — the same convention as `SquadSim.is_passable` — so a
@@ -998,6 +1033,15 @@ func _sampler_for(squad: int, now: float) -> Callable:
 ## and rock are what #97 is about, they come from `MapSettings` over the
 ## wire (D-049), and both sides derive them from the identical numbers.
 var terrain_passable := PackedByteArray()
+
+## The SURFACE FIELD the ground is drawn from, when this client has it.
+##
+## Held beside the sampler rather than instead of it: with the field in
+## hand, `Formation` reads a man's height and his footing from ONE cell
+## derivation (#245) instead of converting the same position to the same
+## hex twice. Empty is the old path, exactly as before, which is what
+## every preview and every test still takes.
+var terrain_surface := PackedFloat32Array()
 
 
 ## Hash of the composition this client will derive from, in the format
@@ -1033,6 +1077,11 @@ func soldier_transforms(squad: int, now: float) -> Array[Transform3D]:
 	var empty: Array[Transform3D] = []
 	if space == null or not curves.has(squad) or not composition.has(squad):
 		return empty
+	# The full-detail path stays on the LOD entry point's shoulders for
+	# the water plane: `soldier_transforms` takes no surface field, so a
+	# ship derived here would fall back to the sampler and the seabed.
+	# Naval stage 8 leaves it, deliberately — the renderer uses the LOD
+	# path, and this one is read by `derive_all`'s cost metric.
 	return Formation.soldier_transforms(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
 		_sampler_for(squad, now), terrain_passable, files_of(squad),
@@ -1055,7 +1104,9 @@ func soldier_transforms_lod(squad: int, now: float, max_soldiers: int) -> Array[
 	return Formation.soldier_transforms_sampled(
 		curves[squad], now, alive_of(squad), shape_of(squad), spacing_of(squad), space,
 		_sampler_for(squad, now), max_soldiers, terrain_passable,
-		files_of(squad), facing_angle_of(squad))
+		files_of(squad), facing_angle_of(squad), terrain_surface,
+		walkway_height_of(squad, now) if tier_of(squad) == DOMAIN_WALL_TOP else 0.0,
+		_water_height_for(squad))
 
 
 ## Total soldiers this client would be drawing — the number that makes
@@ -1184,6 +1235,7 @@ func leave_match() -> void:
 	space = null
 	map_settings = {}
 	terrain_sampler = Callable()
+	terrain_surface = PackedFloat32Array()
 	terrain_passable = PackedByteArray()
 
 	squads = PackedInt32Array()

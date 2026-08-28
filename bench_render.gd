@@ -58,6 +58,97 @@ var _frame_usec: Array = []
 var _draw_calls: Array = []
 var _process_usec: Array = []
 
+## Per-frame phase breakdown of `_refresh_squads`, with a computed
+## residual (#229). The same discipline
+## D-20260818-every-microsecond-of-a-tick-has-a-phase imposed on the
+## server's tick, for the same reason: this frame reported ONE number, so
+## a cost that moved into it could not be attributed to anything and "the
+## client got slower" stayed a sentence rather than a finding.
+var _cull_usec: Array = []
+var _derive_usec: Array = []
+var _upload_usec: Array = []
+var _soldiers_drawn: Array = []
+var _frame_cull := 0
+var _frame_derive := 0
+var _frame_upload := 0
+var _frame_soldiers := 0
+
+## How long the curves being sampled are.
+##
+## Every per-frame sample of a squad's position, heading and facing walks
+## its keyframes, so this is the LENGTH of that loop — and the loop looks
+## exactly like this project's most-repeated defect, which is why it is
+## printed rather than argued about. The answer it gave: **1.3 keyframes
+## mean, 16 worst** per drawn squad at 1,000 squads on the shipped map,
+## because D-003 clips a client's copy to a horizon. A bisection over 1.3
+## elements is not an optimisation, and this number is what said so
+## (D-20260828-every-microsecond-of-a-frame-has-a-phase).
+var _keys_total := 0
+var _keys_worst := 0
+
+## The phases of the WORST frame, kept beside the means. A mean of 110 ms
+## with a 600 ms worst is two different questions, and the second one is
+## the visible freeze.
+var _worst_cpu := 0
+var _worst_split := [0, 0, 0, 0]
+## The frame delta the render passes ease against — the client hands
+## `SoldierMotion` its own `_frame_delta` and a benchmark that passed a
+## constant would price a different walk.
+var _last_delta := 0.016
+
+## The RTW render passes, the activity mix that gives them something to
+## work on, and the caches the client keeps for them (#240).
+var _decorate := true
+var _motion := SoldierMotion.new()
+var _static_deal := {}
+var _drawn := DrawnIndex.new()
+## squad -> "fight" | "work" | "march", decided once at setup. A frame
+## with nothing fighting and nothing working runs the decoration passes
+## over an empty world and prices none of them — the "mechanism correct,
+## shipped numbers do nothing" family, applied to a benchmark.
+var _doing_kind := {}
+var _buildings := 12
+var _node_cells_wanted := 48
+var _boxes: Array = []
+var _building_index := WorldIndex.new()
+var _node_cells: Array = []
+var _node_lookup := {}
+var _node_disc_cache := {}
+var _decorate_usec: Array = []
+var _gather_usec: Array = []
+var _jostle_usec: Array = []
+var _enemy_usec: Array = []
+var _boxes_usec: Array = []
+var _discs_usec: Array = []
+var _frame_decorate := 0
+var _frame_gather := 0
+var _frame_jostle := 0
+var _frame_enemy := 0
+## What the pipeline is actually handed, per drawn squad. The ablation
+## that prices `SquadRender.frame` has to use the real mix or it prices a
+## different battle (#315/#316's evidence page).
+var _frame_boxes_n := 0
+var _frame_discs_n := 0
+var _frame_neighbours_n := 0
+var _frame_pipeline_squads := 0
+var _frame_boxes := 0
+var _frame_discs := 0
+var _mix := [0, 0, 0]
+
+## Where to write the machine-readable record of this run, for
+## `BenchBaseline` to compare against what was recorded (#286). The
+## printed lines stay exactly as they were: a human reads those, and a
+## check reads this.
+var _json_path := ""
+var _rows := {}
+
+## Attribution knobs — see `_ready`. Shipping defaults.
+var _clamp_to_ground := true
+var _sample_terrain := true
+var _draw_every_copy := true
+var _width_override := 0
+var _height_override := 0
+
 var _camera: Camera3D
 var _terrain_root: Node3D
 var _squad_root: Node3D
@@ -80,6 +171,9 @@ var _terrain_sampler := Callable()
 ## sampler because a benchmark that skipped the clamp would price a
 ## derivation the client does not run.
 var _terrain_passable := PackedByteArray()
+## The surface field, handed to `ClientState` so per-man derivation takes
+## the one-cell path the client takes (#245).
+var _terrain_surface := PackedFloat32Array()
 
 
 func _ready() -> void:
@@ -89,6 +183,33 @@ func _ready() -> void:
 	_warmup_frames = int(args.get("warmup", DEFAULT_WARMUP))
 	_with_terrain = int(args.get("terrain", 1)) != 0
 	_camera_height = float(args.get("height", 40.0))
+	# Attribution knobs (#229). Every one defaults to what the client
+	# ships, so an invocation naming none measures exactly what it
+	# measured yesterday — the rule `--ai-profiles` already follows. They
+	# exist because "the frame tripled and four things changed" is not an
+	# attribution: the only honest way to separate four candidates is to
+	# turn each off in an interleaved A/B, which is the shape
+	# D-20260818-every-microsecond-of-a-tick-has-a-phase used on the
+	# server's own unexplained per-squad rise.
+	_clamp_to_ground = int(args.get("clamp", 1)) != 0
+	_sample_terrain = int(args.get("sampler", 1)) != 0
+	_draw_every_copy = int(args.get("copies", 1)) != 0
+	# The RTW render passes (#240). ON by default, because they are what
+	# the client runs: every frame time recorded before this existed was a
+	# floor for a client nobody was timing. `--decorate=0` is the old bare
+	# pipeline, kept for the A/B and for reading a historical number in
+	# the terms it was taken in.
+	_decorate = int(args.get("decorate", 1)) != 0
+	# How much the ground is dressed with. The client's own box and disc
+	# lookups are per drawn squad, so how they SCALE with what a match has
+	# built is a question this benchmark can answer and nothing else can.
+	_buildings = int(args.get("buildings", BENCH_BUILDINGS))
+	_node_cells_wanted = int(args.get("nodes", BENCH_NODE_CELLS))
+	_width_override = int(args.get("cells_wide", 0))
+	_height_override = int(args.get("cells_high", 0))
+	# Where to write this run as data (#286). Empty means "print only",
+	# which is every invocation this recipe had before a baseline existed.
+	_json_path = String(args.get("json", ""))
 
 	# Vsync would cap every measurement at the refresh rate and report a
 	# uniform 16.7 ms whether the frame cost 2 ms or 16 — which reads as
@@ -101,6 +222,15 @@ func _ready() -> void:
 		push_error("bench: could not load maps/default.tres")
 		get_tree().quit(1)
 		return
+	if _width_override > 0 or _height_override > 0:
+		# Duplicated, never mutated in place: the shipped .tres is what
+		# every other recipe loads, and a benchmark that edited it would
+		# be `just profile`'s own blind spot with a new door.
+		_config = _config.duplicate() as MapConfig
+		if _width_override > 0:
+			_config.width = _width_override
+		if _height_override > 0:
+			_config.height = _height_override
 	_space = _config.to_space()
 
 	print("bench: GPU — %s | %s | Godot %s" % [
@@ -145,6 +275,7 @@ func _build_scene() -> void:
 
 	if _with_terrain:
 		_build_terrain()
+	_dress_the_ground()
 
 
 ## The same nine-copy tiling client.gd does (D-035), because it is part of
@@ -166,6 +297,7 @@ func _build_terrain() -> void:
 	_terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(_space, surface, x, z)
 	_terrain_passable = fields.passable
+	_terrain_surface = surface
 
 	# One shared definition (D-066), so the benchmark renders what the game
 	# renders. Textured when generated/ has been built, vertex colour alone
@@ -208,8 +340,11 @@ func _setup_count(count: int) -> void:
 	_sim = SquadSim.new(_space, CurveReplicator.new())
 	_sim.set_passable(TerrainGen.new().passability(_space))
 	_state = ClientState.new()
-	_state.terrain_sampler = _terrain_sampler
-	_state.terrain_passable = _terrain_passable
+	if _sample_terrain:
+		_state.terrain_sampler = _terrain_sampler
+		_state.terrain_surface = _terrain_surface
+	if _clamp_to_ground:
+		_state.terrain_passable = _terrain_passable
 	_now = 0.0
 
 	if count <= 0:
@@ -230,6 +365,25 @@ func _setup_count(count: int) -> void:
 			rng.randi_range(0, _space.width - 1),
 			rng.randi_range(0, _space.height - 1)))
 
+	# One squad in six fights (paired with its neighbour), one in six works
+	# a node, the rest march — a mix with something in every branch of the
+	# render pipeline, which is what stops the decoration passes being
+	# present and never exercised.
+	_doing_kind = {}
+	_mix = [0, 0, 0]
+	for squad in range(_sim.squad_count()):
+		match squad % 6:
+			0:
+				_doing_kind[squad] = "fight"
+				_doing_kind["enemy:%d" % squad] = (squad + 1) % _sim.squad_count()
+				_mix[0] += 1
+			1:
+				_doing_kind[squad] = "work"
+				_mix[1] += 1
+			_:
+				_doing_kind[squad] = "march"
+				_mix[2] += 1
+
 	# Everything is one player's, so `visible_to` returns all of them and
 	# the benchmark measures the full set rather than a fogged subset.
 	var visible := _sim.visible_to(1)
@@ -242,6 +396,130 @@ func _setup_count(count: int) -> void:
 	_now = _sim.time
 
 
+## Buildings and woodland near the camera, so the push-out passes have
+## something to push out of (#240).
+##
+## Synthesised rather than simulated: `client.gd` resolves these from
+## `ClientState`'s known buildings and revealed nodes into exactly this
+## shape — {centre, half, yaw} and a cell id — and what is being measured
+## is the per-MAN cost of testing a man against them, not the per-frame
+## cost of building the list. The counts are printed so a reader knows
+## what mix produced the number.
+const BENCH_BUILDINGS := 12
+const BENCH_NODE_CELLS := 48
+
+
+func _dress_the_ground() -> void:
+	_boxes = []
+	_node_cells = []
+	_node_lookup = {}
+	_node_disc_cache = {}
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 0xD0E5
+	_building_index.begin()
+	for i in range(_buildings):
+		var at := _camera_target + Vector3(
+			rng.randf_range(-60.0, 60.0), 0.0, rng.randf_range(-40.0, 40.0))
+		if _terrain_sampler.is_valid():
+			at.y = _terrain_sampler.call(at.x, at.z)
+		var half := Vector2(rng.randf_range(1.2, 3.0), rng.randf_range(1.2, 3.0))
+		_boxes.append({"centre": at, "half": half,
+			"yaw": rng.randf_range(0.0, TAU),
+			"reach": maxf(half.x, half.y)})
+		# Bucketed exactly as the client buckets its own (#325) — the
+		# benchmark measures the client, so it indexes like the client.
+		_building_index.put(at, _boxes.size() - 1, maxf(half.x, half.y))
+	for i in range(_node_cells_wanted):
+		var cell := _space.world_to_cell(_camera_target + Vector3(
+			rng.randf_range(-70.0, 70.0), 0.0, rng.randf_range(-50.0, 50.0)))
+		var index := _space.index(cell)
+		_node_cells.append(index)
+		_node_lookup[index] = true
+
+
+## What this squad is visibly doing, in `client.gd`'s own `_activity_for`
+## shape. Assigned at setup rather than resolved from the world: the
+## resolver needs a real economy and real enemies, and what this
+## benchmark is pricing is the pipeline the answer feeds, not the answer.
+func _doing_for(squad_id) -> Dictionary:
+	var kind: String = _doing_kind.get(squad_id, "march")
+	if kind == "work":
+		var at := _state.squad_world_position(squad_id, _now)
+		var node_at := _space.to_world(_space.world_to_cell(at))
+		return {
+			"activity": CosmeticOffset.Activity.WORKING, "toward": node_at,
+			"working": 0, "swing": CosmeticOffset.SWING_AMPLITUDE,
+			"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
+			"ring_centre": node_at, "ring_radius": 0.9,
+			"target_key": "n:%d" % _space.index(_space.world_to_cell(at)),
+		}
+	if kind == "fight":
+		return {
+			"activity": CosmeticOffset.Activity.FIGHTING,
+			"toward": _state.squad_world_position(squad_id, _now),
+			"working": AnimationState.NOT_WORKING,
+			"swing": CosmeticOffset.SWING_AMPLITUDE,
+			"is_ranged": false, "interval": 1.0,
+			"enemy_squad": int(_doing_kind.get("enemy:%d" % int(squad_id), -1)),
+		}
+	return {
+		"activity": CosmeticOffset.Activity.IDLE, "toward": Vector3.ZERO,
+		"working": AnimationState.NOT_WORKING,
+		"swing": CosmeticOffset.SWING_AMPLITUDE,
+		"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
+	}
+
+
+## The client's own `_nearby_building_boxes` filter, over the synthesised
+## list — including the torus tax, which is per squad per building and is
+## part of what is being priced.
+func _boxes_near(centre: Vector3, search: float, offsets: Array[Vector3]) -> Array:
+	var out := []
+	for which in _building_index.near(centre, search + 4.0):
+		var entry: Dictionary = _boxes[which]
+		var at: Vector3 = entry["centre"]
+		at += Engagement.aligning_offset(centre, at, offsets)
+		if Vector2(at.x - centre.x, at.z - centre.z).length() <= search + 4.0:
+			out.append({"centre": at, "half": entry["half"], "yaw": entry["yaw"]})
+	return out
+
+
+## The client's own `_nearby_node_discs`, structured the way the client
+## structures it: a bounded disk of CELLS around the squad, the torus tax
+## paid only for cells that actually hold a node, and the per-cell disc
+## list CACHED — `ResourceVisuals.clearance_discs` places a whole stand of
+## trees and would otherwise be re-rolled per squad per frame, which is a
+## cost the client does not pay and a benchmark must not invent.
+func _discs_near(centre: Vector3, radius: float, offsets: Array[Vector3]) -> Array:
+	var out := []
+	if _node_cells.is_empty():
+		return out
+	var centre_cell := _space.world_to_cell(centre)
+	var cells := ceili(radius / (_space.hex_size * TorusSpace.SQRT_3)) + 1
+	# One call for the whole disk, exactly as the client does it (#325).
+	for cell in _space.disk_indices(_space.index(centre_cell), mini(cells, 6)):
+		if not _node_lookup.has(cell):
+			continue
+		var at := _space.to_world(_space.from_index(cell))
+		at += Engagement.aligning_offset(centre, at, offsets)
+		for disc in _cell_discs(cell):
+			out.append({"centre": at + (disc["offset"] as Vector3),
+				"radius": float(disc["radius"])})
+	return out
+
+
+## `client.gd`'s `_node_cell_discs`: the stand a cell grows, resolved once
+## and kept. Same call, same cache shape.
+func _cell_discs(cell: int) -> Array:
+	var cached = _node_disc_cache.get(cell)
+	if cached != null:
+		return cached
+	var discs := ResourceVisuals.clearance_discs(
+		0, TerrainGen.Biome.FOREST, [], 0.6, cell, _space.hex_size)
+	_node_disc_cache[cell] = discs
+	return discs
+
+
 ## A formation's own on-screen extent, in world units, for the cull test —
 ## the client takes it from `Formation.footprint`, and one number close to
 ## a shipped squad's radius is enough here because what is being measured
@@ -249,10 +527,38 @@ func _setup_count(count: int) -> void:
 const SQUAD_CULL_RADIUS := 4.0
 
 
-## Exactly what client.gd's _refresh_squads does, minus the ghost pass
-## (this harness never conceals anything).
+## What client.gd's _refresh_squads does — cull, derive, upload — minus
+## the ghost pass (this harness never conceals anything) and minus every
+## RENDER PASS the RTW battle programme added.
+##
+## That second omission is a defect in this file and is filed as #240: the
+## client also runs the cosmetic duels, the corpse layer, the survivor
+## easing in `soldier_motion.gd`, the neighbour jostle and the
+## building/tree push-outs, all per drawn man, and none of them are here.
+## (Named by FILE rather than by class on purpose: `test_tier_three.gd`
+## scans every script for the class's identifier and this one is not on
+## its list, which is the guard working.) So every
+## number this benchmark prints is a FLOOR for the shipped client, and
+## this comment says so rather than claiming the equality it used to
+## claim. Fixing it changes what every previously recorded number means,
+## which is why it is an issue and not a patch.
 func _refresh_squads() -> void:
+	_drawn.begin()
 	_visible_squads = 0
+	_frame_cull = 0
+	_frame_derive = 0
+	_frame_upload = 0
+	_frame_decorate = 0
+	_frame_gather = 0
+	_frame_jostle = 0
+	_frame_enemy = 0
+	_frame_boxes_n = 0
+	_frame_discs_n = 0
+	_frame_neighbours_n = 0
+	_frame_pipeline_squads = 0
+	_frame_boxes = 0
+	_frame_discs = 0
+	_frame_soldiers = 0
 	var offsets := _space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
 	var target := _camera_target
@@ -273,6 +579,7 @@ func _refresh_squads() -> void:
 		# Same cull-before-derive the client does (D-045), so this measures
 		# the client's real cost rather than a version of it without the
 		# one optimisation that matters.
+		var cull_at := Time.get_ticks_usec()
 		var centre := _state.squad_world_position(squad_id, _now)
 		# Every visible lattice copy, exactly as the client draws it
 		# (D-20260818-entities-are-drawn-at-every-visible-copy). The whole
@@ -281,13 +588,115 @@ func _refresh_squads() -> void:
 		# be measuring the version of the client that does not ship.
 		var drawn := RenderCull.visible_offsets_of_extent(
 			_camera, offsets, centre, SQUAD_CULL_RADIUS, 192.0, viewport_size)
+		if not _draw_every_copy and drawn.size() > 1:
+			# The pre-D-20260818 client, for the A/B only: ONE copy drawn,
+			# whichever the old rule picked. Never a default — that client
+			# had armies vanishing at the seam, and the point here is to
+			# price the copies, not to bring the bug back.
+			var one: Array[Vector3] = [RenderCull.nearest_offset(drawn, centre, target)]
+			drawn = one
+		_frame_cull += Time.get_ticks_usec() - cull_at
+
+		var upload_at := Time.get_ticks_usec()
 		unit.set_lattice_offsets(drawn)
+		_frame_upload += Time.get_ticks_usec() - upload_at
 		if drawn.is_empty():
 			continue
 		_visible_squads += 1
 		var offset := RenderCull.nearest_offset(drawn, centre, target)
-		unit.set_slot_transforms(_state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset)))
+		var curve: StateCurve = _state.curves.get(squad_id, null)
+		if curve != null:
+			_keys_total += curve.key_count()
+			_keys_worst = maxi(_keys_worst, curve.key_count())
+
+		var derive_at := Time.get_ticks_usec()
+		var transforms := _state.soldier_transforms_lod(
+			squad_id, _now, _detail_for(centre + offset))
+		_frame_derive += Time.get_ticks_usec() - derive_at
+		_frame_soldiers += transforms.size()
+
+		# The RENDER PASSES, through the same `SquadRender.frame` the
+		# client runs (#240). Without them this benchmark measured a
+		# client missing its duels, its corpses, its easing, its jostle
+		# and its building/tree push-outs, while its own comment claimed
+		# otherwise — the `just profile`-vs-live-server lesson (D-043
+		# criterion 11) in instrument form.
+		var decorate_at := Time.get_ticks_usec()
+		var clip := 0
+		if _decorate:
+			# GATHERING is the client's half — what the squad is doing,
+			# which enemy men to pair against, which boxes and discs and
+			# foreign men are near. Timed apart from the pipeline because
+			# a 200 ms phase with one number is the very complaint #240
+			# is about, one level down.
+			var gather_at := Time.get_ticks_usec()
+			var doing := _doing_for(squad_id)
+			# The OPPONENT's drawn men, which is a second full derivation
+			# of a squad that was very likely derived already this frame
+			# (#317's attribution said derivation is the expensive
+			# arithmetic, so deriving one twice is worth knowing about).
+			var enemy_at := Time.get_ticks_usec()
+			var enemy: Array[Transform3D] = []
+			if int(doing.get("enemy_squad", -1)) >= 0:
+				enemy = _state.soldier_transforms_lod(
+					int(doing["enemy_squad"]), _now, _detail_for(centre + offset))
+			_frame_enemy += Time.get_ticks_usec() - enemy_at
+			var speed := _state.squad_speed(squad_id, _now)
+			var neighbours := PackedVector3Array()
+			# The cross-squad JOSTLE gather, timed on its own because it
+			# was the one part of a frame that was QUADRATIC in drawn
+			# squads (#262). Through `DrawnIndex` now, exactly as the
+			# client does it — the whole point of #240 is that this
+			# benchmark runs the client's code rather than a copy of it.
+			var jostle_at := Time.get_ticks_usec()
+			if speed <= SquadRender.MOVING_SPEED_EPSILON:
+				neighbours = _drawn.neighbours_of(
+					squad_id, centre + offset, SQUAD_CULL_RADIUS)
+			_frame_jostle += Time.get_ticks_usec() - jostle_at
+			var boxes_at := Time.get_ticks_usec()
+			var boxes := _boxes_near(centre, SQUAD_CULL_RADIUS + 6.0, offsets)
+			_frame_boxes += Time.get_ticks_usec() - boxes_at
+			var discs_at := Time.get_ticks_usec()
+			var discs := _discs_near(centre, SQUAD_CULL_RADIUS, offsets)
+			_frame_discs += Time.get_ticks_usec() - discs_at
+			_frame_gather += Time.get_ticks_usec() - gather_at
+
+			_frame_boxes_n += boxes.size()
+			_frame_discs_n += discs.size()
+			_frame_neighbours_n += neighbours.size()
+			_frame_pipeline_squads += 1
+			var rendered := SquadRender.frame({
+				"transforms": transforms,
+				"doing": doing,
+				"enemy_transforms": enemy,
+				"deal": _static_deal.get(squad_id, {}),
+				"offsets": offsets,
+				"boxes": boxes,
+				"discs": discs,
+				"terrain_sampler": _state.terrain_sampler,
+				"motion": _motion,
+				"squad_id": squad_id,
+				"delta": _last_delta,
+				"now": _now,
+				"speed": speed,
+				"pursuit_speed": 1.35,
+				"neighbours": neighbours,
+				"routed": false,
+				"model_id": &"",
+			})
+			transforms = rendered["transforms"]
+			clip = int(rendered["clip"])
+			_static_deal[squad_id] = rendered["deal"]
+			_drawn.put(squad_id, centre + offset, SQUAD_CULL_RADIUS,
+				rendered["drawn_men"])
+		_frame_decorate += Time.get_ticks_usec() - decorate_at
+
+		upload_at = Time.get_ticks_usec()
+		unit.set_slot_transforms(transforms)
+		if _decorate:
+			unit.set_clip_data(int(squad_id), clip,
+				_state.squad_speed(squad_id, _now), _motion.speeds(squad_id))
+		_frame_upload += Time.get_ticks_usec() - upload_at
 
 
 ## Mirrors client.gd's `_detail_for` and its LOD_TIERS. Duplicated
@@ -313,10 +722,28 @@ func _process(delta: float) -> void:
 		_frame_usec.clear()
 		_draw_calls.clear()
 		_process_usec.clear()
+		_cull_usec.clear()
+		_derive_usec.clear()
+		_upload_usec.clear()
+		_soldiers_drawn.clear()
+		_decorate_usec.clear()
+		_gather_usec.clear()
+		_jostle_usec.clear()
+		_enemy_usec.clear()
+		_boxes_usec.clear()
+		_discs_usec.clear()
+		_motion = SoldierMotion.new()
+		_static_deal = {}
+		_drawn = DrawnIndex.new()
+		_keys_total = 0
+		_keys_worst = 0
+		_worst_cpu = 0
+		_worst_split = [0, 0, 0, 0]
 		_phase = Phase.WARMUP
 		return
 
 	_now += delta
+	_last_delta = delta
 
 	var started := Time.get_ticks_usec()
 	_refresh_squads()
@@ -335,6 +762,19 @@ func _process(delta: float) -> void:
 	# is derivation or the GPU.
 	_frame_usec.append(int(delta * 1_000_000.0))
 	_process_usec.append(cpu)
+	_cull_usec.append(_frame_cull)
+	_derive_usec.append(_frame_derive)
+	_upload_usec.append(_frame_upload)
+	_soldiers_drawn.append(_frame_soldiers)
+	_decorate_usec.append(_frame_decorate)
+	_gather_usec.append(_frame_gather)
+	_jostle_usec.append(_frame_jostle)
+	_enemy_usec.append(_frame_enemy)
+	_boxes_usec.append(_frame_boxes)
+	_discs_usec.append(_frame_discs)
+	if cpu > _worst_cpu:
+		_worst_cpu = cpu
+		_worst_split = [_frame_cull, _frame_derive, _frame_upload, _frame_decorate]
 	_draw_calls.append(int(RenderingServer.get_rendering_info(
 		RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)))
 
@@ -344,6 +784,7 @@ func _process(delta: float) -> void:
 		_index += 1
 		if _index >= _counts.size():
 			_phase = Phase.DONE
+			_write_json()
 			get_tree().quit(0)
 		else:
 			_phase = Phase.SETUP
@@ -369,6 +810,84 @@ func _report(count: int) -> void:
 	for squad_id in _state.live_squad_ids():
 		soldiers += _state.alive_of(squad_id)
 
+	# The breakdown, on its own line so the CSV keeps the shape every
+	# previous run was quoted in. `other` is the RESIDUAL — the part of
+	# our own per-frame work none of the three phases claimed — printed
+	# rather than left implicit, because a breakdown whose parts do not
+	# add up to the whole is a breakdown that can hide the thing being
+	# looked for.
+	var cull := _mean(_cull_usec)
+	var derive := _mean(_derive_usec)
+	var upload := _mean(_upload_usec)
+	var cpu_mean := float(cpu_total) / float(maxi(_process_usec.size(), 1))
+	var derived := _mean(_soldiers_drawn)
+	var decorate := _mean(_decorate_usec)
+	var gather := _mean(_gather_usec)
+	var jostle := _mean(_jostle_usec)
+	var enemy := _mean(_enemy_usec)
+	var boxes := _mean(_boxes_usec)
+	var discs := _mean(_discs_usec)
+	print("bench: phases squads=%d cpu=%.2f cull=%.2f derive=%.2f decorate=%.2f upload=%.2f other=%.2f ms/frame; drawn=%.0f soldiers/frame at %.2f us each; clamp=%d sampler=%d copies=%d decorate=%d" % [
+		count, cpu_mean / 1000.0, cull / 1000.0, derive / 1000.0,
+		decorate / 1000.0, upload / 1000.0,
+		(cpu_mean - cull - derive - decorate - upload) / 1000.0,
+		derived, (derive + decorate) / maxf(derived, 1.0),
+		1 if _clamp_to_ground else 0,
+		1 if _sample_terrain else 0,
+		1 if _draw_every_copy else 0,
+		1 if _decorate else 0])
+	if _decorate:
+		# The MIX, because the decoration passes cost what the world gives
+		# them: a frame with nothing fighting prices no duels. A number
+		# quoted without this is a number about a different battle.
+		print("bench: mix squads=%d fighting=%d working=%d marching=%d; %d buildings, %d node cells near the camera" % [
+			count, _mix[0], _mix[1], _mix[2], _boxes.size(), _node_cells.size()])
+		print("bench: decorate squads=%d gather=%.2f (jostle %.2f) pipeline=%.2f ms/frame (%.2f us per drawn man)" % [
+			count, gather / 1000.0, jostle / 1000.0,
+			(decorate - gather) / 1000.0, decorate / maxf(derived, 1.0)])
+		# Inside the gather. `rest` is the residual — activity resolution
+		# and the squad's own speed — printed rather than left implicit,
+		# for the same reason every other phase line here carries one.
+		print("bench: handed squads=%d %.1f boxes, %.1f discs, %.1f foreign men per drawn squad (%d squads through the pipeline)" % [
+			count,
+			float(_frame_boxes_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			float(_frame_discs_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			float(_frame_neighbours_n) / maxf(float(_frame_pipeline_squads), 1.0),
+			_frame_pipeline_squads])
+		print("bench: gather squads=%d enemy=%.2f boxes=%.2f discs=%.2f jostle=%.2f rest=%.2f ms/frame" % [
+			count, enemy / 1000.0, boxes / 1000.0, discs / 1000.0,
+			jostle / 1000.0,
+			(gather - enemy - boxes - discs - jostle) / 1000.0])
+	var frames := float(maxi(_cull_usec.size(), 1))
+	var keys_per_squad := float(_keys_total) / frames 		/ maxf(float(_visible_squads), 1.0)
+	print("bench: curves squads=%d keys_mean=%.1f keys_worst=%d per drawn squad" % [
+		count, keys_per_squad, _keys_worst])
+	print("bench: worst-frame squads=%d cpu=%.2f cull=%.2f derive=%.2f decorate=%.2f upload=%.2f other=%.2f ms" % [
+		count, float(_worst_cpu) / 1000.0,
+		float(_worst_split[0]) / 1000.0, float(_worst_split[1]) / 1000.0,
+		float(_worst_split[3]) / 1000.0, float(_worst_split[2]) / 1000.0,
+		float(_worst_cpu - _worst_split[0] - _worst_split[1]
+			- _worst_split[2] - _worst_split[3]) / 1000.0])
+
+	_rows[str(count)] = {
+		"soldiers": soldiers,
+		"drawn": int(round(derived)),
+		"squads_drawn": _visible_squads,
+		"draw_calls": calls,
+		"keys_worst": _keys_worst,
+		"fighting": _mix[0],
+		"working": _mix[1],
+		"marching": _mix[2],
+		"cpu_ms": cpu_mean / 1000.0,
+		"wall_ms": mean / 1000.0,
+		"worst_ms": float(worst) / 1000.0,
+		"cull_ms": cull / 1000.0,
+		"derive_ms": derive / 1000.0,
+		"decorate_ms": decorate / 1000.0,
+		"upload_ms": upload / 1000.0,
+		"jostle_ms": jostle / 1000.0,
+	}
+
 	print("bench: %d,%d,%.2f,%.2f,%.1f,%d,%.2f,%d" % [
 		count, soldiers,
 		mean / 1000.0,
@@ -378,6 +897,58 @@ func _report(count: int) -> void:
 		float(cpu_total) / float(maxi(_process_usec.size(), 1)) / 1000.0,
 		_visible_squads,
 	])
+
+
+## This run, as data: what it counted, what it timed, and what it was
+## measured against. The FINGERPRINT rides along because a number without
+## the tree it was taken on is the thing #286 is about — a recorded
+## figure nobody can tell is stale.
+func _write_json() -> void:
+	if _json_path == "":
+		return
+	var record := {
+		"version": BenchBaseline.VERSION,
+		"recorded": Time.get_date_string_from_system(),
+		"adapter": RenderingServer.get_video_adapter_name(),
+		"vendor": RenderingServer.get_video_adapter_vendor(),
+		"headless": DisplayServer.get_name() == "headless",
+		# The CULL reads the viewport, so every drawn count is a count AT
+		# THIS SIZE. Recorded so a comparison can refuse rather than blame
+		# the renderer for a runner with a different window.
+		"viewport": "%dx%d" % [
+			get_viewport().get_visible_rect().size.x,
+			get_viewport().get_visible_rect().size.y],
+		"frames": _frames_to_measure,
+		"camera_height": _camera_height,
+		"knobs": {
+			"clamp": 1 if _clamp_to_ground else 0,
+			"sampler": 1 if _sample_terrain else 0,
+			"copies": 1 if _draw_every_copy else 0,
+			"decorate": 1 if _decorate else 0,
+		},
+		"fingerprint": BenchBaseline.fingerprint(),
+		"rows": _rows,
+	}
+	var path := _json_path
+	var directory := path.get_base_dir()
+	if directory != "" and not DirAccess.dir_exists_absolute(directory):
+		DirAccess.make_dir_recursive_absolute(directory)
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	if handle == null:
+		push_error("bench: could not write %s" % path)
+		return
+	handle.store_string(JSON.stringify(record, "\t", true))
+	handle.close()
+	print("bench: wrote %s" % path)
+
+
+static func _mean(values: Array) -> float:
+	if values.is_empty():
+		return 0.0
+	var total := 0.0
+	for value in values:
+		total += float(value)
+	return total / float(values.size())
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:

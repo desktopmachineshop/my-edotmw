@@ -175,15 +175,22 @@ func test_the_simulation_never_reads_a_duel_and_the_client_draws_one() -> void:
 		if text.contains("CosmeticDuel"):
 			readers.append(path_str)
 
-	assert_true(readers.has("res://client.gd"),
-		"client.gd must actually run the duel — every other test here can "
-		+ "pass while nothing on screen fights (the D-055 caller-exists rule)")
+	assert_true(readers.has("res://squad_render.gd"),
+		"the render pipeline must actually run the duel — every other test "
+		+ "here can pass while nothing on screen fights (the D-055 "
+		+ "caller-exists rule). The call moved out of client.gd into "
+		+ "squad_render.gd when the benchmark had to run it too (#240); "
+		+ "what the rule cares about is that SOMETHING on the render path "
+		+ "calls it.")
 	for reader in readers:
 		assert_true(String(reader) == "res://client.gd"
+			or String(reader) == "res://squad_render.gd"
+			or String(reader) == "res://bench_render.gd"
 			or String(reader) == "res://duel_preview.gd",
-			("only the render path and its preview may read CosmeticDuel — "
-			+ "%s reading it means a cosmetic value is one call from an "
-			+ "outcome, which is D-006's revisit trigger firing") % reader)
+			("only the render path, the benchmark that measures it and its "
+			+ "preview may read CosmeticDuel — %s reading it means a "
+			+ "cosmetic value is one call from an outcome, which is D-006's "
+			+ "revisit trigger firing") % reader)
 
 
 func _all_scripts(path: String, out: Array) -> void:

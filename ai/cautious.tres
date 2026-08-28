@@ -6,7 +6,7 @@
 script = ExtResource("1_aiprof")
 id = &"cautious"
 display_name = "Cautious"
-summary = "Builds an economy well past the point of comfort, fields an army slowly, and sends it in twos. Something to learn the game against — and it still plays by every rule you do."
+summary = "Builds an economy well past the point of comfort, fields an army slowly, and sends it in twos. Something to learn the game against â€” and it still plays by every rule you do."
 order = 0
 is_default = false
 think_interval = 2.0
