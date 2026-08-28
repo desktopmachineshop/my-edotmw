@@ -30,11 +30,9 @@ extends GutTest
 ##   ordering and not an absence of one.
 ## - **the siege ship** buys reach and `damage_vs_buildings`, both
 ##   unpriced. It is exempt from the warship comparison and asserted
-##   against those instead, because "exempt" with nothing behind it is the
-##   vacuous pass D-022's audit block was written about. The design names
-##   a DIFFERENT property — "outranges every shore tower" — and that one
-##   is false at shipped numbers (11.0 against the tower's 15.6); it is
-##   filed rather than asserted. See that test's own comment.
+##   against the property the design NAMES — that it outranges a shore
+##   tower — because "exempt" with nothing behind it is the vacuous pass
+##   D-022's audit block was written about.
 ##
 ## ## The relationship to `tests/test_power_budget.gd`
 ##
@@ -260,58 +258,76 @@ func test_transports_are_ordered_by_what_they_carry_per_resource_point() -> void
 		"the fortification civ should move them in the dearest hull")
 
 
-func test_the_siege_ship_is_exempt_for_a_property_it_actually_has() -> void:
+func test_the_siege_ship_outranges_every_shore_defence() -> void:
 	# It fails "price buys power" on purpose — it is the dearest hull in
 	# the game at RP 210 and its V is under every warship's. What it buys
 	# is reach and demolition, neither of which V prices, so the exemption
 	# is asserted against those instead of waved through.
 	#
-	# THE FIRST RUN OF THIS TEST FAILED, and the design was what was
-	# wrong: §5.3 justifies the exemption with "range 11.0 outranges every
-	# shore tower" and `buildings/tower.tres` reaches 15.6. That is the
-	# design's own instruction working — "a test must recompute this, not
-	# quote it".
+	# THE FIRST RUN OF THIS TEST FAILED AND THE DESIGN WAS WHAT WAS WRONG
+	# (#311). §5.3 justified the exemption with "range 11.0 outranges
+	# every shore tower" and `buildings/tower.tres` reaches 15.6, so it
+	# outranged neither the tower nor the town centre. The DATA was
+	# corrected rather than the claim — see the .tres and #311 for why the
+	# alternative was rejected — and this is now the design's own claim,
+	# asserted.
+	#
+	# Against EVERY armed building rather than against the tower by name:
+	# the claim is "a shore defence cannot answer it", and pinning that to
+	# one def would go quietly false the day something outranges a tower.
 	var def := UnitRoster.by_id(SIEGE_SHIP)
 	assert_not_null(def, "the siege ship must be in the roster")
 
-	# The design names "outranges every shore tower" as the property. IT
-	# DOES NOT, at shipped numbers — the tower reaches 15.6 and this hull
-	# 11.0 — and that is filed against the design rather than fixed by
-	# quietly moving a balance number nobody authorised. See the PR.
-	#
-	# What is asserted here is what the hull DEMONSTRABLY has, because an
-	# exemption asserted against a false property is worse than none: it
-	# is the longest reach on the water by a wide margin, and it ties the
-	# longest reach in the entire unit roster.
-	var longest_afloat := 0.0
-	for row in _ships():
-		if StringName(row["id"]) == SIEGE_SHIP:
-			continue
-		longest_afloat = maxf(longest_afloat, float(row["def"].attack_range))
-	assert_gt(def.attack_range, longest_afloat,
-		"the siege ship must outrange every other hull (%.1f vs %.1f)" % [
-			def.attack_range, longest_afloat])
+	var longest := 0.0
+	var longest_id := ""
+	for building in BuildingSim.all_defs():
+		if building.damage <= 0.0:
+			continue  # not a defence; it does not answer anything
+		if building.attack_range > longest:
+			longest = building.attack_range
+			longest_id = String(building.id)
+	assert_gt(longest, 0.0, "Setup: something on shore must shoot back")
+	assert_gt(def.attack_range, longest,
+		"the siege ship's exemption is that it outranges a shore defence — %.1f against %s's %.1f" % [
+			def.attack_range, longest_id, longest])
 
-	var longest_ashore := 0.0
-	for other in UnitRoster.load_all():
-		if other.id == SIEGE_SHIP or SEA_ROLES.has(other.archetype):
-			continue
-		longest_ashore = maxf(longest_ashore, other.attack_range)
-	assert_gte(def.attack_range, longest_ashore,
-		"and reach at least as far as anything on land (%.1f vs %.1f)" % [
-			def.attack_range, longest_ashore])
+	# And by enough to survive a one-cell positioning error, which is what
+	# makes the standoff a capability rather than a coin toss: a hex is
+	# `SQRT_3` across at the shipped `hex_size` of 1.0.
+	assert_gte(def.attack_range - longest, TorusSpace.SQRT_3,
+		"the standoff must clear a whole hex (%.1f - %.1f = %.2f, need %.2f)" % [
+			def.attack_range, longest, def.attack_range - longest, TorusSpace.SQRT_3])
 
 	var ordinary := UnitDef.new().damage_vs_buildings
 	assert_gt(def.damage_vs_buildings, ordinary,
 		"and that it wrecks what it reaches, against the %.2f default" % ordinary)
 
 	# The exemption has to be NARROW, or it is a hole. It is the only hull
-	# with a building bonus above the default.
+	# with a building bonus above the default, and the only one that
+	# outranges the shore.
 	for row in _ships():
 		if StringName(row["id"]) == SIEGE_SHIP:
 			continue
 		assert_eq(float(row["def"].damage_vs_buildings), ordinary,
 			"%s also carries a siege bonus — the exemption covers one hull" % row["id"])
+		assert_lt(float(row["def"].attack_range), longest,
+			"%s also outranges the shore — the exemption covers one hull" % row["id"])
+
+
+func test_correcting_the_siege_ships_reach_moved_no_screen_row() -> void:
+	# Why #311 was fixed in the DATA and not by re-wording: `attack_range`
+	# is not an input to V, so raising it moves no V, no RP and no V/RP —
+	# every figure §5.3 prints is untouched, and the two rules above still
+	# decide the roster. A fix that changed the screen would have needed
+	# the whole roster re-derived instead.
+	var def := UnitRoster.by_id(SIEGE_SHIP)
+	assert_not_null(def)
+	var dps := float(def.squad_size) * def.damage / maxf(def.attack_interval, 0.001)
+	var ehp := float(def.squad_size) * def.health
+	assert_almost_eq(sqrt(dps * ehp), 126.6, 0.1,
+		"V is unchanged by the reach correction")
+	var rp := float(def.cost_food + def.cost_wood) 		+ 1.5 * float(def.cost_gold + def.cost_stone)
+	assert_almost_eq(rp, 210.0, 0.01, "and so is its price")
 
 
 # --- the roster keeps the rules the land roster already lives under ---
