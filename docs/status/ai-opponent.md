@@ -76,3 +76,47 @@ of #93 — defence, target selection by weakness, composition off the
 counter triangle, retreat on morale, formations, walls; and a pacing
 target derived from D-056's 1–2 hour match length rather than emerging
 from a cooldown.
+
+**And the retry had nowhere else to go (#217, 2026-08-28).** An AI seat
+whose SPAWN CELL held a resource node never founded a town centre — not
+late, ever. `_found_town` sited itself at `ClientState.spawn_cell_of`,
+which never moves, so every five-second retry re-sent the identical
+refused order for the whole match: `buildings=0`, `peak_wood=200` against
+a 150-wood hall, eliminated as soon as its two opening squads died. It
+now walks outward from home through `TorusSpace.disk_offsets`
+(nearest-first, D-067), skipping cells it can SEE are blocked and
+advancing one acceptable cell per refusal.
+
+Four things worth carrying:
+
+- **`docs/status/m6.md`'s paraphrase of D-107 — "It retries against a
+  different site now" — was FALSE when written and is true now.** D-107's
+  own entry never claimed it; the summary invented the half that would
+  have made the fix complete. Same family as the doc-comment defects
+  CLAUDE.md lists, one level up: **a status doc describing behaviour is
+  not evidence of it either.**
+- **The AI already knew how to vary a site — just not for the hall.**
+  `_raise_buildings` has used `_site_beside` since it was written, and
+  the repro log shows a *barracks* refused and immediately placed
+  elsewhere. The town centre was the only build in the file retrying a
+  constant cell, which is what makes this an omission rather than a
+  design.
+- **The retry advances on every attempt, not on a refusal it recognises.**
+  The AI cannot model every rule the server enforces — `terrain_passable`
+  is set by `client.gd` and never for an AI seat, so steep ground and
+  water are not on this client at all, and an enemy's no-build claim may
+  be under fog. Skipping only what it KNOWS would rebuild #217 for every
+  reason it does not. The node check is an optimisation that makes the
+  common case converge on the first attempt; the widening is what makes
+  it converge at all.
+- **The loop was invisible, not absent**, because `_report_refusals`
+  dedupes on message text: one `AI_REFUSED` line stood for a spin that
+  ran the whole match. Worth knowing before reading any AI log as a
+  count of anything.
+
+**And it means ladder numbers can contain matches nobody played, again.**
+A seat that never founds is eliminated and the harness reports a decisive
+win with plausible `AI_STATS` for the winner — D-107's own failure
+arriving through a different door, since the match *did* leave the lobby
+and the started-check passes. Read any strength result taken before this
+with the founding rate beside it.
