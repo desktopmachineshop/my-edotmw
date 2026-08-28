@@ -703,6 +703,10 @@ gen-formation-icons: _import
     # Waits for room on the machine every other agent is also using. $$ is
     # THIS recipe's shell and the lock is stamped with it — a lock stamped
     # with anything shorter-lived is reaped while its job still runs.
+    #
+    # This recipe launches Godot, so it is gated for the same reason as
+    # every other one that does: work on the machine the ledger cannot see
+    # is #153's under-counting arriving through a different door.
     gate="$(bash host-gate.sh acquire medium 'gen-formation-icons' $$)"
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
