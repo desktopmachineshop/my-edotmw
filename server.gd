@@ -773,7 +773,7 @@ func _print_summary(reason: String) -> void:
 	# another one, because it needs conditions of its own (#111).
 	print(_memory_line(OS.get_static_memory_usage(), OS.get_static_memory_peak_usage()))
 
-	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d" % [
+	print("server: final (%s) — ticks=%d time=%.1fs squads=%d bytes=%d packets=%d fields=%d curves_rebuilt=%d dropped_ticks=%d us/squad=%.2f (%s) vision_rebuilds=%d worst_tick=%.1fms field_waits=%d attack_moves_resumed=%d" % [
 		reason, _sim.tick_count, _sim.time, _sim.squad_count(),
 		_sim.replicator.bytes_sent_total, _sim.replicator.packets_sent_total,
 		_sim.fields_built, _sim.curves_rebuilt, _ticks_dropped,
@@ -782,6 +782,12 @@ func _print_summary(reason: String) -> void:
 		_sim.vision_rebuilds,
 		float(_worst_tick_usec) / 1000.0,
 		_sim.field_waits,
+		# ZERO in a match with fighting in it means D-034's halt is
+		# permanent again (#249) — the counter exists to say so, and a
+		# counter nothing prints is the declared-and-unread defect this
+		# project keeps paying for, which would be an unusually poor way
+		# to instrument a fix for exactly that family.
+		_sim.attack_moves_resumed,
 	])
 	print("server: transport — peak RTT %.1fms, peak loss %.3f%%, min throttle %.2f of 1.00, all reliable on channel 0" % [
 		_peak_rtt_ms, _peak_loss_fraction * 100.0,
