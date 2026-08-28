@@ -66,6 +66,7 @@ const REPORTED_TIMES := ["cpu_ms", "wall_ms", "cull_ms", "derive_ms",
 const RENDER_PATH_SOURCES := [
 	"res://formation.gd",
 	"res://squad_render.gd",
+	"res://drawn_index.gd",
 	"res://render_cull.gd",
 	"res://client_state.gd",
 	"res://primitive_unit.gd",

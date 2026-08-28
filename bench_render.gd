@@ -101,7 +101,7 @@ var _last_delta := 0.016
 var _decorate := true
 var _motion := SoldierMotion.new()
 var _static_deal := {}
-var _drawn_cache := {}
+var _drawn := DrawnIndex.new()
 ## squad -> "fight" | "work" | "march", decided once at setup. A frame
 ## with nothing fighting and nothing working runs the decoration passes
 ## over an empty world and prices none of them — the "mechanism correct,
@@ -516,6 +516,7 @@ const SQUAD_CULL_RADIUS := 4.0
 ## claim. Fixing it changes what every previously recorded number means,
 ## which is why it is an issue and not a patch.
 func _refresh_squads() -> void:
+	_drawn.begin()
 	_visible_squads = 0
 	_frame_cull = 0
 	_frame_derive = 0
@@ -602,26 +603,15 @@ func _refresh_squads() -> void:
 					int(doing["enemy_squad"]), _now, _detail_for(centre + offset))
 			var speed := _state.squad_speed(squad_id, _now)
 			var neighbours := PackedVector3Array()
-			# The cross-squad JOSTLE gather, timed on its own because it is
-			# the one part of a frame that is QUADRATIC in drawn squads: a
-			# standing squad walks every other drawn squad's cached men.
-			# D-20260821 bounded it for "72-squad scale"; this is the
-			# instrument that can say what it costs at D-018's.
+			# The cross-squad JOSTLE gather, timed on its own because it
+			# was the one part of a frame that was QUADRATIC in drawn
+			# squads (#262). Through `DrawnIndex` now, exactly as the
+			# client does it — the whole point of #240 is that this
+			# benchmark runs the client's code rather than a copy of it.
 			var jostle_at := Time.get_ticks_usec()
 			if speed <= SquadRender.MOVING_SPEED_EPSILON:
-				var own_at := centre + offset
-				for other_id in _drawn_cache:
-					var record: Dictionary = _drawn_cache[other_id]
-					if other_id == squad_id:
-						continue
-					if (record["centre"] as Vector3).distance_to(own_at) \
-							> SQUAD_CULL_RADIUS + float(record["radius"]) + 1.0:
-						continue
-					var men: PackedVector3Array = record["men"]
-					for k in range(men.size()):
-						if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() \
-								<= SQUAD_CULL_RADIUS + 1.0:
-							neighbours.append(men[k])
+				neighbours = _drawn.neighbours_of(
+					squad_id, centre + offset, SQUAD_CULL_RADIUS)
 			_frame_jostle += Time.get_ticks_usec() - jostle_at
 			var boxes := _boxes_near(centre, SQUAD_CULL_RADIUS + 6.0, offsets)
 			var discs := _discs_near(centre, SQUAD_CULL_RADIUS, offsets)
@@ -649,8 +639,8 @@ func _refresh_squads() -> void:
 			transforms = rendered["transforms"]
 			clip = int(rendered["clip"])
 			_static_deal[squad_id] = rendered["deal"]
-			_drawn_cache[squad_id] = {"men": rendered["drawn_men"],
-				"centre": centre + offset, "radius": SQUAD_CULL_RADIUS}
+			_drawn.put(squad_id, centre + offset, SQUAD_CULL_RADIUS,
+				rendered["drawn_men"])
 		_frame_decorate += Time.get_ticks_usec() - decorate_at
 
 		upload_at = Time.get_ticks_usec()
@@ -693,7 +683,7 @@ func _process(delta: float) -> void:
 		_jostle_usec.clear()
 		_motion = SoldierMotion.new()
 		_static_deal = {}
-		_drawn_cache = {}
+		_drawn = DrawnIndex.new()
 		_keys_total = 0
 		_keys_worst = 0
 		_worst_cpu = 0

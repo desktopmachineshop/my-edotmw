@@ -583,6 +583,22 @@ bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         PHASES with a residual, and the MIX that produced
                         it — a frame with nothing fighting prices no
                         duels.
+drawn_index.gd           Where every squad's men were DRAWN last frame,
+                        indexed so the cross-squad jostle finds its
+                        neighbours without walking the match
+                        (D-20260828-the-jostle-looks-where-the-men-are,
+                        #262). The walk it replaces was QUADRATIC in
+                        drawn squads — 152 ms of a 387 ms frame at 630 of
+                        them — and it fired for STANDING squads, i.e.
+                        once the battle started. A uniform grid over
+                        WORLD positions, deliberately NOT a torus disk
+                        scan: these are lattice COPIES (D-20260818), and
+                        normalising them would merge what the renderer
+                        keeps separate. Per-soldier render state, legal
+                        under D-006 clause 2 as amended, bounded by the
+                        squads drawn (`begin` empties it every frame) and
+                        readable only by a drawing surface — a test scans
+                        for that.
 bench_baseline.gd        The RECORDED render baseline and what a fresh
                         run may differ from it by (D-20260828, #286).
                         COUNTS gate — soldiers, drawn men, drawn squads,
