@@ -623,6 +623,22 @@ bench_render.gd          Client render benchmark (D-045). NATIVE — it
                         PHASES with a residual, and the MIX that produced
                         it — a frame with nothing fighting prices no
                         duels.
+bench_baseline.gd        The RECORDED render baseline and what a fresh
+                        run may differ from it by (D-20260828, #286).
+                        COUNTS gate — soldiers, drawn men, drawn squads,
+                        draw calls are deterministic given the map,
+                        roster, viewport and render path. MILLISECONDS
+                        report and decide nothing: three recordings gave
+                        identical counts while the wall clock moved 13%.
+                        A FINGERPRINT (map, roster, generated manifest,
+                        Godot version, and the SOURCE of the render path)
+                        separates "re-record" from "regression", because
+                        a check that calls a roster change a fault is a
+                        check that gets muted. All-static and pure, so
+                        the arithmetic that decides pass/fail is testable
+                        without the GPU the measurement needs.
+                        `just bench-stale` is the per-PR half and needs
+                        no GPU at all.
 squad_render.gd          THE per-squad render pipeline: duels, the
                         static-target deal, the building and tree
                         push-outs, the survivor easing, the decoration

@@ -2032,6 +2032,81 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESE
     # always did and every number ever quoted stays comparable.
     "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} --host={{HOST}} --preset="{{PRESET}}" --hulls={{HULLS}} {{ARGS}}
 
+# Is the recorded render baseline about THIS tree? (#286)
+#
+# Seconds, headless, no GPU — so it can run on every pull request, which
+# is the point: it cannot tell you the client got slower, and it CAN tell
+# you that nobody has measured since the map, the roster, the built
+# assets or the render path last moved. That absence is what let #229 be
+# a 3x regression found months later by a human playing the game.
+#
+# STRICT=1 exits non-zero when the baseline is stale. Off by default: a
+# stale baseline is news, not a fault, and a check that fails every PR
+# touching formation.gd is a check that gets muted (D-022's audit block
+# from the other direction). The nightly job is where STRICT belongs.
+[doc("Is bench/baseline.json about this map, roster, assets and render path?")]
+bench-stale STRICT="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int STRICT "{{STRICT}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    "$godot" --headless --path . --script bench_check.gd --         --stale --strict={{STRICT}}
+
+# Run the render benchmark and compare it against the recorded baseline.
+#
+# NATIVE and needs a real GPU, exactly like `bench-render` — the numbers
+# are only meaningful on hardware somebody can name (D-014, D-044
+# criterion 2).
+#
+# GATES ON COUNTS, never on milliseconds. Given the same map, roster and
+# render path a run draws the same men at the same LOD in the same draw
+# calls every time; a millisecond is a statement about the host, and this
+# project has already gone red on a wall-clock gate with nothing wrong
+# (D-106's amendment). Times are printed with their deltas and decide
+# nothing.
+[doc("Run bench-render and compare it against the recorded baseline (#286)")]
+bench-check COUNTS="250,1000" FRAMES="90" STRICT="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int FRAMES "{{FRAMES}}"
+    bash recipe-arg.sh int STRICT "{{STRICT}}"
+    gate="$(bash host-gate.sh acquire gpu 'bench-check' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: bench-check needs a native Godot with a GPU (D-014)." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --json=res://artifacts/bench-latest.json
+    "$godot" --headless --path . --script bench_check.gd --         --run=res://artifacts/bench-latest.json --strict={{STRICT}}
+
+# Record the render baseline `bench-check` compares against (#286).
+#
+# A deliberate, human act: it overwrites a committed file with numbers
+# from THIS machine, and the file names the adapter they came from. Never
+# run it to make a red check green without reading what moved first — a
+# baseline re-recorded on a regression is how the mechanism becomes a
+# rubber stamp.
+[doc("Record bench/baseline.json from this machine (names its adapter)")]
+bench-record COUNTS="250,1000" FRAMES="90": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int FRAMES "{{FRAMES}}"
+    gate="$(bash host-gate.sh acquire gpu 'bench-record' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: bench-record needs a native Godot with a GPU (D-014)." >&2
+        exit 1
+    fi
+    mkdir -p bench "{{artifacts_dir}}"
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --json=res://bench/baseline.json
+    echo "recorded bench/baseline.json — COMMIT IT, and say in the message"
+    echo "what hardware it came from (the file names the adapter)."
+
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #
 # Separate from `test-client` because it wants the opposite setup: a
