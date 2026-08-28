@@ -273,7 +273,31 @@ var _fields := {}
 # per-soldier integration value to hide: the render side reads (cell,
 # tier) and derives a height from it, nothing more.
 
-var _tier := PackedInt32Array()  # 0 = ground, 1 = wall-top, per squad
+## The three movement DOMAINS a squad can be in
+## (`D-20260828-water-is-a-second-movement-domain`). `_tier` keeps its
+## NAME so D-076's call sites are not churned; what it holds is a domain.
+##
+## Three values in one field rather than two orthogonal ones, because they
+## are mutually exclusive by construction: a ship is never on a wall, and
+## a land squad is never on open water except as CARGO, which is not in
+## the world at all. Two fields would make representable a combination
+## that can never occur, and every reader would then have to know it
+## cannot.
+const DOMAIN_GROUND := 0
+const DOMAIN_WALL_TOP := 1
+const DOMAIN_WATER := 2
+
+var _tier := PackedInt32Array()  # a DOMAIN_* value, per squad
+
+## Passability for the WATER domain: 1 where a hull may float.
+##
+## EMPTY means "there is no sea here", not "sail anywhere" — the same
+## default `_passable_top` takes and for the same reason D-076 gives:
+## most sims, and every test that predates this feature, have no water,
+## and treating that as fully navigable would sail a ship across a test
+## map that is meant to be a field. It also makes the domains disjoint by
+## construction in a terrain-less sim: everything is land, nothing is sea.
+var _navigable := PackedByteArray()
 
 ## Passability for the tier-1 network. Nonzero only on cells
 ## BuildingSim.walkable_top_cells() reports. Unlike `_passable`, EMPTY
@@ -299,6 +323,59 @@ var _field_cells_this_tick_top: int = 0
 ## not by map area — so a modest fixed budget is enough to solve one
 ## outright in a single tick in the ordinary case.
 var top_field_cells_per_tick: int = 1024
+
+## A THIRD independent FlowField cache, for the water domain. `FlowField`
+## itself is again unmodified — it is driven a third time, which is the
+## call D-076 made when it rejected a unified multi-tier BFS graph.
+##
+## Keyed by `(destination, side)` like the GROUND layer and unlike the
+## wall-top one, because water fields are solved against BELIEF: the
+## obstacles at sea are LAND, and an undiscovered island is exactly the
+## thing `D-20260818-pathing-knows-only-what-the-player-knows` exists to
+## stop a side routing around. D-076's layer is omniscient only because
+## its network is made of buildings a side put there itself.
+var _fields_water := {}
+var _pending_fields_water: Array[Vector2i] = []
+var _field_cells_this_tick_water: int = 0
+
+## Per-tick BFS cell budget for the water layer, separate from both the
+## others for D-040's reason — one shared counter would let a naval solve
+## silently halve ground-pathing throughput on any tick both run.
+##
+## NOT a copy of `top_field_cells_per_tick`, and the difference is the
+## point: a wall-top network is bounded by how many segments a player has
+## built, while water is a REGION. Measured on the `islands` preset — the
+## map this feature exists for — a FULL naval solve is:
+##
+## | size | cells | water | full solve | cells expanded |
+## |---|---|---|---|---|
+## | Skirmish 84x96 | 8,064 | 70.7% | 5.8 ms | 5,690 |
+## | Standard 168x194 | 32,592 | 68.1% | 22.9 ms | 22,149 |
+## | Large 252x290 | 73,080 | 67.0% | 52.0 ms | 48,717 |
+## | Huge 336x388 | 130,368 | 67.2% | 108.4 ms | 86,989 |
+##
+## So roughly 1.03 us per cell, and a Standard naval field is 22,149 cells
+## against a whole-map ground field's 32,592 — water is a comparable
+## region, not a wall's handful of segments.
+##
+## The budget is set EQUAL to `field_cells_per_tick`, deliberately: the
+## naval layer is not privileged over the ground one, and both are bounded
+## identically, which is the defensible default when neither has a
+## measured reason to be larger. It puts the first naval order's latency
+## at 1 tick on Skirmish and 2 on Standard, against the ground layer's own
+## 1/1/3/6 ladder (D-20260818). Raising it to 24,576 buys 1 tick on
+## Standard for about 7 ms more worst tick, and is one number away — the
+## same lever, and the same phrasing, D-20260818 left on the ground layer.
+##
+## **A live worst-tick figure is OWED and is not this stage's to take.**
+## Nothing in a real match sails yet: no `.tres` declares a ship (stage 6)
+## and no AI or bot orders one (stage 7). D-076 reported the identical
+## position for the wall layer — "no bot in that load test builds a wall,
+## so neither run exercises the new branches under load" — and this is
+## that, honestly. The number to quote comes from `test-load` on a water
+## map once stage 7 lands, with its squad count, against #105's standing
+## 204.5 ms breach at 1,000 squads.
+var water_field_cells_per_tick: int = DEFAULT_FIELD_CELLS_PER_TICK
 
 ## A cross-tier order in progress, per squad: the squad is walking to
 ## `_pending_tier_tower[squad]`'s door on its CURRENT tier and will hop to
@@ -419,6 +496,33 @@ func set_passable_top(p: PackedByteArray) -> void:
 	_pending_fields_top.clear()
 
 
+## Hand the simulation the water graph
+## (`D-20260828-water-is-a-second-movement-domain`).
+##
+## Takes the array rather than computing it, exactly as `set_passable`
+## does — the sim never calls `TerrainGen`. That is what lets the water
+## graph and the water domain be built by different people at the same
+## time, and it is why this is testable against a hand-authored field.
+##
+## Flushes the naval field cache for `set_passable`'s reason: a field
+## solved against the old graph is wrong, including one still mid-solve
+## whose frontier holds a reference to the array that just went stale
+## (D-040).
+func set_navigable(p: PackedByteArray) -> void:
+	_navigable = p
+	_fields_water.clear()
+	_pending_fields_water.clear()
+
+
+## Whether `cell` floats a hull. Empty `_navigable` is "no sea" — see the
+## field's own doc for why that default is the opposite of `_passable`'s.
+func is_navigable(cell: Vector2i) -> bool:
+	if _navigable.is_empty():
+		return false
+	var index := space.index(cell)
+	return index < _navigable.size() and _navigable[index] != 0
+
+
 ## Whether `cell` is walkable at tier 1. Empty `_passable_top` means "no
 ## walkway exists at all" — the opposite default from `is_passable`,
 ## because most sims (and every test that predates this feature) have no
@@ -459,7 +563,11 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_last_attack_tick.append(-1)
 	_attack_move.append(0)
 
-	_tier.append(0)
+	# The one place `UnitDef.movement_domain`'s string becomes a
+	# `DOMAIN_*` value (`D-20260828-water-is-a-second-movement-domain`).
+	# A squad's domain is fixed by what it IS and never changes: only
+	# ground<->wall-top crossings exist, and a ship has neither.
+	_tier.append(DOMAIN_WATER if def.movement_domain == "water" else DOMAIN_GROUND)
 	_pending_tier_target.append(-1)
 	_pending_tier_tower.append(-1)
 	_pending_tier_destination.append(-1)
@@ -1099,9 +1207,11 @@ func _approachable(cell: Vector2i, tier: int = 0) -> Vector2i:
 ## Empty GROUND passability means fully open, which is what a bare
 ## SquadSim in a test gets. `tier` 1 defers to `is_passable_top`, whose
 ## empty-array default is the OPPOSITE (D-076) — see that function.
-func is_passable(cell: Vector2i, tier: int = 0) -> bool:
-	if tier == 1:
+func is_passable(cell: Vector2i, domain: int = DOMAIN_GROUND) -> bool:
+	if domain == DOMAIN_WALL_TOP:
 		return is_passable_top(cell)
+	if domain == DOMAIN_WATER:
+		return is_navigable(cell)
 	if _passable.is_empty():
 		return true
 	var index := space.index(cell)
@@ -1172,7 +1282,7 @@ func order_move(squad: int, destination: Vector2i) -> void:
 	if is_routed(squad):
 		return
 	_attack_move[squad] = 0
-	var wanted_tier := _tier_for_destination(destination)
+	var wanted_tier := _tier_for_destination(destination, _tier[squad])
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
 		_apply_move_order(squad, destination, true)
@@ -1228,7 +1338,7 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 	# would otherwise be gated on is spent by D-034's halt one exchange in.
 	if has_stance(squad, STANCE_HOLD_FIRE):
 		set_stance(squad, _stance[squad] & ~STANCE_HOLD_FIRE)
-	var wanted_tier := _tier_for_destination(destination)
+	var wanted_tier := _tier_for_destination(destination, _tier[squad])
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
 		_apply_move_order(squad, destination, true)
@@ -1240,10 +1350,29 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 ## Which tier `destination` belongs to (D-076): 1 if it is a cell on the
 ## wall-top network, 0 otherwise. A bare SquadSim with no `buildings`
 ## always answers 0 — there is nothing to climb onto.
-func _tier_for_destination(destination: Vector2i) -> int:
+## Which domain an order to `destination` means, for a squad currently in
+## `from_domain`.
+##
+## D-076 reads this off the destination cell alone, which is what let it
+## add a whole tier with no wire change. That still holds for the two LAND
+## domains — a cell either is on the wall-top network or is not.
+##
+## It cannot hold for water, and that is the one place naval had to
+## depart from D-076: a SHORE cell is legal land AND adjacent to legal
+## water, so the cell alone genuinely cannot say which was meant. So a
+## squad already in the water domain STAYS in it, whatever it is ordered
+## at — its destination is corrected to the nearest navigable cell by
+## `_approachable` instead (`_apply_move_order`), which is the same
+## "correct, never refuse" shape D-20260818 chose for `_approachable`
+## deliberately. A land squad likewise never becomes a ship by being
+## right-clicked at the sea.
+func _tier_for_destination(destination: Vector2i, from_domain: int = DOMAIN_GROUND) -> int:
+	if from_domain == DOMAIN_WATER:
+		return DOMAIN_WATER
 	if buildings == null:
-		return 0
-	return 1 if buildings.is_walkable_top_cell(space.index(destination)) else 0
+		return DOMAIN_GROUND
+	return DOMAIN_WALL_TOP if buildings.is_walkable_top_cell(space.index(destination)) \
+		else DOMAIN_GROUND
 
 
 ## Start (or restart) a cross-tier move (D-076): walk to the nearest
@@ -1603,9 +1732,12 @@ func _field_budget_remaining() -> int:
 ## wall-top network is deliberately NOT fogged: it is made of buildings a
 ## side put there itself, so there is no unknown ground in it to be
 ## optimistic about.
-func _field_for(destination_index: int, knower: int, tier: int = 0) -> FlowField:
-	if tier == 1:
+func _field_for(destination_index: int, knower: int,
+		domain: int = DOMAIN_GROUND) -> FlowField:
+	if domain == DOMAIN_WALL_TOP:
 		return _field_for_top(destination_index)
+	if domain == DOMAIN_WATER:
+		return _field_for_water(destination_index, knower)
 
 	var key := Vector2i(destination_index, knower)
 	if _fields.has(key):
@@ -1664,6 +1796,61 @@ func _field_for_top(destination_index: int) -> FlowField:
 	_fields_top[destination_index] = field
 	fields_built += 1
 	return field
+
+
+## The water layer's field builder. Ground's shape, not wall-top's: keyed
+## by `(destination, side)` and solved against what that side BELIEVES the
+## sea to be — see `_fields_water`'s own doc for why water is fogged where
+## the wall-top is not.
+##
+## Deliberately does NOT share the ground layer's `fields_per_tick` build
+## counter either. That bound (D-038) exists so a single tick cannot start
+## an unbounded number of BFS solves; a naval order wave and a ground
+## order wave are different waves, and charging them to one counter would
+## make either able to starve the other of STARTS as well as of cells.
+func _field_for_water(destination_index: int, knower: int) -> FlowField:
+	var key := Vector2i(destination_index, knower)
+	if _fields_water.has(key):
+		return _fields_water[key]
+
+	var started := Time.get_ticks_usec()
+	var field := FlowField.new()
+	field.begin(space, space.from_index(destination_index),
+		knowledge.believed_navigable(knower))
+	var remaining := maxi(0, water_field_cells_per_tick - _field_cells_this_tick_water)
+	if not field.expand(remaining) and not _pending_fields_water.has(key):
+		_pending_fields_water.append(key)
+	_field_cells_this_tick_water += field.expanded_cells()
+	total_field_usec += Time.get_ticks_usec() - started
+
+	_fields_water[key] = field
+	fields_built += 1
+	return field
+
+
+## Water counterpart of `_expand_pending_fields` — identical shape, over
+## the water dictionary/queue/budget.
+func _expand_pending_fields_water() -> void:
+	_field_cells_this_tick_water = 0
+	if _pending_fields_water.is_empty():
+		return
+
+	var started := Time.get_ticks_usec()
+	var still_pending: Array[Vector2i] = []
+	for key in _pending_fields_water:
+		var field: FlowField = _fields_water.get(key, null)
+		if field == null or field.is_complete():
+			continue
+		var remaining := maxi(0, water_field_cells_per_tick - _field_cells_this_tick_water)
+		if remaining == 0:
+			still_pending.append(key)
+			continue
+		var before := field.expanded_cells()
+		if not field.expand(remaining):
+			still_pending.append(key)
+		_field_cells_this_tick_water += field.expanded_cells() - before
+	_pending_fields_water = still_pending
+	total_field_usec += Time.get_ticks_usec() - started
 
 
 ## Tier-1 counterpart of `_expand_pending_fields` (D-076) — identical
@@ -1773,11 +1960,23 @@ func _rebuild_curve(squad: int) -> void:
 			# `_passable` empty means a sim with no terrain at all (most
 			# tests): nothing to be wrong about, and no belief array worth
 			# allocating.
-			if _tier[squad] == 0 and not _passable.is_empty():
+			if _tier[squad] == DOMAIN_GROUND and not _passable.is_empty():
 				var open := next < _passable.size() and _passable[next] != 0
 				if knowledge.discover(knower, next, open, _passable.size()):
 					route_discoveries += 1
 				if not open or not knowledge.believes_passable(knower, next):
+					stale = true
+					break
+			# The same moment of truth for the water domain
+			# (`D-20260828-water-is-a-second-movement-domain`). A hull
+			# about to sail onto a cell learns whether it is really sea,
+			# which is what stops optimism steering a ship into an
+			# undiscovered island — the exact job `discover` does on land.
+			elif _tier[squad] == DOMAIN_WATER and not _navigable.is_empty():
+				var wet := next < _navigable.size() and _navigable[next] != 0
+				if knowledge.discover_navigable(knower, next, wet, _navigable.size()):
+					route_discoveries += 1
+				if not wet or not knowledge.believes_navigable(knower, next):
 					stale = true
 					break
 
@@ -1791,7 +1990,13 @@ func _rebuild_curve(squad: int) -> void:
 			# since the curve now ends where the squad is heading — solves
 			# against what this side knows NOW, and every squad sharing the
 			# field gets the corrected route with it.
-			_fields.erase(Vector2i(_destination[squad], knower))
+			# From the layer that produced it — the ground and water caches
+			# are separate, and erasing from the wrong one would leave the
+			# bad field in place and re-solve a good one forever.
+			if _tier[squad] == DOMAIN_WATER:
+				_fields_water.erase(Vector2i(_destination[squad], knower))
+			else:
+				_fields.erase(Vector2i(_destination[squad], knower))
 
 	var curve := _path_curve(squad, cells, speed)
 
@@ -2343,6 +2548,7 @@ func tick() -> void:
 	var fields_started := Time.get_ticks_usec()
 	_expand_pending_fields()
 	_expand_pending_fields_top()  # D-076: its own budget, see that function
+	_expand_pending_fields_water()  # and the water layer's own, likewise
 	last_fields_usec = Time.get_ticks_usec() - fields_started
 	total_fields_usec += last_fields_usec
 
@@ -2395,7 +2601,7 @@ func tick() -> void:
 		# investigation into an unattributed per-squad rise, and a new cost
 		# quietly joining an existing slice is exactly how a number stops
 		# meaning what its name says.
-		knowledge.absorb(vision, _passable)
+		knowledge.absorb(vision, _passable, _navigable)
 		last_vision_usec = Time.get_ticks_usec() - vision_started
 		total_vision_usec += last_vision_usec
 		vision_rebuilds += 1
@@ -2599,7 +2805,7 @@ func soldier_transforms(squad: int, at_time: float = -1.0) -> Array[Transform3D]
 ## an arbitrary number of times and hoping the schedule has caught up.
 func recompute_vision_now() -> void:
 	vision.rebuild(self, buildings)
-	knowledge.absorb(vision, _passable)
+	knowledge.absorb(vision, _passable, _navigable)
 
 
 ## How many of `player`'s squads still have soldiers in them.

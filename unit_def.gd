@@ -103,6 +103,44 @@ class_name UnitDef
 # the counter table is data rather than a match statement in combat.gd.
 # A missing entry means 1.0 — a unit with no bonuses is simply a
 # generalist, not a special case.
+## Which movement DOMAIN this unit belongs to
+## (`D-20260828-water-is-a-second-movement-domain`). A land unit walks the
+## ground and may climb a wall-top (D-076); a water unit sails and does
+## neither.
+##
+## On the UNIT rather than inferred from the order, and that is the one
+## place naval had to depart from D-076. D-076 reads the target tier off
+## the destination cell (`SquadSim._tier_for_destination`), which is what
+## let it add a whole tier with no wire change to movement orders — but a
+## SHORE cell is legal land AND adjacent to legal water, so the cell alone
+## genuinely cannot say which was meant. Deciding it here keeps the wire
+## unchanged anyway and makes the ambiguous case impossible rather than
+## adjudicated: a destination in the wrong domain is CORRECTED to the
+## nearest cell in the right one by `SquadSim._approachable`, never
+## refused.
+##
+## A STRING enum like `armour_class` and `formation_shape`, so a .tres
+## reads as words. It is mapped to `SquadSim.DOMAIN_*` once, in
+## `SquadSim.add_squad`.
+@export_enum("land", "water") var movement_domain: String = "land"
+
+## How many SQUADS this unit can carry
+## (`D-20260828-a-carried-squad-is-cargo`). 0 — every land unit and every
+## warship — means it carries nothing.
+##
+## Squads rather than soldiers, because a squad is this project's atomic
+## unit everywhere else (D-005) and a soldier-denominated capacity would
+## be the only place that is not true. The decision entry records that
+## trade and the roster spread (a 48-strong Corpse Levy against 8 Young
+## Giants) that will eventually reopen it.
+##
+## DECLARED HERE, READ BY STAGE 4. That is normally this project's
+## most-repeated defect — a field nothing reads — and it is deliberate:
+## the ship .tres files are authored against it in stage 6, and stage 4's
+## exit criterion is the first reader. If stage 4 is cut, this field goes
+## with it rather than sitting here unread.
+@export var transport_capacity: int = 0
+
 @export_enum("infantry", "cavalry", "missile") var armour_class: String = "infantry"
 @export var bonus_vs: Dictionary = {}
 
