@@ -25,6 +25,37 @@ re-measured them. Decision 7's evidence is on `main` already, in
 
 ---
 
+## OWNER RATIFIED — 2026-08-29
+
+**The owner's answer was "ratify all": every recommendation on this page
+was accepted as written.** Each page below carries a datelined
+**Ratified** note saying what it became and where the record now lives.
+
+| # | Decision | Ratified outcome |
+|---|---|---|
+| **#285** | Discrete-GPU run | **Stays OPEN** as the owner's action item — ratified *pending hardware*; run it and host mode in one sitting |
+| **#315** | Derive cadence | **CLOSED, declined for now** — revisit when #285's discrete numbers still miss 60 fps |
+| **#316** | GDExtension hatch | **CLOSED, hatch stays shut** — same trigger; D-093's shape recorded if ever opened |
+| **#289** | Host-quit | **CLOSED** — dedicated-first for long matches; the D-088/D-092 revisit's answer |
+| **#341** | ~200-squad successor | **Accepted, owner-ratified** — including the seat-derived `squad_cap` |
+| **#339** | Player-hosted ceiling | **Two numbers ratified** (dedicated ~200, hosted 100-150); tick-off-the-render-thread filed for cycle 2 |
+| **#191** | `model_id` keying | **Per-civ override on an archetype default**; schema + four-civ art queue filed for cycle 2 |
+| **8** | Landing sequence + freeze | **Freeze ratified until cycle 2**, which opens with the full-match measurement and one external alpha session |
+
+**Two of these are deliberately not "done".** #285 stays open because it
+needs hardware nobody has yet, and closing a ratified-but-unperformed
+action is how it stops being anybody's; #339 is ratified as a *pair* of
+numbers rather than one, because a host pays the tick and the frame out
+of the same second and averaging them would overstate what a hosted
+match survives.
+
+**Nothing here was ratified into code.** Every outcome above is a
+decision record or an issue action; the two engineering consequences
+(#339's threading change, #191's schema change) are filed for cycle 2
+rather than started, because the freeze is ratified too.
+
+---
+
 ## Read this first: three of the seven are coupled, and one gates two others
 
 They are not seven independent questions.
@@ -119,6 +150,14 @@ attribution in #339 is wrong and should be re-taken.
   hardware row, and the 30 fps reference budget stops resting on one
   adapter.
 
+### Ratified 2026-08-29 — **pending hardware, issue stays OPEN**
+
+Ratified as recommended, and **#285 is deliberately NOT closed**: it is an
+action the owner performs, not a question they answer. It is annotated
+*ratified-pending-hardware*. Both runs happen in one sitting — the client
+sweep and `--host=1` — because #315, #316 and the client half of #341 all
+read the same numbers.
+
 ---
 
 # 2. #315 — derive a distant squad at a lower cadence
@@ -183,6 +222,13 @@ a good idea aimed at the wrong number.
   issue lists — what "distant" means in `RenderCull`'s existing tiers,
   hold-vs-interpolate, per-squad or per-tier, and the anti-pop rule.
 
+### Ratified 2026-08-29 — **CLOSED, declined for now**
+
+Ratified as recommended and closed. **Revisit trigger: #285's
+discrete-GPU numbers still fall short of 60 fps.** Declining is not a
+judgement that the idea is wrong — it solves a 1,000-squad problem at a
+200-squad scale, and #341 ratified 200 as the scale.
+
 ---
 
 # 3. #316 — D-021's GDExtension hatch
@@ -240,6 +286,15 @@ must cost *speed only*, never the game.
 - If accepted, it sets the precedent for how the second such request is
   handled — which is why the D-093 shape matters more than the decision.
 
+### Ratified 2026-08-29 — **CLOSED, the hatch stays shut**
+
+Ratified as recommended and closed, with the same trigger as #315.
+D-021's GDExtension hatch remains shut. If it is ever opened, the shape
+to follow is **D-093's**: one boundary script naming the dependency, a
+grep-test enforcing that nothing else does, and an absent dependency
+costing the feature and never the game. Recorded now so re-opening starts
+from a known shape rather than from scratch.
+
 ---
 
 # 4. #289 — host-quit ends a 1–2 hour match
@@ -294,6 +349,14 @@ should say so before nineteen other people commit two hours.
   against a target it was not priced for.
 - M8's playtest loop can state what happens when the host leaves, which
   a tester will otherwise discover the hard way.
+
+### Ratified 2026-08-29 — **CLOSED, dedicated-first for long matches**
+
+Ratified as recommended and closed, and recorded as the answer to the
+D-088/D-092 revisit in
+`decisions/D-20260828-host-quit-is-priced-against-a-match-length-nobody-has-measured.md`.
+The match-length measurement this entry says nobody has taken is what
+cycle 2 opens with.
 
 ---
 
@@ -355,6 +418,15 @@ by any GPU.
 - **M9's tick budget** gets a scale to be a budget against.
 - The seat-derived `squad_cap` change can be scheduled.
 - `docs/status/civ-knobs.md`'s worst-case arithmetic gets re-based.
+
+### Ratified 2026-08-29 — **Accepted, including the seat-derived cap**
+
+`decisions/D-20260828-the-shipping-scale.md` moves **Provisional ->
+Accepted, owner-ratified**, superseding D-018's 20-player /
+40,000-soldier number. The seat-derived `squad_cap` is ratified *with*
+it, not separately — a target that did not say where the cap comes from
+would leave one number written down twice and free to disagree, which is
+the shape this repo has already paid for more than once.
 
 ---
 
@@ -422,6 +494,15 @@ fail on D-024.
 - `D-20260828-the-shipping-scale`'s 200 stops being ambiguous about which
   configuration it describes.
 
+### Ratified 2026-08-29 — **two numbers, and the fix is scheduled**
+
+Both figures are ratified as shipping numbers: **~200 dedicated,
+100-150 hosted**. Taking the simulation tick **off the render thread** is
+filed as a cycle-2 engineering ticket — the breach is structural (a 46 ms
+tick cannot fit a 33 ms frame by any scheduling), so it is a threading
+change and not a tuning one. Until it lands, size the M8 hosted playtest
+loop to 100-150.
+
 ---
 
 # 7. The #191 art question — `model_id` keyed by archetype, or by civ
@@ -487,6 +568,14 @@ cost.
   on a rig and on this answer.
 
 ---
+
+### Ratified 2026-08-29 — **per-civ override on an archetype default**
+
+Ratified as recommended. `model_id` keeps its **archetype** default and
+gains a **per-civ override**; the existing fallback is untouched, so a
+civ with no authored body still degrades to the primitive tier exactly as
+it does today (D-064). Filed for cycle 2: the schema change and the
+**four-civ art queue**. Not started, because the freeze is ratified.
 
 ---
 
@@ -597,13 +686,30 @@ worth saying before the first number lands rather than after.
 
 ## Summary table
 
-| # | Decision | Recommendation | Gates |
-|---|---|---|---|
-| **#285** | Discrete-GPU run | **Run it** — plus host mode (`--host=1`) in the same sitting | #315, #316, and the client half of #341 |
-| **#315** | Derive cadence | **Decline for now** — solves a 1,000-squad problem at a 200-squad scale | — |
-| **#316** | GDExtension hatch | **Keep shut for now**; D-093's shape if ever opened | — |
-| **#289** | Host-quit | **Dedicated-first for long matches**; decide after #339 | D-092's revisit, M8 playtest loop |
-| **#341** | Ratify ~200 squads | **Ratify**, including the seat-derived `squad_cap` | M8's 20-seat criterion, M9's budgets |
-| **#339** | Player-hosted at 100–150 | **Two numbers now, tick off-thread scheduled** | M8's hosted playtest, #289 |
-| **#191** | `model_id` keying | **Per-civ override on archetype default** | The art queue for four civs |
-| **8** | The landing sequence | **Ratify the freeze; CI, then decisions, then #350's order** | Everything above, and cycle 2 |
+**Ratified 2026-08-29 — the owner accepted every recommendation below
+("ratify all"). The Outcome column is what each became.**
+
+| # | Decision | Recommendation | Outcome (ratified 2026-08-29) | Gates |
+|---|---|---|---|---|
+| **#285** | Discrete-GPU run | **Run it** — plus host mode (`--host=1`) in the same sitting | **OPEN** — ratified pending hardware | #315, #316, and the client half of #341 |
+| **#315** | Derive cadence | **Decline for now** — solves a 1,000-squad problem at a 200-squad scale | **CLOSED** — declined for now | — |
+| **#316** | GDExtension hatch | **Keep shut for now**; D-093's shape if ever opened | **CLOSED** — hatch stays shut | — |
+| **#289** | Host-quit | **Dedicated-first for long matches**; decide after #339 | **CLOSED** — dedicated-first | D-092's revisit, M8 playtest loop |
+| **#341** | Ratify ~200 squads | **Ratify**, including the seat-derived `squad_cap` | **Accepted**, owner-ratified | M8's 20-seat criterion, M9's budgets |
+| **#339** | Player-hosted at 100–150 | **Two numbers now, tick off-thread scheduled** | **Ratified** — cycle-2 ticket filed | M8's hosted playtest, #289 |
+| **#191** | `model_id` keying | **Per-civ override on archetype default** | **Ratified** — cycle-2 ticket filed | The art queue for four civs |
+| **8** | The landing sequence | **Ratify the freeze; CI, then decisions, then #350's order** | **Ratified** — freeze holds until cycle 2 | Everything above, and cycle 2 |
+
+### Ratified 2026-08-29 — **the freeze holds until cycle 2**
+
+Ratified as recommended, the out-of-order merges included. **The freeze
+stands until cycle 2 opens**, and cycle 2 opens with two things, in this
+order:
+
+1. **the full-match measurement** — an uncapped match, run to a natural
+   conclusion. Every entry above that depends on match length (#289 most
+   directly, D-056 and D-068 behind it) is currently priced against a
+   number nobody has taken;
+2. **one external alpha session** — a tester who is not the owner, on an
+   installed build, because #183's loop is what turns "it runs here" into
+   evidence.

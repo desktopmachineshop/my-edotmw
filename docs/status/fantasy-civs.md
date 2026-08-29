@@ -121,6 +121,21 @@ week and read as noise:
 sizes moved (5-10 against a flat 7), so an opening's LOOK changes more
 than its clock.
 
+**The art question is decided, owner ratified 2026-08-29 (#191):
+`model_id` keys by ARCHETYPE by default and gains a PER-CIV OVERRIDE.**
+Not keyed by civ outright — that would make the shipped fallback the
+exception rather than the rule, and the fallback is what lets five civs
+field a primitive-tier crew today without anything failing (D-064). An
+override is additive: a civ with no authored body resolves exactly as it
+does now.
+
+The schema change and the four-civ art queue are **filed for cycle 2 and
+deliberately not started**, because the same ratification held the
+feature freeze. So the sentence above this one — that the supplied elf
+presumably belongs to the sylvan civ and waits for a rig — is still the
+state of the art queue; what changed is that there is now an agreed way
+to attach a body to a civ when one exists.
+
 **Deliberately not done:** epochs (M9's ladder is still design);
 per-civ walls/buildings; any strength ordering between the six — that is
 `just ai-ladder`'s job now that they exist, and the first run of it on
