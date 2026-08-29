@@ -140,6 +140,41 @@ down. `docs/playtest/` is where the pictures and findings from previous
 sessions live; a session that produced findings should leave a file
 there.
 
+### Report a problem — the channel testers actually have (#288)
+
+**Tell them the button exists.** Menu → *Report a problem*, on the
+pre-connect screen and in the in-game menu. It writes one file holding
+their recent logs, their recent replays and their system details, says
+where it is, and sends nothing. `testers.md` explains it; saying it out
+loud at the start of a session is what makes it get used.
+
+**Ask for the bundle AND the sentence.** The bundle is what makes a
+report reproducible; the sentence is what makes it findable. "It broke"
+with a perfect bundle attached still needs somebody to guess which of
+four hundred log lines matters.
+
+You have the same thing from a checkout:
+
+```bash
+./tools/just report-bundle 1     # what would go in, writes nothing
+./tools/just report-bundle       # write it
+```
+
+Three things worth knowing when the bundles start arriving:
+
+- **The manifest is the first thing to read.** Every bundle lists its own
+  contents and which of them carry the tester's user name and the server
+  address. If somebody asks you what they just sent you, the answer is
+  in the file.
+- **A bundle with no replay in it is a signal, not a fault.** It means
+  that client never recorded one, which for a *host* is worth chasing
+  and for a joining player is normal — the replay is the server's
+  (D-016).
+- **Nothing arrives automatically.** There is no telemetry and no
+  endpoint; a report exists only if a person chose to send it. Budget
+  for chasing people, and read the server log yourself (above) for the
+  things they will never report.
+
 ### What to tell testers up front, every time
 
 These are in `testers.md` too, and repeating them saves reports:
