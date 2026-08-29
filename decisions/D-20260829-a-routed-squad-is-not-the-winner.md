@@ -74,3 +74,32 @@ triangle decided by a phase in which one side could not act; this found a
 scoreboard that rewards breaking. Both trace to rout-plus-no-pursuit, and
 both were invisible to every number until somebody watched a single fight
 tick by tick.
+
+## The measurement, taken by CI once the metric was right
+
+**Even: gildedreach 3 – 3 windmarch. Control: 6 – 0.** The levies are
+sidegrades, the control works, and both were previously unknowable.
+
+| seed | swap | gilded | wind | broke |
+|---|---|---|---|---|
+| 11 | false | 0.67 | 0.71 | wind |
+| 11 | true | 0.60 | 0.68 | gilded |
+| 2029 | false | 0.70 | 0.71 | wind |
+| 2029 | true | 0.63 | 0.79 | gilded |
+| 7919 | false | 0.67 | 0.71 | wind |
+| 7919 | true | 0.57 | 0.68 | gilded |
+
+Two things fall out of that table, and neither was visible before.
+
+**The old metric favoured the SMALLER SQUAD systematically.** Windmarch
+scores higher on fraction in *all six* fights — including the three it
+broke in. It fields 28 men against gildedreach's 30, so the same absolute
+losses read as a better fraction. The fixture was not measuring a levy; it
+was measuring squad size.
+
+**Who breaks is POSITIONAL, 6 out of 6.** The squad starting at the second
+position breaks every time, and swapping the sides swaps who breaks. That
+is why playing both sides is load-bearing rather than tidy, and why 3 – 3
+is the honest answer: each levy breaks exactly when it is put in the
+losing seat. A fixture that played one side only would have reported a
+6 – 0 sweep for whichever civ it happened to place second.
