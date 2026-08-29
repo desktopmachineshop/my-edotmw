@@ -80,6 +80,19 @@ class_name BuildingDef
 @export var damage: float = 0.0
 @export var attack_interval: float = 1.0
 
+## True if this building must stand on a SHORE — a passable land cell with
+## at least one navigable neighbour (naval stage 3, #301,
+## `docs/plans/naval.md` §4.1).
+##
+## One more refusal in `server._build_refusal`, beside the ones already
+## there for water, steep ground, resource nodes and occupied cells. Its
+## reader ships in the same commit as the field, which is why this is not
+## in stage 6 with the rest of the dock's data.
+##
+## The shore predicate itself is `TerrainGen.is_shore` (naval stage 1), so
+## the rule is stated once and this file names no geometry.
+@export var needs_shore: bool = false
+
 ## True if this building can receive gathered resources (D-028's
 ## round-trip hauling). Data rather than a hardcoded list of ids, so
 ## adding a drop-off never means editing the economy.
