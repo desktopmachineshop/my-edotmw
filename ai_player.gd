@@ -140,7 +140,7 @@ func _raise_buildings() -> void:
 		return
 
 	for def in _wanted_buildings():
-		if _owned_building_count(def.id) > 0:
+		if _owned_building_count(def.id) >= _wanted_count(def):
 			continue
 		if not _can_afford(def):
 			# SAVE for it rather than falling through to something
@@ -187,6 +187,21 @@ func _wanted_buildings() -> Array:
 		else:
 			support.append(def)
 	return military + support
+
+
+## How many of this building the AI wants standing. One of everything, and
+## `profile.farms_wanted` FIELDS (D-20260828-food-is-grown-not-only-found)
+## — a farm is the one building whose point is that there are several,
+## because its output is a rate and the only way to raise a rate is to own
+## more of them.
+##
+## Asked of the DEF rather than of an id, so a civ that ships its own field
+## (or a later woodlot) is covered without this file learning a name — the
+## same rule that keeps civs out of every other script (D-046 criterion 3).
+func _wanted_count(def: BuildingDef) -> int:
+	if Economy.grows_kind(def) >= 0 and def.grow_per_second > 0.0:
+		return profile.farms_wanted
+	return 1
 
 
 func _owned_building_count(def_id: StringName) -> int:
@@ -567,7 +582,12 @@ func _own_squads() -> Array:
 ## Send gatherers at the nearest resource the AI knows about. It only
 ## knows about nodes the server told it, which is the point.
 func _put_gatherers_to_work() -> void:
-	if state.space == null or state.nodes.is_empty():
+	# Fields count as work sites (D-20260828-food-is-grown-not-only-found).
+	# Guarding on `state.nodes` alone would have made an AI that had farmed
+	# the whole map's forests out stand its crews down beside its own
+	# harvest — the exact end state #159 is about.
+	var fields := _own_fields()
+	if state.space == null or (state.nodes.is_empty() and fields.is_empty()):
 		return
 	var gatherers := _squads_matching(func(def): return def.carry_capacity > 0)
 	if gatherers.is_empty():
@@ -591,7 +611,8 @@ func _put_gatherers_to_work() -> void:
 	for kind in short:
 		on_kind[kind] = 0
 	for squad in _assigned:
-		var kind := int(state.nodes.get(int(_assigned[squad]), -1))
+		var at := int(_assigned[squad])
+		var kind := int(state.nodes.get(at, fields.get(at, -1)))
 		if on_kind.has(kind):
 			on_kind[kind] = int(on_kind[kind]) + 1
 
@@ -700,6 +721,10 @@ func _scout_for_resources() -> void:
 ## Unlike `_nearest_node_of_kind` this does NOT fall back to another kind
 ## — the whole question here is whether the wanted kind is known at all.
 func _nearest_known_of_kind(kind: int) -> int:
+	var fields := _own_fields()
+	for cell in fields:
+		if not _exhausted.has(int(cell)) and int(fields[cell]) == kind:
+			return int(cell)
 	for cell in state.nodes:
 		if _exhausted.has(int(cell)):
 			continue
@@ -777,11 +802,37 @@ func _scarcest_kind() -> int:
 	return Economy.ResourceKind.FOOD
 
 
+## Every FIELD this AI may put a crew on: cell -> kind. Its own and its
+## allies' (D-050), which is `ClientState.farm_cells`' own filter, so the
+## AI cannot ask for an order the server would refuse.
+##
+## Derived from buildings it already knows about, so it costs nothing and
+## obeys fog by construction — an AI seat is a client without a socket
+## (D-051) and learns about a field exactly when a human would.
+func _own_fields() -> Dictionary:
+	return state.farm_cells(true)
+
+
 func _nearest_node_of_kind(from: Vector2i, kind: int) -> int:
 	var best := -1
 	var best_distance := 1 << 30
 	var fallback := -1
 	var fallback_distance := 1 << 30
+	# Fields first, and by the same distance ranking as everything else —
+	# a farm beside the town hall beats a forest across the map on its own
+	# merits, and nothing here has to prefer one on purpose.
+	var fields := _own_fields()
+	for cell in fields:
+		var field_index := int(cell)
+		if _exhausted.has(field_index):
+			continue
+		var fd := state.space.distance(from, state.space.from_index(field_index))
+		if int(fields[cell]) == kind and fd < best_distance:
+			best_distance = fd
+			best = field_index
+		elif fd < fallback_distance:
+			fallback_distance = fd
+			fallback = field_index
 	for cell in state.nodes:
 		var index := int(cell)
 		if _exhausted.has(index):

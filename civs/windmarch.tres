@@ -6,7 +6,7 @@
 script = ExtResource("1_civ")
 id = &"windmarch"
 display_name = "Windmarch"
-summary = "Mobility. Everything is mounted; nothing takes a fortified position. It wants your gatherers, your reinforcements, and every objective you left lightly held — and every spear counters the whole civ."
+summary = "Mobility. Everything is mounted; nothing takes a fortified position. It wants your gatherers, your reinforcements, and every objective you left lightly held â€” and every spear counters the whole civ."
 colour = Color(0.72, 0.6, 0.38, 1)
 march_speed = 1.12
 starting_food = 260
