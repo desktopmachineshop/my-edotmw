@@ -195,9 +195,16 @@ func _raise_buildings() -> void:
 ## against a threat model. This list answers the unconditional question
 ## and nothing else.
 ##
-## Found by RULE rather than by id, as before: `WallPlan.is_wall_like`
-## and a positive `damage` are fields, so a civ shipping its own wall or
-## its own tower is picked up here with no edit (D-047).
+## What it excludes is exactly what `_fortify` BUYS, asked through the one
+## predicate — `WallPlan.is_static_defence` — rather than restated as two
+## clauses beside it. Two spellings of one boundary is the pair that comes
+## to disagree, and this one did: written as `is_wall_like(def) or
+## def.damage > 0.0`, it dropped the FARM the day #159 shipped one,
+## because `is_wall_like` asked only what a wall is NOT and a field
+## answered every clause the same way a wall does.
+##
+## Found by RULE rather than by id either way, so a civ shipping its own
+## wall, its own tower or its own field is picked up with no edit (D-047).
 func _wanted_buildings() -> Array:
 	var military := []
 	var support := []
@@ -206,7 +213,7 @@ func _wanted_buildings() -> Array:
 			continue
 		if not BuildingSim.can_build(def, &"gatherers"):
 			continue
-		if WallPlan.is_wall_like(def) or def.damage > 0.0:
+		if WallPlan.is_static_defence(def):
 			continue
 		if def.produces.size() > 0:
 			military.append(def)

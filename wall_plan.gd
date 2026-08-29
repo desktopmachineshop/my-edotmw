@@ -192,10 +192,31 @@ static func is_static_defence(def: BuildingDef) -> bool:
 		and not def.consumes_builder and not def.is_drop_off
 
 
+## A piece of the SCREEN — a wall or a gate, as opposed to a tower.
+##
+## Asks a POSITIVE question first, and that is a correction. This used to
+## ask only what a wall is NOT: produces nothing, no drop-off, does not
+## consume its builder, does no damage. That was an exact description of
+## the wall family on the day it was written, and stopped being one the
+## moment #159 shipped the FARM — a field satisfies every clause, so the
+## AI's economy list silently dropped fields and `test_farms` went red on
+## a rule that has never mentioned farms. Same shape as the minimap's
+## two-colour squad dots (D-052): correct when written, and nobody re-read
+## it after the thing it depended on moved.
+##
+## `category` is the def's own declaration of what it is FOR, so a civ
+## shipping its own wall is still found by RULE and never by id (D-047),
+## and a civic building can no longer wander into this answer.
 static func is_wall_like(def: BuildingDef) -> bool:
 	if def == null:
 		return false
-	return def.produces.is_empty() and not def.is_drop_off 		and not def.consumes_builder and not def.is_access_tower 		and def.damage <= 0.0
+	if def.category != "defensive":
+		return false
+	if not def.produces.is_empty() or def.is_drop_off:
+		return false
+	if def.consumes_builder or def.is_access_tower:
+		return false
+	return def.damage <= 0.0
 
 
 ## The cheapest building that SHOOTS — the first thing worth buying with

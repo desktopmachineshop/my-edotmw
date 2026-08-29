@@ -170,6 +170,32 @@ func test_the_cheapest_is_actually_the_cheapest_by_d072s_rate() -> void:
 		assert_lte(mine, theirs, "%s is cheaper than the one chosen" % def.id)
 
 
+## A CIVIC building is not a wall, however little it does.
+##
+## The regression #159 caused and `test_farms` caught from the far side:
+## `is_wall_like` asked only what a wall is NOT — trains nothing, no
+## drop-off, spends no builder, deals no damage — and a FARM answers every
+## one of those exactly as a wall does. So the AI's economy list quietly
+## stopped containing fields, on a rule that has never mentioned farms.
+##
+## Asserted here, where the rule lives, rather than only in `test_farms`,
+## where it was found: the farm is the instance, "a civic building" is the
+## class, and the next one will not be a farm.
+func test_a_building_that_is_not_defensive_is_not_a_wall() -> void:
+	var civic := 0
+	for def in BuildingSim.all_defs():
+		if def.category == "defensive":
+			continue
+		civic += 1
+		assert_false(WallPlan.is_wall_like(def),
+			"%s is category '%s', so it cannot be a piece of a wall screen"
+				% [def.id, def.category])
+		assert_false(WallPlan.is_static_defence(def),
+			"%s is category '%s', so the fortification pass must not buy it"
+				% [def.id, def.category])
+	assert_gt(civic, 0, "there must be non-defensive buildings, or this proves nothing")
+
+
 func test_a_defensive_tower_is_the_one_that_shoots() -> void:
 	# The first thing worth buying with defensive money, because unlike a
 	# wall it does something to an attacker who is already inside. D-066
