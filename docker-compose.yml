@@ -42,7 +42,14 @@ services:
       - "${EDOTMW_HOST_PORT:-4433}:4433/udp"
     restart: "no"
     mem_limit: 2g
-    cpus: 4
+    # CPU quota, parameterised for the same reason the published host
+    # port is: a value that is right on the owner's 16-thread laptop is
+    # not right everywhere. A GitHub-hosted runner has TWO CPUs and
+    # docker REFUSES a service asking for more — "range of CPUs is from
+    # 0.01 to 2.00, as there are only 2 CPUs available" — so `just up`
+    # failed outright on CI until this was a variable. The DEFAULT is
+    # exactly what it was, so nothing local changes.
+    cpus: ${EDOTMW_CPUS_SERVER:-4}
 
   bots:
     build:
@@ -65,7 +72,7 @@ services:
       - ./.godot-container:/work/.godot
     restart: "no"
     mem_limit: 1g
-    cpus: 2
+    cpus: ${EDOTMW_CPUS_BOTS:-2}
 
   # The GUI client rendered with Mesa's software rasteriser under a
   # virtual X server — no GPU, nothing installed on the host. See the
@@ -81,8 +88,15 @@ services:
       - ./.godot-container:/work/.godot
     restart: "no"
     mem_limit: 2g
-    cpus: 4
+    cpus: ${EDOTMW_CPUS_SERVER:-4}
 
+  # `just _import` runs HERE, not just the test suite — every docker
+  # recipe depends on it, so this service's ceiling is the ceiling on the
+  # whole docker estate. It was 1g and the import reached it EXACTLY and
+  # was SIGKILLed (exit 137, #223): sampled 45 -> 579 -> 938 MiB and died
+  # reimporting a docs/playtest screenshot. 2g matches `server` and
+  # `client-test`; a ceiling is not a reservation, and the steady figure
+  # is ~580 MiB. `docs/.gdignore` cut what the walk has to open at all.
   test:
     build:
       context: .
@@ -92,4 +106,4 @@ services:
       - .:/work
       - ./.godot-container:/work/.godot
     restart: "no"
-    mem_limit: 1g
+    mem_limit: 2g

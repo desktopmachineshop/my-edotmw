@@ -52,10 +52,14 @@ Three things worth carrying out of it:
   absolutes taken for it are unusable.** Two interleaved best-of-9 A/Bs on
   the shipped map put the clamp at +47% and +81%, on a host running five
   other worktrees' container suites — where a bare `world_to_cell` priced
-  at thirty times what that arithmetic can cost. A clean `bench-render`
-  A/B on an idle machine is still owed. The lever if M10 wants it back is
-  a per-SQUAD footprint test off `TorusSpace.disk_offsets`, not a faster
-  per-soldier one; the decision entry says why it is not in this change.
+  at thirty times what that arithmetic can cost. **That clean A/B is taken
+  as of 2026-08-28** (#229): interleaved, at 1,000 squads, the clamp is
+  **30-32% of the client's derivation phase — 24.7/25.4 ms, ~5.7 us per
+  drawn man** on Intel Iris Xe. "Tens of percent" was right and the loaded
+  host's absolutes were not; see `docs/status/client-render.md`. The lever
+  if M10 wants it back is a per-SQUAD footprint test off
+  `TorusSpace.disk_offsets`, not a faster per-soldier one — filed as #244,
+  with #245 for the half of it that moves nobody.
 - **The premise that made D-097's cliff lift free was written down and
   false.** It said "nothing stands on impassable ground for the offset to
   disagree with". This is the D-058/D-065 family for the third time: a
