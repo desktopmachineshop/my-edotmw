@@ -55,6 +55,13 @@ const ROLES := {
 	&"cavalry": "cavalry",
 	&"engine": "siege", &"ram": "siege", &"bombard": "siege",
 	&"breaker": "siege",
+	# Naval (#301). A `warboat` fights AND carries -- naval.md §5.3 screens
+	# those as "combined" and warships as their own group, so they are two
+	# roles here rather than one: D-072's rules are scoped WITHIN a role,
+	# and a hull that spends part of its price on a hold is not comparable
+	# with one that spends all of it on guns.
+	&"warship": "warship", &"warboat": "combined",
+	&"transport": "carrier",
 }
 
 
@@ -72,6 +79,8 @@ func _screen() -> Array:
 			"role": String(ROLES.get(def.archetype, "other")),
 			"v": sqrt(dps * ehp), "rp": rp,
 			"vrp": (sqrt(dps * ehp) / rp) if rp > 0.0 else 0.0,
+			"capacity": def.transport_capacity,
+			"cap_rp": (float(def.transport_capacity) / rp) if rp > 0.0 else 0.0,
 		})
 	return out
 
@@ -106,7 +115,25 @@ func test_the_screen_runs_against_the_shipped_roster_at_all() -> void:
 	for entry in screen:
 		assert_gt(float(entry["rp"]), 0.0,
 			"%s costs nothing, so its V/RP is meaningless" % entry["id"])
-		assert_gt(float(entry["v"]), 0.0, "%s has no power at all" % entry["id"])
+		# A CARRIER IS PRICED ON WHAT IT CARRIES, and that is a rule rather
+		# than an exemption (naval.md §5.3: "transports (exempt -- V cannot
+		# price carrying): capacity per RP"). A transport has no attack BY
+		# DESIGN, so V = sqrt(DPS x EHP) is 0 for every one of them and the
+		# power assertion below would fail on correct data forever.
+		#
+		# It is NOT added to SKIP_ARCHETYPES, because a skipped archetype is
+		# screened by nothing and a `.tres` shipping a hold that carries
+		# NOTHING would pass in silence -- the vacuous-pass shape D-022's
+		# audit block was written about. The carrier is screened on the
+		# quantity that does price it instead.
+		if entry["role"] == "carrier":
+			assert_gt(int(entry["capacity"]), 0,
+				"%s is a carrier and carries nothing, so nothing prices it"
+					% entry["id"])
+			assert_gt(float(entry["cap_rp"]), 0.0,
+				"%s has no capacity per RP" % entry["id"])
+		else:
+			assert_gt(float(entry["v"]), 0.0, "%s has no power at all" % entry["id"])
 		assert_ne(entry["role"], "other",
 			"%s has archetype '%s', which this screen has no role for - add it to ROLES"
 				% [entry["id"], entry["def"].archetype])
@@ -121,6 +148,13 @@ func test_price_buys_power_where_the_metric_can_see() -> void:
 	for a in screen:
 		for b in screen:
 			if a["civ"] != b["civ"] or a["role"] != b["role"]:
+				continue
+			# Carriers are compared on capacity, never on V (naval.md §5.3).
+			# Every transport has V = 0 by design, so a dearer hull would
+			# read as "costs more, no more power" against a cheaper one and
+			# red on correct data. No civ fields two today, which is exactly
+			# why this is written now rather than discovered later.
+			if a["role"] == "carrier":
 				continue
 			if float(b["rp"]) <= float(a["rp"]) or float(b["v"]) > float(a["v"]):
 				continue

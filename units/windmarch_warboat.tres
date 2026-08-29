@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"windmarch_warboat"
+display_name = "Reed Raft"
+civ = &"windmarch"
+archetype = &"warboat"
+squad_size = 5
+health = 110.0
+damage = 7.0
+move_speed = 5.6
+attack_range = 4.0
+attack_interval = 1.8
+armour_class = "missile"
+movement_domain = "water"
+transport_capacity = 2
+mesh_primitive = "hull"
+mesh_color = Color(0.72, 0.6, 0.38, 1)
+cost_food = 25
+cost_wood = 30
+cost_gold = 0
+cost_stone = 0
+build_time = 9.0
+cost = 55

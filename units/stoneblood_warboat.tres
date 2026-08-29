@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"stoneblood_warboat"
+display_name = "Stonewright Barge"
+civ = &"stoneblood"
+archetype = &"warboat"
+squad_size = 4
+health = 420.0
+damage = 26.0
+move_speed = 4.0
+attack_range = 6.0
+attack_interval = 2.2
+armour_class = "missile"
+movement_domain = "water"
+transport_capacity = 2
+mesh_primitive = "hull"
+mesh_color = Color(0.45, 0.5, 0.56, 1)
+cost_food = 60
+cost_wood = 70
+cost_gold = 0
+cost_stone = 30
+build_time = 26.0
+cost = 160
