@@ -103,8 +103,26 @@ than no gate.**
 - **A number without the frame it was taken in is not a measurement.**
   This project already says it twice — quote a µs figure with its squad
   count, a ladder result with its cap. Add: quote a pid with the tool
-  that printed it (`ps -W` and `tasklist` disagree by design), and quote
-  a log's numbers with the duration that log claims.
+  that printed it (`ps -W` and `tasklist` disagree by design), quote
+  a log's numbers with the duration that log claims, and quote a HOST
+  sample with what changed on the host before it.
+
+  The last one was bought the hard way. Two workers' free-memory series
+  taken minutes apart differed by 219 MB — **5.6 standard errors**, which
+  no amount of within-window noise explains, and the honest reading of
+  that arithmetic is that the host's LEVEL moves between windows. It
+  does; but here it moved because a session had been retired in between,
+  measured independently at ~250 MB. Against same-era data the two series
+  sit at **1.4 SE** — one host. A correct detection, a wrong diagnosis,
+  and neither worker could see it alone: one held the discrepancy, the
+  other held the event that explained it.
+
+  What generalises is not "sample more". Two SERIES are not one
+  measurement however long each is, and the level moves in **discrete
+  steps at nameable events** rather than by drift — which is the more
+  useful claim, because events can be enumerated. A window may certify a
+  later run if you can say nothing happened in between, and may not if
+  you cannot.
 
 ## Rejected
 
