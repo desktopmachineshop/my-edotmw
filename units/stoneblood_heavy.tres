@@ -8,6 +8,7 @@ id = &"stoneblood_heavy"
 display_name = "Young Giants"
 civ = &"stoneblood"
 archetype = &"heavy"
+requires_tech = &"holding"
 squad_size = 8
 health = 380.0
 damage = 30.0

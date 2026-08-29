@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"health"
+mode = "multiply"
+value = 1.12
+
+[resource]
+script = ExtResource("1")
+id = &"hardened_kit"
+display_name = "Hardened Kit"
+description = "Boiled leather, a second strap, a helm that fits. Most of what keeps soldiers alive is unglamorous."
+line = &"hardened_kit"
+civ = &"neutral"
+epoch = 2
+defining = false
+research_at = &"barracks"
+requires = Array[StringName]([&"mustering"])
+cost_food = 200
+cost_wood = 150
+cost_gold = 0
+cost_stone = 0
+research_time = 35.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

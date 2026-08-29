@@ -193,13 +193,26 @@ static func can_afford(wallet: PackedInt32Array, def: BuildingDef) -> bool:
 ## then correctly offers nothing, and a barracks is unaffected.
 ##
 ## `civ` may be EMPTY, and for a load-test bot it always is — see `_resolve`.
+## `known_techs` is what the bot has RESEARCHED. Empty means nothing, which
+## is the SAFE default and matches what the server would say
+## (`D-20260827-the-tree-is-the-ladder`): a gated archetype is refused, so
+## offering one here would spend a production order on a refusal.
+##
+## Worth filtering rather than relying on order. Both this and the AI's
+## picker take the FIRST match, and `barracks.produces` happens to start
+## with the one ungated archetype — so without this the bots would keep
+## working purely by accident of roster ordering, which is the exact
+## fragility D-20260823 recorded when five test fixtures broke on
+## "whatever sorts first".
 static func archetype_for(building_def: BuildingDef, civ: StringName,
-		hauling_crews: int) -> StringName:
+		hauling_crews: int, known_techs: Array = []) -> StringName:
 	if building_def == null:
 		return &""
 	for archetype in building_def.produces:
 		var def := _resolve(archetype, civ)
 		if def == null:
+			continue
+		if def.requires_tech != &"" and not known_techs.has(def.requires_tech):
 			continue
 		if def.carry_capacity > 0 and hauling_crews >= MAX_HAULING_CREWS:
 			continue

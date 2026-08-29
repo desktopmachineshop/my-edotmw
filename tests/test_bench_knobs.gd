@@ -63,9 +63,15 @@ func test_the_recipe_passes_nothing_by_default() -> void:
 	# (D-20260817-recipe-args-are-positional), so ARGS has to be LAST as
 	# well as empty — anything before it would shift COUNTS, FRAMES or
 	# HEIGHT and quietly measure something else.
+	# #339 added HOST/PRESET/HULLS. They go BEFORE ARGS, which keeps this
+	# rule intact rather than bending it: ARGS is still last, still empty,
+	# and COUNTS/FRAMES/HEIGHT still hold slots 1-3. A new parameter added
+	# after ARGS would be the actual violation, because ARGS is the
+	# free-form passthrough and anything past it can never be reached.
 	var justfile := _source("res://justfile")
 	assert_true(justfile.contains(
-		'bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" ARGS="":'),
+		'bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" '
+		+ 'HOST="0" PRESET="" HULLS="0" ARGS="":'),
 		"bench-render takes ARGS last and empty by default")
 
 

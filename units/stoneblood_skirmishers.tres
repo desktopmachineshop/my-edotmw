@@ -8,6 +8,7 @@ id = &"stoneblood_skirmishers"
 display_name = "Cragthrowers"
 civ = &"stoneblood"
 archetype = &"skirmishers"
+requires_tech = &"mustering"
 squad_size = 12
 health = 110.0
 damage = 14.0

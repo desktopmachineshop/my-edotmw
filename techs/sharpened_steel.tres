@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"damage"
+mode = "multiply"
+value = 1.1
+
+[resource]
+script = ExtResource("1")
+id = &"sharpened_steel"
+display_name = "Sharpened Steel"
+description = "Better edges, better tempering, and somebody whose whole job is the difference."
+line = &"sharpened_steel"
+civ = &"neutral"
+epoch = 4
+defining = false
+research_at = &"barracks"
+requires = Array[StringName]([&"breaking"])
+cost_food = 450
+cost_wood = 350
+cost_gold = 250
+cost_stone = 150
+research_time = 55.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
