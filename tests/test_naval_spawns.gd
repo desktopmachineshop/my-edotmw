@@ -283,12 +283,27 @@ func test_islands_is_offered_in_the_lobby() -> void:
 	# preset, this goes red — which is exactly the signal wanted, because
 	# by then the seating and reachability below have made it playable and
 	# the flip is one line. A comment could not do that.
+	# WHAT STAGE 9 ACTUALLY NEEDS is that the naval MAP generates islands
+	# terrain, not that the lobby offers `islands` as a free-form preset.
+	# `MapConfig.preset` is resolved through `TerrainPresetRoster.by_id`
+	# (server.gd), which is deliberately NOT filtered by `playable` — that
+	# is #299's own design, so a retired preset still loads from a `.tres`
+	# that names it.
+	#
+	# This assertion used to demand `islands` be in `ids()`, the LOBBY
+	# PICKER's list, and that directly contradicted
+	# `test_the_lobby_does_not_offer_islands`. Two tests cannot both be
+	# right about one flag; the question of whether a player may pick
+	# `islands` free-form is #299's to answer, not stage 9's, and stage 9
+	# does not depend on the answer.
+	var naval_map: MapConfig = load("res://maps/isles.tres")
+	assert_not_null(naval_map, "the naval map ships")
+	assert_eq(String(naval_map.preset), "islands",
+		"the naval map names the islands preset")
+	assert_not_null(TerrainPresetRoster.by_id(&"islands"),
+		"and that preset still LOADS by id, which is what the map needs — "
+		+ "retirement hides a preset from the picker, it does not delete it")
 	var offered := TerrainPresetRoster.ids()
-	assert_true(offered.has(&"islands"),
-		"islands must be selectable — naval stage 9 is what makes it playable")
-	# And it is offered because it is OFFERABLE, not by accident: the rows
-	# above prove the same preset seats its full slot count with every
-	# start reachable.
 	assert_gt(offered.size(), 1, "Setup: there are presets to choose between")
 
 
