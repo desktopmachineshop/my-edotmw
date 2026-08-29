@@ -107,6 +107,7 @@ class VirtualClient:
 	# false failure after a completely successful run.
 	var ever_connected := false
 	var failed := false
+	var _refusal_reported := false
 
 	# The SAME client implementation the GUI client uses, deliberately —
 	# a load test against a simplified stand-in could pass while the real
@@ -269,11 +270,22 @@ class VirtualClient:
 				return true
 		return false
 
-	func _init(p_index: int, p_address: String, p_port: int, p_player_count: int) -> void:
+	## The protocol version this bot CLAIMS to speak (#179). Always the
+	## real one in a load test; settable to something else by
+	## `--protocol=N` so `just test-handshake` can drive a deliberately
+	## wrong build at a real server over a real socket and watch it be
+	## refused. That is the observed-to-fail rule made permanent: a
+	## refusal path nobody ever takes is a refusal path that will be
+	## broken the first time it matters.
+	var protocol := NetProtocol.PROTOCOL_VERSION
+
+	func _init(p_index: int, p_address: String, p_port: int, p_player_count: int,
+			p_protocol: int = NetProtocol.PROTOCOL_VERSION) -> void:
 		index = p_index
 		server_address = p_address
 		server_port = p_port
 		player_count = p_player_count
+		protocol = p_protocol
 		# Seeded per client so a load test is reproducible — which matters
 		# because replays (D-016) are the tool for diagnosing whatever a
 		# load test turns up.
@@ -304,10 +316,21 @@ class VirtualClient:
 				ENetConnection.EVENT_CONNECT:
 					connected = true
 					ever_connected = true
+					# The version handshake (#179). The bots share
+					# net_protocol.gd with both real binaries, which is
+					# exactly why they must perform it rather than be
+					# exempted: `test-load` is the only thing that
+					# exercises the ACCEPT path against a real socket,
+					# and an exemption would leave it unexercised while
+					# looking green.
+					peer.send(0, NetProtocol.encode_hello(
+						protocol, BuildVersion.string()),
+						ENetPacketPeer.FLAG_RELIABLE)
 				ENetConnection.EVENT_DISCONNECT:
 					connected = false
 				ENetConnection.EVENT_RECEIVE:
 					_drain(event[1])
+					_report_refusal()
 
 		# Before the order tick below, so the detachment is claimed on the
 		# same pass a crew appears rather than one tick after the haul loop
@@ -319,6 +342,24 @@ class VirtualClient:
 		if connected and now >= _next_order_at:
 			_issue_order(now)
 			_next_order_at = now + ORDER_INTERVAL_SECONDS
+
+	## Say it once, in the bot's own voice, if the server refused us
+	## (#179). A bot that quietly failed to connect and a bot refused for
+	## being the wrong build look identical from outside, and one of them
+	## is a broken test estate — so the two must not be the same line in a
+	## log.
+	func _report_refusal() -> void:
+		if _refusal_reported or state.refusal.is_empty():
+			return
+		_refusal_reported = true
+		print("bot %d: REFUSED — %s" % [
+			index, str(state.refusal.get("text", "")).replace("
+", " ")])
+
+	## Whether the server refused this bot's handshake. Reported in the
+	## verdict, where `just test-handshake` reads it.
+	func was_refused() -> bool:
+		return not state.refusal.is_empty()
 
 	func _drain(from_peer: ENetPacketPeer) -> void:
 		while from_peer.get_available_packet_count() > 0:
@@ -976,6 +1017,9 @@ class VirtualClient:
 var _clients: Array[VirtualClient] = []
 var _elapsed := 0.0
 var _duration := -1.0
+## The protocol version the bots claim (#179). See `--protocol`.
+var _protocol := NetProtocol.PROTOCOL_VERSION
+
 ## The ScenarioDef this run is playing, or null for a real opening.
 ##
 ## A scenario is an opening POSITION (D-098), and a verdict that gates on
@@ -1005,7 +1049,7 @@ func _initialize() -> void:
 	# a harness reading its own fixture is not a client learning something
 	# it should not know.
 	_scenario = Scenario.by_id(StringName(String(args.get("scenario", ""))))
-	var bad_args := CmdArgs.invalid_integers(args, ["clients", "port"])
+	var bad_args := CmdArgs.invalid_integers(args, ["clients", "port", "protocol"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["duration"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("bot_client.gd", bad_args))
@@ -1021,11 +1065,18 @@ func _initialize() -> void:
 	var address: String = String(args.get("address", default_address))
 	var port: int = int(args.get("port", DEFAULT_SERVER_PORT))
 	_duration = float(args.get("duration", -1.0))
+	# Dev-only, and never set by `just test-load`: it exists so
+	# `just test-handshake` can present a deliberately wrong build to a
+	# real server and prove the refusal fires (#179).
+	_protocol = int(args.get("protocol", NetProtocol.PROTOCOL_VERSION))
+	if _protocol != NetProtocol.PROTOCOL_VERSION:
+		print("bot_client.gd: claiming protocol %d instead of %d — expecting to be REFUSED" % [
+			_protocol, NetProtocol.PROTOCOL_VERSION])
 
 	print("bot_client.gd: spawning %d virtual client(s) against %s:%d" % [client_count, address, port])
 
 	for i in range(client_count):
-		var vc := VirtualClient.new(i, address, port, client_count)
+		var vc := VirtualClient.new(i, address, port, client_count, _protocol)
 		var err := vc.start()
 		if err != OK:
 			push_error("bot %d: could not start ENet host (error %d)" % [i, err])
@@ -1240,6 +1291,19 @@ func _military_squads() -> int:
 ## squad (M1's own stub bug, D-022's "known stub" note) would push this to
 ## equal the total — which is exactly the case the comparison exists to
 ## catch, and exactly what was used to perturb-test it (see the report).
+## How many bots the server refused at the handshake (#179). Zero in
+## every ordinary run; `just test-handshake` is the one thing that
+## deliberately makes it nonzero, and it FAILS if it is zero — because a
+## refusal path that is never taken is a refusal path that will be broken
+## the first time it matters.
+func _refused_count() -> int:
+	var count := 0
+	for vc in _clients:
+		if vc.was_refused():
+			count += 1
+	return count
+
+
 func _max_known_squads() -> int:
 	var most := 0
 	for vc in _clients:
@@ -1372,7 +1436,7 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d farms_peak=%d field_orders=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d farms_peak=%d field_orders=%d refused=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
@@ -1380,7 +1444,7 @@ func _report() -> void:
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
 		_patrol_legs(), _scouts_peak(), _raid_orders(), _military_squads(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
-		_nodes_felled(), _farms_peak(), _field_orders()])
+		_nodes_felled(), _farms_peak(), _field_orders(), _refused_count()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
