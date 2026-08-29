@@ -74,12 +74,46 @@ class Belief:
 	## One byte per cell. 0 = this side has seen that this cell is blocked.
 	var believed := PackedByteArray()
 
+	## One byte per cell. 1 = this side has OBSERVED this cell, ever.
+	##
+	## A separate array from `believed`, and it has to be: `believed`
+	## starts all-1 because unknown ground reads PASSABLE (the optimism
+	## that makes a squad find out by walking), so "believed[c] == 1"
+	## cannot distinguish "never seen" from "seen, and open". That is the
+	## same currently-visible-vs-ever-revealed distinction D-026's hash
+	## had to get right, and #120 names it as the input an explore order
+	## needs.
+	##
+	## Accumulated HERE rather than in a new per-player field, because
+	## this is already the object that folds sight into knowledge, on
+	## vision's own cadence, out of vision's own coverage — a second fog
+	## query is exactly what D-004 forbids. It costs one byte per cell per
+	## side and one store inside a loop that was already running.
+	var explored := PackedByteArray()
+
 	## How many cells this side has changed its mind about, ever.
 	var discoveries: int = 0
+
+	## How many distinct cells this side has ever observed. Instrumentation
+	## in `discoveries`' own style: zero on a map with squads on it means
+	## the accumulation is dead.
+	var explored_cells: int = 0
 
 	func _init(cell_count: int) -> void:
 		believed.resize(cell_count)
 		believed.fill(1)
+		explored.resize(cell_count)
+		explored.fill(0)
+
+	## Mark a cell observed. Separated from the passability write because
+	## TOUCH (`learn`) discovers one cell without any coverage, and sight
+	## (`observe`) covers cells whose passability it already agreed with —
+	## both are observations, and only one of them changes `believed`.
+	func see(cell: int) -> void:
+		if cell < 0 or cell >= explored.size() or explored[cell] != 0:
+			return
+		explored[cell] = 1
+		explored_cells += 1
 
 	## Fold one rebuild's coverage into belief. Both directions: a cell
 	## this side can see now is known now, which is what repairs a gate
@@ -88,9 +122,20 @@ class Belief:
 	## The loop lives here rather than in the caller so `believed` is a
 	## direct member on every write — see this class's doc.
 	func observe(coverage: Dictionary, truth: PackedByteArray) -> void:
+		var know_ground := not truth.is_empty()
 		for cell in coverage:
 			var index := int(cell)
 			if index >= believed.size():
+				continue
+			# SEEING a cell is seeing it, whatever this side knows about
+			# the ground under it. Marked before — and independently of —
+			# the passability half, because a sim with no terrain array at
+			# all (every headless fixture, and any map yet to be
+			# generated) still has fog, and an explore order on one would
+			# otherwise be told the whole map is unexplored forever and
+			# send every scout to the cell it is standing on.
+			see(index)
+			if not know_ground:
 				continue
 			var open: int = 1 if truth[index] != 0 else 0
 			if believed[index] == open:
@@ -99,6 +144,10 @@ class Belief:
 			discoveries += 1
 
 	func learn(cell: int, open: bool) -> bool:
+		# Touch is an observation too — a squad with `vision_range` 0
+		# learns only this way, and an explore order must not send it back
+		# to ground it has already walked over.
+		see(cell)
 		var value: int = 1 if open else 0
 		if cell < 0 or cell >= believed.size() or believed[cell] == value:
 			return false
@@ -127,6 +176,41 @@ func believed_passable(group: int) -> PackedByteArray:
 	return side.believed
 
 
+## What `group` has ever OBSERVED — one byte per cell, 1 = seen at least
+## once. THE input an explore order picks its next destination from
+## (#120): the currently-visible field answers "can I see it now", and a
+## scout needs "have I ever been shown it".
+##
+## Empty when this side has never observed anything, which every caller
+## must read as "nothing is explored" rather than indexing it.
+func explored_cells(group: int) -> PackedByteArray:
+	var side: Belief = _sides.get(group, null)
+	if side == null:
+		return PackedByteArray()
+	return side.explored
+
+
+## Whether `group` has ever observed `cell`. Out of range or unknown side
+## reads FALSE — the opposite default from `believes_passable`, and
+## deliberately so: unknown ground is optimistically passable (so a squad
+## will walk into it) and pessimistically unexplored (so a scout will go
+## and look at it). Both defaults push in the same direction.
+func has_explored(group: int, cell: int) -> bool:
+	var side: Belief = _sides.get(group, null)
+	if side == null:
+		return false
+	if cell < 0 or cell >= side.explored.size():
+		return false
+	return side.explored[cell] != 0
+
+
+## How many distinct cells `group` has ever observed. Instrumentation, in
+## `discoveries`' style.
+func explored_count(group: int) -> int:
+	var side: Belief = _sides.get(group, null)
+	return 0 if side == null else side.explored_cells
+
+
 func believes_passable(group: int, cell: int) -> bool:
 	var side: Belief = _sides.get(group, null)
 	if side == null:
@@ -142,12 +226,20 @@ func believes_passable(group: int, cell: int) -> bool:
 ## re-walking the disks, so this costs one pass over cells somebody is
 ## already looking at. `truth` empty means "no terrain in this sim", and
 ## then there is nothing to know.
-func absorb(vision: Vision, truth: PackedByteArray) -> void:
-	if vision == null or truth.is_empty():
+## `truth` empty means "no terrain in this sim" — which used to end the
+## call. It no longer does: passability is unknowable without truth, but
+## what each side has SEEN is not, and the explored set (#120) is fed from
+## here. The size the belief arrays are built at then has to come from the
+## space rather than from `truth`, which is why `cell_count` exists.
+func absorb(vision: Vision, truth: PackedByteArray, cell_count: int = 0) -> void:
+	if vision == null:
+		return
+	var size := truth.size() if not truth.is_empty() else cell_count
+	if size <= 0:
 		return
 	var coverage := vision.coverage_by_group()
 	for group in coverage:
-		var side := _side_for(int(group), truth.size())
+		var side := _side_for(int(group), size)
 		var before := side.discoveries
 		side.observe(coverage[group], truth)
 		discoveries += side.discoveries - before
