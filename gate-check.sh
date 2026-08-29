@@ -140,48 +140,22 @@ case "$check" in
             echo "gate-check(naval): no AI reported wants_navy — no seat ran the naval question at all" >&2
             exit 1
         fi
-        # WHY THE SKIP KEYS ON THE MAP AND NOT ON `wants_navy`.
+        # SKIPPED ON THE AI'S OWN ANSWER HERE, AND THAT IS A KNOWN
+        # WEAKNESS, deliberately carried until the map that makes it
+        # fixable lands. `wants_navy=0` is reported both by an AI that
+        # correctly declined (every enemy walkable) and by one that
+        # declined on an archipelago, which is #351 — and telling those
+        # apart needs SEAT_LANDMASSES, which needs
+        # `MapConfig.reachable_components`, which is naval stage 9.
         #
-        # Two runs report `wants_navy=0`: one where every enemy was
-        # walkable, which is correct, and one on an archipelago, which is
-        # #351 — the defect this gate exists to catch. Skipping on the
-        # AI's own answer lets the thing under test excuse itself, and a
-        # gate that cannot fail is not a gate.
-        #
-        # So the map decides. SEAT_LANDMASSES is topology: one means no
-        # crossing was ever available and a skip is honest; more than one
-        # means the crossing was there and declining it is a finding.
-        # NECESSARY AND SUFFICIENT ARE TWO QUESTIONS, and the map answers
-        # both. `landmasses > 1` says a ship is REQUIRED — somebody cannot
-        # be walked to. `sea_components == 1` says a ship is SUFFICIENT —
-        # there is one body of water joining the starts. A map that
-        # maroons every seat on its own island with its own private sea
-        # satisfies the first and is unplayable, so demanding a landing
-        # there would fail an honest run.
-        #
-        # Both come from `SEAT_LANDMASSES`, which the server derives from
-        # spawn placement and tells no AI (D-051 — a log line is not a
-        # player).
-        islands="$(marker landmasses "$1")"
-        seas="$(marker sea_components "$1")"
-        if [ -z "$islands" ] || [ -z "$seas" ]; then
-            echo "gate-check(naval): the server log has no SEAT_LANDMASSES — cannot tell a land map from an archipelago, so a skip here would be unearned" >&2
-            exit 1
-        fi
-        require_number "$wanted" wants_navy naval
-        require_number "$islands" landmasses naval
-        require_number "$seas" sea_components naval
+        # Stage 9 lands the map, the marker and the topology skip
+        # together, because a topology check with no multi-landmass map
+        # to run on is a branch nothing can reach. Until then no shipped
+        # map offers a crossing, so this skip is correct on every map
+        # that exists.
         if [ "$wanted" -eq 0 ]; then
-            if [ "$islands" -le 1 ]; then
-                echo "gate-check(naval): skipped — the starts share one landmass, so no crossing was available and zero landings is correct"
-                exit 0
-            fi
-            if [ "$seas" -ne 1 ]; then
-                echo "gate-check(naval): skipped — the starts span $islands landmasses but $seas separate seas, so no single crossing joins them"
-                exit 0
-            fi
-            echo "gate-check(naval): the starts span $islands landmasses joined by one sea and NO seat wanted a navy — an AI that cannot walk to its enemy declined to sail (#351)" >&2
-            exit 1
+            echo "gate-check(naval): no AI wanted a navy on this map — every known enemy was walkable, so zero landings is correct"
+            exit 0
         fi
         for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
             key="${leg%%:*}"

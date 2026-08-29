@@ -243,7 +243,7 @@ with the old message quoted back, and removing the marker from
 **And then the acceptance was RUN, on a map that could fire the gate, and
 found three more.** All three were mine, all three were in code that had
 been reviewed and reasoned about, and not one was reachable without
-playing a match on `maps/isles.tres`:
+playing a match on the naval map (stage 9):
 
 - **The AI had stopped looking.** "Have I searched" was keyed on
   `_scout_leg`, and that counter measured HUNGER: scouting ran only while
@@ -361,7 +361,7 @@ no landing can happen on any map:
   water domain and no water flow field exists (stage 2);
   `set_navigable`'s own comment says *"nothing paths on it today"*;
 - **there is no naval map** — `islands` was retired (#280/#299) and
-  `maps/isles.tres` is stage 9's, while §6.2 specifies the gates *on an
+  the naval map (stage 9) is stage 9's, while §6.2 specifies the gates *on an
   islands map*.
 
 So an AI could be given the whole behaviour and no landing would result,
