@@ -243,7 +243,7 @@ func test_both_providers_answer_the_same_five_methods() -> void:
 	# these — a provider missing one is a crash the moment a platform
 	# appears, i.e. on the owner's machine and on nobody else's.
 	var providers: Array = [LanDiscovery.new()]
-	var boundary := load("res://steam_platform.gd")
+	var boundary := load("res://platform.gd")
 	assert_not_null(boundary, "the platform boundary script must exist (#181)")
 	# Absent here — every automated context this repo has is
 	# platform-less, which is the point (D-093) — so the stub is

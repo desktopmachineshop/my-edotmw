@@ -136,7 +136,7 @@ static func _bad(reason: String) -> Dictionary:
 ## unfriendly.
 ##
 ## NOT an identity. Nothing keys on it, exactly as nothing keys on a
-## persona name (D-102's rule, and `steam_platform.persona_name`'s);
+## persona name (D-102's rule, and `Platform.persona_name`'s);
 ## it is a label on a row.
 static func default_game_name() -> String:
 	for key in ["USERNAME", "USER", "LOGNAME"]:

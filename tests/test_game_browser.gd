@@ -304,7 +304,7 @@ func test_the_platform_provider_is_reached_by_path_not_by_name() -> void:
 	# this asserts the other half — that the menu asks for one at all,
 	# rather than shipping a browser with one source for ever.
 	var client := _read("res://client.gd")
-	assert_true(client.contains('load("res://steam_platform.gd")'),
+	assert_true(client.contains('load("res://platform.gd")'),
 		"the menu asks the boundary script for a provider")
 	assert_true(client.contains("lobby_provider()"),
 		"and adds it when there is one")
