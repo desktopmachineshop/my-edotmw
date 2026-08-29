@@ -2967,6 +2967,24 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESE
 bench-stale STRICT="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # A NATIVE SITTING IS ONLY NATIVE IF EDOTMW_RUNTIME SAYS SO.
+    #
+    # This recipe depends on `_import`, and `_import` reads the `runtime`
+    # variable, which DEFAULTS TO DOCKER (top of this file). Written with
+    # the braces it would INTERPOLATE here, so the warning would read
+    # "reads native" exactly when the export is set and the warning does
+    # not apply. `bench-render` has no
+    # `_import` dependency and is pure native, so a sitting can be native
+    # in the step that matters and containerised in the step beside it.
+    # Both caches usually exist in a worked-in tree, so nothing looks wrong.
+    #
+    # It bites on a GPU sitting (#285): that afternoon is native by design,
+    # the lever for freeing host memory is `wsl --shutdown`, and that kills
+    # every container on the machine. One forgotten export turns this step
+    # into a container the owner is about to pull the floor from under, and
+    # the symptom is a bench failure somebody attributes to the bench.
+    #
+    #   export EDOTMW_RUNTIME=native      # once, for the whole sitting
     bash recipe-arg.sh int STRICT "{{STRICT}}"
     # Host admission gate (D-20260818). MEDIUM and not gpu: this half
     # reads a recorded run and reports staleness, so it never opens a
@@ -3021,6 +3039,24 @@ bench-check COUNTS="250,1000" FRAMES="90" STRICT="0": _import
 bench-record COUNTS="250,1000" FRAMES="90": _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # A NATIVE SITTING IS ONLY NATIVE IF EDOTMW_RUNTIME SAYS SO.
+    #
+    # This recipe depends on `_import`, and `_import` reads the `runtime`
+    # variable, which DEFAULTS TO DOCKER (top of this file). Written with
+    # the braces it would INTERPOLATE here, so the warning would read
+    # "reads native" exactly when the export is set and the warning does
+    # not apply. `bench-render` has no
+    # `_import` dependency and is pure native, so a sitting can be native
+    # in the step that matters and containerised in the step beside it.
+    # Both caches usually exist in a worked-in tree, so nothing looks wrong.
+    #
+    # It bites on a GPU sitting (#285): that afternoon is native by design,
+    # the lever for freeing host memory is `wsl --shutdown`, and that kills
+    # every container on the machine. One forgotten export turns this step
+    # into a container the owner is about to pull the floor from under, and
+    # the symptom is a bench failure somebody attributes to the bench.
+    #
+    #   export EDOTMW_RUNTIME=native      # once, for the whole sitting
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
     gate="$(bash host-gate.sh acquire gpu 'bench-record' $$)"
     export EDOTMW_GATE_HELD="$gate"
