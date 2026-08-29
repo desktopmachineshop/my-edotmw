@@ -61,4 +61,4 @@ A stance is a rule a squad keeps following without being told again.
 - HOLD FIRE waits until you explicitly order an attack.
 - RUN moves faster and spends stamina to do it."
 sources = Array[String](["res://combat.gd", "res://squad_sim.gd", "res://decisions/D-20260819-only-men-in-contact-fight.md", "res://decisions/D-20260819-a-charge-is-spent-on-its-impact.md", "res://decisions/D-20260819-tired-men-fight-uphill.md", "res://decisions/D-20260819-stances-are-standing-orders.md"])
-stamp = "e04bb9b6cfaebe472270dc6103d28e6f7a1f63bfca2bc9d4e23baee082d77e9c"
+stamp = "434b171daa759e7db2e0c88bfaef2107f1588d07f7cf5f0c9e4d13965ffc124a"
