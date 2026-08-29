@@ -106,7 +106,12 @@ const RE_RALLY_AT_SECONDS := 40.0
 ## enough that an empty scene cannot pass.
 const MIN_DISTINCT_COLOURS := 24
 
-var _host: ENetConnection
+## How this client reaches a server (#184). ENet today; D-088's Steam
+## relay is the second implementation. Null when there is no connection
+## at all — which is a real state since #180 — and also null when this
+## player is HOSTING, because then the server it owns holds the socket
+## and this client reaches it through the loopback (#182).
+var _transport: NetTransport = null
 ## The other end of this client's connection. UNTYPED since #182,
 ## because there are now two kinds: an `ENetPacketPeer` when joined over
 ## a socket, and a `HostLink` when this player is hosting the match in
@@ -453,9 +458,9 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if _peer != null and _connected:
 		_peer.peer_disconnect_now(0)
-	if _host != null:
-		_host.destroy()
-		_host = null
+	if _transport != null:
+		_transport.close()
+		_transport = null
 	# The one line every interactive session ends with, whatever else
 	# happened. A playtest asked to judge "zero desyncs across the session"
 	# was previously judging it by console SILENCE, and silence is what a
@@ -512,7 +517,7 @@ func _process(delta: float) -> void:
 	# has one, and this client reaches it through the loopback (#182) — so
 	# the test is "is there a connection", not "is there a socket". Read
 	# as the latter, a host would tick its server and render nothing.
-	if _host == null and _hosted_server == null:
+	if _transport == null and _hosted_server == null:
 		# A capture run must still END. `_finish_capture` is the only
 		# thing that quits, and a headless run whose server refused it or
 		# never answered would otherwise hang its recipe forever — a
@@ -753,15 +758,15 @@ func _distinct_colours(image: Image) -> int:
 
 
 func _service_network() -> void:
-	if _host == null:
+	if _transport == null:
 		return
 	while true:
-		var event := _host.service(0)
+		var event := _transport.poll()
 		var type: int = event[0]
-		if type == ENetConnection.EVENT_NONE:
+		if type == NetTransport.EVENT_NONE:
 			return
 		match type:
-			ENetConnection.EVENT_CONNECT:
+			NetTransport.EVENT_CONNECT:
 				_connected = true
 				_ever_connected = true
 				print("client: connected")
@@ -771,7 +776,7 @@ func _service_network() -> void:
 				# a client that never sends it is refused after
 				# NetProtocol.HELLO_TIMEOUT_SECONDS.
 				_send_hello()
-			ENetConnection.EVENT_DISCONNECT:
+			NetTransport.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
 				# #162: `print` goes to stdout and nowhere a player can
@@ -781,8 +786,16 @@ func _service_network() -> void:
 				# chair is indistinguishable from a hang, and is how it
 				# was reported.
 				_on_connection_lost()
-			ENetConnection.EVENT_RECEIVE:
-				var from_peer: ENetPacketPeer = event[1]
+			NetTransport.EVENT_RECEIVE:
+				# UNTYPED, and read through `NetTransport` rather than
+				# through the concrete library — both are #264's seam, not
+				# a slip. A peer is duck-typed to `send`'s shape so that
+				# LoopbackPeer (D-051) and HostLink (#182) can stand in
+				# it, and a test fails if this file names the ENet class
+				# at all. (Which is why this comment does not: the guard
+				# reads the file, and a comment is text like any other —
+				# #184 records the same trap in the Steam boundary.)
+				var from_peer = event[1]
 				while from_peer.get_available_packet_count() > 0:
 					_state.handle_packet(from_peer.get_packet())
 				# Checked after the packets are drained rather than
@@ -791,8 +804,8 @@ func _service_network() -> void:
 				# would leave the rest of it unread.
 				if not _state.refusal.is_empty() and not _refusal_shown:
 					_show_refusal()
-			ENetConnection.EVENT_ERROR:
-				push_error("client: ENet reported a host error")
+			NetTransport.EVENT_ERROR:
+				push_error("client: %s reported a host error" % _transport.describe())
 
 
 ## The chunk size the ground is meshed at (D-017).
@@ -9711,21 +9724,19 @@ func _connect_to(address: String, port: int) -> void:
 	_save_settings()
 	_set_title(MainMenu.format_endpoint(address, port))
 
-	_host = ENetConnection.new()
-	var err := _host.create_host(1, CHANNELS)
-	if err != OK:
-		push_error("client: could not create ENet host (error %d)" % err)
-		_return_to_menu("Could not open a network socket (error %d)." % err)
-		return
-	_peer = _host.connect_to_host(address, port, CHANNELS)
-	if _peer == null:
-		push_error("client: could not reach %s:%d" % [address, port])
+	var dialled := EnetTransport.connect_to(address, port, CHANNELS)
+	_transport = dialled["transport"]
+	_peer = dialled["peer"]
+	if _peer == null or not _transport.is_open():
+		push_error("client: %s" % _transport.describe())
+		_transport = null
+		_peer = null
 		_return_to_menu("Could not reach %s. Check the address, and that the server is running."
 			% _menu_last_endpoint)
 		return
 	_connect_started_at = _wall_now
 	_hide_main_menu()
-	print("client: connecting to %s:%d" % [address, port])
+	print("client: connecting to %s:%d [%s]" % [address, port, _transport.describe()])
 
 
 ## Drop the socket, leaving the scene alone. Split out from
@@ -9735,9 +9746,9 @@ func _connect_to(address: String, port: int) -> void:
 func _close_connection() -> void:
 	if _peer != null and _connected:
 		_peer.peer_disconnect_now(0)
-	if _host != null:
-		_host.destroy()
-	_host = null
+	if _transport != null:
+		_transport.close()
+	_transport = null
 	_peer = null
 	_connected = false
 	_connect_started_at = -1.0
