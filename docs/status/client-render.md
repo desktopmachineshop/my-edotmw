@@ -1,3 +1,43 @@
+**Render cost has a recorded baseline now, and nothing has to remember to
+re-measure** (`D-20260828-render-cost-has-a-recorded-baseline`, #286).
+#229 was a 3x regression found months late by a human playing; #240 then
+found the benchmark had not measured the client at all since the RTW
+programme. Both are one absence — no recorded number to compare against,
+and nothing saying a measurement was owed when the map ladder moved.
+
+```
+just bench-stale          # seconds, headless, ANY machine: is the
+                          # recorded number about THIS tree?
+just bench-check          # a real GPU: run it and compare. Exit 1 if a
+                          # deterministic COUNT moved.
+just bench-record         # a deliberate human act; names its adapter
+```
+
+- **Counts gate, milliseconds report.** Given the same map, roster,
+  viewport and render path a run draws the same men at the same LOD in
+  the same draw calls every time. **Three independent recordings gave
+  identical counts while the wall clock moved 13% between two of them**,
+  on the same build and the same machine — which is the whole argument,
+  and the gap assessment's rule for CI in as many words.
+- **A FINGERPRINT decides whether a difference is a regression at all**:
+  the map, the roster, `generated/manifest.json`, Godot's version and the
+  SOURCE of the render path. A count that moved because a unit was added
+  reads as **STALE — re-record**, not as a fault. Without that the first
+  roster change reports a fault and the second teaches everyone to ignore
+  the check.
+- **`bench-stale` is the per-PR half and needs no GPU.** It cannot tell
+  you the client got slower; it can tell you nobody has measured since
+  the render path last moved, which is exactly what #229 lacked.
+- **A headless baseline is refused**: Godot's dummy display makes the
+  cull pass everything and reports zero draw calls (250 squads draws 155
+  with a GPU, 250 headless). The committed file carries `headless: false`
+  and a test asserts it.
+- First baseline: **Intel(R) Iris(R) Xe Graphics**, 1600x900, 250 and
+  1,000 squads, 90 frames, shipped map. Integrated graphics — D-085's
+  discrete-GPU trigger is still armed.
+
+---
+
 **The benchmark is the client now, and the client is four times what the
 benchmark said** (`D-20260828-the-benchmark-runs-the-clients-own-render-pipeline`,
 #240). `bench_render.gd` claimed to do "exactly what client.gd's

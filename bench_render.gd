@@ -139,6 +139,13 @@ var _frame_gather := 0
 var _frame_jostle := 0
 var _mix := [0, 0, 0]
 
+## Where to write the machine-readable record of this run, for
+## `BenchBaseline` to compare against what was recorded (#286). The
+## printed lines stay exactly as they were: a human reads those, and a
+## check reads this.
+var _json_path := ""
+var _rows := {}
+
 ## Attribution knobs — see `_ready`. Shipping defaults.
 var _clamp_to_ground := true
 var _sample_terrain := true
@@ -215,6 +222,9 @@ func _ready() -> void:
 	_decorate = int(args.get("decorate", 1)) != 0
 	_width_override = int(args.get("cells_wide", 0))
 	_height_override = int(args.get("cells_high", 0))
+	# Where to write this run as data (#286). Empty means "print only",
+	# which is every invocation this recipe had before a baseline existed.
+	_json_path = String(args.get("json", ""))
 	_host_mode = int(args.get("host", 0)) != 0
 	_preset = StringName(String(args.get("preset", "")))
 	_hulls = int(args.get("hulls", 0))
@@ -893,6 +903,7 @@ func _process(delta: float) -> void:
 		_index += 1
 		if _index >= _counts.size():
 			_phase = Phase.DONE
+			_write_json()
 			get_tree().quit(0)
 		else:
 			_phase = Phase.SETUP
@@ -982,6 +993,25 @@ func _report(count: int) -> void:
 		float(_worst_cpu - _worst_split[0] - _worst_split[1]
 			- _worst_split[2] - _worst_split[3]) / 1000.0])
 
+	_rows[str(count)] = {
+		"soldiers": soldiers,
+		"drawn": int(round(derived)),
+		"squads_drawn": _visible_squads,
+		"draw_calls": calls,
+		"keys_worst": _keys_worst,
+		"fighting": _mix[0],
+		"working": _mix[1],
+		"marching": _mix[2],
+		"cpu_ms": cpu_mean / 1000.0,
+		"wall_ms": mean / 1000.0,
+		"worst_ms": float(worst) / 1000.0,
+		"cull_ms": cull / 1000.0,
+		"derive_ms": derive / 1000.0,
+		"decorate_ms": decorate / 1000.0,
+		"upload_ms": upload / 1000.0,
+		"jostle_ms": jostle / 1000.0,
+	}
+
 	print("bench: %d,%d,%.2f,%.2f,%.1f,%d,%.2f,%d" % [
 		count, soldiers,
 		mean / 1000.0,
@@ -991,6 +1021,49 @@ func _report(count: int) -> void:
 		float(cpu_total) / float(maxi(_process_usec.size(), 1)) / 1000.0,
 		_visible_squads,
 	])
+
+
+## This run, as data: what it counted, what it timed, and what it was
+## measured against. The FINGERPRINT rides along because a number without
+## the tree it was taken on is the thing #286 is about — a recorded
+## figure nobody can tell is stale.
+func _write_json() -> void:
+	if _json_path == "":
+		return
+	var record := {
+		"version": BenchBaseline.VERSION,
+		"recorded": Time.get_date_string_from_system(),
+		"adapter": RenderingServer.get_video_adapter_name(),
+		"vendor": RenderingServer.get_video_adapter_vendor(),
+		"headless": DisplayServer.get_name() == "headless",
+		# The CULL reads the viewport, so every drawn count is a count AT
+		# THIS SIZE. Recorded so a comparison can refuse rather than blame
+		# the renderer for a runner with a different window.
+		"viewport": "%dx%d" % [
+			get_viewport().get_visible_rect().size.x,
+			get_viewport().get_visible_rect().size.y],
+		"frames": _frames_to_measure,
+		"camera_height": _camera_height,
+		"knobs": {
+			"clamp": 1 if _clamp_to_ground else 0,
+			"sampler": 1 if _sample_terrain else 0,
+			"copies": 1 if _draw_every_copy else 0,
+			"decorate": 1 if _decorate else 0,
+		},
+		"fingerprint": BenchBaseline.fingerprint(),
+		"rows": _rows,
+	}
+	var path := _json_path
+	var directory := path.get_base_dir()
+	if directory != "" and not DirAccess.dir_exists_absolute(directory):
+		DirAccess.make_dir_recursive_absolute(directory)
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	if handle == null:
+		push_error("bench: could not write %s" % path)
+		return
+	handle.store_string(JSON.stringify(record, "\t", true))
+	handle.close()
+	print("bench: wrote %s" % path)
 
 
 static func _mean(values: Array) -> float:
