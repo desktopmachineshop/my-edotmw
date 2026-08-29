@@ -8,6 +8,7 @@ id = &"emberdeep_heavy"
 display_name = "Shieldwall Vanguard"
 civ = &"emberdeep"
 archetype = &"heavy"
+requires_tech = &"holding"
 squad_size = 20
 health = 130.0
 damage = 10.5

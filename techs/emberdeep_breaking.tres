@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"ram"
+field = &"health"
+mode = "multiply"
+value = 1.15
+
+[resource]
+script = ExtResource("1")
+id = &"emberdeep_breaking"
+display_name = "Rams and Bombards"
+description = "The hold's considered opinion of somebody else's gate."
+line = &"breaking"
+civ = &"emberdeep"
+epoch = 4
+defining = true
+research_at = &"forge"
+requires = Array[StringName]([&"masonry"])
+cost_food = 1200
+cost_wood = 800
+cost_gold = 600
+cost_stone = 250
+research_time = 120.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
