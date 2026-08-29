@@ -870,6 +870,59 @@ func _handle_building_info(data: PackedByteArray) -> void:
 		}
 
 
+## The cells this client knows are FIELDS, and what each grows: cell index
+## -> `Economy.ResourceKind` (D-20260828-food-is-grown-not-only-found).
+##
+## DERIVED from `buildings` — which is already replicated and already
+## fog-gated knowledge (D-030) — and so costs nothing on the wire. That is
+## the same shape as D-052's colour and D-20260825's tool choice: the fact
+## is already here, and a second message carrying it would be a second
+## source of truth free to drift.
+##
+## Rebuilt on demand rather than cached, because the caller (`client.gd`)
+## asks once a frame for a set that changes when a building is raised or
+## razed. `buildings` holds tens of entries, not thousands.
+##
+## `workable_only` narrows it to the fields THIS player's crews may
+## actually be sent to — its own and its allies' (D-050), mirroring
+## `Economy.may_work`. The unfiltered set is what the drawing side wants,
+## because an ally's crew working an ally's field must still be animated
+## working it.
+func farm_cells(workable_only: bool = false) -> Dictionary:
+	var out := {}
+	for id in buildings:
+		var info: Dictionary = buildings[id]
+		if bool(info.get("destroyed", false)):
+			continue
+		if float(info.get("progress", 0.0)) < 1.0:
+			continue
+		var owner := int(info.get("owner", -1))
+		if workable_only and owner != player and not are_allied(owner, player):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
+		var kind := Economy.grows_kind(def)
+		if kind < 0 or def.grow_per_second <= 0.0:
+			continue
+		out[int(info["cell"])] = kind
+	return out
+
+
+## What working this cell yields, or -1: a node's kind, or a field's.
+##
+## THE client-side sibling of `Economy.work_kind_at`, and the reason it
+## exists at all is that `_state.nodes.has(cell)` was the client's only
+## notion of "there is work here" — so a crew standing in a field would
+## have read as idle and a right-click on one would have ordered a march.
+## Convenience for callers asking about ONE cell; anything asking per
+## squad per frame takes `farm_cells()` once and reads it directly, which
+## is what `client.gd` does.
+func work_kind_at(cell_index: int) -> int:
+	if nodes.has(cell_index):
+		return int(nodes[cell_index])
+	var known := farm_cells()
+	return int(known[cell_index]) if known.has(cell_index) else -1
+
+
 ## Its own hash, checked against its own message (D-030).
 ##
 ## The set matters more than the arithmetic: this covers every building

@@ -84,6 +84,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/civ-knobs.md
 
+@docs/status/renewable-economy.md
+
 @docs/status/fantasy-civs.md
 
 @docs/status/m9-plan.md
