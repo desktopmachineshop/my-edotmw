@@ -8,6 +8,7 @@ id = &"gildedreach_sellswords"
 display_name = "Gilded Sellswords"
 civ = &"gildedreach"
 archetype = &"sellswords"
+requires_tech = &"reckoning"
 squad_size = 18
 health = 120.0
 damage = 12.0

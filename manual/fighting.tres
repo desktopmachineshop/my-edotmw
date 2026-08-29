@@ -44,6 +44,14 @@ stamina; standing still restores it. Charge, rest, charge has a price.
 Attacking downhill multiplies your damage by {Combat.DOWNHILL_MULT}, uphill
 by {Combat.UPHILL_MULT}. Take the high ground.
 
+## Research
+
+Research changes what your troops are made of. A tech that raises damage,
+health or reach applies to every squad you own — including the ones already
+standing in the field, not only the next ones you train. You can see your own
+lines and your allies'; what an enemy has researched is hidden, so a squad
+that hits harder than you expected may simply be a better-researched one.
+
 ## Standing orders
 
 A stance is a rule a squad keeps following without being told again.
@@ -53,4 +61,4 @@ A stance is a rule a squad keeps following without being told again.
 - HOLD FIRE waits until you explicitly order an attack.
 - RUN moves faster and spends stamina to do it."
 sources = Array[String](["res://combat.gd", "res://squad_sim.gd", "res://decisions/D-20260819-only-men-in-contact-fight.md", "res://decisions/D-20260819-a-charge-is-spent-on-its-impact.md", "res://decisions/D-20260819-tired-men-fight-uphill.md", "res://decisions/D-20260819-stances-are-standing-orders.md"])
-stamp = "8b5a5635c0865e868068c926022e95e945d74432d67f52b9d88bbaf96f392e8a"
+stamp = "7dcdaa76a3f0687fdd134636b9582a2ab4b1e4f4f0ec920992ae628e647151ab"

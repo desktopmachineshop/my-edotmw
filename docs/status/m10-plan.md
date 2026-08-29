@@ -1,3 +1,22 @@
+**The scale TARGET is measured as of 2026-08-28**
+(`decisions/D-20260828-the-shipping-scale.md`, #287), and it re-scopes
+everything on this page: **~200 squads / ~3,100 soldiers**, recommended
+as 8 players x 25 squads, superseding D-018's 1,000 / 40,000. Both
+budgets land there from opposite directions — D-020's 100 ms **worst**
+tick crosses between 180 and 240 squads (`just profile scale`), and
+30 fps on Intel Iris Xe crosses at ~200 (`just bench-render`, two
+passes). **The budget is a TOTAL**, so `squad_cap` should be derived from
+the seat count rather than being 40 for everybody; at 40 the lobby's own
+24-seat ceiling is 960 squads, nearly five times what the tick holds.
+
+Two consequences for what is written below. **The 1,000-squad sweep being
+over budget (204.5 ms) stops being a shipping problem** and becomes a
+headroom question, because nothing ships at 1,000 squads — #105's
+attribution stands, its urgency does not. And **the host pays BOTH
+budgets** (D-088 runs the server in-process inside a player's client),
+which nothing has ever measured; that is #339 and it may be the binding
+constraint.
+
 ## M10 (scale optimisation) — PLANNED, not built
 
 The map ladder moved up a rung on 2026-08-17 so the zoom cap could stop
@@ -119,5 +138,18 @@ constant, not a fraction of the map, because D-040's worst-tick-flat-in-map-size
 property is worth more than flat latency on two rungs nobody has played —
 raising it to 32,768 takes the ladder to 0/0/1/3 ticks and is one number
 away. And the 1,000-squad sweep is still **over** D-020's 100 ms tick both
-before (342.9 ms) and after (204.5 ms); that is **#105's** unattributed
-per-squad rise, not this, and it is not closed.
+before (342.9 ms) and after (204.5 ms).
+
+**That stopped being a breach on 2026-08-28**
+(`D-20260828-the-shipping-scale`, #287/#105): 1,000 squads is **five
+times a scale nothing ships at**. Measured at the decided ~200 squads —
+on the most water-heavy preset, with naval's third field layer running —
+the tick is **~38 ms mean of a 100 ms budget**. #105's attribution stands
+(flow-field expansion, D-040 working as designed); its urgency does not.
+The honest reading is "over budget at a count the game does not run at",
+and this page said the other thing for a milestone.
+
+**What IS tight at the decided scale is the WORST tick: 92-103 ms against
+100.** Mean has ~60% headroom and worst has none, which is why the
+recommended shape is 8 players x 25 squads rather than something nearer
+the ceiling.

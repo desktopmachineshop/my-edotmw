@@ -8,6 +8,7 @@ id = &"gravesworn_engine"
 display_name = "Carrion Hurler"
 civ = &"gravesworn"
 archetype = &"engine"
+requires_tech = &"breaking"
 squad_size = 3
 health = 90.0
 damage = 30.0
