@@ -424,10 +424,26 @@ func test_a_load_test_bot_wants_several_fields_and_one_of_everything_else() -> v
 		"anything that trains soldiers comes before the SECOND field")
 
 	# Then the rest of the fields, stopping at FIELDS_WANTED.
+	#
+	# HOW MANY producers exist is a property of the ROSTER, not of this
+	# rule, so the producers are drained rather than assumed to be one.
+	# They were one (the barracks) until naval stage 6 landed a dock that
+	# `produces` ships, and a fixture pinned to "the third building" then
+	# reads a correct plan as a regression — the same shape as the unit-id
+	# lists D-20260828-a-guard-is-written-in-a-vocabulary-that-moves
+	# records, arriving in a test rather than in a guard.
 	owned.append(String(second.id))
-	var third := BotBuildPlan.wanted_building(owned, &"gatherers")
-	assert_not_null(third)
-	assert_eq(String(third.id), "farm", "a field is the one support building a bot raises")
+	var next_def := BotBuildPlan.wanted_building(owned, &"gatherers")
+	var drained := 0
+	while next_def != null and not next_def.produces.is_empty():
+		owned.append(String(next_def.id))
+		next_def = BotBuildPlan.wanted_building(owned, &"gatherers")
+		drained += 1
+		assert_true(drained < 12,
+			"the producer list never drained — wanted_building is looping")
+	assert_not_null(next_def)
+	assert_eq(String(next_def.id), "farm",
+		"a field is the one support building a bot raises")
 	for i in range(BotBuildPlan.FIELDS_WANTED):
 		owned.append("farm")
 	assert_null(BotBuildPlan.wanted_building(owned, &"gatherers"),
