@@ -250,3 +250,98 @@ func test_neither_recipe_reimplements_a_shared_comparison() -> void:
 			"known_squads_max", "nodes_known_max", "HANDSHAKE accepted"]:
 		assert_true(script.contains(marker),
 			"gate-check.sh must be the one place %s is read" % marker)
+
+
+# --- the naval gate's ordered vacuity ladder ---------------------------
+#
+# `landings=0` is what a land map, an unplayed match, a missing dock, an
+# untrained transport and a broken disembark all report, so the check
+# fails at the FIRST missing leg and names it.
+#
+# The skip still keys on the AI's own `wants_navy`, which is #351's known
+# weakness — telling a correct refusal from the defect needs the map's
+# own topology, and that arrives with naval stage 9, which is the first
+# thing that can put two starts on different landmasses.
+
+func test_the_naval_gate_still_names_the_first_missing_leg() -> void:
+	# The ordered vacuity ladder survives the topology gate in front of
+	# it: a run that wanted a navy and built no dock must still say so,
+	# rather than being swallowed by the new branch.
+	var server := _log("naval-no-dock",
+		"AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is still a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_the_naval_gate_passes_on_a_landing() -> void:
+	var server := _log("naval-landing",
+		"AI_STATS wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0, "a landing on an archipelago is the pass")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_the_naval_gate_reads_the_best_seat_not_the_last_one() -> void:
+	# A real isles run reported wants_navy=1 for seat 1000 and 0 for seat
+	# 1001, and the gate declared that NO seat wanted a navy — because
+	# `marker` takes the last occurrence, which is right for a marker
+	# printed once a match and silently wrong for one printed once a
+	# player. It would have masked the dock failure underneath with a
+	# #351 report that was not true, which is a gate lying in the
+	# direction of the defect it exists to find.
+	var server := _log("naval-two-seats",
+		"AI_STATS player=1000 wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_eq(got["code"], 0,
+		"one seat crossing is a landing, whatever the other seat did")
+	assert_string_contains(got["out"], "a landing happened")
+
+
+func test_a_seat_that_wanted_a_navy_is_not_erased_by_a_seat_that_did_not() -> void:
+	# The same defect pointed at the ordered ladder rather than at the
+	# skip: the gate must name the leg the keenest seat stopped at, not
+	# the one the last-printed seat never started.
+	var server := _log("naval-wanted-no-dock",
+		"AI_STATS player=1000 wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n"
+		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	var got := _check(["naval", server])
+	assert_ne(got["code"], 0, "a wanted navy with no dock is a failure")
+	assert_string_contains(got["out"], "no dock was ever built")
+
+
+func test_a_log_with_a_stray_byte_is_still_read_and_never_falsely_passes() -> void:
+	# A FALSE GREEN, found by accident on a real ai-ladder log.
+	#
+	# `grep` prints "Binary file <path> matches" INSTEAD OF THE MATCHES
+	# when its input is not text, and one stray byte — a crash dump, a
+	# truncated write, an engine backtrace — is enough. Every `[ ... -eq
+	# ]` downstream then failed with "integer expected", and because a
+	# failed test is not a failed script, the gate ran on to its success
+	# line and exited 0. It reported "a landing happened" on a match with
+	# no dock in it.
+	#
+	# A gate that reports a pass on a log it cannot read is worse than no
+	# gate at all, which is why this is fixed twice over: `grep -a` keeps
+	# the output text, and `require_number` refuses anything that is not
+	# digits.
+	var path := "user://gate-check-binary.log"
+	var handle := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(handle, "could not write the binary fixture")
+	if handle == null:
+		return
+	handle.store_string(
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
+		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
+	handle.store_8(0)
+	handle.store_8(1)
+	handle.store_string("engine backtrace\n")
+	handle.close()
+
+	var got := _check(["naval", ProjectSettings.globalize_path(path)])
+	assert_ne(got["code"], 0,
+		"a run with no dock must fail even when the log carries a stray "
+		+ "byte — the gate may not pass because it could not read")
+	assert_string_contains(got["out"], "no dock was ever built",
+		"and it must still name the leg, rather than failing vaguely")

@@ -33,6 +33,7 @@
 #   bash gate-check.sh fog-nodes  BOTS_LOG SERVER_LOG
 #   bash gate-check.sh civs       SERVER_LOG
 #   bash gate-check.sh handshake  BOTS_LOG SERVER_LOG
+#   bash gate-check.sh naval      SERVER_LOG
 #
 # Exit 0 and print what it proved; exit 1 naming what it could not; exit
 # 2 on a misuse of this script itself.
@@ -41,6 +42,7 @@ set -euo pipefail
 usage() {
     echo "usage: gate-check.sh fog-squads|fog-nodes|handshake BOTS_LOG SERVER_LOG" >&2
     echo "       gate-check.sh civs SERVER_LOG" >&2
+    echo "       gate-check.sh naval SERVER_LOG" >&2
     exit 2
 }
 
@@ -51,8 +53,53 @@ shift
 # The LAST occurrence of `<key>=<number>` in a log. Last, not first:
 # every one of these is a running total reported repeatedly, and the
 # final report is the one describing the whole run.
+# -a because A LOG IS NOT GUARANTEED TO BE TEXT. A single stray byte —
+# from a crash dump, a truncated write, an engine backtrace — makes grep
+# print "Binary file <path> matches" INSTEAD OF THE MATCHES. Every `[`
+# comparison downstream then fails with "integer expected", and because
+# a failed test is not a failed script the gate ran on to its success
+# line and exited 0. Measured: a real ai-ladder log with one such byte
+# reported "a landing happened" on a match with no dock in it.
+#
+# A gate that reports a pass on an unreadable log is worse than no gate,
+# so this is belt AND braces: -a keeps the output text, and
+# `require_number` refuses anything that is not digits.
 marker() {
-    grep -oE "$1=[0-9]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 || true
+    grep -a -oE "$1=[0-9]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 || true
+}
+
+# Fail loudly on anything that is not a plain number.
+#
+# The values here are parsed out of a log, and every consumer compares
+# them arithmetically. `[ "$x" -eq 0 ]` on a non-number writes to stderr
+# and returns non-zero, which inside an `if` is indistinguishable from a
+# legitimate "no" — so an unparseable value silently takes the false
+# branch. Named so the failure says which key was unreadable.
+require_number() {
+    case "$1" in
+        ""|*[!0-9]*)
+            echo "gate-check($3): $2 did not read as a number ('$1') — the log is unreadable here, and a gate that cannot read its input must not report a pass" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# The LARGEST value of a key across the whole log, for keys that are
+# reported PER SEAT.
+#
+# `marker` takes the last occurrence, which is right for a marker printed
+# once a match and silently wrong for one printed once a player: it reads
+# whichever seat happened to print last. Measured on a real isles run —
+# seat 1000 reported `wants_navy=1` and seat 1001 `wants_navy=0`, and the
+# gate declared that no seat wanted a navy, which would have masked the
+# dock failure underneath it with a #351 report that was not true.
+#
+# The naval legs all ask "did ANY seat get this far", so the max is the
+# question. A per-seat gate is a different and harder one — a seat that
+# sailed while another never launched is not a failure, it is one AI
+# playing better than the other.
+marker_max() {
+    grep -a -oE "$1=[0-9]+" "$2" 2>/dev/null | cut -d= -f2         | sort -n | tail -1 || true
 }
 
 # Two markers had to be found for a comparison to have happened at all.
@@ -70,6 +117,64 @@ require_both() {
 }
 
 case "$check" in
+    # Naval cut-list stage 7's gate (#301, naval plan section 6.2): a run
+    # on a map with water must contain a LANDING, or the whole feature is
+    # shipped and unexercised — which is D-076's gap, which is why
+    # section 6 exists, and which is why this is a gate rather than a
+    # metric.
+    #
+    # ORDERED VACUITY GUARDS, and they are the point. `landings=0` is
+    # what a land map, an unplayed match, a missing dock, an untrained
+    # transport and a broken disembark ALL report. So the failure is
+    # reported at the FIRST leg that is missing, and a zero says WHICH
+    # rather than that something did.
+    #
+    # Skipped entirely when no AI ever wanted a navy: on a map where
+    # every enemy is walkable the correct number of landings is zero, and
+    # a gate that failed there would fail every ordinary run. `wants_navy`
+    # is that distinction, which is why the AI reports it.
+    naval)
+        [ "$#" -eq 1 ] || usage
+        wanted="$(marker_max wants_navy "$1")"
+        if [ -z "$wanted" ]; then
+            echo "gate-check(naval): no AI reported wants_navy — no seat ran the naval question at all" >&2
+            exit 1
+        fi
+        # SKIPPED ON THE AI'S OWN ANSWER HERE, AND THAT IS A KNOWN
+        # WEAKNESS, deliberately carried until the map that makes it
+        # fixable lands. `wants_navy=0` is reported both by an AI that
+        # correctly declined (every enemy walkable) and by one that
+        # declined on an archipelago, which is #351 — and telling those
+        # apart needs SEAT_LANDMASSES, which needs
+        # `MapConfig.reachable_components`, which is naval stage 9.
+        #
+        # Stage 9 lands the map, the marker and the topology skip
+        # together, because a topology check with no multi-landmass map
+        # to run on is a branch nothing can reach. Until then no shipped
+        # map offers a crossing, so this skip is correct on every map
+        # that exists.
+        if [ "$wanted" -eq 0 ]; then
+            echo "gate-check(naval): no AI wanted a navy on this map — every known enemy was walkable, so zero landings is correct"
+            exit 0
+        fi
+        for leg in "docks:no dock was ever built"                    "ships_peak:a dock stood but no hull was ever trained"                    "embarks:a hull existed but nobody ever boarded"                    "landings:an army sailed and never got ashore"; do
+            key="${leg%%:*}"
+            why="${leg#*:}"
+            got="$(marker_max "$key" "$1")"
+            if [ -z "$got" ]; then
+                echo "gate-check(naval): the server log has no $key at all — the AI is not reporting its naval legs" >&2
+                exit 1
+            fi
+            require_number "$got" "$key" naval
+            if [ "$got" -eq 0 ]; then
+                echo "gate-check(naval): $why ($key=0)" >&2
+                exit 1
+            fi
+        done
+        echo "gate-check(naval): a landing happened — docks=$(marker_max docks "$1") ships_peak=$(marker_max ships_peak "$1") embarks=$(marker_max embarks "$1") landings=$(marker_max landings "$1")"
+        exit 0
+        ;;
+
     # D-026 criterion 6's load half: fog must be shown gating a REAL
     # multi-client run, not a test fixture — even the single
     # MOST-INFORMED client must know FEWER squads than the server

@@ -531,3 +531,173 @@ func test_an_ai_does_not_go_looking_at_a_teammates_home() -> void:
 
 	assert_eq(looked, [spawns[2]],
 		"The AI went looking at its own team's homes")
+
+
+## An AI with two crews, a full wallet and nobody in sight (#351).
+##
+## The wallet is what makes this the right fixture: `_kinds_below_floor`
+## is empty, so the ECONOMY has nothing to look for. Whether the AI still
+## walks somewhere new is then a question about knowledge alone.
+func _sated_ai_with_nobody_in_sight() -> Dictionary:
+	var sim := SquadSim.new(_space(), CurveReplicator.new())
+	var ai := AiPlayer.new(1000, CivRoster.ids()[0])
+	sim.add_squad(_crew_def(), 1000, Vector2i(8, 8))
+	sim.add_squad(_crew_def(), 1000, Vector2i(9, 8))
+	sim.tick()
+
+	var seats := [{"kind": "ai", "player": 1000, "civ": String(ai.civ),
+		"team": 0, "name": "AI 1000"}]
+	ai.state.handle_packet(NetProtocol.encode_lobby(0, seats, {}, 1))
+	_feed(sim, ai)
+	ai.state.handle_packet(NetProtocol.encode_wallet(
+		PackedInt32Array([9999, 9999, 9999, 9999])))
+	# A KNOWN NODE OF EVERY KIND THE FLOOR ASKS FOR, and this is the half
+	# the fixture is worthless without. `_kinds_below_floor` appends FOOD
+	# unconditionally, so an AI that has been shown no nodes at all is
+	# hungry by construction and scouts forever for a reason that has
+	# nothing to do with the rule under test. The first version of this
+	# fixture omitted them and passed identically with the change
+	# reverted — a test constructing its own input and then testing the
+	# constructor.
+	var space := _space()
+	ai.state.handle_packet(NetProtocol.encode_nodes([
+		{"cell": space.index(Vector2i(10, 8)),
+			"kind": Economy.ResourceKind.FOOD},
+		{"cell": space.index(Vector2i(11, 8)),
+			"kind": Economy.ResourceKind.WOOD},
+	]))
+
+	var sent := []
+	ai.send = func(packet: PackedByteArray) -> void: sent.append(packet)
+	return {"sim": sim, "ai": ai, "sent": sent}
+
+
+## THE DEFECT THIS FILE EXISTS FOR (#351).
+##
+## Scouting used to be driven only by a resource the AI lacked, so an AI
+## whose economy was satisfied stopped walking anywhere new — and
+## `_scout_leg`, which the naval question reads to answer "have I
+## searched", stopped with it. Measured on a real 600 s match on
+## `maps/isles.tres` before the fix: 3 buildings, 29 squads,
+## `scout_legs=2` after ten minutes, so the AI never concluded it had run
+## out of world and never built a navy. The predicate was right; the
+## number under it did not mean what its name said.
+##
+## A BEHAVIOURAL version of this test was written first and DELETED for
+## being vacuous: driven through `update()`, the AI retires a node its
+## crew never reaches, goes hungry, and scouts again for the old reason —
+## so it passed identically with the fix reverted. Only asking the guard
+## directly measures the enemy trigger alone.
+func test_it_looks_for_an_enemy_and_stops_once_it_has_searched() -> void:
+	# The other half, and the reason the trigger is bounded: past
+	# SCOUTED_ENOUGH_LEGS the answer is "I have looked and nobody is
+	# here", which is what the naval question is waiting to hear. An
+	# unbounded search would spend a crew forever on a map with one
+	# opponent behind a wall of fog.
+	#
+	# Driven at the GUARD rather than through `update()`, deliberately.
+	# The economy has its own reason to scout — a node whose crew never
+	# arrives is retired, and the AI is hungry again — and in a fixture
+	# with no real gathering that churn re-triggers scouting for a reason
+	# that is not the one under test. Asking the function directly is the
+	# only way to measure the enemy trigger alone.
+	var w := _sated_ai_with_nobody_in_sight()
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	ai.set_time(sim.time + 1.0)
+
+	ai._scout_leg = AiPlayer.SCOUTED_ENOUGH_LEGS
+	var before := ai.scout_legs
+	ai._scout_for_what_it_lacks()
+	assert_eq(ai.scout_legs, before,
+		"an AI that has searched enough and needs nothing must not keep "
+		+ "walking — the enemy trigger is bounded, not a standing order")
+
+	# And the mirror, so the assertion above cannot pass by the function
+	# being inert: one leg short, it still goes.
+	ai._scout_leg = AiPlayer.SCOUTED_ENOUGH_LEGS - 1
+	ai._resource_scout = -1
+	ai._scout_leg_until = 0.0
+	ai._scout_for_what_it_lacks()
+	assert_gt(ai.scout_legs, before,
+		"premise: one leg short of enough, the same call does scout — "
+		+ "otherwise the bound above proves only that nothing happens")
+
+
+## An AI holding the shipped opening, with a resource node standing on the
+## cell its crew is about to found on (#381 / #217, fixed by PR #255).
+func _founding_ai_blocked_at_home() -> Dictionary:
+	var w := _founding_ai(1)
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var builder := ai._founder()
+	assert_gte(builder, 0, "premise: something in the opening may found")
+	var home := ai.state.squad_cell(builder, sim.time)
+	assert_gte(home.x, 0, "premise: the founder has a known cell")
+	ai.state.handle_packet(NetProtocol.encode_nodes([
+		{"cell": ai.state.space.index(home), "kind": Economy.ResourceKind.WOOD},
+	]))
+	w["home"] = home
+	return w
+
+
+func _town_sites(sent: Array) -> Array:
+	var out := []
+	for order in _build_orders(sent):
+		if String(order["def_id"]) == "town_centre":
+			out.append(int(order["cell"]))
+	return out
+
+
+func test_an_ai_blocked_at_its_start_founds_somewhere_else() -> void:
+	# #381's symptom, verified against the merged #255 fix rather than by
+	# reading it. Before that fix `_found_town` ordered at the spawn cell
+	# and never varied, so a node standing there — 20.0% of starts on the
+	# shipped default map, 8.3% on `ladder`, measured by worker 88 — meant
+	# the seat re-asked for the same refused cell for the whole match:
+	# buildings=0, the crew never consumed so squads_peak stayed at the
+	# opening 2, and no scouting, because scouting needs two crews.
+	#
+	# Driven as a FIXTURE rather than looked for in a ladder run on
+	# purpose: with 2 AI seats on `isles` a run has only about a 34%
+	# chance of containing a blocked start, so a green there would have
+	# meant "the case did not arise" — a coin flip dressed as evidence.
+	var w := _founding_ai_blocked_at_home()
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var blocked: Vector2i = w["home"]
+
+	for i in range(6):
+		var t := sim.time + AiPlayer.FOUND_RETRY * float(i + 1)
+		ai.set_time(t)
+		ai.update(t)
+
+	var sites := _town_sites(w["sent"])
+	assert_gt(sites.size(), 0,
+		"premise: a blocked AI must still ASK — a seat that stops asking "
+		+ "is a different defect from one that asks in the wrong place")
+	assert_false(sites.has(ai.state.space.index(blocked)),
+		"an AI whose start holds a resource node must found elsewhere, "
+		+ "not re-ask for the refused cell for the whole match (#381)")
+
+
+func test_an_unblocked_ai_still_founds_on_its_own_start() -> void:
+	# The mirror, and it is what stops the test above passing for the
+	# wrong reason. If the AI simply never chose its own cell, the
+	# assertion would hold with the filter doing nothing — so this pins
+	# that the start IS the preferred site when it is free, and that the
+	# node is what moved it.
+	var w := _founding_ai(1)
+	var ai: AiPlayer = w["ai"]
+	var sim: SquadSim = w["sim"]
+	var builder := ai._founder()
+	var home := ai.state.squad_cell(builder, sim.time)
+
+	ai.set_time(sim.time + AiPlayer.FOUND_RETRY)
+	ai.update(sim.time + AiPlayer.FOUND_RETRY)
+
+	var sites := _town_sites(w["sent"])
+	assert_gt(sites.size(), 0, "premise: an unblocked AI founds")
+	assert_true(sites.has(ai.state.space.index(home)),
+		"with nothing in the way the start is the site — so the other "
+		+ "test's result is the node moving it, not indifference")

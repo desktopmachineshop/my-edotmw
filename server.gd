@@ -679,6 +679,7 @@ func _build_world() -> void:
 		_settings.width, _settings.height, _settings.preset, _settings.seed,
 		_spawn_points.size()])
 
+
 	# Buildings (D-029). Owned by the server and handed to the sim, which
 	# advances construction and lets armed ones shoot as part of its tick.
 	_buildings = BuildingSim.new(space)

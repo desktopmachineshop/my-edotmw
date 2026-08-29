@@ -865,11 +865,6 @@ func is_passable_top(cell: Vector2i) -> bool:
 ## naval stage 2. It is declared NOW because stage 5 (combat across the
 ## shoreline) needs to name the domain it refuses melee across, and a
 ## bare `2` in `combat.gd` would be a second definition of the same fact.
-## Three values in one field is right because they are MUTUALLY
-## EXCLUSIVE BY CONSTRUCTION: a ship is never on a wall, and a land
-## squad is never on open water except as cargo, which is not in the
-## world at all (naval 3.1, and `_cargo` is where that is enforced).
-##
 const DOMAIN_GROUND := 0
 const DOMAIN_WALL_TOP := 1
 const DOMAIN_WATER := 2

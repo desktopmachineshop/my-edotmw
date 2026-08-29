@@ -102,7 +102,7 @@ func update(now: float) -> void:
 	_report_refusals()
 	_forget_dead_assignments()
 	_drop_unreachable_assignments()
-	_scout_for_resources()
+	_scout_for_what_it_lacks()
 	_found_town()
 	_raise_buildings()
 	_fortify()
@@ -111,6 +111,10 @@ func update(now: float) -> void:
 	_train()
 	_put_gatherers_to_work()
 	if not economy_only:
+		# Before `_fight`, deliberately: the raid pool is what sails, and
+		# an AI that spent it marching at an enemy it cannot walk to
+		# would never have a squad free to board.
+		_go_to_sea()
 		_fight(now)
 
 
@@ -225,6 +229,23 @@ func _wanted_buildings() -> Array:
 			continue
 		# A building behind a tech is not a building it can want yet.
 		if not state.has_tech(def.requires_tech):
+			continue
+		# A shore building is raised by the NAVAL INVESTMENT or not at
+		# all (`_raise_dock`). This list is indiscriminate — every def a
+		# gatherer may build, in cost order — so a dock was going up as
+		# ordinary infrastructure on seats that had never wanted a navy
+		# (#351: `docks=1` beside `wants_navy=0 ships_peak=0`).
+		#
+		# The wasted wood is the small half. §6.2's vacuity ladder gates
+		# FIRST on "no dock was ever built", so a dock nobody meant would
+		# carry the gate past its first leg and make it name the WRONG
+		# one — and a check that lies about which thing broke is worse
+		# than one that only says something did.
+		#
+		# By `needs_shore` rather than by id, so the next shore building
+		# inherits the rule instead of rediscovering it (D-047: no script
+		# names a civ; the same reasoning applies to naming a def).
+		if def.needs_shore:
 			continue
 		if def.produces.size() > 0:
 			military.append(def)
@@ -870,18 +891,36 @@ func _put_gatherers_to_work() -> void:
 const SCOUT_LEG_SECONDS := 25.0
 
 
-func _scout_for_resources() -> void:
+func _scout_for_what_it_lacks() -> void:
 	if state.space == null or not state.welcomed:
 		return
 
-	# Only if something it needs has never been seen. Once a node of that
-	# kind is known, ordinary gathering takes over and this stops.
+	# TWO reasons to walk somewhere new, and the second one is why this
+	# is not called `_scout_for_resources` any more.
+	#
+	# A missing RESOURCE was the original trigger, and it stops the moment
+	# a node of each needed kind has been seen — which is right for the
+	# economy and made `_scout_leg` a measure of HUNGER rather than of
+	# looking. #351's naval question reads that counter to answer "have I
+	# searched", and on a rich island an AI satisfied its economy in two
+	# legs and never scouted again: 3 buildings, 29 squads, `scout_legs=2`
+	# after ten minutes, and so it never concluded it had run out of
+	# world. The predicate was right and the number under it did not mean
+	# what its name said.
+	#
+	# A missing ENEMY is the second, and it makes the counter honest: an
+	# AI that does not know where anybody is has something to look for,
+	# whatever its wallet says. It stops at `SCOUTED_ENOUGH_LEGS` rather
+	# than running forever, because past that point the answer is "I have
+	# looked and there is nobody here" — which is exactly what
+	# `AiNaval.needs_ships` is waiting to hear.
 	var missing := -1
 	for kind in _kinds_below_floor():
 		if _nearest_known_of_kind(kind) < 0:
 			missing = kind
 			break
-	if missing < 0:
+	var unfound_enemy := _known_enemy_cells().is_empty() 		and _scout_leg < SCOUTED_ENOUGH_LEGS
+	if missing < 0 and not unfound_enemy:
 		_resource_scout = -1
 		return
 
@@ -1271,6 +1310,7 @@ var peak_allies_seen: int = 0
 
 
 func _record_stats() -> void:
+	_note_landings()
 	var squads := _own_squads()
 	peak_squads = maxi(peak_squads, squads.size())
 
@@ -1378,7 +1418,7 @@ func _record_stats() -> void:
 ## One line the ladder can parse. Structured markers, not prose — the
 ## same rule the load test's verdict follows.
 func stats_line() -> String:
-	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d defences_ordered=%d defences_standing=%d gate_orders=%d gates_sealed=%d buildings_lost=%d attacks_survived=%d defences_fought=%d epoch=%d techs=%d techs_ordered=%d" % [
+	return "AI_STATS player=%d civ=%s profile=%s team=%d squads_peak=%d workers_peak=%d buildings=%d enemy_buildings_seen=%d allies_seen=%d ally_objectives=%d attacks=%d first_attack=%.1f first_attack_soldiers=%d peak_stockpile=%d peak_food=%d peak_wood=%d substituted=%d unreachable=%d scout_legs=%d afford_refusals=%d cap_refusals=%d defences_ordered=%d defences_standing=%d gate_orders=%d gates_sealed=%d buildings_lost=%d attacks_survived=%d defences_fought=%d epoch=%d techs=%d techs_ordered=%d wants_navy=%d docks=%d ships_peak=%d embarks=%d landings=%d naval_step=%s" % [
 		player, civ, profile.id, _own_team(), peak_squads, peak_workers, buildings_raised,
 		peak_enemy_buildings_known, peak_allies_seen, ally_objectives,
 		attacks_launched, first_attack_at, first_attack_soldiers,
@@ -1391,7 +1431,317 @@ func stats_line() -> String:
 		# never asked" (techs_ordered 0) from "it asked and was refused"
 		# (techs_ordered high, techs 0). Those are different faults with
 		# the same symptom.
-		state.epoch, state.techs.size(), techs_ordered]
+		state.epoch, state.techs.size(), techs_ordered,
+		1 if wants_navy else 0, docks, ships_peak, embarks, landings, naval_step]
+
+
+# --- the sea (naval plan section 6.1, #301 stage 7) -------------------
+#
+# D-076 shipped a whole feature the AI never heard of, and its own entry
+# said so; sixteen days later that was still true and #210 sat
+# undetected. Section 6 makes the consumer part of the feature, so this
+# is written beside the naval simulation rather than after it.
+#
+# Every DECISION lives in `ai_naval.gd` / `ai_investment.gd`, which are
+# static, pure and tested without a server. What is here is the plumbing:
+# reading what this client KNOWS, and sending orders it could have sent
+# by hand.
+
+## Whether this AI has concluded it needs a navy. In AI_STATS so that
+## "the AI did nothing" and "the AI decided it had no reason to" can be
+## told apart — the distinction D-076's gap hid for sixteen days.
+var wants_navy := false
+var docks: int = 0
+var ships_peak: int = 0
+var embarks: int = 0
+var landings: int = 0
+## Which leg of the investment it is on, by name. `landings = 0` is what
+## a land map, an unplayed match and a broken transport all report; this
+## is how a zero says WHICH.
+var naval_step := "none"
+
+## How many scouting legs count as having LOOKED at your own island.
+##
+## Not a difficulty knob: it bounds a FAILURE (concluding something from
+## ignorance), and D-20260818-ai-profiles-are-data keeps those as
+## constants for the reason `FOUND_RETRY` and `UNREACHABLE_AFTER` are —
+## a difficulty able to make an AI never explore is a way to ship a
+## broken opponent by data entry.
+##
+## Three, because `_scout_for_what_it_lacks` expands its radius by 5 cells a
+## leg from 6, so three legs have swept ~21 cells around home — more than
+## `min_spawn_landmass`'s 96-cell disc is wide.
+## How far to look for a coast to put a dock on.
+##
+## Big enough to cross an island that could hold a base: a landmass only
+## qualifies as a start at `min_spawn_landmass` (96) cells, and a real one
+## is elongated rather than a disc, so its far end is a good deal further
+## from the water than a compact 96-cell blob's radius of about six.
+##
+## The cost is a sorted offset table that `TorusSpace.disk_offsets`
+## memoises per radius, walked only while the AI wants a navy and has no
+## dock — so it is paid once, by the seats that are actually going to sea.
+const DOCK_SEARCH_RADIUS := 32
+
+const SCOUTED_ENOUGH_LEGS := 3
+
+var _land_labels := PackedInt32Array()
+var _land_sizes := PackedInt32Array()
+var _navigable := PackedByteArray()
+
+## The GROUND, as this AI derives it for itself.
+##
+## NOT `state.terrain_passable`, which is filled by `client.gd` and
+## `bench_render.gd` and by nothing else — an AI has no rendering path, so
+## that array is empty for every AI in every match. `_raise_dock` read it
+## and therefore asked `is_shore` about a map with no land in it, found no
+## coast anywhere, and never built a dock however close the water was.
+##
+## Derived here from the replicated MapSettings, beside `_navigable` and
+## the component labels, because those three answer one question and a
+## caller holding two of them from one source and the third from another
+## is the shape that hid this.
+var _terrain_passable := PackedByteArray()
+var _terrain_key := ""
+## Squads already ordered aboard, so the AI does not re-order them every
+## think while they walk to the quay. Dropped when they stop existing,
+## which for an embarked squad is immediate — boarding sets `alive` to 0.
+var _sailing := {}
+
+
+## The naval investment, once per think.
+##
+## Every step reuses a mechanism that already exists: a build order with a
+## site rule, `encode_order_produce`, and an ordinary MOVE. That last one
+## is stage 4's doing and worth knowing — a squad ordered onto a hull's
+## cell boards it, and a laden hull ordered at land records a landing —
+## so nothing here needs an opcode that did not already exist.
+func _go_to_sea() -> void:
+	if state.space == null or not state.has_map():
+		return
+	_refresh_naval_terrain()
+
+	var home := state.space.index(state.spawn_cell_of(player))
+	var enemies := _known_enemy_cells()
+	# `_scout_leg` is the AI's own scouting progress — the answer to "have
+	# I looked", which is what separates having cleared an island from
+	# never having left the beach (#351). A clock would answer "has it
+	# been a while", which is the #69/#84 rule about legs being events.
+	#
+	# `min_spawn_landmass` is D-104's definition of enough ground for a
+	# start, read off the map this client was told about rather than
+	# restated here.
+	var looked := _scout_leg >= SCOUTED_ENOUGH_LEGS
+	wants_navy = AiNaval.needs_ships(_land_labels, home, enemies, looked,
+		_land_sizes, int(state.map_settings.get("min_spawn_landmass", 0)))
+	docks = _owned_building_count(&"dock")
+	ships_peak = maxi(ships_peak, _hulls().size())
+	if not AiInvestment.should_invest(wants_navy, profile.naval_commitment):
+		naval_step = "none"
+		return
+
+	# The sizes and the floor go with it: with no enemy known, the target
+	# is the nearest landmass worth crossing to, and "worth" is D-104's
+	# min_spawn_landmass — the same number `needs_ships` decided on.
+	var target := AiNaval.landing_target(state.space, _land_labels, home,
+		enemies, _land_sizes,
+		int(state.map_settings.get("min_spawn_landmass", 0)))
+	var steps := AiNaval.steps(
+		func(): return docks > 0,
+		func(): _raise_dock(),
+		func(): return not _hulls().is_empty(),
+		func(): _train_hull(),
+		func(): return _laden_hull() >= 0 or not _sailing.is_empty(),
+		func(): _send_party_aboard(),
+		func(): return landings > 0,
+		func(): _put_ashore(target))
+
+	var next := AiInvestment.next_step(steps)
+	if next.is_empty():
+		naval_step = "done"
+		return
+	naval_step = String(next["label"])
+	(next["act"] as Callable).call()
+
+
+## The land components and the water field this AI believes in, derived
+## from the replicated `MapSettings` (D-049) exactly as the client's own
+## terrain is — never asked for, so there is no wire change and no way
+## for an AI to learn more than a human in its seat.
+##
+## Recomputed only when the map changes, which in practice is once per
+## match. The walk is O(cells) and a think runs every `think_interval`;
+## this project has paid four times for a per-call re-derivation.
+func _refresh_naval_terrain() -> void:
+	var key := "%d-%d-%d-%s" % [state.space.width, state.space.height,
+		int(state.map_settings.get("seed", 0)),
+		String(state.map_settings.get("preset", ""))]
+	if key == _terrain_key:
+		return
+	var terrain := MapSettings.from_dict(state.map_settings).to_terrain()
+	_terrain_passable = terrain.passability(state.space)
+	_navigable = terrain.navigability(state.space)
+	var components := MapConfig.walkable_components(
+		state.space, _terrain_passable)
+	_land_labels = components["labels"]
+	# The SIZES too, because "is there land I cannot walk to" is only a
+	# reason when that land is worth going to — a stray islet is not, and
+	# generated maps are full of them.
+	_land_sizes = components["sizes"]
+	_terrain_key = key
+
+
+## Cells of every enemy thing this AI has been TOLD about.
+##
+## Buildings only, deliberately: a squad moves, so an enemy squad seen on
+## a beach says nothing about which landmass its owner lives on, and a
+## navy built on a passing scout would be a navy built on noise.
+func _known_enemy_cells() -> Array:
+	var out := []
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if not _hostile(int(info["owner"])) or bool(info["destroyed"]):
+			continue
+		out.append(int(info["cell"]))
+	return out
+
+
+func _hulls() -> Array:
+	return _squads_matching(func(def: UnitDef): return def.movement_domain == "water")
+
+
+## A hull with something aboard, or -1.
+func _laden_hull() -> int:
+	for squad in _hulls():
+		if (state.composition[squad].get("cargo", []) as Array).size() > 0:
+			return squad
+	return -1
+
+
+## Put a dock on a shore near an idle builder.
+##
+## The ordinary build path with ONE extra rule — the site must be a shore
+## — which is section 4.1's placement rule asked before the order rather
+## than discovered by a refusal. `_site_beside` picks deterministically
+## from a disk and knows nothing about water, so an AI using it would
+## have spent its whole match having dock orders refused.
+func _raise_dock() -> void:
+	var def := BuildingSim.def_by_id(&"dock")
+	if def == null or not _can_afford(def):
+		return
+	var builder := _idle_builder()
+	if builder < 0:
+		return
+	var from := state.squad_cell(builder, state_time())
+	if from.x < 0:
+		return
+	# Nearest-first, so the dock lands as close to the builder as the
+	# coast allows — `disk_offsets` is sorted by distance (D-067) and this
+	# is exactly the "walk outward until you find one" that sorting made
+	# legal.
+	#
+	# THE RADIUS BOUNDS THE SEARCH, NOT THE POSSIBILITY, and getting that
+	# backwards is what this was. It was 6, a "nearby" heuristic — so an
+	# AI whose base sat further than six cells from water found no shore,
+	# issued nothing, and reported `naval_step=dock` for the whole match
+	# with every other part of the investment correct. A builder WALKS to
+	# its site (D-031's build reach), so how far the coast is decides how
+	# long the dock takes and never whether it can exist.
+	for offset in TorusSpace.disk_offsets(DOCK_SEARCH_RADIUS):
+		var cell := state.space.normalize(from + offset)
+		if not TerrainGen.is_shore(state.space, _terrain_passable,
+				_navigable, state.space.index(cell)):
+			continue
+		var order := state.encode_build(builder, "dock", cell)
+		if not order.is_empty():
+			send.call(order)
+		return
+
+
+## Ask a dock for a transport.
+##
+## By ARCHETYPE, never by def id: the server resolves an archetype against
+## the asking player's civ (D-047), which is what lets one line of AI
+## serve six rosters. `_producible_archetypes` is the same list the rest
+## of `_train` uses.
+func _train_hull() -> void:
+	for wire_id in state.buildings:
+		var info: Dictionary = state.buildings[wire_id]
+		if int(info["owner"]) != player or bool(info["destroyed"]):
+			continue
+		if String(info["def_id"]) != "dock":
+			continue
+		send.call(NetProtocol.encode_order_produce(int(wire_id), "transport"))
+		return
+
+
+## Order a share of the army onto the hull.
+##
+## An ordinary MOVE at the hull's own cell — stage 4 made that the embark
+## order, so there is no new opcode and nothing here knows what boarding
+## is. The squads are remembered in `_sailing` so they are not re-ordered
+## every think while they walk to the quay.
+func _send_party_aboard() -> void:
+	var owned := _hulls()
+	var hull: int = int(owned[0]) if not owned.is_empty() else -1
+	if hull < 0:
+		return
+	var hull_cell := state.squad_cell(hull, state_time())
+	if hull_cell.x < 0:
+		return
+	var def := UnitRoster.by_id(StringName(state.composition[hull]["def_id"]))
+	var capacity := def.transport_capacity if def != null else 0
+
+	var army := []
+	for squad in _own_squads():
+		if _sailing.has(squad):
+			continue
+		var squad_def := UnitRoster.by_id(StringName(state.composition[squad]["def_id"]))
+		if squad_def == null or squad_def.movement_domain == "water":
+			continue
+		if squad_def.damage <= 1.0 or squad_def.carry_capacity > 0:
+			continue
+		army.append(squad)
+
+	var wanted := AiNaval.sailing_party(army.size(), capacity, profile.naval_commitment)
+	for i in range(wanted):
+		var order := state.encode_order(army[i], hull_cell)
+		if not order.is_empty():
+			send.call(order)
+			_sailing[army[i]] = true
+			embarks += 1
+
+
+## Send the laden hull at the far shore. The landing is recorded the
+## moment the hull is beside it (section 3.3); nothing here waits.
+func _put_ashore(target: int) -> void:
+	if target < 0:
+		return
+	var hull := _laden_hull()
+	if hull < 0:
+		return
+	var order := state.encode_order(hull, state.space.from_index(target))
+	if not order.is_empty():
+		send.call(order)
+
+
+## Count a landing when squads this AI did not have appear ashore after a
+## crossing. Called from `_record_stats`, so it is measured off the
+## client's own state rather than trusted from the order having been sent
+## — D-107's rule, and the reason `_founded` latching on the SEND cost
+## this project every AI match it had ever run.
+func _note_landings() -> void:
+	if _sailing.is_empty():
+		return
+	var still_sailing := {}
+	for squad in _sailing:
+		if state.composition.has(squad) and state.alive_of(squad) > 0:
+			still_sailing[squad] = true
+	# A squad that was ordered aboard and no longer exists has boarded;
+	# once the hull has none left aboard, they are ashore.
+	if still_sailing.is_empty() and _laden_hull() < 0 and not _sailing.is_empty():
+		landings += 1
+	_sailing = still_sailing
 
 
 ## The side this seat is on, as the AI itself understands it — read off
