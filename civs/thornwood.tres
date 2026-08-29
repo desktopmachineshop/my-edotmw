@@ -7,6 +7,7 @@ script = ExtResource("1_civ")
 id = &"thornwood"
 display_name = "Thornwood"
 summary = "Ranged attrition. The longest bows in the game, adequate wardens and fast stags — and almost no answer to a wall, or to an enemy already at arm's length."
+signature_unit = &"greatbow"
 colour = Color(0.22, 0.42, 0.28, 1)
 gather_speed_by_kind = Array[float]([1.1, 1.25, 0.75, 0.9])
 starting_food = 240
