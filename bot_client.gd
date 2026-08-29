@@ -162,6 +162,39 @@ class VirtualClient:
 	var wood_peak := 0
 	var military_peak := 0
 
+	## The most squads this bot ever OWNED, against `squads` in the BOT
+	## line, which is the count at the END.
+	##
+	## Two lines, and they turn "one squad" from ambiguous into evidence.
+	## A terminal count of 1 is equally consistent with *crews were
+	## produced and then lost* and with *no crew was ever produced*, and
+	## those want opposite investigations — the first is combat or
+	## consumption, the second is production. #376 cost real time to
+	## separate, and only by reading the SERVER's per-tick squad
+	## trajectory, which a bot log does not have.
+	##
+	## READ IT AGAINST THE OPENING SIZE, which is TWO — a gatherer crew
+	## AND a general since D-20260823.
+	##
+	## The natural reading of "peak 2, now 1" is a COMBAT LOSS, and it is
+	## not: it is the crew being CONSUMED founding the town hall, by
+	## design. Naming the wrong meaning the eye reaches for first is
+	## worth more here than the table below, because the table is only
+	## consulted by somebody who already suspects they are misreading it
+	## (phrasing from worker 87, who ran the counter and hit this).
+	##
+	##   peak 2 / end 1 / military 1        founded, and produced nothing since
+	##   peak 2 / end 2 / build='no hall'   never founded, crew still standing (#247)
+	##   peak > 2                           production happened at least once
+	##
+	## The first row is #376's signature, stated by the harness instead of
+	## reconstructed afterwards from a server log. An earlier version of
+	## this comment said `peak == 1`, which is wrong and would have read a
+	## healthy opening as a dead one — corrected by worker 87 from having
+	## run the counter on a real union match, which is the difference
+	## between a diagnostic that was reasoned about and one that was used.
+	var squads_peak := 0
+
 	## Raid orders actually issued. The verdict gates on this, because
 	## `raid_pool` was empty on every tick of every match and everything
 	## below it was unreachable — a load test cannot claim to have put two
@@ -377,14 +410,26 @@ class VirtualClient:
 					owned += 1
 			if owned >= 2:
 				second_building_at = now
-		# Only once the founding crew is IDENTIFIED, so the settler can be
-		# excluded from the army count (`_is_military`). A bot fields a real
-		# military squad from tick one now — the opening general
-		# (D-20260823-the-opening-is-a-crew-and-a-general) — so this
-		# latching early is honest rather than the t=0 artefact it used to
-		# be when the founder was the thing being miscounted.
-		var fighting := military_squads() if _founding_squad >= 0 else 0
+		# NOT gated on the founding crew being identified (#230). It was,
+		# and `_is_military` already excludes the founder on its own — no
+		# squad has id -1, so the extra guard bought nothing and cost the
+		# whole metric on any scenario with no crew to identify. On
+		# `scenarios/clash.tres` a bot reported `military=5` and
+		# `military_peak=0` in the same line.
+		#
+		# The guard outlived its reason twice over: it was added against a
+		# t=0 artefact from an opening in which the founder was the only
+		# squad, and D-20260823-the-opening-is-a-crew-and-a-general has
+		# since given every player a general from tick one, which is what
+		# the comment here used to say made latching early honest.
+		#
+		# #123 made this a METRIC so that "there was nothing to send" and
+		# "there was something and it was never sent" could be told apart.
+		# Reporting zero beside five said the first when the second was
+		# true, which is worse than not reporting it.
+		var fighting := military_squads()
 		military_peak = maxi(military_peak, fighting)
+		squads_peak = maxi(squads_peak, state.squads.size())
 		if first_soldier_at < 0.0 and fighting > 0:
 			first_soldier_at = now
 
@@ -397,7 +442,7 @@ class VirtualClient:
 		# on the order having gone out, for the same reason `_issue_order`
 		# is — a refused opening leaves a bot with one squad, and that squad
 		# is the founder.
-		if not _owns_a_building():
+		if _opening_pending():
 			return
 		var home := state.spawn_cell_of(state.player)
 		var watching := _spawn_cell_of((state.player % player_count) + 1)
@@ -658,6 +703,51 @@ class VirtualClient:
 			peer.send(0, NetProtocol.encode_order_gather(squad, best),
 				ENetPacketPeer.FLAG_RELIABLE)
 
+	## Which squad this bot could found its town hall with, or -1.
+	##
+	## Whichever squad `built_by` actually admits — the crew, not whichever
+	## id sorts first. `state.squads[0]` was fine while the opening was one
+	## squad; with a general in the list it is a coin toss between the
+	## settler and a squad the server will refuse ("general cannot build a
+	## Town Centre") forever.
+	##
+	## Extracted from `_found_town_hall` so `_opening_pending` can ask the
+	## same question rather than a second version of it (#230).
+	func _founding_builder() -> int:
+		if _founding_squad in state.squads:
+			return _founding_squad
+		var hall := BuildingSim.def_by_id(&"town_centre")
+		for squad in state.squads:
+			var def: UnitDef = UnitRoster.by_id(StringName(
+				String(state.composition.get(squad, {}).get("def_id", ""))))
+			if def != null and BuildingSim.can_build(hall, def.archetype):
+				return squad
+		return -1
+
+
+	## Whether this bot still has an OPENING to complete, and so must not
+	## be marched anywhere (D-031: a move order cancels a pending build).
+	##
+	## Its two callers used to ask `_owns_a_building()` alone, which is the
+	## same question only while every match starts from the opening. A
+	## SCENARIO (D-098) can hand a bot five fighting squads, no crew and no
+	## buildings — `scenarios/clash.tres` does exactly that — and there the
+	## plain question answers "no building" on every tick forever. So the
+	## bot spent the whole run trying to found a town hall it had nobody to
+	## found with, and never reached the raid order or the patrol at all:
+	## `raid_orders=0 scouts_peak=0 patrol_legs=0` beside five military
+	## squads, and `test-scenario clash` could not pass (#230).
+	##
+	## Stated as what the guard's own comment always said it meant — "a bot
+	## still trying to plant its town hall" — rather than as a proxy for it.
+	## A bot whose crew has DIED also falls through now, and raids with what
+	## it has left, which is better than standing still forever.
+	func _opening_pending() -> bool:
+		if _owns_a_building():
+			return false
+		return _founding_builder() >= 0
+
+
 	## Ask for a town hall, and keep asking until there IS one.
 	##
 	## A player starts with one gatherer crew and one general and no base
@@ -700,15 +790,7 @@ class VirtualClient:
 		# while the opening was one squad; with a general in the list it is
 		# a coin toss between the settler and a squad the server will
 		# refuse ("general cannot build a Town Centre") forever.
-		var builder := _founding_squad if _founding_squad in state.squads else -1
-		if builder < 0:
-			var hall := BuildingSim.def_by_id(&"town_centre")
-			for squad in state.squads:
-				var def: UnitDef = UnitRoster.by_id(StringName(
-					String(state.composition.get(squad, {}).get("def_id", ""))))
-				if def != null and BuildingSim.can_build(hall, def.archetype):
-					builder = squad
-					break
+		var builder := _founding_builder()
 		if builder < 0:
 			return  # the crew is dead; nothing this bot owns may settle
 		var home := state.spawn_cell_of(state.player)
@@ -760,7 +842,7 @@ class VirtualClient:
 		# exactly the bot that has not managed it yet. Observed, one run
 		# after the retry itself was written: `build_attempts=1 buildings=0`
 		# on a bot that asked once, was refused, and never got another turn.
-		if not _owns_a_building():
+		if _opening_pending():
 			_found_town_hall()
 			return
 
@@ -891,6 +973,15 @@ var _elapsed := 0.0
 var _duration := -1.0
 ## The protocol version the bots claim (#179). See `--protocol`.
 var _protocol := NetProtocol.PROTOCOL_VERSION
+
+## The ScenarioDef this run is playing, or null for a real opening.
+##
+## A scenario is an opening POSITION (D-098), and a verdict that gates on
+## something the position does not contain is a vacuous FAILURE — the
+## mirror of the vacuous passes D-022's audit block was written about, and
+## it fails the same way every time, which teaches the next person to
+## ignore the result.
+var _scenario: ScenarioDef = null
 var _reported := false
 var _finished := false
 
@@ -906,6 +997,12 @@ func _initialize() -> void:
 	# that did not run: `int()` strips non-digits, so a mistyped --clients
 	# reads as a plausible count and the verdict quotes it as fact
 	# (D-20260817-recipe-args-are-positional, #89/#98).
+	# The SCENARIO this run is playing, or "" for a real opening. Read only
+	# to scope the verdict below to what the scenario actually contains
+	# (#230) — nothing about it reaches the wire or a bot's decisions, so
+	# a harness reading its own fixture is not a client learning something
+	# it should not know.
+	_scenario = Scenario.by_id(StringName(String(args.get("scenario", ""))))
 	var bad_args := CmdArgs.invalid_integers(args, ["clients", "port", "protocol"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["duration"]))
 	if not bad_args.is_empty():
@@ -1213,11 +1310,49 @@ func _verdict_ok() -> bool:
 	# and the persistent-explored hash agreed about it throughout. A run
 	# where nobody built anything proves nothing about buildings, exactly
 	# as a run where nobody died proves nothing about combat.
-	if _buildings_known() <= 0:
+	#
+	# ASKED ONLY OF A RUN THAT COULD HAVE BUILDINGS (#230). A scenario
+	# that places none, and hands out no squad that could found one,
+	# cannot satisfy this however healthy the run is —
+	# `scenarios/clash.tres` is two armies and nothing else, deliberately,
+	# and it is the scenario `docs/status/ai-opponent.md` tells you to
+	# reach for. Gating on it there fails every run identically, which is
+	# not a check.
+	#
+	# What replaces it is not nothing: a scenario with no buildings must
+	# still field the army it was given (below). The desync clause stays
+	# unconditional — it says "if any building WAS seen, both sides agreed
+	# about it", which is true and cheap on a run with none.
+	if _expects_buildings() and _buildings_known() <= 0:
 		return false
 	if _building_desyncs() != 0:
 		return false
+	# And the army the scenario DID hand out has to be real. On a run with
+	# buildings this is implied by `raid_orders` above; on `clash` it is
+	# the gate that replaces the buildings one, and it is exactly the
+	# number that read 0 beside `military=5` before #230.
+	if not _expects_buildings() and _military_squads() <= 0:
+		return false
 	return true
+
+
+## Whether this run could produce a building at all: a real opening always
+## can, and a scenario can only if it places one or hands out a squad that
+## could found one.
+##
+## Derived from the SCENARIO RESOURCE rather than from a list of scenario
+## NAMES, so a new `.tres` is covered the day it is written rather than
+## the day somebody remembers to add it here.
+func _expects_buildings() -> bool:
+	if _scenario == null:
+		return true
+	if not _scenario.buildings.is_empty():
+		return true
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	for entry in _scenario.squads:
+		if BuildingSim.can_build(hall, entry.archetype):
+			return true
+	return false
 
 
 func _report() -> void:
@@ -1276,12 +1411,13 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
+		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d squads_peak=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
 			vc.state.player, vc.state.squads.size(), vc.military_squads(),
 			vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
-			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at, vc.build_block])
+			vc.squads_peak, vc.military_peak, vc.wood_peak, vc.second_building_at,
+			vc.first_soldier_at, vc.build_block])
 
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:

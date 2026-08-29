@@ -1,0 +1,46 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS38: begin
+
+OBS38 MIRROR - identical squads, equal ground, both ordered in.
+  Each seed is played TWICE: once with player 1's squad as id 0,
+  once with player 2's. A systematic bias shows as a lopsided
+  tally in either the owner column or the id column.
+  emberdeep_levy         n=48  owner p1=23 p2=25 undecided=0 | id0=21 id1=27 | mean 51.0s
+  gildedreach_spearmen   n=48  owner p1=27 p2=19 undecided=2 | id0=20 id1=26 | mean 41.0s
+  thornwood_levy         n=48  owner p1=25 p2=23 undecided=0 | id0=21 id1=27 | mean 32.0s
+  stoneblood_heavy       n=48  owner p1=21 p2=21 undecided=6 | id0=22 id1=20 | mean 47.4s
+  windmarch_cavalry      n=48  owner p1=23 p2=23 undecided=2 | id0=22 id1=24 | mean 25.0s
+
+OBS38 COUNTERS - every shipped bonus_vs pairing, played both ways.
+  'margin' is A's surviving fraction minus B's, averaged over 12
+  seeds; a counter that is FELT should win most seeds AND leave a
+  wide margin, not squeak home.
+  emberdeep_archers      (x1.30 vs infantry) vs gildedreach_levy       favoured=12/12 other=0 undecided=0 margin=+0.44
+  gildedreach_archers    (x1.30 vs infantry) vs emberdeep_heavy        favoured=0/12 other=8 undecided=4 margin=-0.62
+  gildedreach_cavalry    (x1.40 vs missile ) vs emberdeep_archers      favoured=12/12 other=0 undecided=0 margin=+0.54
+  gildedreach_spearmen   (x1.50 vs cavalry ) vs thornwood_cavalry      favoured=12/12 other=0 undecided=0 margin=+0.89
+  gravesworn_spearmen    (x1.60 vs cavalry ) vs gildedreach_cavalry    favoured=12/12 other=0 undecided=0 margin=+0.85
+  thornwood_archers      (x1.40 vs infantry) vs emberdeep_heavy        favoured=9/12 other=2 undecided=1 margin=+0.15
+  thornwood_cavalry      (x1.40 vs missile ) vs emberdeep_archers      favoured=12/12 other=0 undecided=0 margin=+0.43
+  windmarch_cavalry      (x1.50 vs missile ) vs emberdeep_archers      favoured=12/12 other=0 undecided=0 margin=+0.77
+
+OBS38 ROUT - an outmatched squad pushed until it breaks, then watched.
+  A rout must (a) happen, (b) move the squad AWAY, (c) either
+  rally or die. A squad that routs and then stands still is the
+  bug this looks for.
+  stoneblood_heavy     vs gildedreach_levy    : routed at 4.4s (morale 13.2), fled 2 cells, rallied no, wiped at 9.2s, alive 0/30
+  emberdeep_heavy      vs thornwood_levy      : routed at 4.4s (morale 19.2), fled 2 cells, rallied no, wiped at 9.2s, alive 0/28
+
+OBS38 CASUALTIES - every alive[] change over a whole fight.
+  Checks D-024's integer-decrement rule and looks for an
+  'immortal last man' (alive stuck at 1 while still in contact).
+  fight ran 54.8s; A 26->2 in 20 decrements, B 28->0 in 23 decrements
+  decrement sizes A=[1, 2, 2, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  decrement sizes B=[2, 1, 2, 2, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  alive INCREASED 0 times (must be 0); time with a lone survivor still fighting: 11.0s
+
+OBS38 BIG ENGAGEMENT - 6 squads a side, mixed arms, attack-move in.
+  240.1s: emberdeep 66/124 men in 4/6 squads | gildedreach 6/122 men in 1/6 squads | 8 rout events
+  per-squad cost this run: 210.8 us/squad-update over 2401 ticks
+OBS38: end

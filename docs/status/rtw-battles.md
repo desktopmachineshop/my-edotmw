@@ -189,6 +189,31 @@ pinned); combat computes each blow's aspect ONCE for both the defence
 and the morale shock; shield_wall and testudo ship as .tres, granted per
 unit through UnitDef.formations — no script names a civ.
 
+**That last sentence was FALSE for a milestone and is true again**
+(`D-20260828-two-formations-that-belonged-to-nobody`, #309). The fantasy
+roster rewrite (af9c3f4, #191) replaced all 43 unit files and carried no
+`formations` grant across, so both formations were unreachable in the
+shipped game: `offered = false` on each, and `grep -l '^formations'
+units/*.tres` matched nothing. Every part of the mechanism stayed correct
+and covered — which is why nothing failed. **The caller exists; it was
+the GRANT that was missing, and a grant is data.**
+
+Two things to carry:
+
+- **The guard now enumerates the class.** It named `shield_wall`, so that
+  one went red and `testudo` vanished in silence beside it. D-106's
+  caveat — a caller-exists test only covers the caller it names — applied
+  to a test that was itself the caller-exists check.
+- **The numbers pick the grantee, not the flavour.** `shield_wall` is
+  `taken_front 0.5 / taken_rear 1.2 / pace 0.6` — hold ground, punished
+  when flanked. `testudo` is `missile_taken 0.35 / pace 0.5` — an
+  advance-under-fire formation before it is a fighting one. Those are
+  emberdeep's two declared verbs (fortification and siege), and its levy
+  is already modelled carrying a round shield, so the art agreed first.
+  `gildedreach_spearmen` share the shield wall on the flexibility axis —
+  and a second grantee is what stops a formation belonging to exactly one
+  unit, which is how these went missing.
+
 **Workstream 11 — tired men, and men fighting uphill — landed**
 (D-20260819-tired-men-fight-uphill). Fatigue (server-only scalar):
 sprint -12/s, fight -2/s, run -6/s, rest +4/s; damage scales
@@ -238,3 +263,60 @@ to the FORMATION and may only change closeness, which is why `plan` now
 deals files at `Formation.effective_spacing`: dealing them at the unit's
 raw spacing gave a tight squad a loose squad's file count, so it packed
 short of its own stroke and left a gap at each end.
+
+**A fight is decided by two percent, and that is the ceiling on every
+balance question this programme has left**
+(`D-20260828-a-fight-is-decided-by-two-percent`, #346, 2026-08-28). A **2%
+edge in squad damage wins 10 of 12 mirror fights**, and every duel runs to
+annihilation. Measured with the probed unit on both sides so position
+cancels; the curve is 6-6 at 0%, 10-1 at 2%, 11-1 at 4-8%, 12-0 at 10%.
+
+The cause is that nothing ENDS a fight. `V² = n²·(damage/interval)·health`
+is exactly Lanchester's square-law strength for a melee where everyone is
+engaged, so a one-man lead compounds — and **a squad must lose 85% of its
+men before it routs** (morale 100, threshold 25, 4.0 per casualty: 18.8
+casualties of 22). The rout fires only after the squad is already dead.
+
+Three candidate fixes were built and measured. Two do not work:
+
+- **Casualty softening** (output falls with a root of strength, normalised
+  so a fresh squad is unchanged) changes *nothing* about who wins, at any
+  exponent from 1.00 to 0.25 — it applies to both sides equally, so it
+  changes the pace and not the direction. It only shortens fights (44.3 s
+  to 19.1 s), which is the wrong way for D-056.
+- **An engagement-width cap** is slightly *worse* than not doing it (9-3
+  against 8-4 at a 2% edge) and lengthens fights, and it would flatten
+  what `squad_size` means for D-072's power number.
+
+**The one that works is morale-first, and it is already in the queue.**
+With PR #328 (morale scales with squad size, #266) and PR #257 (no morale
+recovery under fire, #218) applied together, the sweep threshold moves
+from ~2% to ~10-20% — a five- to tenfold widening. A 22-man levy breaks at
+**alive = 10 (55% casualties)** instead of 85%. Merging those two is the
+fix for #346; nothing new ships from it.
+
+What is still not fixed, and why nothing further was built: a broken squad
+**rallies and walks back into the fight it just lost** (breaks at 11.6 s,
+rallies at 22.8 s, breaks again at 47.3 s, final separation 1 cell).
+Making rally require breaking contact DOES end fights without annihilation
+(10 v 10) and creates a worse state — two routed squads a cell apart,
+neither able to rally, permanently out of the game. That needs a
+disengagement mechanism that does not exist.
+
+Three things to carry forward, none of them about tuning:
+
+- **`tests/test_battle_decisiveness.gd` is an instrument, not a gate.** It
+  prints the curve and asserts only what must hold whatever the numbers
+  are, because the number is *expected to move* when #328 and #257 land.
+  A threshold guard was written, run, and removed for shipping red.
+- **A both-ways-round score cannot see a side bias.** The first mirror
+  test scored by which def was buffed and played both ways, so a position
+  advantage cancelled out of it exactly; perturbing `combat.gd` to give
+  squad 0 a flat 25% damage bonus left it reporting a tidy 2-2. It counts
+  by POSITION now. Same family as this project's other vacuous guards, and
+  only the perturbation found it.
+- **Some mirror matches are decided by POSITION, seed-independently** —
+  identical squads, symmetric placement, and emberdeep's levy went 0-6
+  while windmarch's went 0-6 and gravesworn's 5-1 across six seeds. Not
+  diagnosed; it is a plausible reason #267's pairings clustered on exact
+  6-6 splits, and it wants its own look.
