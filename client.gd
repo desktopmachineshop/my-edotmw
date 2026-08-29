@@ -159,6 +159,11 @@ var _hosted_server: Node = null
 ## by `--host-port` for the recipes, which are per-instance (D-095).
 var _host_port := DEFAULT_SERVER_PORT
 
+## Capture-only: do not found the opening town centre, so a frame can
+## show the state before a player has acted (#284). Never set by
+## `run-client`; `just test-client HOLD=1` is the one caller.
+var _hold_opening := false
+
 var _host_ai_wanted := 0
 ## Whether `_drive_host_lobby` has already run. It is a ONE-SHOT: the
 ## lobby it acts on stops existing the moment it presses start, and a
@@ -365,7 +370,7 @@ func _ready() -> void:
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
 		["port", "lobby-ai", "lobby-preset-steps", "menu", "host", "host-ai",
-		"host-port"])
+		"host-port", "hold-opening"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
@@ -388,6 +393,8 @@ func _ready() -> void:
 	# around in them, and the human tests the wrong agent's build.
 	_instance = String(args.get("instance", ""))
 	_run_seconds = float(args.get("run-seconds", -1.0))
+	# Capture-only, and only for photographing the opening hint (#284).
+	_hold_opening = int(args.get("hold-opening", 0)) == 1
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
 	# lobby with something in it rather than one empty seat.
@@ -1789,6 +1796,20 @@ func _neighbor_player_candidates() -> Array:
 ## rather than the middle of the map, which is where a player actually
 ## starts looking.
 func _found_home_town() -> void:
+	# `--hold-opening=1` makes the capture deliberately NOT act, so a
+	# frame can show the state a player is in BEFORE they have founded
+	# anything (#284). Without it this instrument structurally cannot
+	# photograph the opening objective: the capture founds within a
+	# second or two of being welcomed, and the hint's whole job is to
+	# disappear once a town centre exists.
+	#
+	# That is the fourth time `test-client`'s framing has been unable to
+	# show something — after cliffs (a spawn is walkable by
+	# construction), forest interiors (a spawn is open ground) and the
+	# fog edge. The lesson each time was the same: when a rendered check
+	# has to see something specific, frame it on purpose.
+	if _hold_opening:
+		return
 	if _founded or not _state.welcomed or _state.squads.is_empty():
 		return
 	_founded = true
@@ -5343,9 +5364,70 @@ func _update_hud() -> void:
 	if _state.notices_received != _notice_seen:
 		_notice_seen = _state.notices_received
 		_notice_until = _now + 5.0
-	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
+	if _now < _notice_until:
+		_hud_notice.text = _state.last_notice
+		_hud_notice.modulate = HudTheme.WARNING
+	else:
+		# The same slot carries the OPENING OBJECTIVE when the server has
+		# nothing to say (#284). One banner rather than two: this is
+		# already where a player looks for "the game is telling me
+		# something", a refusal must win while it is up, and a second
+		# permanent strip would cost the battlefield height for a line
+		# that is empty for all but the first minute of a match.
+		#
+		# Dimmer than a refusal on purpose: a standing instruction at full
+		# warning strength reads as an error the player cannot clear.
+		# `modulate` MULTIPLIES the label's own colour rather than
+		# replacing it, so this is a muted version of the same hue rather
+		# than a different one — checked in the rendered frame, not
+		# assumed.
+		_hud_notice.text = _opening_objective()
+		_hud_notice.modulate = HudTheme.TEXT_DIM
 
 	_update_selection_panel()
+
+
+## What this player should do first, or "" once they have done it (#284).
+##
+## Derived from what they OWN rather than from a match clock, which is
+## what makes it survive the three cases a timed tutorial gets wrong: a
+## player who founded late, one who lost their crew, and one who was
+## razed and is resettling (which
+## `D-20260823-the-opening-is-a-crew-and-a-general` made possible).
+##
+## The rule itself is `opening_brief.gd`'s — asked of the same
+## `BuildingDef.built_by` the server's order gate reads, so the banner
+## cannot tell a player to do something that will be refused.
+func _opening_objective() -> String:
+	if not _state.welcomed or _state.in_lobby():
+		return ""
+	var owned: Array = []
+	for squad in _state.squads:
+		if _state.alive_of(squad) <= 0:
+			continue
+		var def := UnitRoster.by_id(StringName(String(
+			_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and not owned.has(def):
+			owned.append(def)
+	return OpeningBrief.first_objective(owned, _owns_a_founding_building())
+
+
+## Whether this player owns a LIVING building of the kind that founding
+## spends a crew on. Asked by def rather than by id for the same reason
+## `opening_brief.gd` never names one.
+func _owns_a_founding_building() -> bool:
+	var town := OpeningBrief.founding_building()
+	if town == null:
+		return false
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info.get("owner", -1)) != _state.player:
+			continue
+		if bool(info.get("destroyed", false)):
+			continue
+		if StringName(String(info.get("def_id", ""))) == town.id:
+			return true
+	return false
 
 
 ## Fill the context panel from whatever is selected.
@@ -5437,6 +5519,24 @@ func _update_selection_panel() -> void:
 
 	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
 	_selection_detail.text = "%d soldiers" % strength
+
+	# What this squad is FOR, when it is one of the two openers (#284).
+	#
+	# The opening is a gatherer crew and a general, only the crew can
+	# found, and ordering the general to build fails SILENTLY — the
+	# server refuses it because `built_by` lists the general nowhere, so
+	# a new player clicks, nothing happens, and their economy has not
+	# started. `OpeningBrief` asks the same rule the order gate asks, so
+	# this line cannot promise something that will be refused.
+	#
+	# Only shown for a SINGLE selection: a mixed one is counted rather
+	# than described (see the comment above), and a role line about
+	# "3 squads" would be about whichever def happened to sort first.
+	if _selected.size() == 1 and counts.size() == 1:
+		var only := UnitRoster.by_id(StringName(counts.keys()[0]))
+		var role := OpeningBrief.role_line(only)
+		if not role.is_empty():
+			_selection_detail.text = "%d soldiers — %s" % [strength, role]
 
 	# The build menu's category drill-down (playtest fix, see
 	# _build_menu_category's doc) is client state that outlives one panel

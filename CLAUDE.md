@@ -506,6 +506,14 @@ unit_def.gd             UnitDef schema — extend fields here when a new
                         knobs EVERY civ has — never a per-civ branch, and
                         a test fails if any .gd file names a civ at all.
 civ_def.gd              CivDef schema; civ_roster.gd loads them.
+opening_brief.gd         What a squad is FOR in the opening, and what to
+                        do first (D-20260828, #284). All-static and pure,
+                        and it names NO archetype and NO building: "can
+                        this squad found" is `BuildingSim.can_build`
+                        against `built_by` — the same call the ORDER GATE
+                        makes, so the panel cannot promise something the
+                        server will refuse. The founding building is
+                        found by its RULE (`consumes_builder`).
 civ_identity.gd          What a player is TOLD about a civ before they
                         pick it (D-20260828, #283) — its one-line pitch
                         and its signature unit, both from the .tres.
@@ -998,7 +1006,7 @@ Dev loop and tests:
   connected client, so nothing could look at this screen; its first two
   runs found two defects nothing else could. **Look at
   `artifacts/main-menu.png`.**
-- `just test-client [SECONDS]` — the same client, rendered headlessly via
+- `just test-client [SECONDS] [BOTS] [HOLD]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker
   only. See D-014's 2026-07-29 amendment for why this doesn't contradict
