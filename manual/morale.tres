@@ -41,4 +41,4 @@ not a flank, not a general dying beside them. The Civilisations page names
 which army that is, because it reads it off the troop data rather than being
 told."
 sources = Array[String](["res://combat.gd", "res://decisions/D-20260819-morale-reads-the-fight.md", "res://decisions/D-20260819-a-general-holds-the-line.md"])
-stamp = "c63d5c0177fd254aee6bcab4dd753816f3e449dc115fd7f96e17be5131154f1b"
+stamp = "69bea1f322fe411ce998d40292119d9db1a4b52d155694f6d7451081e0a5b5e7"
