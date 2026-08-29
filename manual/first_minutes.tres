@@ -38,4 +38,4 @@ of the game's own data rather than out of this sentence.
 Any gatherer crew can found a new one. Being razed is not being eliminated —
 see \"Winning and losing\"."
 sources = Array[String](["res://decisions/D-20260823-the-opening-is-a-crew-and-a-general.md", "res://decisions/D-20260828-the-opening-says-which-squad-founds.md", "res://opening_brief.gd", "res://buildings/town_centre.tres"])
-stamp = "3f41aad9a023a24e4f62092a65e6d1f7fdecd7b9d0737d3b3d09362ae9102f30"
+stamp = "5098bbee2ff80ced89d0047727fb52e8eca7078fae7344622ca3c537f73feb64"
