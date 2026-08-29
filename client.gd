@@ -11916,7 +11916,13 @@ func _rebuild_map_preview(settings: Dictionary) -> void:
 	# MapConfig and seed it with the match seed where the server seeds it
 	# with the map's base plus the match seed, so every marker it drew was
 	# somewhere nobody starts, under a comment asserting the opposite.
-	for cell in map.to_spawn_config().spawn_points(terrain.passability(space)):
+	# The water graph too (naval stage 9): a start on an island is legal
+	# when a ship can reach it, so the preview must ask the same question
+	# the server does. D-104's lesson is that sharing an implementation is
+	# not sharing its ARGUMENTS — the last time these two disagreed, the
+	# lobby drew twenty markers of which none were real.
+	for cell in map.to_spawn_config().spawn_points(
+			terrain.passability(space), terrain.navigability(space)):
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				image.set_pixel(
