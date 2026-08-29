@@ -69,19 +69,30 @@ func test_the_picker_and_the_option_channel_cycle_one_list() -> void:
 			"neither side may offer a retired preset by reaching past the filter")
 
 
-# --- why islands was retired, asserted rather than remembered ----------
-
-## The evidence, re-derived from the shipped preset rather than quoted:
-## a two-player match on `islands` cannot reliably put both starts on
-## ground they can walk between. This is the measurement the decision was
-## made on, kept as a test so that a future preset change has to face it.
+## Islands stays retired because ARMIES CANNOT CROSS WATER, and that is
+## now the whole of the reason.
 ##
-## Deliberately at REACHABLE_SEATS = 2: the argument for retiring rather
-## than seat-gating is that there is no seat count at which it works, and
-## two is the smallest count there is.
-func test_islands_cannot_seat_even_two_players_on_one_landmass() -> void:
-	var shared := 0
-	var tried := 0
+## It used to be asserted the other way round — that sampled worlds
+## stranded a player's start on a landmass the other could not reach — and
+## #216 made that false by sampling every start from the LARGEST walkable
+## component. Nobody is stranded on `islands` any more. The retirement
+## stands anyway, and rewriting the test rather than deleting it is the
+## point: the premise moved, the conclusion did not, and a reader deserves
+## to know which.
+##
+## **Un-retiring it via #216 would quietly defeat the gate the naval block
+## ships.** Largest-component sampling puts every start on one landmass, so
+## `SPAWN_LANDMASSES` is 1 and naval's own gate SKIPS on the one preset it
+## exists to exercise. Stage 9 un-retires `islands` properly — ship-
+## reachable placement and multi-landmass starts on the measured isles map
+## — which is strictly better than merely not-stranding anybody. Retired
+## until then is load-bearing, not inertia.
+##
+## What is measured here is the thing that has not changed: most of an
+## `islands` world is ground no army can walk to from a start.
+func test_islands_is_mostly_ground_no_army_can_walk_to() -> void:
+	var sampled := 0
+	var worst_reach := 1.0
 	for seed_value in [1337, 42, 7, 99]:
 		var settings := MapSettings.new()
 		settings.apply_preset(_preset(&"islands"))
@@ -93,16 +104,43 @@ func test_islands_cannot_seat_even_two_players_on_one_landmass() -> void:
 		var space := TorusSpace.new(settings.width, settings.height, 1.0)
 		var passable := settings.to_terrain().passability(space)
 		var points := settings.to_spawn_config().spawn_points(passable)
-		if points.size() < REACHABLE_SEATS:
+		if points.is_empty():
 			continue
-		tried += 1
-		if _same_component(space, passable, points[0], points[1]):
-			shared += 1
+		sampled += 1
+		# The share of walkable ground a start can actually reach on foot.
+		# Everything else is scenery until something can carry an army to it.
+		var reach := float(_component_size(space, passable, points[0]))
+		var walkable := 0
+		for i in range(passable.size()):
+			if passable[i] != 0:
+				walkable += 1
+		if walkable > 0:
+			worst_reach = minf(worst_reach, reach / float(walkable))
 
-	assert_gt(tried, 2, "too few worlds seated two players at all to conclude anything")
-	assert_lt(shared, tried,
-		"every sampled islands world put both starts on one landmass — if that is now "
-		+ "true, the reason for retiring it has gone and the decision should be revisited")
+	assert_gt(sampled, 2, "too few islands worlds generated to conclude anything")
+	assert_lt(worst_reach, 0.9,
+		"every islands world now lets a start walk to nearly all of its own "
+		+ "walkable ground — if that is true, water has stopped dividing the "
+		+ "map and the retirement can be revisited")
+
+
+## How much walkable ground is reachable on foot from `from`.
+func _component_size(space: TorusSpace, passable: PackedByteArray, from: Vector2i) -> int:
+	var start := space.index(from)
+	if passable[start] == 0:
+		return 0
+	var seen := {start: true}
+	var frontier := PackedInt32Array([start])
+	while not frontier.is_empty():
+		var at := frontier[frontier.size() - 1]
+		frontier.resize(frontier.size() - 1)
+		for neighbour in space.neighbors(space.from_index(at)):
+			var index := space.index(neighbour)
+			if seen.has(index) or passable[index] == 0:
+				continue
+			seen[index] = true
+			frontier.append(index)
+	return seen.size()
 
 
 ## The control, and it is the important half: the same test on the
