@@ -53,12 +53,24 @@ func test_every_compose_invocation_is_scoped_to_this_instance() -> void:
 
 	# Explicit container names collide across worktrees unless prefixed
 	# with the per-instance project.
+	#
+	# Scanned PER LINE, and only on lines that actually invoke docker.
+	# `--name` is not a docker-only token: `art/attach_kit.py --name
+	# "{{TARGET}}"` hands a .blend id to a Python script, and the
+	# whole-file scan matched THAT — leaving this guard red on `main` for
+	# something that is not an isolation hole at all (#209). The claim
+	# here is about CONTAINERS, so it has to ask about containers: a
+	# guard that cries wolf gets muted, and the next person to genuinely
+	# hardcode a container name would read the red as the known noise.
 	var name_re := RegEx.new()
 	name_re.compile("--name (?!\\{\\{compose_project\\}\\})\\S+")
-	offence = name_re.search(justfile)
-	assert_null(offence,
-		"a named container is not prefixed with {{compose_project}}: %s"
-		% (offence.get_string() if offence != null else ""))
+	for line in justfile.split("\n"):
+		if not line.contains("docker"):
+			continue
+		offence = name_re.search(line)
+		assert_null(offence,
+			"a named container is not prefixed with {{compose_project}}: %s"
+			% (offence.get_string() if offence != null else ""))
 
 	# The stray-container sweep in `down` must be scoped the same way, or
 	# it force-removes other agents' one-off containers.
@@ -94,11 +106,25 @@ func test_host_port_is_per_instance_not_hardcoded() -> void:
 
 
 func test_client_titles_itself_with_its_instance() -> void:
+	# The rule is real; where it LIVES moved — the same shape as
+	# `test_agent_quick_launch_defaults_to_sandbox` below. #180 gave the
+	# client a state in which it is NOT connected, so the title is
+	# rewritten on every connection rather than built once in `_ready()`,
+	# and it goes through `_set_title` (which guards a null window, so a
+	# GUT test can drive the file at all). The old scan looked for a
+	# literal `get_window().title`.
+	#
+	# What replaces it is STRICTER, not looser: it asserts the instance
+	# actually reaches the title, where the old one only asserted that
+	# some `.title` assignment existed somewhere in a 10,000-line file.
 	var client := _read("res://client.gd")
 	assert_true(client.contains("args.get(\"instance\""),
 		"the client must accept --instance so the launcher can label the window")
-	assert_true(client.contains("get_window().title"),
+	assert_true(client.contains("window.title = MainMenu.window_title(_instance"),
 		"the client must put the instance in its title bar (D-095)")
+	var menu := _read("res://main_menu.gd")
+	assert_true(menu.contains("instance.is_empty()"),
+		"and the one definition of that title must actually use the instance")
 
 
 func test_agent_quick_launch_defaults_to_sandbox() -> void:
