@@ -157,9 +157,15 @@ func test_the_disconnect_event_actually_calls_it() -> void:
 	# caller is asserted by reading it.
 	var source := FileAccess.get_file_as_string("res://client.gd")
 	assert_false(source.is_empty(), "could not read client.gd to scan it")
-	var at := source.find("ENetConnection.EVENT_DISCONNECT")
+	# `NetTransport.*`, not `ENetConnection.*`: #264 put a seam between
+	# the netcode and its library and a test now FORBIDS this file naming
+	# the concrete class, so the vocabulary this guard scans for moved
+	# under it. That is `D-20260828-a-guard-is-written-in-a-vocabulary-
+	# that-moves` happening to this guard — the intent is unchanged and
+	# only the identifier is different.
+	var at := source.find("NetTransport.EVENT_DISCONNECT")
 	assert_gt(at, 0, "there must be a disconnect branch to scan")
-	var ends := source.find("ENetConnection.EVENT_RECEIVE", at)
+	var ends := source.find("NetTransport.EVENT_RECEIVE", at)
 	assert_gt(ends, at, "the disconnect branch must be followed by the receive branch")
 	var branch := source.substr(at, ends - at)
 	assert_true(branch.contains("_on_connection_lost()"),
