@@ -1,4 +1,19 @@
-### D-20260823-fantasy-civs-on-a-four-epoch-ladder · 2026-08-23 · Provisional — the civ roster is fantasy, and the ladder runs medieval → imperial → modern → futuristic
+### D-20260823-fantasy-civs-on-a-four-epoch-ladder · 2026-08-23 · Provisional; its LADDER half superseded by D-20260828-the-epoch-ladder — the civ roster is fantasy, and the ladder runs medieval → imperial → modern → futuristic
+
+> **Amended 2026-08-28 — the ladder half of this entry is superseded; the
+> civ half is not, and neither is settled here.**
+>
+> `D-20260828-the-epoch-ladder` is now the single description of the ladder
+> and it ships FIVE rungs, not this entry's four. The tie-break was which
+> civs actually ship: `/civs` holds the six of `docs/plans/fantasy-civs.md`
+> (per `D-20260818-fantasy-civs-supersede-the-historical-frame`, Accepted
+> 2026-08-26), whose own arc table is five-stage — while the four-rung arc
+> table below is written for a civ set that does not exist in the repo.
+>
+> The rung count remains an **open owner call** and was built to stay cheap
+> to reverse: collapsing to this entry's four is a data edit with no script
+> change. The civ NAMING tension between the two sets is recorded as open in
+> `docs/status/fantasy-civs.md` and is not this note's to settle.
 
 **Supersedes D-069 (the five-rung antiquity-to-medieval ladder) and
 D-071 (six historical civs).** Owner's call, 2026-08-23: the setting is
