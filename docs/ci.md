@@ -10,6 +10,139 @@ red, and restored — and doing that found **four defects in the pipeline
 itself**, one of which was a workflow reporting a green job over a red
 suite.
 
+## The second reason, which is not "catch what nobody ran"
+
+#290 was filed on eleven incidents in which `main` sat red and an
+unrelated worker eventually noticed. That is a real reason and it is the
+weaker one.
+
+> Beyond catching what nobody ran, CI is a reader who cannot inherit your
+> derivation. An author cannot re-derive their own claim — they remember
+> the derivation, so re-reading the field returns the meaning already in
+> mind. CI has no memory to substitute.
+
+(That framing is 88's, from a cluster of five wrong readings found in one
+day — the write-up is on #350 and the entry is
+`D-20260828-read-what-a-metric-counts-not-what-it-is-called`.)
+
+The case for it from this file's own author, because it is the one that
+should be least reassuring:
+
+**`[exited with code 0]` was printed over a recipe that had failed with
+exit code 1.** A backgrounded `just test-unit 2>&1 | tail` reported
+success while the host gate had timed out after 1834 s and the suite had
+never run at all. The pipe returns *`tail`'s* status. That is the
+identical defect this workflow's `defaults.run.shell: bash` exists to fix
+— written up thirty lines above, by the same person, hours earlier — and
+it was not re-derived on sight. It was **recognised**: "exit 0, fine."
+It is worth being exact about what kind of defect that is, because the
+obvious classification is the wrong one. `$?` after a pipeline is **not
+misnamed**: POSIX specifies that a pipeline's status *is* its last
+command's, so the value is precisely what it is documented to be. There is
+no declaration site that could have carried a better sentence and nothing
+was mislabelled — which is why this does not belong with the
+metric-name family, whose remedy is "document at the declaration" and
+cannot reach an instance with no declaration to fix.
+
+What failed was **reading**. The status was correct, was available, and
+was not consulted; it was recognised.
+
+### `pipefail` is necessary and not sufficient
+
+The obvious lesson from that miss is "set `pipefail`", and it is half a lesson.
+Measured in this shell rather than reasoned about — the four cases are 81's,
+reproduced here before being written down:
+
+```
+set -o pipefail; false | tail        -> 1    pipefail catches the PIPE
+                 false | tail        -> 0    the trap above
+set -o pipefail; false; true | tail  -> 0    pipefail is BLIND to a CHAIN
+set -eo pipefail; false; true | tail -> aborts at `false`
+```
+
+`pipefail` changes a **pipeline's** status to that of its first failing element.
+It does nothing for a `;` **chain**, where `$?` is simply the last command's, so
+an earlier failure is masked whatever `pipefail` says. `set -e`, or an explicit
+check, covers that half. GitHub's `shell: bash` supplies **both** — it runs
+`bash --noprofile --norc -eo pipefail {0}` — which is why this workflow's own
+header says `-eo pipefail` and not `pipefail`.
+
+Worth spelling out because **`set -o pipefail` reads like a complete answer and
+is half of one**: a guard that is correct about the case it covers and silent
+about the neighbouring one, which is the shape of everything else in this
+section.
+
+And the same witness applies again, one level down: the shell commands used to
+investigate the incident above were written as
+`set -o pipefail; git fetch …; …; cmd | tail` — the chain form, half-covered, by
+the author of this paragraph while writing it.
+
+### And the limit of the argument, which belongs beside it and not after it
+
+**CI could not have caught that one.** It was not a defect in the tree;
+it was a defect in how a run was read. No workflow sits between an author
+and their own terminal.
+
+So the rule the pipeline supports rather than replaces: **when no machine
+sits between you and the claim, the second reader has to be the primary
+data itself.** Read the log, not the status. The only reason that miss
+was caught is that this project already requires it — "a green run is not
+the same as a run that happened", which is D-022's audit block, and which
+is older than any of this automation.
+
+A corollary for anything with a `##[error]` or an `assert` message in it:
+**a guard's message has to survive being skimmed by somebody who already
+believes they know what it says.** Two of the day's five misreadings were
+of guard text that was not unclear and was not being read — it was being
+confirmed against what the reader already thought it said.
+
+### "Is this failure mine?" — compare the FIGURES, not the test name
+
+A PR's checks run on the **merge commit**, so a red base makes every open PR red
+and hands each author a failure that is not theirs, carrying an instruction to
+fix and push. That is not hypothetical: it happened to #273 and to this PR, and
+in one case a documentation-only change was told to fix a combat regression.
+
+There is a one-comparison answer, and it is free (88's, from the same day's
+cluster):
+
+> A failure inherited from your base reproduces its **numbers exactly** — the
+> same data and the same seed produce the same arithmetic. A failure your change
+> caused, or interacts with, will not.
+
+#273's margins were **−0.67 and −0.68**, byte-identical to the run on `main`
+fifteen minutes earlier. That settled the question before any bisect.
+
+Three conditions, because the rule is sharp only inside them:
+
+- **the base must itself be red on the same test.** If the base is green there
+  are no base figures to match, and identical-to-nothing proves nothing;
+- **the measurement must be deterministic.** Here it is by construction —
+  `test_counters_are_felt.gd` sets `sim.combat_seed` and sweeps fixed seeds
+  (`1000 + s * 7919`). Against a fixture that is timing- or host-dependent the
+  comparison says nothing in either direction;
+- **several agreeing figures are the FALLBACK for the condition above, not a
+  separate strength gauge.** The two are not independent. If you can read the
+  fixture and confirm it seeds, one identical figure settles it. If you cannot —
+  someone else's test, a harness whose seeding is not obvious, no time to read
+  it — then several independent figures agreeing *is* the evidence of
+  reproducibility, obtained empirically instead of by reading. Two margins from
+  different pairings matching to two decimals is a far stronger statement about
+  the fixture than about your change. (88's refinement; it is what tells you
+  which to reach for — read the fixture if you can, count the agreements if you
+  cannot, and if you have neither, the rule does not apply.)
+
+Note what the rule actually needs, which is narrower than determinism in
+general: **reproducibility between the two runs being compared.** Reading the
+seed establishes that in advance; agreeing figures establish it after the fact.
+Either is enough, and neither is a claim that the fixture is deterministic
+everywhere.
+
+And its limit, which its author states rather than leaving to be found: **it
+works only where a failure carries a measurement.** A bare assertion — a missing
+key, a vacuous-table guard — has no figures to compare, and there the question
+falls back to reading the log and checking the base's own history.
+
 ## The workflows
 
 | workflow | when | runtime | what it is for |
