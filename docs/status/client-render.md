@@ -1,3 +1,62 @@
+**The benchmark is the client now, and the client is four times what the
+benchmark said** (`D-20260828-the-benchmark-runs-the-clients-own-render-pipeline`,
+#240). `bench_render.gd` claimed to do "exactly what client.gd's
+`_refresh_squads` does" and had not since the RTW battle programme
+landed: the duels, the corpse layer, the survivor easing, the cross-squad
+jostle and the building/tree push-outs are all per drawn man, all
+shipped, and none of them were measured. The pipeline is ONE function
+now — `SquadRender.frame` — and both files call it.
+
+At 1,000 squads on the shipped map (Intel Iris Xe, 4,385 men drawn per
+frame, two interleaved pairs):
+
+| | cpu ms | derive | decorate | wall ms | fps |
+|---|---|---|---|---|---|
+| what the benchmark used to measure | 90.1 / 85.9 | 62.5 / 59.8 | — | 105.7 / 88.8 | 9.5 / 11.3 |
+| **what the client runs** | **369.2 / 342.2** | 68.8 / 63.6 | **263.2 / 243.8** | 414.1 / 411.5 | **2.4** |
+
+- **#229's 168-185 ms was a floor**, as it suspected. The shipped client
+  at D-018's scale is nearer **2.4 fps**, and D-086's 18.5 is not
+  comparable to either — it was taken on an instrument measuring a third
+  thing.
+- **`--decorate=0` reproduces the old measurement**, so every historical
+  number stays readable in the terms it was taken in rather than merely
+  remembered.
+- **A frame time now carries its MIX** (fighting / working / marching,
+  plus the buildings and node cells dressed near the camera). The
+  decoration passes cost what the world gives them: a frame with nothing
+  fighting prices no duels. Same rule as µs/squad with a squad count.
+- **The biggest single cost is quadratic and is not derivation** (#262):
+  the cross-squad jostle gather is 9.97 ms at 155 drawn squads and
+  **142.71 ms at 630** — 4.06x the squads for 14.3x the time, 39% of the
+  whole frame — and it fires when squads STAND, which is when the battle
+  starts. D-20260821 bounded it "at 72-squad scale".
+**The ladder, with the client's own pipeline** (same host and session,
+90 measured frames each, one run per row — the SHAPE is the result, not
+the third digit):
+
+| squads | drawn squads | drawn men | cpu ms | derive | decorate (gather / jostle / pipeline) | wall ms | fps |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | 0 | 0.06 | — | — | 6.78 | 147.5 |
+| 100 | 63 | 487 | 27.98 | 8.33 | 15.58 (9.15 / 1.75 / 6.44) | 30.21 | 33.1 |
+| 250 | 155 | 1,067 | 65.92 | 17.81 | 38.77 (25.30 / 8.99 / 13.47) | 66.38 | 15.1 |
+| 500 | 321 | 2,297 | 126.72 | 30.20 | 80.96 (57.19 / 30.22 / 23.78) | 127.94 | 7.8 |
+| 1000 | 630 | 4,385 | 387.51 | 71.33 | 277.30 (217.08 / **152.43** / 60.22) | 432.77 | **2.3** |
+
+Read the jostle column down: 1.75 -> 8.99 -> 30.22 -> 152.43 while drawn
+squads go 63 -> 155 -> 321 -> 630. Everything else on the row is linear
+in drawn men; that one is not.
+
+- **The client's render pipeline is testable now** — no GPU, no camera,
+  no scene tree (`tests/test_squad_render.gd`). "client.gd cannot be
+  tested" was always too wide a reading; this is the rest of the
+  correction D-075 started.
+- **Not verified by a rendered frame.** `just test-client` is docker-only
+  and its import step is being OOM-killed on this host (#223 plus four
+  other agents resident). Owed.
+
+---
+
 **The client's frame has PHASES now, and the 1,000-squad cost is
 attributed** (`D-20260828-every-microsecond-of-a-frame-has-a-phase`,
 #229). `just bench-render` reported one number per squad count, so when
