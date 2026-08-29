@@ -369,3 +369,43 @@ func test_neighbor_table_is_cached_and_survives_a_reshape() -> void:
 		for dir in range(6):
 			assert_eq(reshaped[cell * 6 + dir], t.neighbor_index(cell, dir),
 				"Cell %d direction %d kept a table built for the old shape" % [cell, dir])
+
+
+func test_index_and_normalize_are_the_same_wrap() -> void:
+	# `index` writes its own two `posmod`s rather than calling
+	# `normalize`, because the delegation cost more than the arithmetic
+	# it wrapped (0.19 us of a 0.41 us call, once per drawn man per frame
+	# and once per cell in every disk scan). D-008 is untouched — the wrap
+	# rule still lives in one FILE and every caller still comes through
+	# this class — but two spellings of one rule is exactly the shape this
+	# project keeps having to undo, so they are held to the same answer
+	# here.
+	var space := TorusSpace.new(W, H, 1.0)
+	for q in range(-2 * W, 2 * W, 3):
+		for r in range(-2 * H, 2 * H, 3):
+			var coord := Vector2i(q, r)
+			var wrapped := space.normalize(coord)
+			assert_eq(space.index(coord), wrapped.y * space.width + wrapped.x,
+				"index(%s) is the index OF normalize(%s)" % [coord, coord])
+
+
+func test_round_axial_still_cube_rounds() -> void:
+	# The body moved out of a private helper into `round_axial` itself for
+	# the same measured reason. Cube rounding is what makes the plane
+	# partition into HEXAGONS rather than rhombi
+	# (D-20260818-a-curve-samples-the-hex-not-the-rhombus), so the
+	# property is asserted rather than the implementation: the rounded
+	# cell must be the nearest cell centre, which independent per-axis
+	# rounding is not.
+	var space := TorusSpace.new(W, H, 1.0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 0xF00D
+	for _i in range(4000):
+		var fractional := Vector2(rng.randf_range(0.0, float(W)),
+			rng.randf_range(0.0, float(H)))
+		var cell := space.round_axial(fractional)
+		var at := space.axial_offset_to_world(fractional - Vector2(cell))
+		# Inside its own hex: no point of a unit hexagon is further than
+		# its circumradius from the centre.
+		assert_lte(Vector2(at.x, at.z).length(), space.hex_size * 1.0001,
+			"%s rounds into the hex it is in" % fractional)
