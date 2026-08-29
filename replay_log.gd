@@ -33,6 +33,15 @@ class_name ReplayLog
 ## combat event before it decodes the payload.
 
 const MAGIC := "EDMWRPL2"
+
+## The extension a replay wears on disk.
+##
+## Here rather than in the two `server.gd` format strings that used to
+## spell it out, because a THIRD reader arrived (#288's report bundle,
+## which has to pick replays out of an artifacts directory holding every
+## other kind of log) and "which files are replays" is this file's
+## question, not its callers'.
+const SUFFIX := ".edmw"
 const HEADER_BYTES := 8 + 4 + 4 + 4 + 4  # magic + hz + width + height + hex_size
 
 # Fixed portion of every record: kind (u8) + at_time (float32) +

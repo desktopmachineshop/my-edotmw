@@ -88,6 +88,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/host-in-process.md
 
+@docs/status/alpha-loop.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/renewable-economy.md
@@ -927,6 +929,14 @@ Three rules come with it:
 
 Lifecycle:
 
+- `just package [TARGET]` — wrap an exported build into the zip a tester
+  downloads (#183): versioned filename, `docs/alpha/testers.md` inside as
+  README.txt, sha256 printed. Packed by GODOT's ZIPPacker, because `zip`
+  is not on Git Bash's PATH and a fresh clone must need nothing but
+  `./bootstrap.ps1`.
+- `just publish-itch [TARGET] [PROJECT]` — push a package to a PRIVATE
+  itch.io channel via butler. **Never run against a real target**; what
+  is verified is its refusal path. `docs/alpha/runbook.md` has the rest.
 - `just export [TARGET]` — the shipping builds (D-094 criterion 1).
   Native only, and needs `just bootstrap-export-templates` first (~1.3 GB,
   into `tools/`, once). TARGET is `all` (default), `windows-client`,
