@@ -1483,7 +1483,16 @@ const PROTOCOL_VERSION := 1
 ## server would otherwise have to spend a player id, a seat and a lobby
 ## broadcast on a peer it is about to refuse, and D-033's seat lifecycle
 ## is not something to run backwards.
-const C2S_HELLO := 39
+# 42, not 39. #297's C2S_SURRENDER took 39 on `main` while this PR was
+# open, and both PRs picked "the next free value on main" — the exact
+# collision #363 predicted for the OTHER scarce namespace (keybindings)
+# and named wire opcodes as the first instance of.
+#
+# THIS side moves, not surrender's: #297 has landed, so 39 is the shared
+# truth and anything already built against `main` speaks it. No version
+# bump is needed — no shipped build has ever spoken C2S_HELLO, because
+# the handshake is new in this PR.
+const C2S_HELLO := 42
 const S2C_REFUSED := 40
 
 ## Why a join was refused. On the wire as an integer rather than as
