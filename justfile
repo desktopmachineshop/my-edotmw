@@ -83,6 +83,21 @@ blender_pip := if os_family() == "windows" { blender_venv + "/Scripts/pip.exe" }
 # that depend on it agree about when it exists.
 server_scene := "server.tscn"
 
+# --- exported builds (D-20260827, #178, D-094 criterion 1) -------------
+# THE build version, read out of the one place it is written down
+# (project.godot's application/config/version — see build_version.gd).
+# The recipes below only ever PRINT it; nothing here may compute a
+# version of its own, which is the entire point of there being one.
+build_version := `grep -m1 '^config/version=' project.godot | cut -d'"' -f2`
+build_dir := justfile_directory() + "/build"
+# Export templates live UNDER tools/, not in the machine's Godot data
+# directory, because bootstrap.ps1 promises a fresh clone installs
+# nothing system-wide and `just nuke` promises to leave pure source.
+# Godot puts its editor data beside its own binary when a file named
+# `_sc_` sits there ("self-contained mode"), which is what makes that
+# possible without any per-preset absolute path.
+export_templates_dir := tools_dir + "/editor_data/export_templates/" + godot_version + ".stable"
+
 [doc("List all available recipes")]
 default:
     @"{{just_executable()}}" --list
@@ -183,6 +198,18 @@ doctor:
         exit 1
     fi
 
+    # --- exported builds (#178) ----------------------------------------
+    # Reported, never required. Producing a build needs export templates;
+    # running, testing and playing the game does not, which is the same
+    # rule the art tooling below is reported under.
+    echo
+    echo "Build version: {{build_version}} (project.godot, application/config/version)"
+    if [ -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "OK: export templates $(cat "{{export_templates_dir}}/version.txt") present"
+    else
+        echo "note: no export templates — \`just export\` needs \`just bootstrap-export-templates\` first"
+    fi
+
     # --- art tooling (D-20260821) --------------------------------------
     # Reported, never required. Neither the wheel nor the application is
     # needed to run, test or play the game: generated/ is committed, so a
@@ -259,6 +286,130 @@ bootstrap:
     mv "$extracted" "$target"
     chmod +x "$target"
     echo "OK: Godot {{godot_version}} installed at $target"
+
+# Fetch the PINNED engine's export templates into tools/.
+#
+# Separate from `bootstrap` for the same reason `bootstrap-art` is: it is
+# a ~1.3 GB download and only somebody producing a build needs it.
+# Everything else in this repo — running, testing, playing — works
+# without it.
+#
+# The templates MUST match the engine exactly (a 4.7.1 build exported
+# with 4.7.0 templates fails at load, not at export), so the version
+# comes from .godot-version like everything else and is never typed here.
+[doc("Fetch the pinned engine's export templates into tools/ (needed by `just export`)")]
+bootstrap-export-templates:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "export templates {{godot_version}} already present — nothing to do."
+        echo "  {{export_templates_dir}}"
+        exit 0
+    fi
+    mkdir -p "{{tools_dir}}"
+    # Godot's "self-contained mode" marker. With this file beside the
+    # binary, editor data — export templates included — lives in
+    # tools/editor_data instead of %APPDATA%/Godot or ~/.local/share/godot.
+    # That is what keeps bootstrap.ps1's "nothing is installed
+    # system-wide" promise true and what makes `just nuke` complete.
+    : > "{{tools_dir}}/_sc_"
+    url="https://github.com/godotengine/godot-builds/releases/download/{{godot_version}}-stable/Godot_v{{godot_version}}-stable_export_templates.tpz"
+    echo "Fetching export templates for Godot {{godot_version}} (~1.3 GB) ..."
+    curl -fL --retry 2 -o "{{tools_dir}}/export_templates.tpz" "$url"
+    rm -rf "{{tools_dir}}/tpz"
+    mkdir -p "{{tools_dir}}/tpz"
+    unzip -o -q "{{tools_dir}}/export_templates.tpz" -d "{{tools_dir}}/tpz"
+    if [ ! -f "{{tools_dir}}/tpz/templates/version.txt" ]; then
+        echo "FAIL: the downloaded archive has no templates/version.txt — not an export template pack?" >&2
+        exit 1
+    fi
+    got="$(cat "{{tools_dir}}/tpz/templates/version.txt")"
+    if [ "$got" != "{{godot_version}}.stable" ]; then
+        echo "FAIL: templates say '$got', .godot-version says '{{godot_version}}.stable'" >&2
+        exit 1
+    fi
+    mkdir -p "{{export_templates_dir}}"
+    cp -f "{{tools_dir}}"/tpz/templates/* "{{export_templates_dir}}/"
+    rm -rf "{{tools_dir}}/tpz" "{{tools_dir}}/export_templates.tpz"
+    echo "OK: export templates $got installed at {{export_templates_dir}}"
+
+# Produce the shipping builds (D-094 criterion 1, #178).
+#
+# TARGET is one of: all (default), windows-client, windows-server,
+# linux-server. The presets themselves live in export_presets.cfg, which
+# is COMMITTED — that is what makes "from a clean clone" true, and
+# tests/test_export.gd fails if a preset this recipe names stops
+# existing.
+#
+# NATIVE ONLY, and not for D-014's usual reason: exporting needs the
+# engine's editor half (it is `--export-release`, an editor operation),
+# and the docker image ships the headless server binary. It imports
+# natively first for exactly the reason `run-client` does — `_import`
+# follows EDOTMW_RUNTIME and would populate the wrong cache.
+#
+# There is no timestamp, no git sha and no build counter anywhere in
+# here: the version comes from project.godot and nothing else, so two
+# clean clones of one commit export the same bytes (D-081's rule, and
+# #178's own).
+[doc("Export shipping builds (TARGET: all|windows-client|windows-server|linux-server)")]
+export TARGET="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" all windows-client windows-server linux-server
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    gate="$(bash host-gate.sh acquire medium 'export' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: exporting needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    if [ ! -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "FAIL: no export templates for Godot {{godot_version}}." >&2
+        echo "      Run: {{just_executable()}} bootstrap-export-templates" >&2
+        exit 1
+    fi
+    version="{{build_version}}"
+    if [ -z "$version" ]; then
+        echo "FAIL: project.godot has no application/config/version — see build_version.gd" >&2
+        exit 1
+    fi
+
+    # Import NATIVELY and unconditionally, for the same reason run-client
+    # does: an export resolves every global class_name out of the import
+    # cache, and .godot-container is the wrong one.
+    "$godot" --headless --path . --import
+
+    echo "export: my-edotmw $version (Godot {{godot_version}})"
+
+    do_export () {
+        preset="$1"; out="$2"
+        mkdir -p "$(dirname "$out")"
+        rm -f "$out"
+        echo "  -> $preset"
+        # --export-release, never --export-debug: a debug export carries
+        # the debug template and would report a different build to a
+        # player than the one that was tested.
+        "$godot" --headless --path . --export-release "$preset" "$out"
+        if [ ! -s "$out" ]; then
+            echo "FAIL: '$preset' produced no binary at $out" >&2
+            exit 1
+        fi
+        echo "     $(du -h "$out" | cut -f1)  $out"
+    }
+
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "windows-client" ]; then
+        do_export "Windows Client" "{{build_dir}}/windows/my-edotmw.exe"
+    fi
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "windows-server" ]; then
+        do_export "Windows Server" "{{build_dir}}/windows-server/my-edotmw-server.exe"
+    fi
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "linux-server" ]; then
+        do_export "Linux Server" "{{build_dir}}/linux-server/my-edotmw-server.x86_64"
+    fi
+    echo "OK: exported my-edotmw $version into {{build_dir}}"
 
 # Start the server detached (docker runtime only — native has no
 # persistent 'up' state, use run-server directly).

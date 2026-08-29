@@ -78,6 +78,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m8-plan.md
 
+@docs/status/m8-export.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/fantasy-civs.md
@@ -523,6 +525,22 @@ forest_preview.gd        The same idea again for WOODS (D-108), framed on
                         own idea of a forest.
 
 --- tooling ---
+build_version.gd         THE one definition of which build this is
+                        (D-20260827). The number lives in project.godot's
+                        `application/config/version` and NOWHERE else —
+                        `just export` greps the same line, so a binary and
+                        the artifact it was written into cannot disagree.
+                        All-static; a test fails if a second script names
+                        the setting, and forbids a git sha or a timestamp
+                        (D-081: two clean clones of one commit must export
+                        the same bytes).
+export_presets.cfg       The shipping builds, COMMITTED — Windows Client,
+                        Windows Server, Linux Server. An exported binary
+                        cannot be handed a scene on the command line, so
+                        which one it starts in is a FEATURE TAG
+                        (`custom_features="server"` against
+                        `run/main_scene.server`); either half alone
+                        exports a working client under the server's name.
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
@@ -864,6 +882,11 @@ Three rules come with it:
 
 Lifecycle:
 
+- `just export [TARGET]` — the shipping builds (D-094 criterion 1).
+  Native only, and needs `just bootstrap-export-templates` first (~1.3 GB,
+  into `tools/`, once). TARGET is `all` (default), `windows-client`,
+  `windows-server` or `linux-server`. Prints the version it stamped;
+  `docs/status/m8-export.md` has the rules that came out of it.
 - `just doctor` — preflight: runtime prerequisites actually met?
 - `just up` / `just down` / `just status` — all scoped to this instance
 - `just instance` — this checkout's instance name, udp port and compose
