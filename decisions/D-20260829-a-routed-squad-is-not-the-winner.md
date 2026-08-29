@@ -103,3 +103,58 @@ is why playing both sides is load-bearing rather than tidy, and why 3 – 3
 is the honest answer: each levy breaks exactly when it is put in the
 losing seat. A fixture that played one side only would have reported a
 6 – 0 sweep for whichever civ it happened to place second.
+
+---
+
+## Amendment, same day (#406) — annihilation outranks breaking
+
+The rule above was right and incomplete: **a rout is not final.** A broken
+squad can rally (D-019) and go on to destroy the side that held, so
+first-to-break is the correct rule for fights that end in a rout and the
+wrong one for fights that end in a wipe.
+
+Caught in this fixture's own printed output, one run after it was written:
+
+```
+seed 2029  swap=true   gilded 0.00  wind 0.39  broke=wind
+```
+
+Gildedreach was **annihilated** and the metric credited it the win. The
+control's 6 – 0 therefore included a fight its winner had lost outright —
+a green control worth exactly nothing, which is the thing this entry was
+written to stop.
+
+**A squad reduced to nothing has lost, whatever the morale ledger says.**
+The wipe is read first; first-to-break decides only among survivors.
+
+### The control was recalibrated, and the factor was MEASURED
+
+Adding the clause takes the control to **5 – 1** at x2 — one fight short.
+That is the honest red, and it makes 81's reading on #346 live: x2 was
+calibrated against a world that has since moved, with sweep thresholds
+going from 2% to 10–20%.
+
+Swept on CI over the shipped defs:
+
+| factor | result |
+|---|---|
+| **x2** | **5 – 1** — no longer sweeps |
+| **x3** | **6 – 0** |
+| x4 | 6 – 0 |
+| x5 | 6 – 0 |
+| x7 | 6 – 0 |
+
+**x3 is the smallest measured factor that sweeps**, and the sweep is stable
+above it rather than perched on a threshold. The boundary between x2 and x3
+is deliberately not narrowed: this control asks whether the fixture can see
+a GROSS imbalance, and one tuned to the edge would be measuring its own
+precision instead.
+
+The even case is **unchanged at 3 – 3** — no fight in it contains a 0.00,
+so the clause cannot touch it. `main` stayed green throughout.
+
+### What was refused
+
+Quieting the control by tuning unit data. That would leave the fixture
+measuring the tuning, and it is the outcome this entry's parent already
+warned against.
