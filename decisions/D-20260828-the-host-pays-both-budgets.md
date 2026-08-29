@@ -117,6 +117,26 @@ machine — precisely the count that breaches here.
 
 ---
 
+#### Owner ratified 2026-08-29
+
+**Both numbers are ratified as the shipping figures:** **~200 squads
+dedicated**, **100-150 hosted**. They are deliberately two numbers rather
+than one — a host runs the authoritative tick inside its own render frame
+(D-088), so it pays both budgets out of one second, and averaging that
+into a single figure would overstate what a player-hosted match survives.
+
+**The recovery is scheduled rather than declined.** Taking the
+simulation tick off the render thread is filed as a **cycle-2
+engineering ticket**; this entry's own finding is that the breach is
+structural — a 46 ms tick cannot fit a 33 ms frame budget by any
+scheduling — so the fix is a threading change and not a tuning one.
+Until it lands, 100-150 is the honest hosted ceiling and the M8 playtest
+loop should be sized to it.
+
+**This also pulls D-088 toward dedicated-first for long matches**, which
+is #289's ratified answer, recorded in
+`D-20260828-host-quit-is-priced-against-a-match-length-nobody-has-measured`.
+
 #### Rejected alternatives
 
 - **Add the isolated figures together and call it measured.** Rejected,
