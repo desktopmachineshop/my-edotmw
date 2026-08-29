@@ -39,6 +39,18 @@ extends Resource
 ## Squads every player starts with, placed relative to their home.
 @export var squads: Array[ScenarioSquad] = []
 
+## Tech LINES every player is granted at scenario start
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## A scenario skips the opening, and once the tree exists it must be able
+## to skip the tree too — otherwise every scenario is permanently epoch 1
+## and the siege loop cannot reach a siege engine. Granted through
+## `ResearchState.grant`, the same call the server makes when research
+## completes, for D-098's governing reason: a scenario is applied through
+## the game's own calls and never through a faster path that builds the
+## world its own way.
+@export var techs: Array[StringName] = []
+
 ## Starting wallet: food, wood, gold, stone. A scenario about combat
 ## should not also be a scenario about saving up.
 @export var food: int = 0

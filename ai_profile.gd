@@ -117,6 +117,22 @@ class_name AiProfileDef
 ## A floor is where the economy stalls, and moving one without measuring
 ## is how the AI spent a whole session gathering zero wood while its food
 ## pile looked perfectly healthy (D-054's `substituted` counter).
+## How readily this AI spends its bank on RESEARCH rather than troops
+## (`D-20260827-the-tree-is-the-ladder`), in (0, 1].
+##
+## Not a probability — nothing in an AI decision may be random, because a
+## replay has to reproduce (D-016). It is a SURPLUS threshold: an optional
+## branch tech is bought only once the wallet holds `cost / research_bias`,
+## so 1.0 buys the moment it is affordable and 0.4 waits until the AI has
+## two and a half times the price sitting idle.
+##
+## A DEFINING tech ignores this and is bought as soon as it is affordable,
+## on purpose. An AI that could talk itself out of climbing would sit at
+## epoch 1 against an opponent that did not, and every ladder number after
+## this would be measuring that instead of the civs — which is exactly the
+## D-107 failure this project has already paid for once.
+@export var research_bias: float = 0.7
+
 @export var food_floor: int = 180
 @export var wood_floor: int = 200
 
