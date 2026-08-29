@@ -42,8 +42,26 @@ func _initialize() -> void:
 		quit(1)
 		return
 
+	# `--only=<section>` runs one section instead of all four. The whole
+	# sweep is minutes of work and the ladder alone is what #304 needs, so
+	# iterating on one of them should not mean paying for the other three.
+	# Empty is every section, so a bare `just profile` is unchanged.
+	var only := String(args.get("only", ""))
+
 	print("profile: %s (%dx%d), %d ticks per count" % [
 		config.id, config.width, config.height, TICKS])
+	if only == "" or only == "count":
+		_count_sweep(config)
+	if only == "" or only == "map":
+		_map_sweep()
+	if only == "" or only == "derive":
+		_derive_sweep(config)
+	if only == "" or only == "ladder":
+		_tick_ladder(config)
+	quit(0)
+
+
+func _count_sweep(config: MapConfig) -> void:
 	for amortised in [true, false]:
 		print("profile: --- count sweep, amortised=%s ---" % ("yes" if amortised else "no"))
 		print("profile: count,us_per_squad,us_vision,us_combat,ms_per_tick,ms_worst_tick,fields_built")
@@ -51,9 +69,250 @@ func _initialize() -> void:
 			_run(config, int(count),
 				SquadSim.DEFAULT_FIELD_CELLS_PER_TICK if amortised else -1)
 
-	_map_sweep()
-	_derive_sweep(config)
-	quit(0)
+
+# --- the steady-state tick ladder (#304) --------------------------------
+#
+# ## Why the sweep above could not answer #304
+#
+# `_run` builds a BARE simulation: no `teams`, no `civs`, no `economy`, no
+# `buildings`, no `research`. Every one of those is a thing M6 and later
+# added, and the sweep cannot see the cost of a system it never
+# instantiates. That is not a flaw in the sweep — it isolates SIMULATION
+# cost on purpose, and the count table's meaning depends on it not
+# changing — it is the reason a separate harness was needed. It is also
+# the mechanism behind CLAUDE.md's standing warning that "a green
+# `just profile` is not a green server", stated one level more precisely:
+# the sweep is green partly because half the server is absent from it.
+#
+# So this builds the world the SERVER builds, at one matched squad count,
+# and turns each suspect off in turn. Every knob defaults to ON, so a bare
+# `just profile` measures the shipped configuration and the ladder is
+# comparable between runs.
+#
+# ## Steady state, and why it is not optional here
+#
+# The first ticks of any run are dominated by flow-field construction —
+# every squad is ordered at once and D-040's budget spreads one solve over
+# many ticks, so an average taken from tick 0 is an average of a transient
+# that never recurs. #105 attributed a whole 84 us/squad rise to exactly
+# that phase, and it would swamp the differences this ladder is looking
+# for. Counters are therefore SNAPSHOTTED after a warm-up and the ladder
+# is the delta.
+
+const LADDER_SQUADS := 120
+const LADDER_WARMUP := 120
+const LADDER_TICKS := 200
+const LADDER_PLAYERS := 4
+
+## One rally per five squads. The count sweep above uses eight for any
+## count, which at 120 squads puts fifteen squads on one cell — and
+## separation then spends its whole budget shoving them outward past each
+## other. Measured: 51-70 us/squad of separation against the 5-8 a real
+## `just test-load` run reports. That is a pathological workload, not a
+## defect, and a ladder built on it would attribute host noise and pile-up
+## to whichever knob happened to be off.
+const LADDER_RALLY_POINTS := 24
+
+## Interleaved repeats, and the ladder reports the MINIMUM of them.
+##
+## Not the mean: this machine runs a dozen other agents' containers, and
+## interference only ever ADDS time. The minimum is the closest thing to
+## "what this configuration costs when nothing else is happening", and it
+## is the statistic that makes a 3 us difference between two knobs
+## readable at all. The first version took one pass each and reported
+## 209.81 and 272.23 us/squad for the SAME configuration — a 30% spread,
+## wider than every effect it was looking for, with knobs turned OFF
+## reading as slower.
+const LADDER_PASSES := 7
+
+
+## One configuration of the world, and what it costs per squad-update.
+##
+## `off` names the suspect to disable, or "" for the shipped
+## configuration. Returns the phase ladder in microseconds per
+## squad-update, so every column is directly comparable with the
+## `us/squad=` line `just test-load` prints.
+##
+## Terrain and the resource field are passed IN rather than built here:
+## both are deterministic, both are expensive, and rebuilding them thirty
+## times would put their variance inside the measurement.
+func _ladder_run(space: TorusSpace, passable: PackedByteArray,
+		terrain: TerrainGen, nodes: Dictionary, off: String) -> Dictionary:
+	# `control` is the shipped configuration under another name — the
+	# noise-floor row. Nothing below may branch on it.
+	if off == "control":
+		off = ""
+	var sim := SquadSim.new(space, CurveReplicator.new())
+	sim.set_passable(passable)
+
+	if off != "buildings":
+		sim.buildings = BuildingSim.new(space)
+	if off != "economy":
+		var economy := Economy.new(space)
+		economy.terrain = terrain
+		economy.nodes = nodes.duplicate(true)
+		sim.economy = economy
+
+	var civ_ids := CivRoster.ids()
+	for player in range(1, LADDER_PLAYERS + 1):
+		# TEAMS: two sides of two. Off means the dictionary the sim reads
+		# is empty, which is what every pre-M6 build had.
+		if off != "teams":
+			sim.teams[player] = 1 + (player % 2)
+		# CIV KNOBS: the resolved CivDef the sim reads for squad cap,
+		# production and gather rate (D-20260823). Off means the
+		# default-constructed CivDef an unknown civ resolves to, which is
+		# the pre-#158 behaviour — the knobs present but unread.
+		if off != "civ-knobs" and not civ_ids.is_empty():
+			sim.civs[player] = CivRoster.effects_of(civ_ids[(player - 1) % civ_ids.size()])
+	# RESEARCH is new in D-20260827 and is measured here for the same
+	# reason the others are: a cost this branch ADDS belongs in the same
+	# table as the costs it is attributing, not exempt from it.
+	if off != "research":
+		sim.research = ResearchState.new()
+
+	var defs := UnitRoster.load_all()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 0xF00D
+	for i in range(LADDER_SQUADS):
+		sim.add_squad(defs[i % defs.size()], 1 + (i % LADDER_PLAYERS), Vector2i(
+			rng.randi_range(0, space.width - 1),
+			rng.randi_range(0, space.height - 1)))
+
+	# A town centre each, so the buildings pass has something to walk and
+	# vision has stationary sources — the shape a real match has.
+	if sim.buildings != null:
+		var hall := BuildingSim.def_by_id(&"town_centre")
+		if hall != null:
+			for player in range(1, LADDER_PLAYERS + 1):
+				sim.buildings.add_building(hall, player, Vector2i(
+					rng.randi_range(0, space.width - 1),
+					rng.randi_range(0, space.height - 1)), true)
+
+	var rallies := []
+	for r in range(LADDER_RALLY_POINTS):
+		rallies.append(Vector2i(
+			rng.randi_range(0, space.width - 1),
+			rng.randi_range(0, space.height - 1)))
+
+	# Warm up, THEN snapshot. See the header: an average that includes the
+	# opening field solves is an average of a transient that never recurs.
+	for tick in range(LADDER_WARMUP):
+		if tick % MOVE_EVERY_TICKS == 0:
+			for squad in range(sim.squad_count()):
+				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+		sim.tick()
+
+	var keys := ["tick", "fields", "curves", "vision", "combat", "buildings",
+		"production", "economy", "separation"]
+	var before := {}
+	for key in keys:
+		before[key] = int(sim.get("total_%s_usec" % key))
+
+	var worst := 0
+	for tick in range(LADDER_TICKS):
+		if tick % MOVE_EVERY_TICKS == 0:
+			for squad in range(sim.squad_count()):
+				sim.order_move(squad, rallies[squad % LADDER_RALLY_POINTS])
+		sim.tick()
+		worst = maxi(worst, sim.last_tick_usec)
+
+	var updates := float(LADDER_TICKS * LADDER_SQUADS)
+	var out := {"worst_ms": float(worst) / 1000.0}
+	for key in keys:
+		out[key] = float(int(sim.get("total_%s_usec" % key)) - int(before[key])) / updates
+	# The residual is the honest column: whatever the tick spent that no
+	# named phase claimed. #105's whole finding was that a tick with only
+	# two reported phases hides its cost in the gap between them.
+	var named := 0.0
+	for key in keys:
+		if key != "tick":
+			named += float(out[key])
+	out["other"] = float(out["tick"]) - named
+	return out
+
+
+## Map sizes the ladder runs the SHIPPED configuration at, 120 squads on
+## each.
+##
+## 128x64 is M4's map, and it is here because it is the control the whole
+## question turns on. M4 measured 40.8 us/squad at 120 squads on 8,192
+## cells; the shipped map is 32,592. Without this row, every difference
+## between that number and today's could be attributed to the feature set
+## — which is exactly the invented attribution
+## `D-20260818-every-microsecond-of-a-tick-has-a-phase` refused to make.
+## Height must be even (D-008).
+const LADDER_SIZES := [Vector2i(128, 64), Vector2i(168, 194)]
+
+
+## The ladder, in two sections: what the MAP costs, and what each FEATURE
+## costs. Squad count is held at `LADDER_SQUADS` throughout — the standing
+## quote-it-with-the-count rule, applied by never varying it.
+func _tick_ladder(config: MapConfig) -> void:
+	print("profile: --- tick ladder, map size at %d squads, %d ticks after %d warm-up, best of %d ---"
+		% [LADDER_SQUADS, LADDER_TICKS, LADDER_WARMUP, LADDER_PASSES])
+	print("profile: cells,us_per_squad,fields,curves,vision,combat,buildings,production,economy,separation,other,ms_worst")
+	var by_size := {}
+	for _pass in range(LADDER_PASSES):
+		for size in LADDER_SIZES:
+			var s := TorusSpace.new(int(size.x), int(size.y), 1.0)
+			var t := TerrainGen.new()
+			t.noise_seed = 1337
+			var e := Economy.new(s)
+			e.generate(t, 1)
+			var row := _ladder_run(s, t.passability(s), t, e.nodes, "")
+			if not by_size.has(size) or float(row["tick"]) < float(by_size[size]["tick"]):
+				by_size[size] = row
+	for size in LADDER_SIZES:
+		var row: Dictionary = by_size[size]
+		print("profile: %d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f" % [
+			int(size.x) * int(size.y),
+			row["tick"], row["fields"], row["curves"], row["vision"],
+			row["combat"], row["buildings"], row["production"], row["economy"],
+			row["separation"], row["other"], row["worst_ms"]])
+
+	var space := config.to_space()
+	var terrain := TerrainGen.new()
+	terrain.noise_seed = 1337
+	var passable := terrain.passability(space)
+	var template := Economy.new(space)
+	template.generate(terrain, 1)
+
+	print("profile: --- tick ladder, %d squads, %d players, %d ticks after %d warm-up, best of %d ---"
+		% [LADDER_SQUADS, LADDER_PLAYERS, LADDER_TICKS, LADDER_WARMUP, LADDER_PASSES])
+	print("profile: config,us_per_squad,fields,curves,vision,combat,buildings,production,economy,separation,other,ms_worst")
+
+	# `control` is a SECOND run of the shipped configuration under a
+	# different label, and it is the most important row in the table.
+	#
+	# It is the instrument's own error bar. Two runs of identical code,
+	# interleaved with everything else, differ only by what the HOST was
+	# doing — so the gap between `as shipped` and `control` is the
+	# smallest difference this table can resolve, and any knob closer to
+	# `as shipped` than that is not measurably anything. Without it a
+	# reader has no way to tell a 4% effect from a 4% noise floor, and
+	# this project has thrown away two sets of numbers for exactly that
+	# reason already (M6's worst-tick figures, and `terrain.md`'s
+	# bench-render absolutes).
+	var configs := ["", "control", "teams", "economy", "civ-knobs", "buildings", "research"]
+	var best := {}
+	# INTERLEAVED: every configuration once per pass, so a host that gets
+	# busier half way through hits all of them rather than reading as an
+	# effect on whichever came last (the rule `docs/status/terrain.md`
+	# bought the hard way).
+	for _pass in range(LADDER_PASSES):
+		for off in configs:
+			var row := _ladder_run(space, passable, terrain, template.nodes, off)
+			if not best.has(off) or float(row["tick"]) < float(best[off]["tick"]):
+				best[off] = row
+
+	for off in configs:
+		var row: Dictionary = best[off]
+		print("profile: %s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f" % [
+			off if off != "" else "as shipped",
+			row["tick"], row["fields"], row["curves"], row["vision"],
+			row["combat"], row["buildings"], row["production"], row["economy"],
+			row["separation"], row["other"], row["worst_ms"]])
 
 
 ## Client-side derivation cost — D-006's other half.
