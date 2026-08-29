@@ -169,3 +169,9 @@ func test_a_duplicate_inside_one_table_is_impossible_to_write() -> void:
 				"%s is in both tables" % letter)
 			letters[String(letter)] = table
 	assert_gt(letters.size(), 10, "the scan must actually be reading the tables")
+
+
+## DELIBERATE FAILURE — scratch branch only, to observe the #290 annotation
+## fire. Never merged.
+func test_deliberate_failure_to_observe_the_annotation() -> void:
+	assert_eq(1, 2, "deliberate: observing that a red suite now emits an ::error::")
