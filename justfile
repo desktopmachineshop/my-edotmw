@@ -2786,6 +2786,15 @@ bench-stale STRICT="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int STRICT "{{STRICT}}"
+    # Host admission gate (D-20260818). MEDIUM and not gpu: this half
+    # reads a recorded run and reports staleness, so it never opens a
+    # window — but it still launches Godot, and work the ledger cannot
+    # see is #153 under-counting through a different door. The rule is
+    # "if a body starts a Godot process it acquires", which is exactly
+    # what `gen-formation-icons` was fixed for.
+    gate="$(bash host-gate.sh acquire medium 'bench-stale' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     "$godot" --headless --path . --script bench_check.gd --         --stale --strict={{STRICT}}
 
