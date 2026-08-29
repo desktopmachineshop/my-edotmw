@@ -3408,6 +3408,57 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="" MAP="res://map
     ' "$log"
 
 
+# A rendered picture of SHIPS ON WATER, framed on a coastline.
+#
+# Naval stage 8's exit criterion (`docs/plans/naval.md` §7): "a rendered frame
+# with ships on water, looked at". Every existing instrument frames somewhere a
+# hull cannot be — `gen-terrain-shot` prefers a mountain and draws no units,
+# `gen-model-preview` uses a studio plane with no sea, `gen-forest-preview`
+# frames a wood, and `test-client` aims at a spawn (walkable by construction).
+#
+# So this frames the busiest piece of coast on the map, with a shipped warship
+# afloat and a land squad ashore beside it — the contrast is the check: a hull
+# riding a hand's breadth too high is invisible on its own and obvious next to
+# something standing on the ground.
+#
+# Real path throughout: a `/units` def with `movement_domain = "water"`, a
+# `PrimitiveUnit`, and `Formation.soldier_transforms_sampled` with the same
+# `water_height` `ClientState` passes.
+#
+# Software-rasterised, so it needs no GPU and says nothing about speed.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render ships on water, framed on a coast, to artifacts/naval-godot.png")]
+gen-naval-shot HEIGHT="9" SEABED="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    bash recipe-arg.sh num SEABED "{{SEABED}}"
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    gate="$(bash host-gate.sh acquire medium 'gen-naval-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-naval-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/naval-godot.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path .             --rendering-method gl_compatibility --resolution 1400x900             naval_shot.tscn -- --height={{HEIGHT}} --seabed={{SEABED}}
+    else
+        "$godot" --path . --rendering-method gl_compatibility             --resolution 1400x900 naval_shot.tscn -- --height={{HEIGHT}}             --seabed={{SEABED}}
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-naval-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
+
 # A TEAMED all-AI match, played for real, that fails if an AI marches on a
 # friend (#119).
 #

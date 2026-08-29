@@ -752,6 +752,16 @@ forest_preview.gd        The same idea again for WOODS (D-108), framed on
                         obvious at eye height. Real Economy.generate, real
                         trees_for, real batching; nothing it draws is its
                         own idea of a forest.
+naval_shot.gd            And again for SHIPS ON WATER (naval stage 8),
+                        framed on the busiest piece of coast with a hull
+                        against the beach, a hull in open water and a
+                        squad ashore. Real /units defs, real
+                        `Formation.soldier_transforms_sampled` with the
+                        water plane, drawn at every lattice copy. The
+                        shore is ranked by HEIGHT first: ranked by water
+                        sides it frames the flattest sandbar on the map,
+                        which is a picture of two squads at the same
+                        height proving nothing.
 
 --- tooling ---
 build_version.gd         THE one definition of which build this is
@@ -1313,6 +1323,12 @@ Dev loop and tests:
   docker like `menu-shot`. Fails if the list is empty, because a
   photograph of a feature not working is still a valid PNG. **Look at
   `artifacts/game-browser.png`.**
+- `just gen-naval-shot [HEIGHT] [SEABED]` — a RENDERED picture of SHIPS
+  ON WATER, framed on a coastline, with a land squad ashore for contrast.
+  Software-rasterised, no GPU. **Look at `artifacts/naval-godot.png`.**
+  `SEABED=1` derives the hulls the pre-stage-8 way and prints what that
+  costs (a hull inshore rides 0.055 up the beach) — the difference is a
+  NUMBER and is not visible in the frame, which the recipe says out loud.
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running

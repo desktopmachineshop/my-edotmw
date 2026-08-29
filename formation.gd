@@ -695,7 +695,8 @@ static func soldier_transforms_sampled(
 	files: int = 0,
 	ordered_facing: float = NAN,
 	surface: PackedFloat32Array = PackedFloat32Array(),
-	height_bump: float = 0.0
+	height_bump: float = 0.0,
+	water_height: float = NAN
 ) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	if curve == null or alive <= 0:
@@ -727,6 +728,15 @@ static func soldier_transforms_sampled(
 	# have only a sampler — the previews, the tests, anything with a
 	# synthetic ground — so nothing has to change to keep working.
 	var one_sample := not surface.is_empty()
+	# A SHIP floats on the water plane, not on the ground under it (naval
+	# stage 8). The drawn sea is already flat — `TerrainGen.build_fields`
+	# clamps every vertex of a water cell up to `sea_level` — so a hull in
+	# open water lands at the right height through the ordinary sampler.
+	# What it does NOT survive is a SHORE cell, where the corners a cell
+	# shares with land pull the interpolated surface up the beach and lift
+	# the hull out of the sea. NAN means "not a ship", which is every
+	# caller that has ever existed.
+	var afloat := not is_nan(water_height)
 	# The formation DEF is a property of the squad, like the curve sample
 	# and the basis above — but `slot_offset` resolved it from the roster
 	# once per soldier, converting `shape` to a StringName and hashing it
@@ -771,6 +781,16 @@ static func soldier_transforms_sampled(
 		# Clamped BEFORE the height is sampled, so a man pulled back off the
 		# rock takes the height of the ground he ends up on rather than of
 		# the cliff top he was briefly aimed at.
+		if afloat:
+			# No terrain sample and no footing test: the sea is flat, and
+			# the passability array describes LAND — clamping a hull
+			# against it would drag a ship toward its own centre whenever
+			# it overhung a shoal. Its own domain's navigability is stage
+			# 2's array and is what a later stage clamps against.
+			var origin_afloat := centre + offset
+			origin_afloat.y = water_height
+			out[i] = Transform3D(basis, origin_afloat)
+			continue
 		if one_sample:
 			# ONE cell derivation for both halves of the terrain sample
 			# (#245): a man's footing and his height are answers about the
