@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"engine"
+field = &"build_time"
+mode = "multiply"
+value = 0.8
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_breaking"
+display_name = "Contract Engines"
+description = "You do not build a springald. You buy the men who have already built one."
+line = &"breaking"
+civ = &"gildedreach"
+epoch = 4
+defining = true
+research_at = &"forge"
+requires = Array[StringName]([&"masonry"])
+cost_food = 1200
+cost_wood = 800
+cost_gold = 600
+cost_stone = 250
+research_time = 120.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

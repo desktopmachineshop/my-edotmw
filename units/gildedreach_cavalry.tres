@@ -8,6 +8,7 @@ id = &"gildedreach_cavalry"
 display_name = "Hired Outriders"
 civ = &"gildedreach"
 archetype = &"cavalry"
+requires_tech = &"holding"
 squad_size = 14
 health = 75.0
 damage = 9.0

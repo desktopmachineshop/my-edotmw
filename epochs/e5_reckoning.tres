@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="EpochDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://epoch_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+index = 5
+display_name = "The Reckoning"
+verb = "decide"
+summary = "Scarce, decisive troops become possible. Every signature is here or one rung below it."
