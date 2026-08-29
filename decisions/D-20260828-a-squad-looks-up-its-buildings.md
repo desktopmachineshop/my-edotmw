@@ -137,3 +137,56 @@ rather than its shape. And the opponent derivation at 10.75 ms, which is
 a second full derivation of a squad usually derived already this frame;
 memoising it per frame is a candidate, and it is a cache of a pure
 function within one pass rather than state that survives frames.
+
+---
+
+**Amendment, 2026-08-28 — the revisit trigger, both halves, one taken and
+one refused.**
+
+This entry closed naming two things left in the gather. Both were tried;
+they came out opposite ways, and the one that failed is the more useful
+of the two.
+
+**The tree discs: taken, 26%.** `_nearby_node_discs` walks a disk of
+cells around a squad and asked `space.index(centre_cell + offset)` for
+each one — sixty-one calls per drawn squad per frame at the radius it
+uses. `D-20260828-inside-the-derive-phase` had already priced a GDScript
+call at **0.174 us against 0.095 us for the wrap arithmetic inside it**,
+so that was most of the cost of the scan and none of its work.
+`TorusSpace.disk_indices` answers the whole disk in one call, with the
+wrap staying exactly where D-008 requires. Interleaved, 1,000 squads:
+
+| pass | per-cell call | one call | |
+|---|---|---|---|
+| 1 | 20.05 ms | **14.96 ms** | −25.4% |
+| 2 | 21.97 ms | **15.92 ms** | −27.5% |
+
+`jostle`, untouched, was the control: 10.49 → 10.59 and 11.52 → 11.70.
+Same cells in the same order, pinned against `disk_offsets` +
+`index()` over every cell of a test map at four radii.
+
+**The opponent derivation: tried, measured at a 6% hit rate, reverted.**
+A squad in a melee is derived twice a frame — once as itself, once as
+somebody's opponent — so memoising the derivation for the frame looks
+free: it is a cache of a pure function keyed by its own arguments, it
+survives no frame, and there is no invalidation to get wrong.
+
+It was written, tested (identical answers, a copy on the way out because
+the render pipeline writes back into the array it is handed, and nothing
+outliving `now`), and then measured: **63,270 derivations, 4,050 served —
+6.0%**. Deriving 6% less while paying an array copy and a dictionary
+write on the other 94% measured *slightly worse*, and the interleaved
+pairs said so (enemy 9.76 → 10.15 and 8.50 → 10.66 ms).
+
+**The reason is a rule this project already had, pointing the other way.**
+The client derives an opponent at the ASKING squad's detail tier, not the
+opponent's own, and `client.gd` says why in as many words: *"pairing
+against men the enemy is not drawing would aim strikes at empty
+ground."* Two callers asking about the same squad therefore usually ask
+DIFFERENT questions, and a memo keyed on the answer cannot merge them.
+Making them agree would mean pairing against men nobody drew.
+
+So the duplicate derivation is not duplicate work — it is two different
+answers that happen to be about one squad. Recorded rather than dropped,
+because "derive each squad once per frame" is the obvious next idea and
+this is the measurement that says what it is worth.

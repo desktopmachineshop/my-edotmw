@@ -559,8 +559,8 @@ func _discs_near(centre: Vector3, radius: float, offsets: Array[Vector3]) -> Arr
 		return out
 	var centre_cell := _space.world_to_cell(centre)
 	var cells := ceili(radius / (_space.hex_size * TorusSpace.SQRT_3)) + 1
-	for offset in TorusSpace.disk_offsets(mini(cells, 6)):
-		var cell := _space.index(centre_cell + offset)
+	# One call for the whole disk, exactly as the client does it (#325).
+	for cell in _space.disk_indices(_space.index(centre_cell), mini(cells, 6)):
 		if not _node_lookup.has(cell):
 			continue
 		var at := _space.to_world(_space.from_index(cell))

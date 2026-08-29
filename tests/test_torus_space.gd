@@ -409,3 +409,34 @@ func test_round_axial_still_cube_rounds() -> void:
 		# its circumradius from the centre.
 		assert_lte(Vector2(at.x, at.z).length(), space.hex_size * 1.0001,
 			"%s rounds into the hex it is in" % fractional)
+
+
+func test_disk_indices_is_disk_offsets_through_index() -> void:
+	# The one-call form of "every cell within radius r", added because the
+	# per-offset `index()` call was most of the cost of the client's tree
+	# lookup and none of its work. Same cells, same ORDER — a caller that
+	# swapped to it must not find anything different.
+	var space := TorusSpace.new(W, H, 1.0)
+	for cell_index in range(space.cell_count()):
+		for radius in [0, 1, 3, 5]:
+			var want := PackedInt32Array()
+			var origin := space.from_index(cell_index)
+			for offset in TorusSpace.disk_offsets(radius):
+				want.append(space.index(origin + offset))
+			assert_eq(space.disk_indices(cell_index, radius), want,
+				"cell %d, radius %d" % [cell_index, radius])
+
+
+func test_disk_indices_wraps_at_the_seam() -> void:
+	# The half a non-wrapping implementation gets wrong, and the reason
+	# this lives in TorusSpace rather than in the caller that wanted it.
+	var space := TorusSpace.new(W, H, 1.0)
+	var corner := space.index(Vector2i(0, 0))
+	var indices := space.disk_indices(corner, 1)
+	assert_eq(indices.size(), 7, "a radius-1 disk is seven cells")
+	for i in indices:
+		assert_gte(i, 0, "every index is in range")
+		assert_lt(i, space.cell_count())
+	# The neighbour across the west seam is a real cell on the far side.
+	assert_true(indices.has(space.index(Vector2i(-1, 0))),
+		"the cell west of the origin is the one at x = width - 1")

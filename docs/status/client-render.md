@@ -1,3 +1,29 @@
+**The gather's own revisit trigger, both halves** (amendment inside
+`D-20260828-a-squad-looks-up-its-buildings`). One taken, one refused, and
+the refusal is the more useful.
+
+- **Tree discs: taken, −26%.** `_nearby_node_discs` asked
+  `space.index(centre_cell + offset)` once per cell of a 61-cell disk,
+  per drawn squad, per frame — and a GDScript call costs 0.174 µs against
+  0.095 µs for the wrap arithmetic inside it. `TorusSpace.disk_indices`
+  answers the whole disk in one call, wrap staying exactly where D-008
+  requires. Interleaved at 1,000 squads: **20.05 → 14.96** and
+  **21.97 → 15.92 ms**, with `jostle` flat as the control. Same cells,
+  same order, pinned against the two-call form over every cell of a test
+  map at four radii.
+- **Opponent derivation: tried, 6% hit rate, reverted.** Memoising the
+  per-frame derivation looks free — a cache of a pure function keyed by
+  its arguments, outliving no frame. Measured: **63,270 derivations,
+  4,050 served — 6.0%**, and paying a copy on the other 94% measured
+  slightly *worse*. The reason is a rule the client already states: an
+  opponent is derived at the ASKING squad's detail tier, because
+  *"pairing against men the enemy is not drawing would aim strikes at
+  empty ground"*. Two callers asking about one squad are usually asking
+  DIFFERENT questions, so there is no duplicate work to remove — only two
+  answers that happen to be about the same squad.
+
+---
+
 **A squad looks up its buildings; it does not walk the match**
 (`D-20260828-a-squad-looks-up-its-buildings`, #325). The decoration
 phase was attributed the same way derive was, and its `gather` half split
