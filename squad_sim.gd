@@ -355,6 +355,78 @@ var _field_cells_this_tick_top: int = 0
 ## outright in a single tick in the ordinary case.
 var top_field_cells_per_tick: int = 1024
 
+# --- the water domain (naval stage 2, #301, docs/plans/naval.md 2.2/2.3)
+
+
+## THE map from `UnitDef.movement_domain`'s string to the constant above,
+## and the reason it is a function rather than an inline comparison.
+##
+## The domain vocabulary lives in two places by necessity — a string in
+## the schema so a `.tres` reads as words, an integer in the sim so
+## `_tier` stays a packed array — and #367 is what happens when nothing
+## ties them together: two chains declared the enum with DIFFERENT VALUES
+## ("ground" here, "land" in the design PR) and the schema log recorded
+## both, because each appended without seeing the other. A `.tres`
+## authored against the losing spelling loads, is not in the enum, and
+## reads as not-water: the hull walks.
+##
+## The integration merge then produced the same failure one level up — a
+## DUPLICATED `DOMAIN_*` block, because two chains each defined it.
+##
+## So: one mapping, in one place, with `tests/test_naval_domain.gd`
+## walking the exported enum's own hint string and asserting every member
+## maps to a distinct known constant. A spelling that is not in the enum,
+## an enum member with no constant, and two members colliding on one
+## constant are all caught from inside whichever chain introduced them,
+## without that chain having to know about any other.
+##
+## Anything that needs a squad's domain from a def calls THIS. Two callers
+## did the comparison inline before, and two is how a third gets written.
+static func domain_from_name(name: String) -> int:
+	match name:
+		"water":
+			return DOMAIN_WATER
+		_:
+			# Ground is the default for every unit that predates ships, and
+			# for any value this function does not recognise: an unknown
+			# domain must beach a unit rather than float it, because a land
+			# squad drawn at sea is a bug somebody sees and a hull walking
+			# is one nobody does.
+			return DOMAIN_GROUND
+
+
+## How far a mis-domained order is corrected before it simply lapses
+## (naval 2.4). A shoreline is by definition within a cell or two of the
+## other domain, so this only has to cover a genuine misclick — not a
+## click on the far side of a continent, which is an order nobody meant.
+const CORRECTION_RADIUS := 6
+
+## The water layer's own cache, queue and counter — a third set, for the
+## reason D-076's entry gives about the second: one shared budget would
+## let a naval solve silently halve ground-pathing throughput on any tick
+## both run, and on the maps this feature exists for BOTH run constantly.
+var _fields_water := {}
+var _pending_fields_water: Array[int] = []
+var _field_cells_this_tick_water: int = 0
+
+## Per-tick BFS cell budget for the water layer.
+##
+## MEASURED, not copied. D-076's 1,024 is right for a wall-top network,
+## which is bounded by how many segments a player has built; water is
+## bounded by the MAP, and on the maps that matter it is most of it —
+## `islands` is 65-71% water, so a naval field is routinely LARGER than a
+## ground field on the same ground. Copying 1,024 would have made every
+## naval order wait dozens of ticks.
+##
+## The number comes from `just profile` over the shipped ladder: see the
+## decision entry for the table. It is deliberately NOT the ground
+## layer's 16,384 either — that was set by D-20260818 after finding the
+## solver was 93% neighbour lookup, and the water layer inherits that fix
+## for free (`TorusSpace.neighbor_table()` is memoised per space instance
+## and the sim holds one), so the two budgets answer different questions
+## about different-sized regions.
+var water_field_cells_per_tick: int = 24576
+
 ## A cross-tier order in progress, per squad: the squad is walking to
 ## `_pending_tier_tower[squad]`'s door on its CURRENT tier and will hop to
 ## `_pending_tier_target[squad]` once it arrives, then continue toward
@@ -481,6 +553,12 @@ var _navigable := PackedByteArray()
 
 func set_navigable(p: PackedByteArray) -> void:
 	_navigable = p
+	# Any cached water field was solved against the old sea, including any
+	# still mid-solve whose frontier holds a reference to the array that
+	# just went stale — the same reason `set_passable` clears the ground
+	# caches (D-040).
+	_fields_water.clear()
+	_pending_fields_water.clear()
 
 
 func is_navigable(cell: Vector2i) -> bool:
@@ -685,10 +763,20 @@ func _advance_landings() -> Array:
 		if _alive[carrier] <= 0 or (_cargo[carrier] as Array).is_empty():
 			_pending_landing[carrier] = -1
 			continue
-		var at := space.from_index(target)
-		if space.distance(cell_of(carrier), at) > 1:
-			continue  # still sailing — naval stage 2 is what moves it
-		landed.append_array(disembark(carrier, at))
+		if _cell[carrier] != _destination[carrier]:
+			continue  # still sailing
+		# Ashore around the HULL, not around the cell that was clicked.
+		#
+		# 3.3 says the ship "sails to the nearest navigable cell adjacent
+		# to it, and the cargo hops out onto passable land cells around
+		# THAT point" — and the two are not the same cell. A land target
+		# inside an island has no adjacent water at all, so the order was
+		# corrected (2.4) to the nearest sea room, which can be several
+		# cells off. Landing around the ordered cell instead left a hull
+		# parked at the only water it could reach, holding an army,
+		# forever — found by sailing a real crossing rather than by
+		# reading it.
+		landed.append_array(disembark(carrier, cell_of(carrier)))
 	return landed
 
 
@@ -777,6 +865,11 @@ func is_passable_top(cell: Vector2i) -> bool:
 ## naval stage 2. It is declared NOW because stage 5 (combat across the
 ## shoreline) needs to name the domain it refuses melee across, and a
 ## bare `2` in `combat.gd` would be a second definition of the same fact.
+## Three values in one field is right because they are MUTUALLY
+## EXCLUSIVE BY CONSTRUCTION: a ship is never on a wall, and a land
+## squad is never on open water except as cargo, which is not in the
+## world at all (naval 3.1, and `_cargo` is where that is enforced).
+##
 const DOMAIN_GROUND := 0
 const DOMAIN_WALL_TOP := 1
 const DOMAIN_WATER := 2
@@ -824,7 +917,11 @@ func add_squad(def: UnitDef, owner: int, at: Vector2i) -> int:
 	_attack_move.append(0)
 	_explore.append(0)
 
-	_tier.append(0)
+	# A unit begins in the domain its def names (naval 2.4): the UNIT
+	# decides its domain and the cell decides only whether an order is
+	# legal. Everything that predates ships is `ground`, which is 0 and
+	# exactly what this appended before.
+	_tier.append(domain_from_name(def.movement_domain))
 	_pending_tier_target.append(-1)
 	_pending_tier_tower.append(-1)
 	_pending_tier_destination.append(-1)
@@ -1530,6 +1627,10 @@ func _approachable(cell: Vector2i, tier: int = 0) -> Vector2i:
 ## SquadSim in a test gets. `tier` 1 defers to `is_passable_top`, whose
 ## empty-array default is the OPPOSITE (D-076) — see that function.
 func is_passable(cell: Vector2i, tier: int = 0) -> bool:
+	# The domain dispatch (naval 2.2). `tier` keeps its name; its doc is
+	# 'domain' and the constants are `DOMAIN_*`.
+	if tier == DOMAIN_WATER:
+		return is_navigable(cell)
 	if tier == 1:
 		return is_passable_top(cell)
 	if _passable.is_empty():
@@ -1563,7 +1664,7 @@ func _spawn_cell_near(buildings: BuildingSim, building: int,
 	# over `_navigable` is naval stage 2. Stage 3's claim is only that a
 	# hull APPEARS in water, which is what makes stage 2 something that can
 	# be looked at rather than inferred.
-	if produced != null and produced.movement_domain == "water":
+	if produced != null and domain_from_name(produced.movement_domain) == DOMAIN_WATER:
 		var launched := _launch_cell_near(buildings, building)
 		if launched.x >= 0:
 			return launched
@@ -1689,12 +1790,68 @@ func order_move(squad: int, destination: Vector2i) -> void:
 		pass  # ordered at water: an ordinary move for a hull, not a landing
 	elif not (_cargo[squad] as Array).is_empty():
 		_pending_landing[squad] = space.index(destination)
-	var wanted_tier := _tier_for_destination(destination)
+	# THE DOMAIN CORRECTION (naval 2.4), and it comes AFTER the embark and
+	# landing branches above on purpose — both of those are orders that
+	# deliberately name a cell in the other domain, and correcting first
+	# would turn every embark into a walk to the beach and every landing
+	# into a move to open sea. That ordering is the whole interlock
+	# between naval stages 2 and 4; it is asserted by
+	# `test_naval_domain.gd` rather than left to a comment.
+	destination = _corrected_destination(squad, destination)
+	var wanted_tier := _wanted_domain_for(squad, destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
 		_apply_move_order(squad, destination, true)
 		return
 	_begin_tier_crossing(squad, destination, wanted_tier)
+
+
+## The cell this squad can actually be ordered to, given the domain it
+## lives in (naval 2.4).
+##
+## **The unit decides its domain; the cell decides only whether the order
+## is legal.** D-076 could infer a tier from the destination because a
+## wall-top cell is unambiguous. A shore cell is not: it is legal ground
+## for a land squad AND adjacent to legal water, so "which domain did they
+## mean" cannot be answered from the cell.
+##
+## So an order into the wrong domain is CORRECTED rather than refused —
+## the same shape as `_approachable`, which D-20260818 deliberately left
+## omniscient precisely because it can never refuse an order, only move
+## one. A player who clicks the sea with infantry selected gets a march to
+## the shore, which is what they meant.
+##
+## Returns `destination` unchanged for every squad in its own domain,
+## which is every squad that predates ships.
+func _corrected_destination(squad: int, destination: Vector2i) -> Vector2i:
+	var domain := _tier[squad]
+	if domain == DOMAIN_WATER:
+		if is_navigable(destination):
+			return destination
+		return _nearest_in_domain(destination, true)
+	if domain == DOMAIN_GROUND:
+		if not is_navigable(destination) or _navigable.is_empty():
+			return destination
+		return _nearest_in_domain(destination, false)
+	return destination
+
+
+## The nearest cell of the wanted kind to `from`, or `from` itself if
+## there is none within reach.
+##
+## Nearest-first through `disk_offsets` (D-067 sorted it for exactly this
+## walk), so the correction is deterministic and a replay corrects
+## identically. Bounded rather than unbounded: a correction that searched
+## the whole map would happily send a ship to the far side of the world
+## because somebody misclicked, and "the order lapses" is the behaviour
+## every other unreachable order in this file already has.
+func _nearest_in_domain(from: Vector2i, want_water: bool) -> Vector2i:
+	for offset in TorusSpace.disk_offsets(CORRECTION_RADIUS):
+		var candidate := space.normalize(from + offset)
+		if is_navigable(candidate) == want_water:
+			if want_water or is_passable(candidate):
+				return candidate
+	return from
 
 
 ## The friendly transport standing on `destination` that `squad` could
@@ -1829,7 +1986,7 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 	if has_stance(squad, STANCE_HOLD_FIRE):
 		set_stance(squad, _stance[squad] & ~STANCE_HOLD_FIRE)
 	_explore[squad] = 0
-	var wanted_tier := _tier_for_destination(destination)
+	var wanted_tier := _wanted_domain_for(squad, destination)
 	if wanted_tier == _tier[squad]:
 		_pending_tier_target[squad] = -1
 		_apply_move_order(squad, destination, true)
@@ -1838,6 +1995,29 @@ func order_attack_move(squad: int, destination: Vector2i) -> void:
 	_attack_move[squad] = 1
 	# A fresh order replaces any errand a halt was holding (#249).
 	_attack_move_goal.erase(squad)
+
+
+## Which DOMAIN this squad's order belongs to (naval 2.4).
+##
+## THE rule the design pins: **the unit decides its domain, the cell
+## decides only whether the order is legal.** D-076 could infer a tier
+## from the cell because a wall-top cell is unambiguous; a shore cell is
+## not, being legal ground for a land squad and adjacent to legal water.
+##
+## So a water squad's domain is simply its own — it never climbs a wall
+## and never walks ashore, and its destination has already been corrected
+## into water by `_corrected_destination`. Everything else keeps D-076's
+## inference exactly, which is what leaves every pre-naval call site and
+## every wire order untouched.
+##
+## Without this a hull ordered anywhere fell into `_begin_tier_crossing`
+## looking for an access tower, found none, and the order was dropped in
+## silence — measured, before it was fixed: 120 ticks, 0 fields built, a
+## ship that never moved.
+func _wanted_domain_for(squad: int, destination: Vector2i) -> int:
+	if _tier[squad] == DOMAIN_WATER:
+		return DOMAIN_WATER
+	return _tier_for_destination(destination)
 
 
 ## Which tier `destination` belongs to (D-076): 1 if it is a cell on the
@@ -2390,6 +2570,8 @@ func _field_budget_remaining() -> int:
 func _field_for(destination_index: int, knower: int, tier: int = 0) -> FlowField:
 	if tier == 1:
 		return _field_for_top(destination_index)
+	if tier == DOMAIN_WATER:
+		return _field_for_water(destination_index)
 
 	var key := Vector2i(destination_index, knower)
 	if _fields.has(key):
@@ -2448,6 +2630,64 @@ func _field_for_top(destination_index: int) -> FlowField:
 	_fields_top[destination_index] = field
 	fields_built += 1
 	return field
+
+
+## The water counterpart of `_field_for` (naval 2.3) — same `FlowField`
+## class, unmodified, driven a third time over its own dictionary, queue
+## and budget.
+##
+## NOT FOGGED, and the argument is stronger than the wall-top layer's
+## rather than weaker. D-20260818 made ground pathing solve against what a
+## SIDE believes, because unknown land can hide a lake or a wall. In v1
+## there is nothing about water to discover: `navigable[i]` is exactly
+## `elevation(i) < sea_level` (naval 2.1), no building subtracts from it,
+## and no ramp carves it — so a per-side belief array would be identical
+## to the truth array for every side on every tick, and fogging it would
+## be cost with provably no effect.
+##
+## `test_naval_domain.gd` asserts that premise rather than trusting it: if
+## anything ever subtracts a cell from `_navigable` — naval 2.2 names a
+## sea wall and a floating platform as the cases — the test fires and this
+## layer needs belief before that lands.
+func _field_for_water(destination_index: int) -> FlowField:
+	if _fields_water.has(destination_index):
+		return _fields_water[destination_index]
+
+	var started := Time.get_ticks_usec()
+	var field := FlowField.new()
+	field.begin(space, space.from_index(destination_index), _navigable)
+	var remaining := maxi(0, water_field_cells_per_tick - _field_cells_this_tick_water)
+	if not field.expand(remaining) and not _pending_fields_water.has(destination_index):
+		_pending_fields_water.append(destination_index)
+	_field_cells_this_tick_water += field.expanded_cells()
+	total_field_usec += Time.get_ticks_usec() - started
+
+	_fields_water[destination_index] = field
+	fields_built += 1
+	return field
+
+
+## The water counterpart of `_expand_pending_fields` — identical shape,
+## over the water dictionary/queue/budget.
+func _expand_pending_fields_water() -> void:
+	_field_cells_this_tick_water = 0
+	if _pending_fields_water.is_empty():
+		return
+
+	var still_pending: Array[int] = []
+	for destination_index in _pending_fields_water:
+		var field: FlowField = _fields_water.get(destination_index, null)
+		if field == null or field.is_complete():
+			continue
+		var remaining := maxi(0, water_field_cells_per_tick - _field_cells_this_tick_water)
+		if remaining == 0:
+			still_pending.append(destination_index)
+			continue
+		var before := field.expanded_cells()
+		if not field.expand(remaining):
+			still_pending.append(destination_index)
+		_field_cells_this_tick_water += field.expanded_cells() - before
+	_pending_fields_water = still_pending
 
 
 ## Tier-1 counterpart of `_expand_pending_fields` (D-076) — identical
@@ -3127,6 +3367,7 @@ func tick() -> void:
 	var fields_started := Time.get_ticks_usec()
 	_expand_pending_fields()
 	_expand_pending_fields_top()  # D-076: its own budget, see that function
+	_expand_pending_fields_water()  # naval 2.3: and so does the water layer
 	last_fields_usec = Time.get_ticks_usec() - fields_started
 	total_fields_usec += last_fields_usec
 
