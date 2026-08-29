@@ -38,6 +38,13 @@
 set shell := ["bash", "-cu"]
 
 godot_version := `cat .godot-version`
+# The GodotSteam release paired with THAT engine version (D-093, #181).
+# Its own file, beside .godot-version, because the two are a PAIR and a
+# mismatched pair fails at LOAD rather than at build — on a player's
+# machine, not the builder's. Reported by `just doctor`; nothing here
+# requires it, because absent Steam costs Steam features and never the
+# game.
+godotsteam_version := `cat .godotsteam-version`
 runtime := env_var_or_default("EDOTMW_RUNTIME", "docker")
 tools_dir := justfile_directory() + "/tools"
 artifacts_dir := justfile_directory() + "/artifacts"
@@ -82,6 +89,21 @@ blender_pip := if os_family() == "windows" { blender_venv + "/Scripts/pip.exe" }
 # Single source of truth for the M1 server entry scene, so the recipes
 # that depend on it agree about when it exists.
 server_scene := "server.tscn"
+
+# --- exported builds (D-20260827, #178, D-094 criterion 1) -------------
+# THE build version, read out of the one place it is written down
+# (project.godot's application/config/version — see build_version.gd).
+# The recipes below only ever PRINT it; nothing here may compute a
+# version of its own, which is the entire point of there being one.
+build_version := `grep -m1 '^config/version=' project.godot | cut -d'"' -f2`
+build_dir := justfile_directory() + "/build"
+# Export templates live UNDER tools/, not in the machine's Godot data
+# directory, because bootstrap.ps1 promises a fresh clone installs
+# nothing system-wide and `just nuke` promises to leave pure source.
+# Godot puts its editor data beside its own binary when a file named
+# `_sc_` sits there ("self-contained mode"), which is what makes that
+# possible without any per-preset absolute path.
+export_templates_dir := tools_dir + "/editor_data/export_templates/" + godot_version + ".stable"
 
 [doc("List all available recipes")]
 default:
@@ -183,6 +205,18 @@ doctor:
         exit 1
     fi
 
+    # --- exported builds (#178) ----------------------------------------
+    # Reported, never required. Producing a build needs export templates;
+    # running, testing and playing the game does not, which is the same
+    # rule the art tooling below is reported under.
+    echo
+    echo "Build version: {{build_version}} (project.godot, application/config/version)"
+    if [ -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "OK: export templates $(cat "{{export_templates_dir}}/version.txt") present"
+    else
+        echo "note: no export templates — \`just export\` needs \`just bootstrap-export-templates\` first"
+    fi
+
     # --- art tooling (D-20260821) --------------------------------------
     # Reported, never required. Neither the wheel nor the application is
     # needed to run, test or play the game: generated/ is committed, so a
@@ -191,6 +225,20 @@ doctor:
     # a window — blender-path.sh's header says which.
     echo
     bash blender-path.sh explain | sed 's/^/blender: /'
+
+    # --- Steam (D-093, #181) -------------------------------------------
+    # Reported, never required, and never a FAILURE: Steam-less is the
+    # configuration every automated context here runs in — docker, CI,
+    # the bots, this whole test estate — so a preflight that failed on it
+    # would fail everywhere that matters.
+    #
+    # What is printed is the PAIRING, because that is the part a human
+    # can get wrong: whether Steam is actually reachable is a runtime
+    # question and `platform.gd` is the one thing allowed to
+    # answer it (a second definition in shell would be free to disagree).
+    echo
+    echo "GodotSteam pin: {{godotsteam_version}} (for Godot {{godot_version}}) — platform.gd decides availability at runtime"
+    echo "note: absent Steam costs Steam features (relay, lobbies, invites), never the game (D-093)"
 
     # --- host budget (D-20260818) -------------------------------------
     # Reported, never enforced here: doctor's job is to say what the
@@ -259,6 +307,320 @@ bootstrap:
     mv "$extracted" "$target"
     chmod +x "$target"
     echo "OK: Godot {{godot_version}} installed at $target"
+
+# Wrap an exported build into the thing a tester actually downloads
+# (#183). One zip, named for the build inside it.
+#
+# The name carries the version because a tester's Downloads folder is
+# where mixed builds are BORN: "my-edotmw.zip" twice is two files called
+# "my-edotmw (1).zip", and the resulting desync report ends in "you were
+# on last week's build". #179's handshake catches that at the join now —
+# this is the half that stops it happening.
+#
+# The version comes from the one place it is written down (D-20260827),
+# and the archive's entries are written in SORTED order so two packages
+# of one build do not differ merely because a filesystem enumerated
+# differently. It is NOT claimed to be byte-identical run to run — a zip
+# stores mtimes — which is why the recipe prints a sha256 for whoever is
+# about to hand it to somebody: the checksum you quote is the checksum of
+# the file you send, not of a rebuild.
+[doc("Zip an exported build for a tester (TARGET: windows-client|linux-server)")]
+package TARGET="windows-client": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" windows-client windows-server linux-server
+    # Host admission gate (D-20260818): this runs Godot over a 100+ MB
+    # build, and `tests/test_host_budget.gd` is what caught it not
+    # declaring a class — a recipe that can start while the machine has
+    # nothing left is what that gate exists to stop.
+    gate="$(bash host-gate.sh acquire medium 'package' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    version="{{build_version}}"
+    if [ -z "$version" ]; then
+        echo "FAIL: project.godot has no application/config/version — see build_version.gd" >&2
+        exit 1
+    fi
+    case "{{TARGET}}" in
+        windows-client)  dir="{{build_dir}}/windows" ;;
+        windows-server)  dir="{{build_dir}}/windows-server" ;;
+        linux-server)    dir="{{build_dir}}/linux-server" ;;
+    esac
+    if [ ! -d "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+        echo "FAIL: nothing exported at $dir — run: {{just_executable()}} export {{TARGET}}" >&2
+        exit 1
+    fi
+    mkdir -p "{{build_dir}}/packages"
+    name="my-edotmw-{{TARGET}}-$version"
+    out="{{build_dir}}/packages/$name.zip"
+    rm -f "$out"
+    # The README travels WITH the build, because a tester who downloaded a
+    # zip six weeks ago has no repo to look anything up in and the
+    # instructions have to be in the same folder as the thing they are
+    # about. docs/alpha/testers.md is the one copy; this is a copy of it,
+    # made at package time so it cannot go stale on its own.
+    staging="{{build_dir}}/packages/.$name"
+    rm -rf "$staging"
+    mkdir -p "$staging"
+    cp -r "$dir"/. "$staging/"
+    cp docs/alpha/testers.md "$staging/README.txt"
+    # Packed by GODOT, not by `zip`. `zip` is not on Git Bash's PATH on
+    # Windows and `Compress-Archive` is PowerShell-only; adding either as
+    # a dependency would break the promise that a fresh clone needs
+    # nothing but ./bootstrap.ps1. The engine is already pinned (D-001)
+    # and is the same binary that produced the build being packed.
+    #
+    # Paths from INSIDE the staging directory, so the archive opens as
+    # the build itself rather than as a folder a tester has to descend
+    # into.
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: packaging needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    "$godot" --headless --path . --script package_zip.gd -- \
+        --dir="$staging" --out="$out"
+    rm -rf "$staging"
+    if [ ! -s "$out" ]; then
+        echo "FAIL: no package was written at $out" >&2
+        exit 1
+    fi
+    echo "package: $out"
+    # `sha256sum` prefixes the digest with a backslash when the path it
+    # was given contains one, which every Windows path does — strip it,
+    # or the checksum quoted to a tester does not match the one they
+    # compute.
+    echo "package: $(du -h "$out" | cut -f1), sha256 $(sha256sum "$out" | cut -d' ' -f1 | sed 's|^\\||')"
+    echo "package: version $version — hand this to a tester with docs/alpha/testers.md"
+# Bundle this machine's logs, replays and system details into one file a
+# tester can attach to a bug report (#288).
+#
+# The recipe half of the feature. The half that MATTERS is the "Report a
+# problem" button in both client menus, because a tester installing a zip
+# has no `just` and no checkout — this is here for the person running the
+# session, who has both and who is the one that ends up assembling other
+# people's reports.
+#
+# `LIST=1` answers "what would you send" without writing anything. That
+# is the question a tester is entitled to ask first, and it is also what
+# makes the recipe useful on a machine that has played nothing.
+#
+# Host-gated, which the first version of this comment got wrong: it said
+# "not gated, it copies a few files", and the files are not the cost —
+# STARTING GODOT is, which is exactly what the gate rations
+# (D-20260818). `test_host_budget.gd` caught it, which is what that scan
+# is for. It also depends on `_import`, because it names global classes
+# (ReportBundle, ArtifactPath, BuildVersion).
+[doc("Zip logs, replays and system info into one attachable file (LIST=1 to preview)")]
+report-bundle LIST="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum LIST "{{LIST}}" 0 1
+    gate="$(bash host-gate.sh acquire medium 'report-bundle' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    if [ "{{LIST}}" = "1" ]; then
+        "$godot" --headless --script make_report.gd -- --list=1
+    else
+        "$godot" --headless --script make_report.gd
+    fi
+
+
+
+# Push a package to a PRIVATE itch.io channel via butler (#183).
+#
+# **This recipe has never been run against a real target.** It needs an
+# itch.io account, a project, and a butler API key, none of which exist in
+# a worktree — so what is verified here is the half that CAN be: it
+# refuses, loudly and specifically, when butler or the key is missing,
+# which is the state every automated context is in. The push itself is
+# the human remainder, and the PR that added this says so.
+#
+# It exists as a recipe rather than as a line in the runbook because the
+# invocation is the part that is easy to get wrong: the channel name is
+# what itch uses to decide "is this the same product", and the `--userversion`
+# is what makes a tester's client able to say which build it has. Both
+# come from the one version (D-20260827) rather than from whoever is
+# typing.
+#
+# It is also a rehearsal for steamcmd (#185) on purpose — same shape,
+# same versioning question, and cheaper to get wrong.
+[doc("Push a package to a private itch.io channel via butler (needs BUTLER_API_KEY)")]
+publish-itch TARGET="windows-client" PROJECT="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" windows-client windows-server linux-server
+    if ! command -v butler >/dev/null 2>&1; then
+        echo "FAIL: butler is not on PATH." >&2
+        echo "      It is itch.io's uploader: https://itch.io/docs/butler/" >&2
+        echo "      Nothing here installs it — it is a personal tool with a personal key," >&2
+        echo "      the same reason blender-path.sh finds Blender rather than fetching it." >&2
+        exit 1
+    fi
+    if [ -z "${BUTLER_API_KEY:-}" ]; then
+        echo "FAIL: BUTLER_API_KEY is not set — butler cannot authenticate." >&2
+        echo "      Get one with: butler login" >&2
+        exit 1
+    fi
+    # The env fallback is read HERE rather than as a `just` default
+    # expression. `tests/test_recipe_args.gd` scans recipe signatures for
+    # parameters that are not checked, and a default of the form
+    # `NAME=env_var_or_default(...)` parses as a parameter of its own —
+    # so the guard reported a bare `"")` as an unchecked argument. No
+    # other recipe here uses a function-call default, and matching the
+    # house style is cheaper than reshaping a shared guard around one
+    # unusual signature.
+    project="{{PROJECT}}"
+    if [ -z "$project" ]; then
+        project="${EDOTMW_ITCH_PROJECT:-}"
+    fi
+    if [ -z "$project" ]; then
+        echo "FAIL: no itch project. Pass it, or set EDOTMW_ITCH_PROJECT." >&2
+        echo "      It looks like: yourname/my-edotmw" >&2
+        exit 1
+    fi
+    version="{{build_version}}"
+    package="{{build_dir}}/packages/my-edotmw-{{TARGET}}-$version.zip"
+    if [ ! -s "$package" ]; then
+        echo "FAIL: no package at $package — run: {{just_executable()}} package {{TARGET}}" >&2
+        exit 1
+    fi
+    # The channel is the PRODUCT identity on itch, and `alpha-` keeps
+    # these off any public channel name a store page would offer
+    # (D-087: M8 produces no public artifact).
+    channel="alpha-{{TARGET}}"
+    echo "publish-itch: pushing $package to $project:$channel as $version"
+    butler push "$package" "$project:$channel" --userversion "$version"
+    butler status "$project:$channel"
+
+# Fetch the PINNED engine's export templates into tools/.
+#
+# Separate from `bootstrap` for the same reason `bootstrap-art` is: it is
+# a ~1.3 GB download and only somebody producing a build needs it.
+# Everything else in this repo — running, testing, playing — works
+# without it.
+#
+# The templates MUST match the engine exactly (a 4.7.1 build exported
+# with 4.7.0 templates fails at load, not at export), so the version
+# comes from .godot-version like everything else and is never typed here.
+[doc("Fetch the pinned engine's export templates into tools/ (needed by `just export`)")]
+bootstrap-export-templates:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "export templates {{godot_version}} already present — nothing to do."
+        echo "  {{export_templates_dir}}"
+        exit 0
+    fi
+    mkdir -p "{{tools_dir}}"
+    # Godot's "self-contained mode" marker. With this file beside the
+    # binary, editor data — export templates included — lives in
+    # tools/editor_data instead of %APPDATA%/Godot or ~/.local/share/godot.
+    # That is what keeps bootstrap.ps1's "nothing is installed
+    # system-wide" promise true and what makes `just nuke` complete.
+    : > "{{tools_dir}}/_sc_"
+    url="https://github.com/godotengine/godot-builds/releases/download/{{godot_version}}-stable/Godot_v{{godot_version}}-stable_export_templates.tpz"
+    echo "Fetching export templates for Godot {{godot_version}} (~1.3 GB) ..."
+    curl -fL --retry 2 -o "{{tools_dir}}/export_templates.tpz" "$url"
+    rm -rf "{{tools_dir}}/tpz"
+    mkdir -p "{{tools_dir}}/tpz"
+    unzip -o -q "{{tools_dir}}/export_templates.tpz" -d "{{tools_dir}}/tpz"
+    if [ ! -f "{{tools_dir}}/tpz/templates/version.txt" ]; then
+        echo "FAIL: the downloaded archive has no templates/version.txt — not an export template pack?" >&2
+        exit 1
+    fi
+    got="$(cat "{{tools_dir}}/tpz/templates/version.txt")"
+    if [ "$got" != "{{godot_version}}.stable" ]; then
+        echo "FAIL: templates say '$got', .godot-version says '{{godot_version}}.stable'" >&2
+        exit 1
+    fi
+    mkdir -p "{{export_templates_dir}}"
+    cp -f "{{tools_dir}}"/tpz/templates/* "{{export_templates_dir}}/"
+    rm -rf "{{tools_dir}}/tpz" "{{tools_dir}}/export_templates.tpz"
+    echo "OK: export templates $got installed at {{export_templates_dir}}"
+
+# Produce the shipping builds (D-094 criterion 1, #178).
+#
+# TARGET is one of: all (default), windows-client, windows-server,
+# linux-server. The presets themselves live in export_presets.cfg, which
+# is COMMITTED — that is what makes "from a clean clone" true, and
+# tests/test_export.gd fails if a preset this recipe names stops
+# existing.
+#
+# NATIVE ONLY, and not for D-014's usual reason: exporting needs the
+# engine's editor half (it is `--export-release`, an editor operation),
+# and the docker image ships the headless server binary. It imports
+# natively first for exactly the reason `run-client` does — `_import`
+# follows EDOTMW_RUNTIME and would populate the wrong cache.
+#
+# There is no timestamp, no git sha and no build counter anywhere in
+# here: the version comes from project.godot and nothing else, so two
+# clean clones of one commit export the same bytes (D-081's rule, and
+# #178's own).
+[doc("Export shipping builds (TARGET: all|windows-client|windows-server|linux-server)")]
+export TARGET="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum TARGET "{{TARGET}}" all windows-client windows-server linux-server
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    gate="$(bash host-gate.sh acquire medium 'export' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: exporting needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    if [ ! -f "{{export_templates_dir}}/version.txt" ]; then
+        echo "FAIL: no export templates for Godot {{godot_version}}." >&2
+        echo "      Run: {{just_executable()}} bootstrap-export-templates" >&2
+        exit 1
+    fi
+    version="{{build_version}}"
+    if [ -z "$version" ]; then
+        echo "FAIL: project.godot has no application/config/version — see build_version.gd" >&2
+        exit 1
+    fi
+
+    # Import NATIVELY and unconditionally, for the same reason run-client
+    # does: an export resolves every global class_name out of the import
+    # cache, and .godot-container is the wrong one.
+    "$godot" --headless --path . --import
+
+    echo "export: my-edotmw $version (Godot {{godot_version}})"
+
+    do_export () {
+        preset="$1"; out="$2"
+        mkdir -p "$(dirname "$out")"
+        rm -f "$out"
+        echo "  -> $preset"
+        # --export-release, never --export-debug: a debug export carries
+        # the debug template and would report a different build to a
+        # player than the one that was tested.
+        "$godot" --headless --path . --export-release "$preset" "$out"
+        if [ ! -s "$out" ]; then
+            echo "FAIL: '$preset' produced no binary at $out" >&2
+            exit 1
+        fi
+        echo "     $(du -h "$out" | cut -f1)  $out"
+    }
+
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "windows-client" ]; then
+        do_export "Windows Client" "{{build_dir}}/windows/my-edotmw.exe"
+    fi
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "windows-server" ]; then
+        do_export "Windows Server" "{{build_dir}}/windows-server/my-edotmw-server.exe"
+    fi
+    if [ "{{TARGET}}" = "all" ] || [ "{{TARGET}}" = "linux-server" ]; then
+        do_export "Linux Server" "{{build_dir}}/linux-server/my-edotmw-server.x86_64"
+    fi
+    echo "OK: exported my-edotmw $version into {{build_dir}}"
 
 # Start the server detached (docker runtime only — native has no
 # persistent 'up' state, use run-server directly).
@@ -699,6 +1061,17 @@ quick-test SEED="1337" SANDBOX="auto":
 gen-formation-icons: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    #
+    # This recipe launches Godot, so it is gated for the same reason as
+    # every other one that does: work on the machine the ledger cannot see
+    # is #153's under-counting arriving through a different door.
+    gate="$(bash host-gate.sh acquire medium 'gen-formation-icons' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
@@ -709,6 +1082,232 @@ gen-formation-icons: _import
     "$godot" --headless --path . --script formation_icon_preview.gd
     echo "look at {{artifacts_dir}}/formation-icons.png"
 
+
+[doc("Regenerate the placeholder sound effects into generated/audio")]
+build-audio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # NOT host-gated and needs NOTHING installed: `wave`, `math` and
+    # `struct` are the standard library, so unlike `build-assets` (a ~1 GB
+    # bpy wheel, blocked host-wide by an Application Control policy at the
+    # time of writing) this runs on a fresh clone. Audio has no such
+    # constraint and should not inherit one.
+    #
+    # Two runs must be byte-identical (D-081): fixed seeds, sorted
+    # iteration, no timestamps.
+    python audio/sfx.py
+    echo "audio: now run   {{just_executable()}} test-unit audio   to check the table still resolves"
+
+# A picture of the PRE-CONNECTION menu (#180).
+#
+# It exists because every other instrument this project has is aimed at a
+# CONNECTED client: `test-client` needs a server to point at, and
+# `lobby-shot` photographs the lobby, which is only reachable once a
+# socket exists. The menu is the first thing a tester who installs a
+# build ever sees, and until this recipe nothing could look at it — which
+# is the blind spot this project has now paid for four times (cliffs,
+# forest interiors, the fog edge, the HUD at 1080p).
+#
+# Modelled on `lobby-shot`, including being DOCKER-ONLY: it renders
+# through Mesa's software GL under a virtual X server, so it needs no GPU
+# and — the part that matters here — opens no window on anybody's
+# desktop. `--headless` cannot be used instead: the dummy rendering
+# driver draws nothing, so the screenshot would be a blank image that
+# looked like a broken menu.
+#
+# Unlike `lobby-shot` it starts NO SERVER, and that is the point: the menu
+# is the one screen that must render with nothing running.
+#
+# LOOK at artifacts/main-menu.png.
+[doc("Render the pre-connection main menu to artifacts/main-menu.png")]
+menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0" MANUAL="": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # CONTROLS=1 photographs the CONTROLS screen instead of the menu
+    # behind it (#282). Validated like every other numeric argument,
+    # because `int()` strips non-digits and a mistyped value would
+    # silently photograph the wrong screen
+    # (D-20260817-recipe-args-are-positional).
+    bash recipe-arg.sh enum CONTROLS "{{CONTROLS}}" 0 1
+    # MANUAL=<page> photographs that page of the MANUAL instead (#305),
+    # and wins over CONTROLS when both are given. A page id rather than a
+    # flag, because "the manual" is a dozen screens and a shot of the
+    # first one says nothing about the ones with tables on them.
+    #
+    # NOT validated against a list here: the pages are `manual.gd`'s
+    # registry plus whatever `.tres` sit in /manual, and a second copy of
+    # that list in a shell script is exactly the pair that comes to
+    # disagree. The client refuses an unknown page and this recipe reads
+    # the marker it prints, below.
+    gate="$(bash host-gate.sh acquire medium 'menu-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "menu-shot requires the docker runtime (it needs the software-GL image)." >&2
+        echo "A native run would open a real window on somebody's desktop, which an" >&2
+        echo "instrument has no business doing." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/main-menu.png"
+    if [ "{{CONTROLS}}" = "1" ]; then shot="{{artifacts_dir}}/controls.png"; fi
+    if [ -n "{{MANUAL}}" ]; then shot="{{artifacts_dir}}/manual-{{MANUAL}}.png"; fi
+    log="{{artifacts_dir}}/menu-shot.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
+
+    status=0
+    # `--menu=1` forces the screen even though `--run-seconds` is capture
+    # mode, which would otherwise connect. `=1` rather than a bare flag
+    # because CmdArgs only parses `--key=value` and drops the rest — see
+    # main_menu.gd, where the bare version cost a wrong picture.
+    # No --address anywhere, and no server: this recipe is only honest if
+    # nothing is running.
+    timeout 180 docker compose -p {{compose_project}} run --rm --no-deps client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution {{RESOLUTION}} \
+        -- --menu=1 --controls={{CONTROLS}} --manual={{MANUAL}} \
+        --run-seconds={{SECONDS}} \
+        --screenshot="res://artifacts/$(basename "$shot")" \
+        > "$log" 2>&1 || status=$?
+
+    if [ ! -s "$shot" ]; then
+        echo "menu-shot: no screenshot written — the menu did not render (see $log)" >&2
+        exit 1
+    fi
+    # A frame that rendered NOTHING still saves as a valid PNG — it is one
+    # flat colour. The capture path already counts distinct colours for
+    # exactly that reason, so read its count rather than trusting the
+    # file's existence (CLAUDE.md: assert the thing happened).
+    colours="$(grep -oE 'distinct_colours=[0-9]+' "$log" | tail -1 | cut -d= -f2 || true)"
+    if [ -z "$colours" ] || [ "$colours" -lt 8 ]; then
+        echo "menu-shot: the frame has ${colours:-no} distinct colours — nothing was drawn (see $log)" >&2
+        exit 1
+    fi
+    # The client's own VERDICT is expected to FAIL here and its exit
+    # status with it: that verdict is about a MATCH — terrain, squads,
+    # state hashes — and this recipe deliberately runs with no server at
+    # all. Reported rather than hidden, so a real crash is still visible.
+    # Assert the page ASKED FOR is the page drawn, rather than trusting
+    # that a screenshot exists. `--controls=1` was written as a bare
+    # `--menu` flag once and silently photographed the failure path with
+    # every check green (#180); this is that lesson applied to an
+    # argument that can name a page which does not exist.
+    if [ -n "{{MANUAL}}" ]; then
+        if ! grep -q "client: MANUAL page={{MANUAL}}" "$log"; then
+            echo "menu-shot: the client did not open manual page '{{MANUAL}}' (see $log)" >&2
+            grep -E "is not a page" "$log" >&2 || true
+            exit 1
+        fi
+    fi
+    echo "menu-shot: wrote $shot — $colours distinct colours, client exit $status (its match verdict does not apply here)"
+    echo "menu-shot: LOOK AT IT"
+
+# In-process hosting, proved against REAL remote clients (#182, D-088).
+#
+# A hosting client is a client and a server in ONE process: the host's
+# own game reaches the simulation through the loopback peer D-051's AI
+# seats already use, and remote players arrive over the ordinary socket.
+# The interesting failure is therefore not "does it run" but "do the two
+# halves agree" — so this points real bots at a real hosting client and
+# reads the state-hash machinery on BOTH sides.
+#
+# NATIVE ONLY, for the same reason `run-client` is (D-014): the host is a
+# client. It runs headless — the point here is the wire and the tick, not
+# the picture — so it needs no GPU and opens no window.
+#
+# The host binds THIS INSTANCE's port (D-095), never the shared 4433: two
+# agents running this at once must not find each other's match.
+[doc("Prove in-process hosting: a hosting client, real bots joining it (#182)")]
+test-host N="2" DURATION="60" AI="1": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
+    bash recipe-arg.sh int AI "{{AI}}"
+    gate="$(bash host-gate.sh acquire heavy 'test-host' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    mkdir -p "{{artifacts_dir}}"
+    host_log="{{artifacts_dir}}/test-host-host.log"
+    bots_log="{{artifacts_dir}}/test-host-bots.log"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: test-host needs a native Godot (the host IS a client, D-014)." >&2
+        exit 1
+    fi
+    host_pid=""
+    cleanup () {
+        if [ -n "$host_pid" ]; then kill "$host_pid" 2>/dev/null || true; fi
+        bash host-gate.sh release "$gate"
+    }
+    trap cleanup EXIT INT TERM
+
+    # The host runs a little longer than the bots so it is still there to
+    # print its own verdict after they have gone.
+    host_seconds=$(( {{DURATION}} + 20 ))
+    "$godot" --headless --path . client.tscn --         --host=1 --host-port={{port}} --host-ai={{AI}}         --run-seconds="$host_seconds" > "$host_log" 2>&1 &
+    host_pid=$!
+
+    # Wait for the host to be LISTENING rather than sleeping a guess:
+    # world generation is tens of seconds on the shipped map, and a bot
+    # that connects before the socket exists fails for the wrong reason.
+    waited=0
+    until grep -q "server: listening on" "$host_log" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -gt 120 ]; then
+            echo "test-host: the host never started listening (see $host_log)" >&2
+            exit 1
+        fi
+    done
+    echo "test-host: host is listening on udp {{port}} after ${waited}s"
+
+    bots_status=0
+    "$godot" --headless --script bot_client.gd --         --clients={{N}} --duration={{DURATION}} --port={{port}}         > "$bots_log" 2>&1 || bots_status=$?
+
+    wait "$host_pid" || true
+    host_pid=""
+
+    fail=0
+    # 1. The server really did run inside the client.
+    if ! grep -q "the server is in this process" "$host_log"; then
+        echo "test-host: the client did not host in-process (see $host_log)" >&2
+        fail=1
+    fi
+    # 2. Remote clients really did join it over a socket — otherwise this
+    #    proves only that a host can play alone, which the loopback makes
+    #    true trivially.
+    if ! grep -qE "{{N}}/{{N}} bots connected" "$bots_log"; then
+        echo "test-host: not every bot connected to the host (see $bots_log)" >&2
+        fail=1
+    fi
+    # 3. Both sides agree, and the comparison ACTUALLY RAN: zero desyncs
+    #    over zero checks is nothing (the vacuous-pass rule).
+    for pair in "host:$host_log" "bots:$bots_log"; do
+        who="${pair%%:*}"; log="${pair#*:}"
+        checks="$(grep -oE '[0-9]+ state.hash checks|state_hash_checks=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        desyncs="$(grep -oE '[0-9]+ desyncs' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        if [ -z "${checks:-}" ] || [ "${checks:-0}" -lt 1 ]; then
+            echo "test-host: $who ran no state-hash comparisons — nothing was proved (see $log)" >&2
+            fail=1
+        fi
+        if [ -n "${desyncs:-}" ] && [ "$desyncs" -gt 0 ]; then
+            echo "test-host: $who reported $desyncs desync(s) (see $log)" >&2
+            fail=1
+        fi
+    done
+    if [ "$bots_status" -ne 0 ] && ! grep -q "VERDICT" "$bots_log"; then
+        echo "test-host: the bots exited with status $bots_status and no verdict (see $bots_log)" >&2
+        fail=1
+    fi
+
+    if [ "$fail" -ne 0 ]; then exit 1; fi
+    echo "test-host: clean — a hosting client and {{N}} remote client(s), no desyncs"
+    grep -E "server: final" "$host_log" || true
+    grep -E "client: state sync" "$host_log" || true
+    grep -E "VERDICT" "$bots_log" || true
 
 [doc("Run the GUI client natively (WASD pan, wheel zoom, right-click order)")]
 run-client ADDRESS="127.0.0.1" PORT=port:
@@ -770,13 +1369,24 @@ run-bots N DURATION="-1": _import
     gate="$(bash host-gate.sh acquire heavy 'run-bots' $$)"
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    # The bots are told which SCENARIO is being played, if any, so their
+    # verdict can be scoped to what that scenario actually contains
+    # (#230). `test-scenario` already exports EDOTMW_SCENARIO for the
+    # server; empty means a real opening, which is what `test-load` and a
+    # bare `just run-bots` are, and nothing about the run changes there.
+    #
+    # The bots do not act on it — it reaches the VERDICT only. A scenario
+    # that places no buildings cannot satisfy a buildings gate however
+    # healthy the run is, and failing every run identically is not a
+    # check.
+    scenario="${EDOTMW_SCENARIO:-}"
     if [ "{{runtime}}" = "docker" ]; then
         # In-network: the bots reach this project's server as "server:4433",
         # so no host port is involved (D-095).
-        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}}
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --scenario="$scenario"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}}
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}} --scenario="$scenario"
     fi
 
 # GUT unit tests, headless. Imports the project first so global
@@ -845,6 +1455,130 @@ test-unit FILTER="" TEST="": _import
 # _verdict_ok(), so check 1/2 already fail on them; check 3 is the one
 # condition bot_client.gd cannot check itself, because a client never
 # learns the server's TOTAL squad count, only what it can see.
+# The protocol version handshake, both ways (#179, D-094 criterion 3).
+#
+# `test-load` and `test-scenario` prove the ACCEPT path on every run —
+# `gate-check.sh handshake` fails a run in which anybody joined without
+# one. Nothing they do can reach the REFUSAL, because every binary in
+# this repo is built from the same net_protocol.gd and therefore agrees
+# with itself by construction.
+#
+# So this recipe presents a deliberately wrong build to a REAL server
+# over a REAL socket, and fails unless it is refused with a message that
+# names both builds. That is the observed-to-fail rule made permanent
+# rather than performed once by hand and written up: a refusal path
+# nothing ever takes is a refusal path that will be broken the first time
+# it matters, and that first time is a player's.
+#
+# It checks BOTH directions in one run, and the second half is not
+# decoration: a server that refused everybody would satisfy the first
+# half perfectly.
+[doc("Prove a version-mismatched client is refused, and a matched one is not (#179)")]
+test-handshake:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gate="$(bash host-gate.sh acquire heavy 'test-handshake' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    mkdir -p "{{artifacts_dir}}"
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
+    "{{just_executable()}}" up
+
+    stale_log="{{artifacts_dir}}/test-handshake-stale.log"
+    matched_log="{{artifacts_dir}}/test-handshake-matched.log"
+    server_log="{{artifacts_dir}}/test-handshake-server.log"
+
+    # THE wrong version, derived from the right one rather than typed, so
+    # bumping PROTOCOL_VERSION cannot silently make this recipe test a
+    # version that happens to be valid again.
+    ours="$(grep -oE '^const PROTOCOL_VERSION := [0-9]+' net_protocol.gd | grep -oE '[0-9]+$')"
+    if [ -z "$ours" ]; then
+        echo "test-handshake: could not read PROTOCOL_VERSION out of net_protocol.gd" >&2
+        exit 1
+    fi
+    stale=$((ours + 1))
+    echo "test-handshake: this build speaks protocol $ours; presenting $stale"
+
+    # 1. The wrong build. Its bot never becomes a client, so it cannot
+    #    take the server down with it on the way out (which is a rule of
+    #    its own in server.gd's disconnect path, and was worth having).
+    stale_status=0
+    "{{just_executable()}}" run-bots-protocol 1 8 "$stale" > "$stale_log" 2>&1 || stale_status=$?
+
+    # 2. The right one, against the SAME still-running server.
+    matched_status=0
+    "{{just_executable()}}" run-bots 1 8 > "$matched_log" 2>&1 || matched_status=$?
+
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} stop server >/dev/null 2>&1 || true
+        docker compose -p {{compose_project}} logs server > "$server_log" 2>&1 || true
+    fi
+
+    fail=0
+
+    # The server said so, naming the protocol it was offered.
+    if ! grep -q "server: REFUSED a client on protocol $stale" "$server_log"; then
+        echo "test-handshake: the server did not refuse protocol $stale (see $server_log)" >&2
+        fail=1
+    fi
+    # The CLIENT said so too, and could say what to do about it. A
+    # refusal the far end never hears is a silent disconnect, which is
+    # the confusing symptom this whole ticket replaces.
+    if ! grep -q "REFUSED —" "$stale_log"; then
+        echo "test-handshake: the stale client was never told why (see $stale_log)" >&2
+        fail=1
+    fi
+    if ! grep -q "Update to the same build as the server" "$stale_log"; then
+        echo "test-handshake: the refusal did not tell the player what to do (see $stale_log)" >&2
+        fail=1
+    fi
+    if ! grep -q "refused=1" "$stale_log"; then
+        echo "test-handshake: the stale run's verdict did not report a refusal (see $stale_log)" >&2
+        fail=1
+    fi
+
+    # And the matched build got in — otherwise a server that refused
+    # everyone would pass everything above. Asked through the SAME
+    # `gate-check.sh handshake` that `test-load` and `test-scenario` run
+    # on every ordinary run, rather than by a private grep here: the
+    # comparison lives in one place, so this recipe cannot pass a check
+    # the gate would fail (D-20260818-the-fast-loop-carries-the-gate's
+    # rule, applied in the other direction).
+    bash gate-check.sh handshake "$matched_log" "$server_log" || fail=1
+    if [ "$matched_status" -ne 0 ]; then
+        echo "test-handshake: the matched bot exited with status $matched_status" >&2
+        fail=1
+    fi
+
+    if [ "$fail" -ne 0 ]; then
+        exit 1
+    fi
+    echo "test-handshake: clean — protocol $stale refused with an actionable message, protocol $ours admitted"
+    grep -E "server: REFUSED" "$server_log"
+    grep -E "REFUSED —" "$stale_log"
+
+# `run-bots`, but claiming a protocol version of your choosing. Dev-only
+# and used by exactly one caller (`test-handshake`) — a separate recipe
+# rather than a fourth positional argument on `run-bots`, because just
+# binds arguments POSITIONALLY and a load test silently measured on the
+# wrong protocol is precisely the class of accident
+# D-20260817-recipe-args-are-positional exists to stop.
+[doc("run-bots claiming PROTOCOL instead of this build's (dev only, #179)")]
+run-bots-protocol N DURATION PROTOCOL: _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int N "{{N}}"
+    bash recipe-arg.sh int DURATION "{{DURATION}}"
+    bash recipe-arg.sh int PROTOCOL "{{PROTOCOL}}"
+    gate="$(bash host-gate.sh acquire heavy 'run-bots-protocol' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --protocol={{PROTOCOL}}
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}} --protocol={{PROTOCOL}}
+    fi
+
 [doc("Load test: server + N bots for DURATION seconds, then verify the run")]
 test-load N DURATION:
     #!/usr/bin/env bash
@@ -889,11 +1623,13 @@ test-load N DURATION:
         exit 1
     fi
 
-    # The three comparisons that need BOTH logs, in gate-check.sh rather
+    # The comparisons that need BOTH logs, in gate-check.sh rather
     # than inline (D-20260818-the-fast-loop-carries-the-gate): fog gating
     # of squads (D-026 criterion 6's load half), fog gating of resource
-    # positions (D-061), and both civilisations having fielded something
-    # (D-046 criterion 10). They were written here and copied nowhere, so
+    # positions (D-061), both civilisations having fielded something
+    # (D-046 criterion 10), and every client having joined through the
+    # protocol version handshake (#179, D-094 criterion 3). They were
+    # written here and copied nowhere, so
     # `test-scenario` — the loop people iterate in, because this one is
     # five minutes — asserted none of them. The reasoning for each lives
     # in the script; a test fails if this recipe makes a check the fast
@@ -901,6 +1637,7 @@ test-load N DURATION:
     bash gate-check.sh fog-squads "$bots_log" "$server_log"
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
+    bash gate-check.sh handshake "$bots_log" "$server_log"
 
     # Match engine/script diagnostics by their line PREFIX, not by prose
     # containing a scary word. The previous `warning|desync` word scan
@@ -1012,7 +1749,7 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
         exit 1
     fi
 
-    # 4. The same three log comparisons the GATE makes, from the same
+    # 4. The same log comparisons the GATE makes, from the same
     #    script (D-20260818-the-fast-loop-carries-the-gate). This recipe
     #    said "the checks follow test-load's shape" and had copied one of
     #    four; the missing three cost nothing here, because a scenario
@@ -1020,9 +1757,32 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     #    anything HARDER to satisfy mid-game than during the opening —
     #    armies are in reach, so more of the board is visible — which is
     #    what makes it worth asserting on the loop that actually runs.
-    bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    #
+    #    The peak-knowledge comparison is asked only of a scenario that
+    #    can answer it (#230). `fog-squads` says even the MOST-INFORMED
+    #    client knew fewer squads than the server simulated, at every
+    #    moment — and a scenario whose armies all converge has a moment
+    #    when somebody has seen everything. `clash` is that scenario by
+    #    construction, and it is declared so in its own `.tres` rather
+    #    than named here, so a new scenario is covered the day it is
+    #    written.
+    #
+    #    NOT SILENT. gate-check.sh's own header is explicit that "a
+    #    comparison that silently skips is the vacuous pass D-022's audit
+    #    was written against", so the skip is printed with its reason —
+    #    and `fog-nodes` still runs, so fog is asserted here either way,
+    #    as are the conceal/reveal events the bots' own verdict gates on.
+    if grep -q "proves_fog_gating=false" "$server_log"; then
+        echo "gate-check(fog-squads): SKIPPED — scenario '{{SCENARIO}}' declares it cannot prove"
+        echo "  peak fog gating: its armies converge, so the best-informed client ends up"
+        echo "  having seen every squad. Fog is still asserted by fog-nodes below and by the"
+        echo "  bots' own conceal/reveal gates. See #230 and scenario_def.gd."
+    else
+        bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    fi
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
+    bash gate-check.sh handshake "$bots_log" "$server_log"
 
     # 5. Engine diagnostics, by line PREFIX rather than by scary word.
     if grep -Eq '(^|\| *)(ERROR|WARNING|SCRIPT ERROR|USER ERROR|USER WARNING):' \
@@ -1037,6 +1797,41 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     grep -E "server: SCENARIO id=" "$server_log"
     grep -E "VERDICT" "$bots_log"
     grep -E "server: final" "$server_log" || true
+
+# Re-stamp the manual's prose pages against the rules they describe (#305).
+#
+# Only the PROSE needs this. The manual's roster, stat, counter, building
+# and formation pages are derived from the shipped .tres when a player
+# opens them, so there is nothing there to rebuild and nothing that can go
+# stale — `just build-manual` has no work to do for them at all.
+#
+# MODE=verify changes nothing and exits non-zero if anything is stale,
+# which is what you want before deciding whether you have prose to write.
+# `just test-unit manual` makes the same comparison and is the gate.
+[doc("Re-stamp the manual's prose pages against the rules they describe")]
+build-manual MODE="write": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum MODE "{{MODE}}" write verify
+    # Host admission gate (D-20260818). `medium`, the same class as the
+    # gen-* previews: the work is small but the Godot process this project
+    # starts is not, and classing it `free` would be claiming a measurement
+    # nobody took. `tests/test_host_budget.gd` is structural about the
+    # declaration existing at all — a recipe that runs Godot declares a
+    # class, or the machine is un-gated by one more thing nobody
+    # remembered.
+    gate="$(bash host-gate.sh acquire medium 'build-manual' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    args=""
+    if [ "{{MODE}}" = "verify" ]; then args="--verify"; fi
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps test \
+            --headless --script manual_stamp.gd -- $args
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script manual_stamp.gd -- $args
+    fi
 
 # Every shipped scenario and what it is for (D-098).
 [doc("List the mid-game scenarios test-scenario and --scenario can name")]
@@ -1096,12 +1891,25 @@ scenarios: _import
 # the old one is stale" applied to an ASSET getting heavier, and the honest
 # direction is to lengthen the run rather than to weaken the check.
 # didn't complain (D-022's standing rule).
+# RESOLUTION is a parameter for the same reason `lobby-shot` grew one: this
+# recipe was pinned to 1280x720, which is the reference window `hud_layout.gd`
+# is designed against, and therefore the one size at which a scaling or
+# anchoring defect is a deliberate no-op - #90 was invisible here for exactly
+# that reason. The default is unchanged, so every frame taken before this is
+# still comparable.
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3": _import
+test-client SECONDS="90" BOTS="3" HOLD="0" RESOLUTION="1280x720": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
     bash recipe-arg.sh int BOTS "{{BOTS}}"
+    # HOLD reaches the client as `--hold-opening=N` and is read with
+    # `int()`, which STRIPS non-digits rather than failing — so `HOLD=yes`
+    # would silently mean 0 and the capture would found anyway, producing
+    # the empty-banner frame this flag exists to avoid
+    # (D-20260817-recipe-args-are-positional). Caught by
+    # `test_every_numeric_recipe_argument_is_checked`, not by me.
+    bash recipe-arg.sh enum HOLD "{{HOLD}}" 0 1
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
     # Waits for room on the machine every other agent is also using. $$ is
     # THIS recipe's shell and the lock is stamped with it — a lock stamped
@@ -1141,8 +1949,9 @@ test-client SECONDS="90" BOTS="3": _import
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
-        --resolution 1280x720 \
+        --resolution {{RESOLUTION}} \
         -- --address=server --run-seconds={{SECONDS}} \
+        --hold-opening={{HOLD}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
 
@@ -1842,6 +2651,56 @@ gen-terrain-shot HEIGHT="14": _import
         exit 1
     fi
 
+# A rendered picture of the TORUS SEAM, with armies standing on it.
+#
+# Written for playtest #32, which asks whether the wrapped world reads as
+# seamless. Nothing in the estate could frame that question: `test-client`
+# points at a spawn, `gen-terrain-shot` finds a cliff, `gen-forest-preview`
+# finds the densest wood — three deliberate framings of something else, and
+# a seam is no likelier to appear in any of them than any other cell.
+#
+# SEAM is "q" (the width wrap), "r" (the height wrap) or "corner" (both at
+# once). Squads are drawn through the client's own three-call copy pipeline
+# (RenderCull.visible_offsets_of_extent -> LatticeCopies.draw), so a squad
+# straddling the wrap line is drawn exactly where the game would draw it.
+#
+# Software-rasterised, so it needs no GPU and says nothing about speed.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render the torus seam with armies on it, to artifacts/seam-<seam>.png")]
+gen-seam-shot SEAM="q" HEIGHT="16": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    gate="$(bash host-gate.sh acquire medium 'gen-seam-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-seam-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/seam-{{SEAM}}.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            playtest_seam_shot.tscn -- --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 playtest_seam_shot.tscn -- \
+            --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-seam-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #
 # Drives the simulation directly at 100/250/500/1000 squads rather than
@@ -2119,6 +2978,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
     : > "$log"
 
     profiles="{{PROFILES}}"
+    died=""
     echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
@@ -2130,20 +2990,37 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         # read as an AI weakness through several rounds of AI work. The
         # "match actually started" assertion after the loop is what makes
         # that unrepeatable; this is only the fix.
+        #
+        # --stop-after-match: a decided match stops rather than simulating
+        # its winner gathering against nobody for the rest of the cap
+        # (#224). One ladder match was decided at 95s of a 600s cap and
+        # then simulated 505 further seconds — 84% of its wall clock —
+        # which is why `ai-ladder 3 600` cost a flat half hour however
+        # fast the matches decided. ONLY this recipe passes it, so every
+        # other harness measures the window it always did.
+        #
+        # And the exit status is KEPT rather than discarded with
+        # `|| true`. It was discarded, so a server killed from outside
+        # (this host OOMs — #153) vanished from the results with nothing
+        # anywhere saying so.
+        status=0
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
+        fi
+        if [ "$status" -ne 0 ]; then
+            died="$died seed=$i(exit $status)"
         fi
         printf '.'
     done
@@ -2179,8 +3056,35 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         exit 1
     fi
 
+    # AND ASSERT IT FINISHED. The mirror of the check above, and the half
+    # D-107 did not write (#224): three matches left the lobby, one of
+    # them died mid-run printing nothing at all, and the ladder reported
+    # "decided: 2 of 2" for a run of THREE — a denominator counted from
+    # the matches that survived, so a vanished match cannot appear in it
+    # by construction.
+    #
+    # None of the existing guards could see it. The started-check passed,
+    # because it did start. The diagnostics grep found nothing, because a
+    # process that is killed prints no ERROR. And `|| true` swallowed the
+    # exit code. This is D-107's own lesson one layer in: that entry made
+    # the ladder assert that matches START, and nothing asserted they END.
+    finished=$(grep -c '^server: MATCH_RESULT' "$log" || true)
+    if [ "$finished" -lt "{{MATCHES}}" ]; then
+        echo "ai-ladder: FAILED — $finished of {{MATCHES}} matches produced a result;" >&2
+        echo "  $(( {{MATCHES}} - finished )) started and then vanished without one." >&2
+        if [ -n "$died" ]; then
+            echo "  servers that exited non-zero:$died" >&2
+            echo "  (137 is SIGKILL — on this project's host that is usually the OOM" >&2
+            echo "   killer rather than a game defect: see #153 and 'just host-status')" >&2
+        else
+            echo "  every server exited 0, so the loss is inside the run, not the process." >&2
+        fi
+        echo "  A missing match is not a drawn match. See $log." >&2
+        exit 1
+    fi
+
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
-    awk '
+    awk -v asked={{MATCHES}} '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
             match($0, /team=(-?[0-9]+)/, wt)
@@ -2201,6 +3105,10 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
             matches++
         }
         /AI_STATS/ {
+            match($0, /defences_standing=([0-9]+)/, ds); defences_total += ds[1] + 0
+            match($0, /defences_ordered=([0-9]+)/, do_); defences_ordered_total += do_[1] + 0
+            match($0, /defences_fought=([0-9]+)/, df); defences_fought_total += df[1] + 0
+            match($0, /gate_orders=([0-9]+)/, go); gate_orders_total += go[1] + 0
             match($0, /player=([0-9]+)/, p)
             match($0, /civ=([a-z_]+)/, c)
             match($0, / team=([0-9]+)/, t)
@@ -2225,7 +3133,16 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
                 printf "  FAILED: %d of %d matches ended still in the lobby — nothing was measured\n", unstarted, matches
                 exit 1
             }
-            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
+            # Denominator is what was ASKED for, never what survived.
+            # The self-referential version is what printed "2 of 2" for a
+            # run of three (#224); the bash check above catches this
+            # first, and this is here so the LINE cannot lie even if
+            # somebody reaches the awk another way.
+            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, asked, draws
+            if (asked > 0 && matches != asked) {
+                printf "  FAILED: only %d of %d matches produced a result\n", matches, asked
+                exit 1
+            }
             for (k in n) {
                 printf "  player %-5s civ=%-10s ai=%-11s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
                     k, civ[k], prof[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]
@@ -2254,6 +3171,41 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
                 printf "  FAILED: %d attack objective(s) landed on a friend — see #83/#119\n", ally_obj_total
                 for (k in ally_obj) if (ally_obj[k] > 0) printf "    player %s: %d\n", k, ally_obj[k]
                 exit 1
+            }
+            # #337, and the standing gap D-076 recorded: no AI built or
+            # used a wall, so this harness could not exercise the feature
+            # at all — the shape that left BuildingSim.damage() uncalled
+            # for two milestones (D-055).
+            #
+            # Gated on a defence STANDING rather than on one being
+            # ordered. An order is an intent, and D-107 is the standing
+            # reason not to trust one: the first version of this feature
+            # reported 40 orders and 1 building.
+            #
+            # defences_fought is REPORTED, not gated. A wall is only
+            # fought over if somebody attacks it, which needs a match that
+            # reaches contact — and a gate that fails an honest run is how
+            # "test-load 4 40" came to be the documented recommendation
+            # for a milestone while being unable to pass (D-031). Measured:
+            # 4 seats at a 600s cap reported defences_fought=71 on one
+            # seat, and 2 seats at 420s reported zero. The counter is here
+            # so the gate is one line the day somebody settles which
+            # configuration always reaches it.
+            #
+            # NOTE: no apostrophes anywhere in this awk program. It is a
+            # single-quoted shell string, so one ends the quoting and the
+            # error you get is "awk: cmd. line:N: (END OF FILE)" pointing
+            # at a line that is fine. That cost two ladder runs.
+            if (defences_total <= 0) {
+                print "  FAILED: no AI built any static defence — walls, gates and towers"
+                print "    are shipped (D-076) and #337 exists because nothing exercised them."
+                print "    Check AI_STATS defences_ordered= against defences_standing=: orders"
+                print "    with nothing standing means the sites are being refused."
+                exit 1
+            }
+            printf "  static defence: %d standing across seats, %d ordered, %d fought over, %d gate order(s)\n", defences_total, defences_ordered_total, defences_fought_total, gate_orders_total
+            if (defences_fought_total == 0) {
+                print "  (no wall was attacked this run — reported, not gated; see D-20260828-an-ai-that-fortifies)"
             }
             if (draws == matches) {
                 print "  EVERY match hit the time cap — the AI is not seeking combat, which is a finding, not a pass"
