@@ -388,7 +388,16 @@ func _ready() -> void:
 	# Overridable from the command line for a no-lobby quick start (D-049
 	# normally only reaches these through the lobby UI's sliders). Mirrors
 	# --ai/--map/--seed above.
-	if args.has("preset"):
+	# Non-EMPTY, not merely present. `--preset=` with nothing after it is
+	# how a harness says "whatever the MapConfig chose" (docker-compose
+	# passes it unconditionally so every recipe can opt in), and taking it
+	# literally would set the preset to "" — which `TerrainPresetRoster`
+	# answers null for, so `apply_preset` returns early and the world is
+	# generated from `continents`' numbers under a blank name. The client
+	# derives its own terrain from the replicated NUMBERS (D-049) so the
+	# two would still agree; what would be wrong is every log line and
+	# every lobby row naming a preset that does not exist.
+	if String(args.get("preset", "")) != "":
 		_settings.preset = StringName(args["preset"])
 	_settings.apply_preset(TerrainPresetRoster.by_id(_settings.preset))
 	if args.has("height_scale"):

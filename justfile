@@ -3175,7 +3175,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="" MAP="res://map
 
     profiles="{{PROFILES}}"
     died=""
-    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map={{MAP}}, profiles=${profiles:-<default>}"
+    echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map={{MAP}}, preset=${EDOTMW_PRESET:-<map default>}, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
         # one map repeatedly and call it a win rate.
@@ -3203,15 +3203,13 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="" MAP="res://map
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-                --map={{MAP}} --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --map={{MAP}} --preset="${EDOTMW_PRESET:-}" \n                --lobby=0 --players=0 \n                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-                --map={{MAP}} --lobby=0 --players=0 \
-                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
+                --map={{MAP}} --preset="${EDOTMW_PRESET:-}" \n                --lobby=0 --players=0 \n                --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
                 --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
                 >> "$log" 2>&1 || status=$?
         fi
@@ -3522,14 +3520,16 @@ test-ai-teams MATCHES="3" SECONDS="90" AI="4" TEAMS="2" SCENARIO="siege" PROFILE
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --map=res://maps/ladder.tres --preset="${EDOTMW_PRESET:-}" \
+                --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" --scenario={{SCENARIO}} \
                 --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
-                --map=res://maps/ladder.tres --lobby=0 --players=0 \
+                --map=res://maps/ladder.tres --preset="${EDOTMW_PRESET:-}" \
+                --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" --scenario={{SCENARIO}} \
                 --seed=$i --run-seconds={{SECONDS}} \
                 >> "$log" 2>&1 || true
