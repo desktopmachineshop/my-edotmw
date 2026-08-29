@@ -392,6 +392,45 @@ package TARGET="windows-client": _import
     # compute.
     echo "package: $(du -h "$out" | cut -f1), sha256 $(sha256sum "$out" | cut -d' ' -f1 | sed 's|^\\||')"
     echo "package: version $version — hand this to a tester with docs/alpha/testers.md"
+# Bundle this machine's logs, replays and system details into one file a
+# tester can attach to a bug report (#288).
+#
+# The recipe half of the feature. The half that MATTERS is the "Report a
+# problem" button in both client menus, because a tester installing a zip
+# has no `just` and no checkout — this is here for the person running the
+# session, who has both and who is the one that ends up assembling other
+# people's reports.
+#
+# `LIST=1` answers "what would you send" without writing anything. That
+# is the question a tester is entitled to ask first, and it is also what
+# makes the recipe useful on a machine that has played nothing.
+#
+# Host-gated, which the first version of this comment got wrong: it said
+# "not gated, it copies a few files", and the files are not the cost —
+# STARTING GODOT is, which is exactly what the gate rations
+# (D-20260818). `test_host_budget.gd` caught it, which is what that scan
+# is for. It also depends on `_import`, because it names global classes
+# (ReportBundle, ArtifactPath, BuildVersion).
+[doc("Zip logs, replays and system info into one attachable file (LIST=1 to preview)")]
+report-bundle LIST="0": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum LIST "{{LIST}}" 0 1
+    gate="$(bash host-gate.sh acquire medium 'report-bundle' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    if [ "{{LIST}}" = "1" ]; then
+        "$godot" --headless --script make_report.gd -- --list=1
+    else
+        "$godot" --headless --script make_report.gd
+    fi
+
+
 
 # Push a package to a PRIVATE itch.io channel via butler (#183).
 #
