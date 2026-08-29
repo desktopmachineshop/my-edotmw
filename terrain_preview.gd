@@ -15,6 +15,8 @@ extends SceneTree
 
 const DEFAULT_MAP := "res://maps/default.tres"
 const DEFAULT_CHUNK_SIZE := 16
+## Resolved through `ArtifactPath`, because `res://` is read-only inside
+## an exported build (#201). The identity in a checkout.
 const OUTPUT_DIR := "res://artifacts"
 
 
@@ -62,8 +64,11 @@ func _initialize() -> void:
 		image.resize(space.width * pixel_scale, space.height * pixel_scale,
 			Image.INTERPOLATE_NEAREST)
 
-	if not DirAccess.dir_exists_absolute(OUTPUT_DIR):
-		DirAccess.make_dir_recursive_absolute(OUTPUT_DIR)
+	out_path = ArtifactPath.resolve(out_path)
+	var dir_error := ArtifactPath.ensure_dir_for(out_path)
+	if dir_error != OK:
+		push_error("terrain_preview: could not create %s (error %d)"
+			% [out_path.get_base_dir(), dir_error])
 	var save_error := image.save_png(out_path)
 	if save_error != OK:
 		push_error("gen-terrain-preview: could not write %s (error %d)" % [out_path, save_error])

@@ -79,7 +79,20 @@ func _ticks_until_rout(attacker_behind: bool) -> int:
 	sim.order_move(defender, Vector2i(16, 6))
 	for _i in range(40):
 		sim.tick()
-	var facing_cell := Vector2i(16, 4)
+	# THE SAME DISTANCE either side, which this fixture did not have: the
+	# defender halts at (16, 6), so (16, 4) was two cells ahead against
+	# (16, 9) three cells behind. That asymmetry was noise while a squad
+	# needed ~19 casualties to break, and it INVERTED the result the
+	# moment breaking got quicker
+	# (D-20260828-morale-is-a-fraction-of-the-squad): the rear attacker
+	# spent its extra cell of approach and reported 8 ticks against the
+	# frontal 4.
+	#
+	# The function's own contract is that "nothing but the term under test
+	# differentiates two runs", and a cell of travel is something else.
+	# Another instance of the standing rule: a timing tuned against the
+	# old behaviour is stale when the behaviour moves.
+	var facing_cell := Vector2i(16, 3)
 	var behind_cell := Vector2i(16, 9)
 	var attacker := sim.add_squad(_attacker_def(), 1,
 		behind_cell if attacker_behind else facing_cell)

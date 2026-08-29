@@ -5,6 +5,12 @@ tools/
 .godot/
 .godot-container/
 
+# Exported builds (#178). Produced by `just export` from committed
+# presets, never committed themselves — a build is derivable from the
+# source it was made from, and a 200 MB binary in git is the opposite of
+# D-081's "commit the generator".
+build/
+
 # Test/load-test output, replays, terrain previews
 artifacts/
 

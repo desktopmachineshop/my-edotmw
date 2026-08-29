@@ -36,26 +36,39 @@ Status is one of:
    same-day decisions collide on a slug, the collision is a visible
    add/add conflict on one small file, not a silent double-assignment.
 
-3. **Never renumber, never edit history in place.** Historical IDs
+3. **A RUNNING log is split by workstream, not kept in one file.**
+   Rule 1 applies to logs as hard as it applies to decisions, and D-010's
+   schema log was the one place still breaking it — six open PRs were
+   appending to the same block at once (#366). Its log is now
+   `D-010-schema-<workstream>.md`, one per workstream, with `D-010.md`
+   as the index; a new workstream adds a FILE and one row to that table
+   rather than a paragraph to somebody else's log.
+
+   The file is chosen by WORKSTREAM, not by schema: a field naval adds
+   to `UnitDef` is logged in the naval file. Splitting by schema would
+   put naval, techs and a plain unit-stat change back in one file, which
+   is the monolith with extra steps.
+
+4. **Never renumber, never edit history in place.** Historical IDs
    D-001–D-108 are FROZEN — code, tests and the justfile cite them, and
    a renumber breaks every citation. Supersede instead, so the rationale
    trail survives. The duplicated legacy IDs stay duplicated; their
    filenames' slugs disambiguate.
 
-4. **Not every cited ID has its own file.** Some legacy decisions
+5. **Not every cited ID has its own file.** Some legacy decisions
    (e.g. D-028–D-037) were recorded inside sibling entries — milestone
    exit-criteria blocks, amendments — and never had their own heading.
    `grep -rl "D-031" decisions/` finds where an ID actually lives; do
    not conclude a decision is missing because `ls` doesn't show it.
 
-5. **A measurement is recorded in the decision that took it**, dated and
+6. **A measurement is recorded in the decision that took it**, dated and
    with its caveats — never as a hand-maintained global count in a
    shared file. The merge train once inherited six rival test-count
    lines, one per branch, none right after the merge. Living prose says
    "run `just test-unit`" instead of quoting a number that is stale by
    construction on any merged tree.
 
-6. **Milestone status lives in `docs/status/`**, one file per milestone
+7. **Milestone status lives in `docs/status/`**, one file per milestone
    or topic, imported into `CLAUDE.md`. Edit the file for the thing you
    touched; new standing rules that come out of a change belong in that
    change's decision file first, and in a status file only if agents

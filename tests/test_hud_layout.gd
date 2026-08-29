@@ -736,9 +736,24 @@ func test_every_building_s_train_list_fits_at_the_smallest_window() -> void:
 	# a civ that gains a fifth trainable unit fails here rather than in a
 	# match, and at the SMALLEST window the HUD allows, which is the worst
 	# case by construction.
+	# Measured the way `Client._show_train_chips` measures it: per CIV,
+	# resolving each archetype through `UnitRoster.for_civ_archetype` and
+	# dropping the ones this civ does not field. `produces` became the
+	# 14-archetype UNION of all six civs in #191, and a union is a list no
+	# player is ever shown — asserting against it fails for a reason that
+	# is not a bug AND stops measuring the reachable one, which is the
+	# thing this test exists to protect.
 	var widest := 0
+	var worst := ""
 	for def in BuildingSim.all_defs():
-		widest = maxi(widest, def.produces.size())
+		for civ in CivRoster.ids():
+			var shown := 0
+			for archetype in def.produces:
+				if UnitRoster.for_civ_archetype(civ, archetype) != null:
+					shown += 1
+			if shown > widest:
+				widest = shown
+				worst = "%s as %s" % [def.id, civ]
 	assert_true(widest > 0, "the shipped roster has something to train at all")
 
 	# On a window anyone actually plays on, the whole list is on screen at
@@ -748,8 +763,8 @@ func test_every_building_s_train_list_fits_at_the_smallest_window() -> void:
 	for viewport in [Vector2(1600.0, 900.0), Vector2(1920.0, 1080.0)]:
 		var roomy := HudLayout.chip_strip_rect(_laid_out(viewport)["panel"], false)
 		assert_true(HudLayout.chip_capacity(roomy) >= widest,
-			"a %d-unit train list fits at %s without paging (capacity %d)"
-				% [widest, viewport, HudLayout.chip_capacity(roomy)])
+			"the widest train list a player is shown (%d — %s) fits at %s without paging (capacity %d)"
+				% [widest, worst, viewport, HudLayout.chip_capacity(roomy)])
 
 	# At the SMALLEST window the HUD allows it does not fit, and that is
 	# what `Client._chip_window`'s pager is for — but paging only reaches

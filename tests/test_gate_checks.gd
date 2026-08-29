@@ -99,6 +99,46 @@ func test_an_ungated_run_fails() -> void:
 		"knowing every resource node is D-061's leak, not a pass")
 
 
+func test_a_handshaken_run_passes_and_says_what_it_proved() -> void:
+	# #179. Every client that joined did so through the protocol version
+	# handshake, and none was refused.
+	var bots := _log("hs-ok-bots", "4/4 bots connected, ... refused=0
+")
+	var server := _log("hs-ok-server", "server: HANDSHAKE accepted=4 refused=0 protocol=1 build=0.1.0
+")
+	var result := _check(["handshake", bots, server])
+	assert_eq(result["code"], 0, "a handshaken run must pass: %s" % result["out"])
+	assert_true(str(result["out"]).contains("4"),
+		"the pass must quote how many joined: %s" % result["out"])
+
+
+func test_a_client_that_joined_without_a_handshake_fails() -> void:
+	# The regression this exists to catch: the accept path quietly not
+	# running while everything else about the run looks perfect. Zero
+	# refusals is what a working run, a run nobody joined, and a
+	# handshake that is not wired up at all all report — so the check
+	# reads ACCEPTED, against the bots' own count of who got in.
+	var bots := _log("hs-short-bots", "4/4 bots connected, ... refused=0
+")
+	var server := _log("hs-short-server", "server: HANDSHAKE accepted=3 refused=0 protocol=1 build=0.1.0
+")
+	assert_eq(_check(["handshake", bots, server])["code"], 1,
+		"three handshakes for four clients means somebody joined without one")
+
+
+func test_a_mixed_build_run_fails() -> void:
+	# A run in which somebody WAS refused is not a run whose numbers can
+	# be quoted: part of the field was played by a build that never got
+	# in. `just test-handshake` is where a refusal is the expected
+	# outcome, and it is a recipe of its own for that reason.
+	var bots := _log("hs-mixed-bots", "4/4 bots connected, ... refused=1
+")
+	var server := _log("hs-mixed-server", "server: HANDSHAKE accepted=4 refused=1 protocol=1 build=0.1.0
+")
+	assert_eq(_check(["handshake", bots, server])["code"], 1,
+		"a refused client means the run was played by mixed builds")
+
+
 func test_one_civ_fails() -> void:
 	var server := _log("one-civ", "CIVS_FIELDED 1 of 2 — stoneblood=32\n")
 	assert_eq(_check(["civs", server])["code"], 1,
@@ -121,6 +161,10 @@ func test_a_missing_marker_is_a_failure_not_a_skip() -> void:
 		"no nodes_known_max means the comparison never ran")
 	assert_eq(_check(["civs", quiet])["code"], 1,
 		"no CIVS_FIELDED marker means the comparison never ran")
+	assert_eq(_check(["handshake", quiet, server])["code"], 1,
+		"no bots-connected line means the handshake comparison never ran")
+	assert_eq(_check(["handshake", server, quiet])["code"], 1,
+		"no HANDSHAKE marker means the handshake comparison never ran")
 
 
 func test_misusing_the_checker_is_its_own_exit_code() -> void:
@@ -191,7 +235,7 @@ func test_neither_recipe_reimplements_a_shared_comparison() -> void:
 	# gate-check.sh alone.
 	var justfile := _read("res://justfile")
 	for marker in ["FOG_TOTAL_SQUADS", "FOG_TOTAL_NODES", "CIVS_FIELDED",
-			"known_squads_max", "nodes_known_max"]:
+			"known_squads_max", "nodes_known_max", "HANDSHAKE accepted"]:
 		# Naming a marker in a comment is fine; GREPPING for it is the
 		# copy. Reading one is what the recipes must not do themselves.
 		# `.` does not match a newline in Godot's RegEx, so this cannot
@@ -203,6 +247,6 @@ func test_neither_recipe_reimplements_a_shared_comparison() -> void:
 			+ "so both recipes get the same answer") % marker)
 	var script := _read("res://gate-check.sh")
 	for marker in ["FOG_TOTAL_SQUADS", "FOG_TOTAL_NODES", "CIVS_FIELDED",
-			"known_squads_max", "nodes_known_max"]:
+			"known_squads_max", "nodes_known_max", "HANDSHAKE accepted"]:
 		assert_true(script.contains(marker),
 			"gate-check.sh must be the one place %s is read" % marker)
