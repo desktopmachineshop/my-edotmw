@@ -64,3 +64,38 @@ Everything here is the apparatus. The first session is also the first
 real test of D-042's transport claims on a network that is not a
 loopback, a LAN or a docker bridge, so its RTT and loss numbers want
 recording beside the originals with their conditions.
+
+**And a tester has a way to send back what happened
+(D-20260828-a-report-is-made-not-sent, #288).** The runbook got a build
+installed and then left somebody who hit a bug with no channel: find a
+log directory by hand, know that replays exist, remember to say what GPU
+you have. **Menu -> Report a problem** — on the pre-connect screen and in
+the in-game menu — writes one file holding recent logs, recent replays
+and a system report, and says where it is. `just report-bundle` is the
+same thing for whoever is running the session (`LIST=1` previews without
+writing).
+
+**It CREATES and never SENDS, and that is the design rather than a
+limitation.** `testers.md` promises no telemetry and no account; nothing
+in `report_bundle.gd` can open a socket and a test asserts that by name.
+An automatic upload would be a better feedback channel and a broken
+promise, and at this stage — a game asking strangers to run an unsigned
+binary from a zip — the promise is worth more.
+
+Three things worth knowing:
+
+- **The bundle carries a MANIFEST naming every file and what is in it**,
+  including the two a player would not guess: a log holds the address of
+  the server they joined and, on Windows, their user name from inside
+  every path the engine prints. "You decide whether to attach it" is
+  only a real decision if the contents are named.
+- **The system report is hardware and build, never identity.** A test
+  tries the four environment variables a user name or machine name would
+  arrive from and fails if any of them appears in the text.
+- **Three defects were found by RUNNING it**, and two of the tests
+  written for it could not have caught the one that shipped — they
+  supplied the input they then asserted on. `ReportBundle.sources()`
+  takes its directories as arguments now so the CALL SITE is under test.
+  That is the third instance of the same shape in one session's work;
+  the decision entry generalises it.
+
