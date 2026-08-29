@@ -206,19 +206,32 @@ func test_the_render_path_list_names_files_that_exist() -> void:
 			"%s is watched for render-path changes and must exist" % path)
 
 
-func test_the_committed_baseline_is_readable_and_names_its_hardware() -> void:
-	var text := FileAccess.get_file_as_string(BenchBaseline.PATH)
-	assert_ne(text, "", "%s is committed" % BenchBaseline.PATH)
-	var parsed = JSON.parse_string(text)
-	assert_true(parsed is Dictionary, "and is JSON")
-	if parsed is Dictionary:
-		assert_ne(String(parsed.get("adapter", "")), "",
+func test_the_committed_baselines_are_readable_and_name_their_hardware() -> void:
+	var slots := BenchBaseline.slots()
+	assert_gt(slots.size(), 0, "at least one baseline is committed")
+	for path in slots:
+		var text := FileAccess.get_file_as_string(String(path))
+		assert_ne(text, "", "%s is readable" % path)
+		var parsed = JSON.parse_string(text)
+		assert_true(parsed is Dictionary, "%s is JSON" % path)
+		if not (parsed is Dictionary):
+			continue
+		var adapter := String((parsed as Dictionary).get("adapter", ""))
+		assert_ne(adapter, "",
 			"a frame time without its hardware is not a number anyone can use")
-		assert_false(bool(parsed.get("headless", false)),
+		assert_false(bool((parsed as Dictionary).get("headless", false)),
 			"a baseline recorded headless has no draw calls and a cull that "
 			+ "passes everything — it must come from a real GPU")
-		assert_gt((parsed.get("rows", {}) as Dictionary).size(), 0,
+		assert_gt(((parsed as Dictionary).get("rows", {}) as Dictionary).size(), 0,
 			"and it has rows")
+		# THE SLOT AND ITS CONTENTS AGREE. A file whose name says one
+		# adapter and whose numbers say another is worse than no file: the
+		# check would pick it BY NAME for a machine it was not measured
+		# on, and then compare milliseconds across hardware — the exact
+		# thing per-adapter slots exist to stop (#285).
+		if String(path) != BenchBaseline.LEGACY_PATH:
+			assert_eq(String(path), BenchBaseline.path_for(adapter),
+				"%s must be the slot its own adapter name resolves to" % path)
 
 
 func test_a_different_window_is_stale_rather_than_changed() -> void:
@@ -232,3 +245,83 @@ func test_a_different_window_is_stale_rather_than_changed() -> void:
 	assert_eq(String(comparison["status"]), "stale")
 	assert_true(BenchBaseline.report(comparison).contains("viewport"),
 		"and the report names it")
+
+
+# --- one slot per adapter (#285) ---------------------------------------
+#
+# A single recorded file made recording on a second machine an act that
+# DESTROYED the first one's history, silently, in a commit whose message
+# said "recorded". #285 books hardware time on a discrete GPU against a
+# file holding the numbers every figure in docs/status/client-render.md is
+# quoted against, so the trap was live rather than hypothetical.
+
+
+func test_an_adapter_name_becomes_a_filename() -> void:
+	assert_eq(BenchBaseline.slug_for("Intel(R) Iris(R) Xe Graphics"),
+		"intel-r-iris-r-xe-graphics")
+	assert_eq(BenchBaseline.slug_for("NVIDIA GeForce RTX 4070 Laptop GPU"),
+		"nvidia-geforce-rtx-4070-laptop-gpu")
+	assert_eq(BenchBaseline.slug_for("AMD Radeon(TM) 780M"), "amd-radeon-tm-780m")
+	# No leading or trailing dash, whatever the punctuation.
+	assert_eq(BenchBaseline.slug_for("  (weird)  "), "weird")
+	assert_eq(BenchBaseline.slug_for(""), "")
+
+
+func test_two_adapters_never_share_a_slot() -> void:
+	# The property the whole change rests on. A slug that "tidied up"
+	# vendor punctuation would collapse names that differ only in it, and
+	# then one machine's record would land in another's file — which is
+	# the failure this exists to prevent, arriving through the fix.
+	var names := ["Intel(R) Iris(R) Xe Graphics", "Intel Iris Xe Graphics",
+		"Intel(R) Arc(TM) A770", "Intel Arc A770",
+		"NVIDIA GeForce RTX 4070", "NVIDIA GeForce RTX 4070 Ti"]
+	var seen := {}
+	for name in names:
+		var slot := BenchBaseline.path_for(name)
+		assert_false(seen.has(slot),
+			"'%s' and '%s' would share %s" % [name, seen.get(slot, ""), slot])
+		seen[slot] = name
+
+
+func test_the_path_is_derived_and_not_typed() -> void:
+	# The recipe must not name the file: it does not know what it is about
+	# to measure on, and the one it named would be somebody else's.
+	var justfile := FileAccess.get_file_as_string("res://justfile")
+	assert_ne(justfile, "")
+	var record := _recipe_body(justfile, "bench-record ")
+	assert_true(record.contains("--record=1"),
+		"bench-record asks the RUN to name the slot")
+	assert_false(record.contains("--json=res://bench/baseline"),
+		"and never names a baseline file itself (#285)")
+	var writer := FileAccess.get_file_as_string("res://bench_render.gd")
+	assert_true(writer.contains("BenchBaseline.path_for("),
+		"the writer derives the slot from the adapter it measured on")
+
+
+func test_the_migrated_iris_slot_kept_its_history() -> void:
+	# The existing baseline moved into its adapter's slot rather than
+	# being re-recorded: every figure in docs/status/client-render.md is
+	# quoted against those numbers, and a fresh recording would have
+	# quietly replaced the thing they are compared to.
+	var iris := BenchBaseline.path_for("Intel(R) Iris(R) Xe Graphics")
+	assert_true(FileAccess.file_exists(iris),
+		"the Iris Xe numbers survive the move, at %s" % iris)
+	assert_false(FileAccess.file_exists(BenchBaseline.LEGACY_PATH),
+		"and the single slot is gone, so nothing writes to it by habit")
+
+
+func _recipe_body(justfile: String, declaration: String) -> String:
+	var body := ""
+	var inside := false
+	for raw in justfile.split("
+"):
+		var line := String(raw).replace("", "")
+		if not inside:
+			if line.begins_with(declaration):
+				inside = true
+			continue
+		if not line.is_empty() and not line.begins_with(" ") and not line.begins_with("	"):
+			break
+		body += line + "
+"
+	return body

@@ -191,6 +191,13 @@ just bench-check          # a real GPU: run it and compare. Exit 1 if a
 just bench-record         # a deliberate human act; names its adapter
 ```
 
+- **One recorded file per ADAPTER** (`bench/baseline-<slug>.json`, #285).
+  A frame time is a statement about hardware, so recording on a second
+  machine writes a second slot and **cannot overwrite the first** — the
+  Intel Iris Xe numbers every figure on this page is quoted against are
+  safe from the discrete-GPU run by construction rather than by a flag.
+  A run with no slot of its own still has its COUNTS gated, because those
+  are a property of the tree; only the milliseconds go uncompared.
 - **Counts gate, milliseconds report.** Given the same map, roster,
   viewport and render path a run draws the same men at the same LOD in
   the same draw calls every time. **Three independent recordings gave

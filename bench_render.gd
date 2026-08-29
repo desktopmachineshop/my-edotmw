@@ -160,6 +160,10 @@ var _mix := [0, 0, 0]
 ## printed lines stay exactly as they were: a human reads those, and a
 ## check reads this.
 var _json_path := ""
+
+## Whether this run is RECORDING a baseline, in which case it writes to
+## `bench/baseline-<adapter slug>.json` rather than to `--json=`.
+var _record_slot := false
 var _rows := {}
 
 ## Attribution knobs — see `_ready`. Shipping defaults.
@@ -246,6 +250,10 @@ func _ready() -> void:
 	# Where to write this run as data (#286). Empty means "print only",
 	# which is every invocation this recipe had before a baseline existed.
 	_json_path = String(args.get("json", ""))
+	# Record into this adapter's own baseline slot (#285). Separate from
+	# `--json=` on purpose: that one is a path a caller chose, this one is
+	# a path only the run can compute.
+	_record_slot = int(args.get("record", 0)) != 0
 	_host_mode = int(args.get("host", 0)) != 0
 	_preset = StringName(String(args.get("preset", "")))
 	_hulls = int(args.get("hulls", 0))
@@ -1088,7 +1096,7 @@ func _report(count: int) -> void:
 ## the tree it was taken on is the thing #286 is about — a recorded
 ## figure nobody can tell is stale.
 func _write_json() -> void:
-	if _json_path == "":
+	if _json_path == "" and not _record_slot:
 		return
 	var record := {
 		"version": BenchBaseline.VERSION,
@@ -1113,7 +1121,12 @@ func _write_json() -> void:
 		"fingerprint": BenchBaseline.fingerprint(),
 		"rows": _rows,
 	}
-	var path := _json_path
+	# `--record=1` means "this machine's slot", and the FILE NAME is
+	# decided here rather than by the recipe, because this is the only
+	# place that knows which adapter was actually measured on (#285).
+	# A recipe that named the file would be naming hardware it has not
+	# asked about — and the one it named would be somebody else's history.
+	var path := BenchBaseline.path_for(String(record["adapter"])) 		if _record_slot else _json_path
 	var directory := path.get_base_dir()
 	if directory != "" and not DirAccess.dir_exists_absolute(directory):
 		DirAccess.make_dir_recursive_absolute(directory)

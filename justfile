@@ -2793,7 +2793,7 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESE
 # stale baseline is news, not a fault, and a check that fails every PR
 # touching formation.gd is a check that gets muted (D-022's audit block
 # from the other direction). The nightly job is where STRICT belongs.
-[doc("Is bench/baseline.json about this map, roster, assets and render path?")]
+[doc("Are the recorded render baselines about this map, roster, assets, render path?")]
 bench-stale STRICT="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2847,7 +2847,7 @@ bench-check COUNTS="250,1000" FRAMES="90" STRICT="0": _import
 # run it to make a red check green without reading what moved first — a
 # baseline re-recorded on a regression is how the mechanism becomes a
 # rubber stamp.
-[doc("Record bench/baseline.json from this machine (names its adapter)")]
+[doc("Record this machine's render baseline slot (one file per adapter)")]
 bench-record COUNTS="250,1000" FRAMES="90": _import
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2861,9 +2861,14 @@ bench-record COUNTS="250,1000" FRAMES="90": _import
         exit 1
     fi
     mkdir -p bench "{{artifacts_dir}}"
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --json=res://bench/baseline.json
-    echo "recorded bench/baseline.json — COMMIT IT, and say in the message"
-    echo "what hardware it came from (the file names the adapter)."
+    # `--record=1`, not `--json=<path>`: the RUN names the file, because
+    # it is the only thing that knows which adapter it measured on
+    # (#285). One slot per GPU, so recording here cannot overwrite the
+    # numbers somebody took on other hardware — structurally, rather than
+    # by a flag anybody has to remember.
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}}         --frames={{FRAMES}} --record=1
+    echo "recorded this machine's slot in bench/ — COMMIT IT. The file is"
+    echo "named for the adapter, and no other adapter's slot was touched."
 
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #
