@@ -74,26 +74,12 @@ class Belief:
 	## One byte per cell. 0 = this side has seen that this cell is blocked.
 	var believed := PackedByteArray()
 
-	## The same, for WATER
-	## (`D-20260828-water-is-a-second-movement-domain`). A second array
-	## rather than a tri-state one, for the reason `SquadSim._navigable`
-	## is separate from `_passable`: every existing reader of `believed`
-	## means LAND, and widening it would change what each of them asks
-	## without any of them being touched.
-	##
-	## Optimism points the same way — unknown reads NAVIGABLE — so
-	## believed-navigable is a superset of truly-navigable and a side can
-	## only ever be refused a voyage that was genuinely impossible.
-	var navigable := PackedByteArray()
-
 	## How many cells this side has changed its mind about, ever.
 	var discoveries: int = 0
 
 	func _init(cell_count: int) -> void:
 		believed.resize(cell_count)
 		believed.fill(1)
-		navigable.resize(cell_count)
-		navigable.fill(1)
 
 	## Fold one rebuild's coverage into belief. Both directions: a cell
 	## this side can see now is known now, which is what repairs a gate
@@ -101,39 +87,22 @@ class Belief:
 	##
 	## The loop lives here rather than in the caller so `believed` is a
 	## direct member on every write — see this class's doc.
-	## `water_truth` empty means a sim with no sea — the water half is
-	## simply not folded in, and every cell stays optimistically navigable,
-	## which no water squad exists to read.
-	func observe(coverage: Dictionary, truth: PackedByteArray,
-			water_truth := PackedByteArray()) -> void:
+	func observe(coverage: Dictionary, truth: PackedByteArray) -> void:
 		for cell in coverage:
 			var index := int(cell)
 			if index >= believed.size():
 				continue
 			var open: int = 1 if truth[index] != 0 else 0
-			if believed[index] != open:
-				believed[index] = open
-				discoveries += 1
-			if index >= water_truth.size():
+			if believed[index] == open:
 				continue
-			var wet: int = 1 if water_truth[index] != 0 else 0
-			if navigable[index] != wet:
-				navigable[index] = wet
-				discoveries += 1
+			believed[index] = open
+			discoveries += 1
 
 	func learn(cell: int, open: bool) -> bool:
 		var value: int = 1 if open else 0
 		if cell < 0 or cell >= believed.size() or believed[cell] == value:
 			return false
 		believed[cell] = value
-		discoveries += 1
-		return true
-
-	func learn_navigable(cell: int, open: bool) -> bool:
-		var value: int = 1 if open else 0
-		if cell < 0 or cell >= navigable.size() or navigable[cell] == value:
-			return false
-		navigable[cell] = value
 		discoveries += 1
 		return true
 
@@ -167,48 +136,20 @@ func believes_passable(group: int, cell: int) -> bool:
 	return side.believed[cell] != 0
 
 
-## The water counterpart of `believed_passable`
-## (`D-20260828-water-is-a-second-movement-domain`).
-##
-## Water fields are keyed by SIDE and solved against BELIEF, like the
-## ground layer and unlike D-076's wall-top layer — and that is a decision
-## rather than a copy. D-20260818 leaves the wall-top omniscient and says
-## why: its network is made of buildings a side put there itself, so there
-## is no unknown ground in it to be optimistic about. **Water is not that.
-## The obstacles at sea are LAND**, and an undiscovered island is exactly
-## the thing belief exists to stop a side routing around — so a
-## ground-truth naval field would rebuild #96 in a second domain.
-func believed_navigable(group: int) -> PackedByteArray:
-	var side: Belief = _sides.get(group, null)
-	if side == null:
-		return PackedByteArray()
-	return side.navigable
-
-
-func believes_navigable(group: int, cell: int) -> bool:
-	var side: Belief = _sides.get(group, null)
-	if side == null:
-		return true
-	if cell < 0 or cell >= side.navigable.size():
-		return true
-	return side.navigable[cell] != 0
-
-
 ## Fold every side's current sight into its belief.
 ##
 ## Reads the coverage `Vision.rebuild` has just stamped rather than
 ## re-walking the disks, so this costs one pass over cells somebody is
 ## already looking at. `truth` empty means "no terrain in this sim", and
 ## then there is nothing to know.
-func absorb(vision: Vision, truth: PackedByteArray,
-		water_truth := PackedByteArray()) -> void:
+func absorb(vision: Vision, truth: PackedByteArray) -> void:
 	if vision == null or truth.is_empty():
 		return
 	var coverage := vision.coverage_by_group()
 	for group in coverage:
 		var side := _side_for(int(group), truth.size())
 		var before := side.discoveries
-		side.observe(coverage[group], truth, water_truth)
+		side.observe(coverage[group], truth)
 		discoveries += side.discoveries - before
 
 
@@ -224,20 +165,6 @@ func discover(group: int, cell: int, open: bool, cell_count: int) -> bool:
 		return false
 	var side := _side_for(group, cell_count)
 	if not side.learn(cell, open):
-		return false
-	discoveries += 1
-	return true
-
-
-## Discovery by touch, for WATER. A ship about to sail onto a cell learns
-## whether it is really sea, which is the same safety net `discover` is
-## for land: optimism may plan a course through an undiscovered island,
-## and must never put a hull inside one.
-func discover_navigable(group: int, cell: int, open: bool, cell_count: int) -> bool:
-	if cell_count <= 0:
-		return false
-	var side := _side_for(group, cell_count)
-	if not side.learn_navigable(cell, open):
 		return false
 	discoveries += 1
 	return true
