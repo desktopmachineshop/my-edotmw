@@ -1,0 +1,250 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS207: begin
+
+OBS207 OPENING - can each civ afford the town hall it must found?
+  town centre costs 150 wood; storehouse (the other drop-off) costs 60.
+  civ            wood   need can_open note
+  emberdeep       160    150      yes 
+  gildedreach     200    150      yes 
+  gravesworn      140    150       NO storehouse first (60 wood) then gather 70 — a human can, the AI never does
+  stoneblood      180    150      yes 
+  thornwood       260    150      yes 
+  windmarch       160    150      yes 
+
+OBS207 SEATS - starting positions each shipped map will actually give,
+  as the seat count rises. `_seats_changed` reverts a count the map
+  refuses, so 'slots' below is what the match really generates.
+  ladder.tres              42x48 authored_slots=4 :  2 seats->2 slots  4 seats->4 slots  6 seats->6 slots  8 seats->8 slots
+  default.tres             168x194 authored_slots=20 :  2 seats->2 slots  4 seats->4 slots  6 seats->6 slots  8 seats->8 slots
+  A seat past the slot count shares another seat's start. The two
+  that share never found a base in any ladder match measured here.
+
+  The REAL search, on real terrain, for the ladder map at 6 slots:
+    seed 1: player_slots=6 -> 6 starting positions   validate_spawns: "" (silent)
+    seed 2: player_slots=6 -> 6 starting positions   validate_spawns: "" (silent)
+    seed 3: player_slots=6 -> 6 starting positions   validate_spawns: "" (silent)
+
+OBS207 ROSTER - what each civ actually resolves, against #207's table.
+  A leak shows as an archetype resolving to another civ's def, or as
+  a civ fielding something the ticket does not list for it.
+  emberdeep    combat=["archers", "bombard", "heavy", "levy", "ram"] support=["gatherers", "general"] matches_ticket=true
+  gildedreach  combat=["archers", "cavalry", "engine", "levy", "sellswords", "spearmen"] support=["gatherers", "general"] matches_ticket=true
+  gravesworn   combat=["engine", "levy", "shades", "spearmen"] support=["gatherers", "general"] matches_ticket=true
+  stoneblood   combat=["breaker", "heavy", "levy", "skirmishers"] support=["gatherers", "general"] matches_ticket=true
+  thornwood    combat=["archers", "cavalry", "greatbow", "levy"] support=["gatherers", "general"] matches_ticket=true
+  windmarch    combat=["bowriders", "cavalry", "levy", "skirmishers"] support=["gatherers", "general"] matches_ticket=true
+
+OBS207 ROSTER - the barracks offers a UNION; who resolves each entry.
+  levy         fielded by 6: ["emberdeep", "gildedreach", "gravesworn", "stoneblood", "thornwood", "windmarch"]
+  spearmen     fielded by 2: ["gildedreach", "gravesworn"]
+  heavy        fielded by 2: ["emberdeep", "stoneblood"]
+  archers      fielded by 3: ["emberdeep", "gildedreach", "thornwood"]
+  skirmishers  fielded by 2: ["stoneblood", "windmarch"]
+  cavalry      fielded by 3: ["gildedreach", "thornwood", "windmarch"]
+  shades       fielded by 1: ["gravesworn"]
+  greatbow     fielded by 1: ["thornwood"]
+  bowriders    fielded by 1: ["windmarch"]
+  sellswords   fielded by 1: ["gildedreach"]
+  breaker      fielded by 1: ["stoneblood"]
+  engine       fielded by 2: ["gildedreach", "gravesworn"]
+  ram          fielded by 1: ["emberdeep"]
+  bombard      fielded by 1: ["emberdeep"]
+  leaks=0
+
+OBS207 SPREAD - every civ's version of a SHARED archetype.
+  D-072's V = sqrt(DPS x EHP), RP = food + wood + 1.5*(gold+stone),
+  both per SQUAD, so a cheap numerous squad and a dear elite one are
+  compared the way a player buys them.
+
+  levy - fielded by 6 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    emberdeep    emberdeep_levy            26   85.0   6.70  1.90   2.90   591.6    48.0 12.325
+    gildedreach  gildedreach_levy          30   68.0   6.30  1.90   3.40   620.9    45.0 13.799
+    gravesworn   gravesworn_levy           48   40.0   4.80  1.90   3.00   665.1    32.0 20.785
+    stoneblood   stoneblood_levy           24   95.0   8.50  1.90   3.20   682.0    50.0 13.640
+    thornwood    thornwood_levy            28   62.0   6.40  1.90   3.50   557.8    40.0 13.944
+    windmarch    windmarch_levy            28   61.0   6.50  1.90   4.40   557.5    38.0 14.672
+    spread: 1.22x from windmarch (557.5) to stoneblood (682.0)
+
+  skirmishers - fielded by 2 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    stoneblood   stoneblood_skirmishers    12  110.0  14.00  5.50   3.00   351.0    65.0  5.400
+    windmarch    windmarch_skirmishers     24   48.0   6.00  1.90   4.60   407.3    26.0 15.665
+    spread: 1.16x from stoneblood (351.0) to windmarch (407.3)
+
+  cavalry - fielded by 3 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    gildedreach  gildedreach_cavalry       14   75.0   9.00  1.90   5.60   363.7    75.0  4.850
+    thornwood    thornwood_cavalry         14   70.0   8.00  1.90   5.80   331.3    70.0  4.733
+    windmarch    windmarch_cavalry         16   85.0  11.00  1.90   6.00   466.5    95.0  4.910
+    spread: 1.41x from thornwood (331.3) to windmarch (466.5)
+
+  archers - fielded by 3 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    emberdeep    emberdeep_archers         22   60.0  11.00  5.50   2.90   399.6    63.0  6.344
+    gildedreach  gildedreach_archers       24   55.0  10.00  6.50   3.20   419.5    75.0  5.594
+    thornwood    thornwood_archers         26   50.0   9.00  8.00   3.20   450.3    70.0  6.433
+    spread: 1.13x from emberdeep (399.6) to thornwood (450.3)
+
+  spearmen - fielded by 2 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    gildedreach  gildedreach_spearmen      28   72.0   6.80  1.90   3.20   590.7    55.0 10.740
+    gravesworn   gravesworn_spearmen       40   45.0   5.20  1.90   3.00   583.4    44.0 13.259
+    spread: 1.01x from gravesworn (583.4) to gildedreach (590.7)
+
+  heavy - fielded by 2 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    emberdeep    emberdeep_heavy           20  130.0  10.50  1.90   2.80   689.0    92.5  7.449
+    stoneblood   stoneblood_heavy           8  380.0  30.00  2.20   3.00   779.7   115.0  6.780
+    spread: 1.13x from emberdeep (689.0) to stoneblood (779.7)
+
+  gatherers - fielded by 6 civ(s)
+    civ          def                        n     hp    dmg   rng    spd       V      RP   V/RP
+    emberdeep    emberdeep_gatherers        7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    gildedreach  gildedreach_gatherers      7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    gravesworn   gravesworn_gatherers       7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    stoneblood   stoneblood_gatherers       7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    thornwood    thornwood_gatherers        7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    windmarch    windmarch_gatherers        7   30.0   1.00  2.00   3.50    24.2    14.0  1.732
+    spread: 1.00x from emberdeep (24.2) to emberdeep (24.2)
+
+OBS207 DUELS - civ A's levy against civ B's levy, and so on.
+  Flat equal ground, both ordered onto the other's own start cell,
+  6 seeds, played BOTH ways round so the lower-id advantage #38
+  looked for cannot masquerade as a civ difference.
+  margin = winner's surviving fraction; a pairing that is genuinely
+  even reads ~0.0 and splits its wins.
+
+  --- levy ---
+    emberdeep    vs gildedreach   6-0-0  survivors 0.69 / 0.00  emberdeep WINS
+    emberdeep    vs gravesworn    6-0-0  survivors 0.34 / 0.00  emberdeep WINS
+    emberdeep    vs stoneblood    5-1-0  survivors 0.31 / 0.10  emberdeep WINS
+    emberdeep    vs thornwood     6-0-0  survivors 0.75 / 0.00  emberdeep WINS
+    emberdeep    vs windmarch     6-0-0  survivors 0.73 / 0.00  emberdeep WINS
+    gildedreach  vs gravesworn    6-0-0  survivors 0.38 / 0.00  gildedreach WINS
+    gildedreach  vs stoneblood    6-0-0  survivors 0.48 / 0.00  gildedreach WINS
+    gildedreach  vs thornwood     6-0-0  survivors 0.43 / 0.00  gildedreach WINS
+    gildedreach  vs windmarch     6-0-0  survivors 0.75 / 0.00  gildedreach WINS
+    gravesworn   vs stoneblood    3-3-0  survivors 0.09 / 0.31  even
+    gravesworn   vs thornwood     6-0-0  survivors 0.54 / 0.00  gravesworn WINS
+    gravesworn   vs windmarch     6-0-0  survivors 0.61 / 0.00  gravesworn WINS
+    stoneblood   vs thornwood     6-0-0  survivors 0.79 / 0.00  stoneblood WINS
+    stoneblood   vs windmarch     6-0-0  survivors 0.78 / 0.00  stoneblood WINS
+    thornwood    vs windmarch     6-0-0  survivors 0.68 / 0.00  thornwood WINS
+
+  --- cavalry ---
+    gildedreach  vs thornwood     6-0-0  survivors 0.38 / 0.00  gildedreach WINS
+    gildedreach  vs windmarch     0-6-0  survivors 0.00 / 0.60  windmarch WINS
+    thornwood    vs windmarch     0-6-0  survivors 0.00 / 0.70  windmarch WINS
+
+  --- skirmishers ---
+    stoneblood   vs windmarch     6-0-0  survivors 0.64 / 0.00  stoneblood WINS
+
+OBS207 KNOBS - the three CivDef fields, as the simulation reads them.
+  civ           cap+   prod   gath | what that is worth
+  emberdeep        0   1.00   1.00 | cap 40->40, a 10 s train takes 10.00 s, a 1.0/s crew gathers 1.00/s
+  gildedreach      0   1.00   1.15 | cap 40->40, a 10 s train takes 10.00 s, a 1.0/s crew gathers 1.15/s
+  gravesworn       4   1.15   1.00 | cap 40->44, a 10 s train takes 8.70 s, a 1.0/s crew gathers 1.00/s
+  stoneblood       0   1.00   1.00 | cap 40->40, a 10 s train takes 10.00 s, a 1.0/s crew gathers 1.00/s
+  thornwood        0   1.00   1.00 | cap 40->40, a 10 s train takes 10.00 s, a 1.0/s crew gathers 1.00/s
+  windmarch        0   1.00   1.00 | cap 40->40, a 10 s train takes 10.00 s, a 1.0/s crew gathers 1.00/s
+
+OBS207 QUANTITY - what 1000 food buys each civ, and how fast.
+  squads and SOLDIERS both, because 'quantity' is bodies on the
+  field rather than entries in a list.
+  civ          levy                         n   cost  squads     men  train_s     cap
+  emberdeep    emberdeep_levy              26     48      20     520     10.0      40
+  gildedreach  gildedreach_levy            30     45      22     660      9.0      40
+  gravesworn   gravesworn_levy             48     32      31    1488      7.0      44
+  stoneblood   stoneblood_levy             24     50      20     480      9.0      40
+  thornwood    thornwood_levy              28     40      25     700      9.0      40
+  windmarch    windmarch_levy              28     38      26     728      9.0      40
+
+OBS207 ECONOMY - the real haul cycle, 240 s, one crew, one node,
+  one drop-off two cells away. Same ground, same node, same tick.
+  civ          gatherers                    n     rate   banked vs median
+  emberdeep    emberdeep_gatherers          7    0.280      450     1.00x
+  gildedreach  gildedreach_gatherers        7    0.322      495     1.10x
+  gravesworn   gravesworn_gatherers         7    0.280      450     1.00x
+  stoneblood   stoneblood_gatherers         7    0.280      450     1.00x
+  thornwood    thornwood_gatherers          7    0.280      450     1.00x
+  windmarch    windmarch_gatherers          7    0.280      450     1.00x
+
+OBS207 PROFILE - each civ's roster as a whole, for the four that
+  have no knob at all. If two civs' columns are the same shape,
+  they are one army with two unit lists.
+  civ           defs   meanV    maxV  meanRP    V/RP   reach   speed  siege
+  emberdeep        5   398.3   689.0    98.7   4.036   11.00    2.90   1.00
+  gildedreach      6   461.8   666.6    90.8   5.084    9.00    5.60   0.90
+  gravesworn       4   416.0   665.1    64.6   6.438   10.00    4.80   1.00
+  stoneblood       4   576.1   779.7    95.0   6.065    5.50    3.20   0.85
+  thornwood        4   414.8   557.8    67.5   6.146    9.50    5.80   0.15
+  windmarch        4   434.0   557.5    57.9   7.499    5.00    6.20   0.15
+
+OBS207 FEARLESS - every civ's levy put under the SAME beating, and
+  watched for a rout. `tests/test_fearless.gd` proves gravesworn
+  CANNOT rout; the ticket asks whether that shows in a fight, which
+  it only does if the others DO rout under the same pressure.
+  civ          levy                     threshold   routed     at_s     left
+  emberdeep    emberdeep_levy                25.0       NO        -        0/26
+  gildedreach  gildedreach_levy              25.0      yes      8.7        0/30
+  gravesworn   gravesworn_levy                0.0       NO        -        0/48
+  stoneblood   stoneblood_levy               25.0       NO        -        0/24
+  thornwood    thornwood_levy                25.0      yes      7.5        0/28
+  windmarch    windmarch_levy                25.0      yes      7.5        0/28
+
+OBS207 ROUT REACH - casualties needed to reach the threshold, against
+  the men available to supply them. need = (morale - threshold) /
+  morale_loss_per_casualty. need >= n means the squad CANNOT rout.
+  def                           n  morale    thr   loss     need   need/n can rout?
+  emberdeep_archers            22     100   25.0    4.0     18.8     0.85 yes
+  emberdeep_bombard             4     100   25.0    4.0     18.8     4.69 NEVER
+  emberdeep_heavy              20     100   25.0    4.0     18.8     0.94 yes
+  emberdeep_levy               26     100   25.0    4.0     18.8     0.72 yes
+  emberdeep_ram                 6     100   25.0    4.0     18.8     3.13 NEVER
+  gildedreach_archers          24     100   25.0    4.0     18.8     0.78 yes
+  gildedreach_cavalry          14     100   25.0    4.0     18.8     1.34 NEVER
+  gildedreach_engine            4     100   25.0    4.0     18.8     4.69 NEVER
+  gildedreach_levy             30     100   25.0    4.0     18.8     0.63 yes
+  gildedreach_sellswords       18     120   25.0    4.0     23.8     1.32 NEVER
+  gildedreach_spearmen         28     100   25.0    4.0     18.8     0.67 yes
+  gravesworn_engine             3     100    0.0    0.0      inf      inf NEVER
+  gravesworn_levy              48     100    0.0    0.0      inf      inf NEVER
+  gravesworn_shades            20     100    0.0    0.0      inf      inf NEVER
+  gravesworn_spearmen          40     100    0.0    0.0      inf      inf NEVER
+  stoneblood_breaker            6     100   25.0    4.0     18.8     3.13 NEVER
+  stoneblood_heavy              8     100   25.0    4.0     18.8     2.34 NEVER
+  stoneblood_levy              24     100   25.0    4.0     18.8     0.78 yes
+  stoneblood_skirmishers       12     100   25.0    4.0     18.8     1.56 NEVER
+  thornwood_archers            26     100   25.0    4.0     18.8     0.72 yes
+  thornwood_cavalry            14     100   25.0    4.0     18.8     1.34 NEVER
+  thornwood_greatbow           16     100   25.0    4.0     18.8     1.17 NEVER
+  thornwood_levy               28     100   25.0    4.0     18.8     0.67 yes
+  windmarch_bowriders          16     100   25.0    4.0     18.8     1.17 NEVER
+  windmarch_cavalry            16     100   25.0    4.0     18.8     1.17 NEVER
+  windmarch_levy               28     100   25.0    4.0     18.8     0.67 yes
+  windmarch_skirmishers        24     100   25.0    4.0     18.8     0.78 yes
+
+  16 of 27 combat defs can never rout. Gravesworn's four are BY DESIGN
+  (rout_threshold 0, #191). These 12 are not, and belong to five other civs:
+    ["emberdeep_bombard", "emberdeep_ram", "gildedreach_cavalry", "gildedreach_engine", "gildedreach_sellswords", "stoneblood_breaker", "stoneblood_heavy", "stoneblood_skirmishers", "thornwood_cavalry", "thornwood_greatbow", "windmarch_bowriders", "windmarch_cavalry"]
+
+OBS207 LOOK - what a bot can say about criterion 5, which is
+  otherwise the owner's. Player COLOUR is per player (D-052) and
+  is not the civ's; what the civ decides is the MODEL, and four of
+  six wear the primitive capsule for everything.
+  civ          colour    authored models              primitive-tier archetypes
+  emberdeep    #ad5c29   ["archers", "gatherers", "militia", "spearmen"] ["ram"]
+  gildedreach  #c79e33   ["cavalry", "heavy_infantry"] ["archers", "engine", "gatherers", "general", "levy", "spearmen"]
+  gravesworn   #b8bd9e   ["<none>"]                   ["engine", "gatherers", "general", "levy", "shades", "spearmen"]
+  stoneblood   #738094   ["<none>"]                   ["breaker", "gatherers", "general", "heavy", "levy", "skirmishers"]
+  thornwood    #386b47   ["<none>"]                   ["archers", "cavalry", "gatherers", "general", "greatbow", "levy"]
+  windmarch    #b89961   ["<none>"]                   ["bowriders", "cavalry", "gatherers", "general", "levy", "skirmishers"]
+
+  Civ colour is NOT what a player sees in a melee — D-052 gives the
+  colour to the PLAYER, so two seats of the same civ are different
+  colours and two seats of different civs may be adjacent hues. The
+  civ's contribution to telling armies apart is its MODELS, and the
+  table above is the whole of it.
+OBS207: end
