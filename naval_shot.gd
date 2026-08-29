@@ -323,7 +323,14 @@ func _parse_arguments() -> void:
 	for argument in OS.get_cmdline_user_args():
 		var text := String(argument)
 		if text.begins_with("--out="):
-			out_path = text.trim_prefix("--out=")
+			# REBASED through ArtifactPath, never taken as given
+			# (D-20260828). `res://` is a real directory in a checkout and a
+			# read-only virtual filesystem inside an exported build's .pck,
+			# so a writer that trusts its own argument works here and writes
+			# nothing at all from a shipped build — which is #201, found
+			# after an exported server played a whole match and recorded no
+			# replay. Same one line as `terrain_shot.gd`.
+			out_path = ArtifactPath.resolve(text.trim_prefix("--out="))
 		elif text.begins_with("--preset="):
 			preset_id = text.trim_prefix("--preset=")
 		elif text.begins_with("--seconds="):
