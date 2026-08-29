@@ -2708,8 +2708,12 @@ gen-seam-shot SEAM="q" HEIGHT="16": _import
 # production produces and D-018 targets ~1,000. Prints CSV: the SHAPE of
 # the curve is the deliverable, not the endpoint — cost should stay flat
 # per squad, and a bend means something is accidentally quadratic.
-[doc("Scale sweep: simulation cost at 100/250/500/1000 squads")]
-profile: _import
+# ONLY selects one section — count, map, derive or ladder — instead of all
+# four. Empty runs everything, so a bare `just profile` is what it was.
+# The ladder (#304) is the section a perf question usually wants, and the
+# whole sweep is minutes of work.
+[doc("Scale sweep: simulation cost at 100/250/500/1000 squads; ONLY=count|map|derive|ladder")]
+profile ONLY="" COUNTS="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
@@ -2720,10 +2724,10 @@ profile: _import
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     if [ "{{runtime}}" = "docker" ]; then
-        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd
+        docker compose -p {{compose_project}} run --rm --no-deps test --headless --script profile_sweep.gd -- --only="{{ONLY}}" --counts="{{COUNTS}}"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script profile_sweep.gd
+        "$godot" --headless --script profile_sweep.gd -- --only="{{ONLY}}" --counts="{{COUNTS}}"
     fi
 
 # Client render benchmark (D-044 criteria 1-3, closing Q15's trigger).
@@ -2744,11 +2748,18 @@ profile: _import
 # import, global class_names do not resolve and it dies with parse errors
 # naming unrelated lines.
 [doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
-bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" ARGS="":
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" HOST="0" PRESET="" HULLS="0" ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
     bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    # HOST and HULLS are numeric and therefore go through the checker
+    # (D-20260817-recipe-args-are-positional): GDScript's `int()` STRIPS
+    # non-digits rather than failing, so `HOST=islands` would silently be
+    # host mode OFF and the run would measure a client while claiming to
+    # measure a host. PRESET is a name and is passed through as one.
+    bash recipe-arg.sh int HOST "{{HOST}}"
+    bash recipe-arg.sh int HULLS "{{HULLS}}"
     # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
     # Waits for room on the machine every other agent is also using. $$ is
     # THIS recipe's shell and the lock is stamped with it — a lock stamped
@@ -2766,8 +2777,9 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" ARGS="":
     # ARGS is the attribution channel (#229): --clamp=0, --sampler=0,
     # --copies=0, --cells_wide=84 --cells_high=96. Empty by default, so a
     # bare `just bench-render` measures the shipping client exactly as it
-    # always did and every number ever quoted stays comparable.
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} {{ARGS}}
+    # always did and every number ever quoted stays comparable. It is LAST
+    # on the command line so it can still override a host flag by hand.
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} --host={{HOST}} --preset="{{PRESET}}" --hulls={{HULLS}} {{ARGS}}
 
 # Is the recorded render baseline about THIS tree? (#286)
 #

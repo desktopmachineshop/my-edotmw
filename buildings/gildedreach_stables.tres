@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_stables"
+display_name = "Hiring Yard"
+civ = &"gildedreach"
+archetype = &"stables"
+requires_tech = &"settling"
+max_health = 900.0
+build_time = 45.0
+vision_range = 14.0
+no_build_radius = 3
+produces = Array[StringName]([&"cavalry"])
+cost_food = 0
+cost_wood = 180
+cost_gold = 60
+cost_stone = 0
+mesh_primitive = "box"
+mesh_color = Color(0.52, 0.44, 0.3, 1)
+category = "military"
+footprint_radius = 1
+built_by = Array[StringName]([&"gatherers"])

@@ -8,6 +8,7 @@ id = &"emberdeep_bombard"
 display_name = "Ember Bombard"
 civ = &"emberdeep"
 archetype = &"bombard"
+requires_tech = &"reckoning"
 squad_size = 4
 health = 110.0
 damage = 34.0

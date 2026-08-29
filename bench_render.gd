@@ -24,6 +24,26 @@ extends Node3D
 ## generated up front; the measured frames only sample them, which is
 ## exactly what a client does between updates.
 ##
+## ## HOST MODE (`--host=1`), and why it is a different question (#339)
+##
+## Everything above measures a CLIENT. `D-088` makes the host a PLAYER:
+## it runs the authoritative simulation **in-process** inside its own
+## client, so a hosting machine pays the tick budget and the frame budget
+## out of the same second. Nothing had ever measured the combination —
+## every figure this project has is one or the other, taken alone, in its
+## own process.
+##
+## `--host=1` therefore does the thing the paragraph above forbids, on
+## purpose: it ticks the simulation INSIDE the measured frames, at
+## `SquadSim.TICK_HZ`, and reports what the two together consume out of
+## each wall-clock second. It also builds the world the SERVER builds —
+## teams, civs, economy, buildings, research — because a host runs a
+## match and not a squad soup, and the client-only rows deliberately do
+## not.
+##
+## The client-only rows are unchanged and remain the default, so
+## `just bench-render` measures exactly what it measured yesterday.
+##
 ## ## Why this cannot be `just test-client`
 ##
 ## `test-client` renders through Mesa's software rasteriser in docker
@@ -183,6 +203,18 @@ var _terrain_passable := PackedByteArray()
 ## the one-cell path the client takes (#245).
 var _terrain_surface := PackedFloat32Array()
 
+## HOST mode (#339): the sim ticks inside the measured frames.
+var _host_mode := false
+## Terrain preset to build the world on, or empty for the map's own.
+## `islands` is the worst honest case for a host — the water layer is a
+## third field layer and `islands` is ~68% sea.
+var _preset := &""
+var _hulls := 0
+var _tick_accumulator := 0.0
+var _sim_usec: Array = []
+var _ticks_run := 0
+var _navigable := PackedByteArray()
+
 
 func _ready() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
@@ -222,6 +254,9 @@ func _ready() -> void:
 	# `--json=` on purpose: that one is a path a caller chose, this one is
 	# a path only the run can compute.
 	_record_slot = int(args.get("record", 0)) != 0
+	_host_mode = int(args.get("host", 0)) != 0
+	_preset = StringName(String(args.get("preset", "")))
+	_hulls = int(args.get("hulls", 0))
 
 	# Vsync would cap every measurement at the refresh rate and report a
 	# uniform 16.7 ms whether the frame cost 2 ms or 16 — which reads as
@@ -252,7 +287,11 @@ func _ready() -> void:
 	print("bench: map %dx%d (%d cells), %d measured frames per count, terrain=%s" % [
 		_space.width, _space.height, _space.cell_count(),
 		_frames_to_measure, "on" if _with_terrain else "off"])
-	print("bench: squads,soldiers,ms_mean,ms_worst,fps_mean,draw_calls,cpu_ms_mean,squads_drawn")
+	if _host_mode:
+		print("bench: HOST mode — the simulation ticks inside the measured frames (#339)")
+		print("bench: squads,soldiers,ms_mean,fps_mean,client_ms,sim_ms_per_tick,sim_ms_per_s,client_ms_per_s,TOTAL_ms_per_s")
+	else:
+		print("bench: squads,soldiers,ms_mean,ms_worst,fps_mean,draw_calls,cpu_ms_mean,squads_drawn")
 
 	_build_scene()
 
@@ -351,7 +390,9 @@ func _setup_count(count: int) -> void:
 	_lod_tier.clear()
 
 	_sim = SquadSim.new(_space, CurveReplicator.new())
-	_sim.set_passable(TerrainGen.new().passability(_space))
+	_sim.set_passable(_bench_terrain().passability(_space))
+	if _host_mode:
+		_build_host_world()
 	_state = ClientState.new()
 	if _sample_terrain:
 		_state.terrain_sampler = _terrain_sampler
@@ -369,8 +410,32 @@ func _setup_count(count: int) -> void:
 	var defs := UnitRoster.load_all()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 0xBEEF
-	for i in range(count):
-		_sim.add_squad(defs[i % defs.size()], 1, Vector2i(
+
+	# Hulls REPLACE ground squads rather than adding to them: a fleet is a
+	# share of an army, and holding the total fixed is what makes the row
+	# comparable with the client-only rows above.
+	var placed := 0
+	if _hulls > 0 and not _navigable.is_empty():
+		var hull: UnitDef = null
+		for def in defs:
+			if def.get("movement_domain") == "water":
+				hull = def
+				break
+		var water := []
+		for index in range(_space.cell_count()):
+			if _navigable[index] != 0:
+				water.append(index)
+		if hull != null and not water.is_empty():
+			for n in range(mini(_hulls, count)):
+				_sim.add_squad(hull, 1 + (n % 4) if _host_mode else 1,
+					_space.from_index(int(water[(n * 97) % water.size()])))
+				placed += 1
+
+	for i in range(count - placed):
+		# Four owners in host mode, so combat and teams have sides to be
+		# about; one in client mode, which is what those rows have always
+		# measured (`visible_to` then returns every squad).
+		_sim.add_squad(defs[i % defs.size()], 1 + (i % 4) if _host_mode else 1, Vector2i(
 			rng.randi_range(0, _space.width - 1),
 			rng.randi_range(0, _space.height - 1)))
 	for squad in range(_sim.squad_count()):
@@ -531,6 +596,48 @@ func _cell_discs(cell: int) -> Array:
 		0, TerrainGen.Biome.FOREST, [], 0.6, cell, _space.hex_size)
 	_node_disc_cache[cell] = discs
 	return discs
+
+
+## The terrain the benchmark builds its world on — the map's own, or the
+## `--preset` one. One definition, so the ground the camera sees and the
+## ground the simulation paths on cannot come from two different
+## generators (the D-096 shared-arithmetic rule).
+func _bench_terrain() -> TerrainGen:
+	if _preset == &"":
+		return TerrainGen.new()
+	var settings := MapSettings.from_map(_config)
+	var preset := TerrainPresetRoster.by_id(_preset)
+	if preset == null:
+		push_error("bench: no terrain preset '%s'" % _preset)
+		return TerrainGen.new()
+	settings.preset = _preset
+	settings.apply_preset(preset)
+	settings.pin_seed(1337)
+	return settings.to_terrain()
+
+
+## What the SERVER builds, which the client-only rows deliberately do not
+## (#339). A host runs a match: four sides, an economy, buildings, the
+## civ knobs and the research state. Measuring a host against a squad
+## soup would understate the half of the second it actually spends.
+func _build_host_world() -> void:
+	var terrain := _bench_terrain()
+	_sim.buildings = BuildingSim.new(_space)
+	var economy := Economy.new(_space)
+	economy.generate(terrain, 1)
+	_sim.economy = economy
+	var civ_ids := CivRoster.ids()
+	for player in range(1, 5):
+		_sim.teams[player] = 1 + (player % 2)
+		if not civ_ids.is_empty():
+			_sim.civs[player] = CivRoster.effects_of(civ_ids[(player - 1) % civ_ids.size()])
+	_sim.research = ResearchState.new()
+	# The water layer, when this tree has one (naval stage 2). Guarded, so
+	# the harness runs on a tree without naval and simply reports no hulls.
+	if _hulls > 0 and terrain.has_method("navigability") \
+			and _sim.has_method("set_navigable"):
+		_navigable = terrain.call("navigability", _space)
+		_sim.call("set_navigable", _navigable)
 
 
 ## A formation's own on-screen extent, in world units, for the cull test —
@@ -771,11 +878,34 @@ func _process(delta: float) -> void:
 		_keys_worst = 0
 		_worst_cpu = 0
 		_worst_split = [0, 0, 0, 0]
+		_sim_usec.clear()
+		_ticks_run = 0
+		_tick_accumulator = 0.0
 		_phase = Phase.WARMUP
 		return
 
 	_now += delta
 	_last_delta = delta
+
+	# THE host measurement (#339): the authoritative tick, inside the
+	# frame, at D-020's rate. A host pays this out of the same second it
+	# pays the frame out of.
+	var sim_cost := 0
+	if _host_mode and _sim != null and _sim.squad_count() > 0:
+		_tick_accumulator += delta
+		var step := 1.0 / float(SquadSim.TICK_HZ)
+		while _tick_accumulator >= step:
+			_tick_accumulator -= step
+			var tick_began := Time.get_ticks_usec()
+			_sim.tick()
+			# The host's own client still receives its state over the
+			# loopback peer (D-051/D-088), so the encode and decode are
+			# part of what a host pays and are timed with the tick.
+			for packet in _sim.replicator.collect_for_client(1, _sim.time, _sim.visible_to(1)):
+				_state.handle_packet(NetProtocol.encode_curve(packet["bytes"]))
+			sim_cost += Time.get_ticks_usec() - tick_began
+			_ticks_run += 1
+		_now = _sim.time
 
 	var started := Time.get_ticks_usec()
 	_refresh_squads()
@@ -786,6 +916,13 @@ func _process(delta: float) -> void:
 		if _frames_seen >= _warmup_frames:
 			_phase = Phase.MEASURE
 			_frames_seen = 0
+			# Ticks run during warm-up too — the sim cannot be paused and
+			# resumed without changing what it is doing — but they must
+			# not land in the measured denominator. Caught by the two
+			# reported figures disagreeing by 3x: `sim_ms_per_tick` was
+			# measured-microseconds over warmup-plus-measured ticks, which
+			# understates a tick by exactly the warm-up's share.
+			_ticks_run = 0
 		return
 
 	# `delta` is the true frame period with vsync disabled, so it is the
@@ -807,6 +944,8 @@ func _process(delta: float) -> void:
 	if cpu > _worst_cpu:
 		_worst_cpu = cpu
 		_worst_split = [_frame_cull, _frame_derive, _frame_upload, _frame_decorate]
+	if _host_mode:
+		_sim_usec.append(sim_cost)
 	_draw_calls.append(int(RenderingServer.get_rendering_info(
 		RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)))
 
@@ -842,6 +981,27 @@ func _report(count: int) -> void:
 	for squad_id in _state.live_squad_ids():
 		soldiers += _state.alive_of(squad_id)
 
+	if _host_mode:
+		# THE number #339 asks for: milliseconds of CPU consumed per
+		# wall-clock SECOND, by each half and together, against 1,000.
+		# Not per frame and not per tick — those are two different
+		# denominators, and adding them is the mistake that makes a host
+		# look affordable.
+		var sim_total := 0
+		for usec in _sim_usec:
+			sim_total += usec
+		var seconds := float(total) / 1_000_000.0
+		var fps := 1_000_000.0 / maxf(mean, 1.0)
+		var client_ms := float(cpu_total) / float(maxi(_process_usec.size(), 1)) / 1000.0
+		var sim_ms_per_tick := float(sim_total) / float(maxi(_ticks_run, 1)) / 1000.0
+		var sim_ms_per_s := float(sim_total) / 1000.0 / maxf(seconds, 0.001)
+		var client_ms_per_s := float(cpu_total) / 1000.0 / maxf(seconds, 0.001)
+		print("bench: %d,%d,%.2f,%.1f,%.2f,%.2f,%.1f,%.1f,%.1f" % [
+			count, soldiers, mean / 1000.0, fps, client_ms,
+			sim_ms_per_tick, sim_ms_per_s, client_ms_per_s,
+			sim_ms_per_s + client_ms_per_s,
+		])
+		return
 	# The breakdown, on its own line so the CSV keeps the shape every
 	# previous run was quoted in. `other` is the RESIDUAL — the part of
 	# our own per-frame work none of the three phases claimed — printed

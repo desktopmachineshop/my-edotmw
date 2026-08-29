@@ -1,0 +1,45 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"health"
+mode = "multiply"
+value = 1.12
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"morale"
+mode = "add"
+value = 15.0
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"*"
+field = &"rout_rally_margin"
+mode = "multiply"
+value = 0.8
+
+[resource]
+script = ExtResource("1")
+id = &"veterancy"
+display_name = "Veterancy"
+description = "The survivors teach the replacements, and the replacements survive."
+line = &"veterancy"
+civ = &"neutral"
+epoch = 5
+defining = false
+research_at = &"barracks"
+requires = Array[StringName]([&"reckoning"])
+cost_food = 700
+cost_wood = 500
+cost_gold = 400
+cost_stone = 200
+research_time = 90.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

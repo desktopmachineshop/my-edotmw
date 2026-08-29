@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_forge"
+display_name = "Bone Kiln"
+civ = &"gravesworn"
+archetype = &"forge"
+requires_tech = &"mustering"
+max_health = 1100.0
+build_time = 55.0
+vision_range = 12.0
+no_build_radius = 3
+produces = Array[StringName]([&"engine"])
+cost_food = 0
+cost_wood = 150
+cost_gold = 0
+cost_stone = 120
+mesh_primitive = "box"
+mesh_color = Color(0.4, 0.34, 0.34, 1)
+category = "military"
+footprint_radius = 1
+built_by = Array[StringName]([&"gatherers"])

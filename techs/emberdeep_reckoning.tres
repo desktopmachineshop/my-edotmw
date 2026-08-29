@@ -1,0 +1,45 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"bombard"
+field = &"attack_range"
+mode = "add"
+value = 1.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"ram"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.1
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"bombard"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.1
+
+[resource]
+script = ExtResource("1")
+id = &"emberdeep_reckoning"
+display_name = "The Deep Gates Open"
+description = "What the hold has been building since the first epoch, wheeled out."
+line = &"reckoning"
+civ = &"emberdeep"
+epoch = 5
+defining = false
+research_at = &"forge"
+requires = Array[StringName]([&"sapping"])
+cost_food = 1000
+cost_wood = 700
+cost_gold = 800
+cost_stone = 300
+research_time = 150.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
