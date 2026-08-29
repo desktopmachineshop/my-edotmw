@@ -1,0 +1,167 @@
+# The gate that closes eleven "main is red" incidents (#290).
+#
+# #152, #154, #160, #202, #203, #204, #208, #209, #211, #212, #215, #223
+# are all one incident repeated: a change lands, the suite is red for
+# days, and an UNRELATED worker finds it while doing something else and
+# stops to file it. With ~29 PRs open that does not improve by being more
+# careful. If `main` is known-green, a red PR is the PR's fault — and the
+# per-branch baselining workers keep having to do by hand disappears.
+#
+# Runtime is NATIVE, not docker. Two reasons, and the second is the real
+# one: a native run needs no image build (cost — this repo is PRIVATE, so
+# Actions minutes are billed), and the twelve shell-out tests that fail
+# under native on a DEV machine fail there because Godot's
+# OS.execute("bash", …) resolves to the WSL relay on Windows. On a Linux
+# runner `bash` is bash. That is a claim rather than a memory, so it is
+# recorded with its evidence in docs/ci.md; if it is ever false this
+# workflow goes red on those twelve and the fix is `EDOTMW_RUNTIME=docker`
+# here, which is measured green (1273/1273).
+name: test-unit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One run per ref. A branch pushed three times in a minute should cost one
+# run, not three — the same reasoning host-gate.sh applies to the laptop,
+# applied to the bill.
+concurrency:
+  group: test-unit-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every `run:` step is `bash -eo pipefail`, and that is LOAD-BEARING, not
+# tidiness. GitHub's default shell has `-e` but NOT `pipefail`, so
+# `just test-unit 2>&1 | tee log` returns TEE's exit status and a failing
+# suite reports a GREEN job. That is not hypothetical: it happened on this
+# workflow's second run — the suite reported `Failing Tests 1` and the job
+# reported success — and it was caught only because the gate was
+# deliberately perturbed to watch it go red. It is D-022's audit block
+# rebuilt in CI: `test-load` once reported clean while every bot had
+# exited non-zero. The observed-red is recorded in docs/ci.md.
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+env:
+  EDOTMW_RUNTIME: native
+  # A CI runner is not the owner's shared laptop, so there is nothing to
+  # queue behind. `just doctor` REPORTS this rather than hiding it, which
+  # is exactly what D-20260818 designed the off switch to do.
+  EDOTMW_NO_GATE: "1"
+
+jobs:
+  test-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # `bootstrap.ps1` is deliberately Windows-only (local dev is
+      # Windows, D-014), so CI fetches its own `just` — from the SAME
+      # .just-version pin, which is why that file exists. The VERSION is
+      # the policy and it lives in one place; only the platform asset
+      # differs.
+      - name: Read the pinned tool versions
+        id: pins
+        run: |
+          echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+          echo "godot=$(tr -d '[:space:]' < .godot-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache tools/
+        uses: actions/cache@v6
+        with:
+          path: tools
+          key: tools-${{ runner.os }}-just${{ steps.pins.outputs.just }}-godot${{ steps.pins.outputs.godot }}
+
+      - name: Fetch just and Godot
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          if [ ! -x tools/just ]; then
+            curl -fsSL -o /tmp/just.tar.gz \
+              "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+            tar -xzf /tmp/just.tar.gz -C tools just
+          fi
+          if [ ! -x tools/godot ]; then
+            curl -fsSL -o /tmp/godot.zip \
+              "https://github.com/godotengine/godot-builds/releases/download/${{ steps.pins.outputs.godot }}-stable/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64.zip"
+            unzip -q /tmp/godot.zip -d tools
+            mv "tools/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64" tools/godot
+          fi
+          chmod +x tools/just tools/godot
+          # The same .gdignore `bootstrap-art` writes, for the same reason:
+          # Godot scans every directory under the project, and a portable
+          # engine binary sitting in one is not something to import.
+          : > tools/.gdignore
+
+      # Godot's own import tracking is md5-based, so a restored cache is
+      # correctness-neutral: an unchanged file is skipped because its hash
+      # matches, not because a key did. The key is keyed on the importable
+      # content anyway, so a change to any of it starts clean — this
+      # project has already paid once for verifying against a stale import
+      # cache (M7's asset work) and the cache is not where that risk is
+      # being reintroduced.
+      - name: Cache the Godot import
+        uses: actions/cache@v6
+        with:
+          path: .godot
+          key: godot-import-${{ runner.os }}-${{ steps.pins.outputs.godot }}-${{ hashFiles('project.godot', 'generated/**', '**/*.tres', '**/*.tscn', '**/*.gdshader', '**/*.gdshaderinc') }}
+          restore-keys: |
+            godot-import-${{ runner.os }}-${{ steps.pins.outputs.godot }}-
+
+      # Preflight, and it prints the runtime and the gate state into the
+      # log. Worth a step of its own: when this workflow eventually fails
+      # for an environment reason, this is the output that says so.
+      - name: just doctor
+        run: ./tools/just doctor
+
+      - name: just test-unit
+        run: ./tools/just test-unit 2>&1 | tee /tmp/test-unit.log
+
+      # THE counts, into the run summary, so "how many tests are there"
+      # stops being something a human runs a recipe to answer and pastes
+      # into a PR body. Published, not gated — this project's rule is to
+      # gate on counts and publish milliseconds, and a test COUNT that
+      # must not fall is a separate check nobody has asked for.
+      - name: Publish the totals
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo '### `just test-unit`'
+            echo ''
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/test-unit.log \
+              | sed -n '/^Totals/,/^Time/p' || echo '(no totals — the run did not reach them)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # D-20260818-every-file-has-a-line-ending-rule. A Godot recipe that
+      # leaves the working tree dirty is a real, already-paid-for failure:
+      # 782 of 938 tracked files were once checked out CRLF against an LF
+      # index, and one `just test-unit` left 136 files "modified" with a
+      # zero-line diff — which then makes `git rebase` refuse to start.
+      #
+      # Runs AFTER test-unit deliberately, because the import is what
+      # rewrites the files it owns.
+      - name: The tree is clean after a Godot recipe
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code --stat; then
+            echo "::error::A Godot recipe left the working tree dirty — see D-20260818-every-file-has-a-line-ending-rule"
+            git diff --stat
+            exit 1
+          fi
+
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-unit-log
+          path: /tmp/test-unit.log
+          retention-days: 14

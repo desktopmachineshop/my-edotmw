@@ -226,6 +226,12 @@ var _world_environment: WorldEnvironment = null
 ## issue #58.
 var _fog: TerrainFog = null
 
+## Audio (#344). Client-only and one-way: nothing the simulation, the
+## wire or the composition hash reads depends on a sound having played
+## (D-006 clause 2). The DECISIONS live in `audio_cue.gd`, which is pure
+## and tested headless; this reference is only the device half.
+var _audio: AudioDirector = null
+
 ## The one terrain material (`TerrainChunk.make_material`), kept so the
 ## fog field above can be pushed into it, and the texture it is pushed
 ## through — updated in place four times a second rather than rebuilt, so
@@ -248,40 +254,42 @@ var _fog_updated_at := -1.0
 ## exactly the maps with the most ground to cross.
 const FOG_INTERVAL := 0.25
 
-## Render LOD tiers (D-045): distance from the camera in world units, and
-## the most soldiers a squad past that distance is drawn with.
-##
-## Tuned against `just bench-render` rather than chosen: at D-018's full
-## scale the client was at 17.8 fps with every visible soldier derived,
-## and per-soldier derivation was ~96% of the frame.
-##
-## Nothing here touches `alive`. A thinned squad keeps its true frontage
-## because `slot_offset` is still asked for the real size, so this reads
-## as a distant formation being sparse rather than as a smaller unit —
-## which matters, because unit size is tactical information a player is
-## entitled to read off the screen correctly.
 ## Below this ground speed a squad is standing still as far as animation is
 ## concerned. Not zero: a curve sampled either side of a keyframe produces a
 ## little numerical drift, and a squad that flickered between idle and walk on
 ## that drift would twitch.
 const MOVING_SPEED_EPSILON := 0.15
 
-const LOD_TIERS := [
-	{"distance": 55.0, "soldiers": 1 << 30},
-	{"distance": 110.0, "soldiers": 12},
-	{"distance": INF, "soldiers": 5},
-]
+## Which LOD tier each squad was drawn at last frame — the MEMORY
+## `RenderCull.detail_tier`'s hysteresis band needs, and the client's only
+## part in the ladder. The tiers, the band and the arithmetic all live in
+## `render_cull.gd`, where they can be tested without a GPU (D-014); this
+## is a dictionary of one int per squad, cleared with the match exactly as
+## `_drawn_cache` is.
+##
+## Legal under D-006 for the same reason that cache is: it decides nothing
+## about where a soldier stands — the same slots come back — and nothing
+## in it reaches the simulation, the wire or the composition hash.
+var _lod_tier := {}
 
 
-## How many soldiers to draw for a squad at `world` (D-045).
-func _detail_for(world: Vector3) -> int:
+## How many soldiers to draw for the squad drawn at `offsets` (D-045).
+##
+## Hysteretic, and it is asked about the NEAREST visible copy rather than
+## about the one `nearest_offset` picked for placement. Both halves are
+## #155: a squad hovering near 55 flipped between forty men and twelve on
+## the smallest movement, and since every copy is drawn
+## (D-20260818-entities-are-drawn-at-every-visible-copy) an argmin between
+## two near-equidistant copies could move the distance a whole map period
+## with the camera perfectly still.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
 	if _camera == null:
-		return 1 << 30
-	var distance := _camera.global_position.distance_to(world)
-	for tier in LOD_TIERS:
-		if distance < float(tier["distance"]):
-			return int(tier["soldiers"])
-	return int(LOD_TIERS[LOD_TIERS.size() - 1]["soldiers"])
+		return RenderCull.lod_soldiers(0)
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 ## Squads derived and drawn this frame, against the number known. Shown in
@@ -419,6 +427,7 @@ func _ready() -> void:
 	_build_debug_panel()
 	_build_defeat_screen()
 	_build_loading_screen()
+	_build_connection_lost_screen()
 
 	_build_main_menu()
 	# `--host=1` starts the in-process server and joins it, exactly as the
@@ -630,9 +639,14 @@ func _finish_capture() -> void:
 		# otherwise the capture races rendering and yields an empty image.
 		await RenderingServer.frame_post_draw
 		image = get_viewport().get_texture().get_image()
-		var directory := _screenshot_path.get_base_dir()
-		if directory != "" and not DirAccess.dir_exists_absolute(directory):
-			DirAccess.make_dir_recursive_absolute(directory)
+		# `res://` is read-only in an exported build (#201); the identity
+		# in a checkout, so `--screenshot=res://artifacts/client-frame.png`
+		# still lands where `just test-client` looks for it.
+		_screenshot_path = ArtifactPath.resolve(_screenshot_path)
+		var dir_error := ArtifactPath.ensure_dir_for(_screenshot_path)
+		if dir_error != OK:
+			push_error("client: could not create %s (error %d)"
+				% [_screenshot_path.get_base_dir(), dir_error])
 		if image.save_png(_screenshot_path) == OK:
 			print("client: wrote %s (%dx%d)" % [
 				_screenshot_path, image.get_width(), image.get_height()])
@@ -747,6 +761,7 @@ func _service_network() -> void:
 		match type:
 			NetTransport.EVENT_CONNECT:
 				_connected = true
+				_ever_connected = true
 				print("client: connected")
 				# The version handshake, first thing and before any order
 				# (#179, D-094 criterion 3). The server admits nobody
@@ -757,7 +772,22 @@ func _service_network() -> void:
 			NetTransport.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
+				# #162: `print` goes to stdout and nowhere a player can
+				# see. Until this, a client whose server had shut down
+				# kept its window, kept burning a core and kept drawing a
+				# world that could no longer change — which from the
+				# chair is indistinguishable from a hang, and is how it
+				# was reported.
+				_on_connection_lost()
 			NetTransport.EVENT_RECEIVE:
+				# UNTYPED, and read through `NetTransport` rather than
+				# through the concrete library — both are #264's seam, not
+				# a slip. A peer is duck-typed to `send`'s shape so that
+				# LoopbackPeer (D-051) and HostLink (#182) can stand in
+				# it, and a test fails if this file names the ENet class
+				# at all. (Which is why this comment does not: the guard
+				# reads the file, and a comment is text like any other —
+				# #184 records the same trap in the Steam boundary.)
 				var from_peer = event[1]
 				while from_peer.get_available_packet_count() > 0:
 					_state.handle_packet(from_peer.get_packet())
@@ -898,6 +928,13 @@ func _begin_terrain() -> void:
 	# every lattice copy — and the drain that feeds it only records while
 	# this flag says a renderer is reading (D-20260819).
 	_state.record_corpses = true
+	# Only something that DRAINS the queue may set this — bots and AI
+	# seats run this same ClientState and leave it off, so their list
+	# stays empty for the length of a run.
+	_state.record_audio = true
+	_audio = AudioDirector.new()
+	_audio.name = "AudioDirector"
+	add_child(_audio)
 	_corpse_layer = CorpseLayer.new()
 	add_child(_corpse_layer)
 	_corpse_layer.set_offsets(space.lattice_offsets())
@@ -1212,6 +1249,7 @@ func _refresh_squads() -> void:
 	# (D-20260819-a-casualty-is-visible), and the falls still playing get
 	# their one phase write.
 	_drain_casualty_sites()
+	_drain_audio_events()
 	if _corpse_layer != null:
 		_corpse_layer.update(_now)
 
@@ -1302,7 +1340,7 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var detail := _detail_for(centre + offset)
+		var detail := _detail_for(squad_id, drawn, centre)
 		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
@@ -2002,6 +2040,10 @@ var _menu_button: Button = null
 ## The in-game menu, and the settings pane inside it. Its own CanvasLayer
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
+## The two-press surrender guard (D-20260828-a-player-may-concede): the
+## first press swaps one button for the other, the second sends.
+var _surrender_button: Button = null
+var _surrender_confirm: Button = null
 var _settings_panel: Control = null
 ## The player scoreboard (D-102), a sibling of the settings pane inside
 ## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
@@ -2963,11 +3005,71 @@ func _to_hud(at: Vector2) -> Vector2:
 ## HUD, so the keys a player is told about are by construction the keys
 ## that work. They were previously a `match` statement and a hand-written
 ## hint string listing the same letters twice.
+## Letters claimed by the hand-written `event.keycode == KEY_x` branches
+## in `_handle_key`, declared so something can NOTICE a table taking one
+## (#302).
+##
+## They were only ever written as branches, which is how `G` came to be in
+## BUILD_KEYS *and* handled below it: the build table is consulted first,
+## so pressing G armed a garrison wall and `_gather_selected()` could
+## never be reached from the keyboard at all. The file predicted it twice
+## in prose — "a letter added to BUILD_KEYS or TRAIN_KEYS silently steals
+## it from here", and "L/K/G/F/U avoid ... every existing
+## BUILD_KEYS/TRAIN_KEYS letter" — and the second comment checked the new
+## letters against the two TABLES rather than against these branches, so
+## `G` cleared the check it was measured against.
+##
+## The value is a human-readable name, not a callable: this table exists
+## to be COMPARED against the other two, and `tests/test_hotkeys.gd`
+## fails both if a letter is claimed twice and if a branch here is not
+## declared. A third comment would have been the third prose guard for a
+## thing prose has now got wrong twice.
+##
+## Not exhaustive of every key `_handle_key` reads — ESC and the digits
+## are not LETTERS and cannot collide with a table keyed by
+## `OS.get_keycode_string`.
+const RESERVED_KEYS := {
+	"X": "stop the selection",
+	"V": "rotate the placement ghost (D-076)",
+	"G": "gather at the cursor's node",
+}
+
+## Letters claimed by work IN FLIGHT on another branch (#363).
+##
+## The half that PREVENTS a collision rather than detecting one, and the
+## gap #302's guard structurally could not close: that test checks
+## BUILD_KEYS against RESERVED_KEYS and TRAIN_KEYS, and cannot check
+## against a letter that does not exist yet on its own branch.
+##
+## It bit immediately. #302 moved `garrison_wall` G -> J on the reasoning
+## that G is what a player reaches for to GATHER; #246 added `farm` on J
+## with the comment "J is free of WASD, Q/E and every other letter in
+## this table and TRAIN_KEYS", which was true when it was written. Both
+## checked J against the tables AS THEY STOOD ON MAIN, and neither could
+## see the other. Merged, `BUILD_KEYS` has a duplicate key and `client.gd`
+## does not even PARSE — a Dictionary literal cannot hold one letter
+## twice, so the collision is not a subtle wrong binding, it is the
+## client failing to load.
+##
+## A claim here is visible to every branch that rebases. An entry leaves
+## this table in the same commit that adds its real binding.
+const RESERVED_FOR_IN_FLIGHT := {
+	# #246, renewable food. `farm` was on J, which `garrison_wall` had
+	# already taken; O is free and is what the merge rehearsal used.
+	"O": &"farm",
+}
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
-	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
-	# existing BUILD_KEYS/TRAIN_KEYS letter.
-	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
+	# together deliberately; F and U continue it.
+	#
+	# `garrison_wall` was on G and has moved to J (#302): G is what a
+	# player reaches for to GATHER, that is the verb they use from the
+	# first minute of a match, and a niche wall piece has the weaker claim
+	# on the letter. Every letter here is checked against RESERVED_KEYS
+	# and TRAIN_KEYS by a test now, rather than by a comment.
+	"L": &"wall", "K": &"gate", "J": &"garrison_wall", "F": &"garrison_gate",
 	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
@@ -3139,6 +3241,51 @@ var _frame_delta := 0.0
 ## (D-024), and their transforms are derived here exactly as the living
 ## are drawn — same curve, same formation function, same sampler — so a
 ## body lies where the man was standing.
+## Turn what happened into what is heard (#344).
+##
+## The resolution is `AudioCue`'s, not this function's: fog, distance,
+## rate and voice caps are all decided there, purely, and this only
+## supplies the three things that need a live client — the fog LEVEL for
+## the cell, where the camera is looking, and the clock.
+##
+## Fog is read through `TerrainFog.level_at`, which is the ONE vision
+## query this client already has (D-106) and the one the ground shader
+## and the minimap read. #344 is explicit that ears must not invent a
+## second: a sound whose cause a player cannot SEE must not play.
+func _drain_audio_events() -> void:
+	if _audio == null or _state.space == null:
+		return
+	_audio.reap()
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var listener := _state.space.index(_state.space.world_to_cell(_camera_target))
+	for event in _state.take_audio_events():
+		var def := SoundRoster.by_event(StringName(event["event"]))
+		if def == null:
+			continue
+		var cell := int(event["cell"])
+		var level := _fog.level_at(cell) if _fog != null and cell >= 0 else TerrainFog.VISIBLE
+		var cue := AudioCue.resolve(def, cell, listener, _state.space, level, now,
+			_audio.ledger(), float(event.get("magnitude", 1.0)))
+		_audio.play(cue, now)
+
+
+## Play an interface cue — a click, an order acknowledgement, a stinger.
+##
+## Never fog gated (the DATA says so, `SoundDef.fog_gated`), because a UI
+## sound has no cause on the map: gating it on sight would silence the
+## one category that is unambiguously the player's own.
+func _play_ui(event: StringName) -> void:
+	if _audio == null:
+		return
+	var def := SoundRoster.by_event(event)
+	if def == null:
+		return
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var cue := AudioCue.resolve(def, -1, -1, _state.space, TerrainFog.VISIBLE,
+		now, _audio.ledger())
+	_audio.play(cue, now, true)
+
+
 func _drain_casualty_sites() -> void:
 	if _corpse_layer == null:
 		return
@@ -5766,6 +5913,15 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	# Explore (#120): a standing order, so the button shows whether it is
+	# ON — and the pressed state comes off the WIRE (`ClientState`), not
+	# from remembering that we sent it, because a rout cancels the mode
+	# server-side and a locally-guessed light would go on claiming the
+	# squad was scouting. Same discipline as the stance buttons below.
+	out.append({"label": "Explore",
+		"hint": "Explore: go and uncover the map, until given another order",
+		"current": _state.is_exploring(int(_selected[0])),
+		"kind": "explore", "id": &""})
 	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
 		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
 			"kind": "charge_arm", "id": &""})
@@ -6009,6 +6165,7 @@ func _can_afford(food: int, wood: int, gold: int, stone: int) -> bool:
 func _on_action_pressed(index: int) -> void:
 	if index < 0 or index >= _actions.size():
 		return
+	_play_ui(&"ui_click")
 	var action: Dictionary = _actions[index]
 	match String(action["kind"]):
 		"train":
@@ -6022,6 +6179,8 @@ func _on_action_pressed(index: int) -> void:
 			_gather_selected()
 		"stop":
 			_stop_selected()
+		"explore":
+			_explore_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
 		"width":
@@ -7195,6 +7354,8 @@ func _handle_key(event: InputEventKey) -> void:
 	if TRAIN_KEYS.has(key):
 		_train_selected(TRAIN_KEYS[key])
 		return
+	# Reached only because no table above claims G — see RESERVED_KEYS,
+	# which is what makes that a checked fact rather than a hope (#302).
 	if event.keycode == KEY_G:
 		_gather_selected()                   # workers, at the cursor's node
 		return
@@ -8247,6 +8408,7 @@ func _train_selected(archetype: StringName) -> void:
 
 
 func _stop_selected() -> void:
+	_play_ui(&"order_move")
 	var sent := 0
 	for squad in _selected:
 		var order := _state.encode_stop(squad)
@@ -8255,6 +8417,24 @@ func _stop_selected() -> void:
 			sent += 1
 	if sent > 0:
 		print("client: stopped %d squad(s)" % sent)
+
+
+## Send every selected squad off to hunt fog (#120).
+##
+## Modelled on `_stop_selected` exactly — one order per squad through
+## `ClientState`, reliable, with a count printed. Several squads ordered
+## at once deliberately do NOT coordinate here: the server spreads them,
+## because it is the side that knows what has been explored and what the
+## other scouts are already walking towards.
+func _explore_selected() -> void:
+	var sent := 0
+	for squad in _selected:
+		var order := _state.encode_explore(squad)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			sent += 1
+	if sent > 0:
+		print("client: exploring with %d squad(s)" % sent)
 
 
 ## WASD pans relative to WHERE THE CAMERA IS LOOKING, not to world axes.
@@ -8681,6 +8861,26 @@ func _build_game_menu() -> void:
 	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
 	column.add_child(save)
 
+	# Conceding is NOT leaving, and the two sit next to each other so the
+	# difference is visible (D-20260828-a-player-may-concede). Surrender
+	# ends YOUR match and leaves you watching; Leave match ends the match
+	# for everyone and returns to the lobby.
+	#
+	# It asks first. A concession is irreversible and one misclick from
+	# the Resume button, and the server deliberately does not arbitrate
+	# whether a player meant it — that would be a second round trip for a
+	# decision already made, so the confirmation belongs here.
+	_surrender_button = _styled_button("Surrender", HudTheme.DANGER)
+	_surrender_button.tooltip_text = "Concede the match. Your army and buildings are lost."
+	_surrender_button.pressed.connect(_on_surrender_pressed)
+	column.add_child(_surrender_button)
+
+	_surrender_confirm = _styled_button("Surrender — are you sure?", HudTheme.DANGER)
+	_surrender_confirm.tooltip_text = "This cannot be undone."
+	_surrender_confirm.visible = false
+	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
+	column.add_child(_surrender_confirm)
+
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
 	to_lobby.pressed.connect(_on_leave_match_pressed)
@@ -8925,6 +9125,7 @@ func _toggle_game_menu() -> void:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
 	if not _game_menu_layer.visible:
+		_disarm_surrender()
 		if _settings_panel != null:
 			_settings_panel.visible = false
 		if _scoreboard_panel != null:
@@ -8982,6 +9183,39 @@ func _on_hud_auto_toggled(automatic: bool) -> void:
 ## reappears because `_state.in_lobby()` is true again. Nothing here has
 ## to draw a lobby, and nothing here decides a match is over — a client
 ## that could would be a client that decides for everyone (D-002).
+## First press ARMS the concession; the second sends it.
+##
+## Two buttons rather than a modal, because the game menu is already a
+## column of buttons and a modal would be a second dialogue system for one
+## question. The armed button says what it is: a player who came here for
+## Resume and misclicked sees a question, not a lost match.
+func _on_surrender_pressed() -> void:
+	if _surrender_confirm == null:
+		return
+	_surrender_confirm.visible = true
+	if _surrender_button != null:
+		_surrender_button.visible = false
+
+
+func _on_surrender_confirmed() -> void:
+	_disarm_surrender()
+	_toggle_game_menu()
+	print("client: surrendering")
+	if _peer != null and _connected:
+		_peer.send(0, NetProtocol.encode_surrender(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Put the confirmation away again. Called when the menu closes, so a
+## player who armed it, changed their mind and pressed ESC does not find
+## it still armed the next time they open the menu — which would turn a
+## deliberate two-press guard into a single press at the worst moment.
+func _disarm_surrender() -> void:
+	if _surrender_confirm != null:
+		_surrender_confirm.visible = false
+	if _surrender_button != null:
+		_surrender_button.visible = true
+
+
 func _on_leave_match_pressed() -> void:
 	_toggle_game_menu()
 	print("client: leaving match")
@@ -9074,6 +9308,7 @@ func _teardown_match() -> void:
 	_order_press = Vector2.INF
 	_static_deal.clear()
 	_drawn_cache.clear()
+	_lod_tier.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
@@ -9377,6 +9612,13 @@ func _connect_to(address: String, port: int) -> void:
 	# A fresh attempt is not carrying the last one's refusal.
 	_state.refusal = {}
 	_menu_last_endpoint = MainMenu.format_endpoint(address, port)
+	# What the connection-lost screen names when it cannot reach the
+	# server (#162). It used to be set inline in `_ready`, which is the
+	# block #180 replaced with the menu flow — so taking the menu side of
+	# that merge whole would have left this empty and the screen saying
+	# "could not reach " with nothing after it. Connecting is centralised
+	# here now, so the endpoint belongs here too.
+	_server_endpoint = MainMenu.format_endpoint(address, port)
 	_save_settings()
 	_set_title(MainMenu.format_endpoint(address, port))
 
@@ -9541,6 +9783,134 @@ func _show_refusal() -> void:
 # opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
+## The connection-lost screen (#162). Built once at start-up like every
+## other overlay, because the moment it is needed there is no server to
+## ask for anything.
+var _connection_lost_layer: CanvasLayer = null
+var _connection_lost_headline: Label = null
+var _connection_lost_detail: Label = null
+## Latched: ENet can report a disconnect more than once, and this must
+## not rebuild or re-log on every service() call.
+var _connection_lost := false
+## Whether a connection was ever ESTABLISHED. A never-answered connect
+## attempt also arrives as EVENT_DISCONNECT, and "the server went away"
+## and "there was never a server there" are different things to tell a
+## player.
+var _ever_connected := false
+## "host:port", as `_ready` resolved it.
+var _server_endpoint := ""
+
+
+## The client has no server any more, and the player is told (#162).
+##
+## Deliberately the SMALL version. The right home for this is the
+## pre-lobby main menu (#180) — that ticket names this issue as its
+## sibling and says the disconnect should land on the menu — so this
+## does the part that cannot wait, in a way that ticket can absorb: one
+## overlay, one message, one way out.
+##
+## What it deliberately does NOT do is tear the match down.
+## `_teardown_match()` frees the terrain, the squads and the buildings,
+## and a player who has just lost the server would be shown a black
+## screen instead of the last thing that happened. The world underneath
+## is frozen and stale, and the banner says exactly that.
+##
+## The backdrop DOES take mouse input, though, and that is load-bearing
+## rather than cosmetic: it is what stops a click reaching the world and
+## issuing an order down a dead socket. Guarding each of the twenty-odd
+## `_peer.send` sites individually would be the same rule written twenty
+## times, which is how it comes to be written wrongly once.
+func _on_connection_lost() -> void:
+	if _connection_lost:
+		return
+	_connection_lost = true
+
+	# A capture run's screenshot is an INSTRUMENT (`just test-client`),
+	# and every check it makes is over the pixels. Covering the frame
+	# with a banner would change what those measure, so an unattended
+	# render says it on the console — where its verdict already reads —
+	# and keeps drawing what it was asked to draw.
+	if _run_seconds > 0.0:
+		push_warning("client: lost the server mid-capture")
+		return
+
+	if _connection_lost_layer == null:
+		return
+	if _connection_lost_headline != null:
+		_connection_lost_headline.text = "Connection lost" if _ever_connected \
+			else "Could not reach the server"
+	if _connection_lost_detail != null:
+		_connection_lost_detail.text = ("The server is no longer there. "
+			+ "Nothing on screen can change, and no order will reach anyone.") \
+			if _ever_connected else \
+			("Nothing answered at %s. The server may not be running yet."
+				% _server_endpoint)
+	_connection_lost_layer.visible = true
+
+
+func _build_connection_lost_screen() -> void:
+	_connection_lost_layer = CanvasLayer.new()
+	# Above the lobby (10), which is the only overlay that outranks the
+	# defeat screen. With no server there is no lobby to go back to, so
+	# nothing this client can draw may sit on top of this.
+	_connection_lost_layer.layer = 12
+	_connection_lost_layer.visible = false
+	add_child(_connection_lost_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.color.a = 0.82
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	# STOP, unlike the defeat screen's IGNORE, and see `_on_connection_lost`
+	# for why: this is what keeps a click from ordering a squad that
+	# nothing is listening for.
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_connection_lost_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_connection_lost_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "DISCONNECTED"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	_connection_lost_headline = Label.new()
+	_connection_lost_headline.text = "Connection lost"
+	_connection_lost_headline.add_theme_font_size_override("font_size",
+		HudTheme.DISPLAY_SIZE + 16)
+	_connection_lost_headline.modulate = HudTheme.TEXT_BRIGHT
+	_connection_lost_headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_connection_lost_headline)
+
+	_connection_lost_detail = Label.new()
+	_connection_lost_detail.text = "The server is no longer there."
+	_connection_lost_detail.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_connection_lost_detail.modulate = HudTheme.TEXT_DIM
+	_connection_lost_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connection_lost_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_connection_lost_detail.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_connection_lost_detail)
+
+	var button_row := CenterContainer.new()
+	button_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	var quit := _styled_button("Quit to desktop", HudTheme.DANGER)
+	quit.pressed.connect(_on_quit_pressed)
+	button_row.add_child(quit)
+	column.add_child(button_row)
+
+
 func _build_defeat_screen() -> void:
 	_defeat_layer = CanvasLayer.new()
 	# Above the HUD and the in-game menu, below the lobby (which replaces
