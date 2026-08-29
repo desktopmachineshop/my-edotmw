@@ -9556,6 +9556,48 @@ func _on_leave_match_pressed() -> void:
 		_peer.send(0, NetProtocol.encode_leave_match(), ENetPacketPeer.FLAG_RELIABLE)
 
 
+## Write a problem report bundle, and say where it went (#288).
+##
+## The whole action, because there is nothing else it should do: the
+## bundle is CREATED and never sent (`report_bundle.gd`'s header has the
+## reasoning — `testers.md` promises no telemetry, and that promise is
+## worth more at this stage than the reports would be).
+##
+## Reached from BOTH menus through one handler, so the two cannot drift
+## into writing different bundles — the same rule as every other pair of
+## call sites in this project that share a definition.
+func _on_report_a_problem_pressed() -> void:
+	var path := ArtifactPath.of(ReportBundle.bundle_name(
+		BuildVersion.string(), ReportBundle.stamp_now()))
+	var result := ReportBundle.write(path)
+	if not bool(result["ok"]):
+		var why := String(result.get("error", "could not write the report"))
+		push_error("client: %s" % why)
+		_show_report_result(why)
+		return
+	# The PATH is the message, and deliberately the OS path rather than
+	# the `user://` one: a player cannot paste `user://` into a file
+	# manager, so telling them where a file is in a vocabulary only the
+	# engine speaks is the same as not telling them.
+	var real := ProjectSettings.globalize_path(String(result["path"]))
+	print("client: wrote a problem report to %s" % real)
+	_show_report_result("Report written to %s — attach it to your report. Nothing was sent."
+		% real)
+
+
+## Put the outcome where the player is actually looking.
+##
+## Two screens can hold the button — the pre-connect menu and the in-match
+## menu — and each already has somewhere to say things. One function
+## chooses, so the two cannot come to say different things.
+func _show_report_result(text: String) -> void:
+	if _menu_layer != null and _menu_layer.visible and _menu_status != null:
+		_menu_status.text = text
+		return
+	if _report_status != null:
+		_report_status.text = text
+		_report_status.visible = true
+
 func _on_quit_pressed() -> void:
 	# `_connected` as well as the peer: `_peer` is the wrapper object and
 	# is never nulled, so a peer that has already gone away still passes a

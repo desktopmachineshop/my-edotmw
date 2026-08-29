@@ -768,12 +768,13 @@ func _shutdown() -> void:
 		print("server: wrote %d replay records to %s"
 			% [_replay.records_written, ArtifactPath.describe(_replay.path)])
 		_replay.close()
-	_beacon.stop()
 	elif _replay != null and _replay.open_error != "":
 		# Again at the end, not only at start-up: a run that scrolled past
 		# one line an hour ago is a run whose missing replay is a surprise
 		# (#201).
 		print("server: NOT recording a replay — %s" % _replay.open_error)
+	# The LAN beacon (#187) goes down with the socket it advertises.
+	_beacon.stop()
 	# `_transport.close()`, not the library's own teardown — #264's seam.
 	# This file no longer names the ENet class and a test asserts that, so
 	# the teardown goes through the transport like everything else. The
