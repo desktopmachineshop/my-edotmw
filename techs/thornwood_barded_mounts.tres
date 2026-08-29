@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"cavalry"
+field = &"health"
+mode = "multiply"
+value = 1.2
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"bowriders"
+field = &"health"
+mode = "multiply"
+value = 1.2
+
+[resource]
+script = ExtResource("1")
+id = &"thornwood_barded_mounts"
+display_name = "Thornmail"
+description = "Grown, not forged, and it takes the tree eleven years."
+line = &"barded_mounts"
+civ = &"thornwood"
+epoch = 5
+defining = false
+research_at = &"stables"
+requires = Array[StringName]([&"reckoning"])
+cost_food = 500
+cost_wood = 300
+cost_gold = 500
+cost_stone = 0
+research_time = 80.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

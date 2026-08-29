@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"shades"
+field = &"move_speed"
+mode = "multiply"
+value = 1.1
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"shades"
+field = &"vision_range"
+mode = "add"
+value = 4.0
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_reckoning"
+display_name = "The Court Rides Out"
+description = "The hunting dead are let off the leash."
+line = &"reckoning"
+civ = &"gravesworn"
+epoch = 5
+defining = false
+research_at = &"forge"
+requires = Array[StringName]([&"sapping"])
+cost_food = 1000
+cost_wood = 700
+cost_gold = 800
+cost_stone = 300
+research_time = 150.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
