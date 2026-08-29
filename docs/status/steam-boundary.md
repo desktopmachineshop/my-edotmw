@@ -1,6 +1,6 @@
 **The Steam boundary exists, and nothing has crossed it yet**
 (`D-20260828-godotsteam-does-not-ship-a-gdextension`, #181, D-093,
-2026-08-28). `steam_platform.gd` is the one script in this project
+2026-08-28). `platform.gd` is the one script in this project
 allowed to name Steam; `tests/test_steam_boundary.gd` fails if any other
 `.gd` names the API. That guard is what lets D-021 — *GDScript only, no
 C#* — be amended by exactly one category (platform integration) without
