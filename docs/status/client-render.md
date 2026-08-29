@@ -1,3 +1,26 @@
+**Inside `pipeline` — the last unattributed line in the frame** (second
+amendment in `D-20260828-a-squad-looks-up-its-buildings`). Same ablation
+method: nothing restructured, only inputs varied, two passes. Per squad
+of 12 drawn men, at the mix the benchmark measures being handed to it
+(0.2 boxes, 0.4 discs, 2.5 foreign men per drawn squad):
+
+| part | µs/squad | share of a melee |
+|---|---|---|
+| duel pass (pairing, seam alignment, stepping into contact) | 45.1 / 40.8 | ~40% |
+| survivor easing + the jostle it applies | 37.5 / 36.3 | ~34% |
+| decoration (strike, sway, footfall) | 12–20 | ~13% |
+| floor (call, drawn-men copy, clip, plumbing) | 10.4 / 10.1 | ~9% |
+| push-outs, when a box and a disc are near | 15.0 / 16.7 | ~4 amortised |
+
+**Every line of it is the feature** — D-006 clause 2 render work, per
+drawn man, at GDScript's per-operation cost. No lookup to index, no
+invariant to hoist, no delegation to collapse. So "what remains is #315
+or #316" is a measurement now, not a judgement: #315 would cut the duel
+pass and the easing together (a squad not re-derived is not re-paired),
+#316 would cut all of it, and nothing else would.
+
+---
+
 **The gather's own revisit trigger, both halves** (amendment inside
 `D-20260828-a-squad-looks-up-its-buildings`). One taken, one refused, and
 the refusal is the more useful.

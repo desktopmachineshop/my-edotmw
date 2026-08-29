@@ -190,3 +190,47 @@ So the duplicate derivation is not duplicate work — it is two different
 answers that happen to be about one squad. Recorded rather than dropped,
 because "derive each squad once per frame" is the obvious next idea and
 this is the measurement that says what it is worth.
+
+---
+
+**Second amendment, 2026-08-28 — inside `pipeline`, so "what remains is a
+design call" is a measurement.**
+
+The gather is attributed and levered; `pipeline` — `SquadRender.frame`
+itself — is the other half of the phase and was the largest single line
+left in the frame. Attributed by the same ablation method: nothing
+restructured, nothing shipped touched, only the INPUTS varied, two
+passes.
+
+Per squad of **12 drawn men**, at the mix the benchmark measures being
+handed to the pipeline at 1,000 squads (**0.2 boxes, 0.4 discs and 2.5
+foreign men per drawn squad** — the obstacle figures below are for a
+squad that HAS one of each):
+
+| part | us per squad | share of a melee |
+|---|---|---|
+| duel pass — pairing, seam alignment, stepping into contact | 45.1 / 40.8 | **~40%** |
+| survivor easing and the jostle it applies | 37.5 / 36.3 | **~34%** |
+| decoration — strike, sway, footfall | 12 to 20 | ~13% |
+| the floor — the call, the drawn-men copy, the clip, the plumbing | 10.4 / 10.1 | ~9% |
+| push-outs, when a box and a disc are near | 15.0 / 16.7 | (~4 amortised) |
+
+Decoration is quoted as a range because it genuinely is one: an IDLE
+squad takes `decorate_all` (~12 us) and a WORKING one the activity path
+(~20 us).
+
+**Every line of that is D-006 clause 2 render work — it is the feature.**
+The duel pass is Tier 1 of the RTW programme (each man paired, faced and
+stepped into contact); the easing is what stops a restamped formation
+snapping; the decoration is the sway and footfall that make a standing
+squad look alive. There is no lookup to index, no invariant to hoist and
+no delegation to collapse: it is per-man work whose cost is the
+per-operation cost of GDScript, the same finding
+`D-20260828-inside-the-derive-phase` reached one phase over.
+
+**So the claim that what remains is #315 or #316 is now a measurement
+rather than a judgement**, and this table is the evidence page appended
+to both. #315 (a lower derive cadence for distant squads) would cut the
+duel pass and the easing together, because a squad not re-derived is not
+re-paired either; #316 (D-021's hatch) would cut all of it. Nothing else
+would.
