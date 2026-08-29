@@ -7,9 +7,12 @@ script = ExtResource("1_page")
 id = &"economy"
 title = "Resources and gathering"
 order = 80
-summary = "Four resources, and why the walk back is the part that costs you."
+summary = "Four resources, why the walk back costs you, and the one you can grow."
 body = "Four resources: FOOD, WOOD, GOLD and STONE. What each thing costs is on the
 Troops and Buildings pages.
+
+Three of the four are FOUND and never replaced. Food is the exception: it is
+also GROWN, and that is what keeps a long match from ending in an empty map.
 
 Gathering is a ROUND TRIP. A crew walks to a node, works it, fills up, walks
 back to a drop-off and unloads. So distance is income: a node across the map
@@ -27,6 +30,24 @@ the SAME kind close by — it will never switch you from wood to food behind
 your back. When nothing of that kind is left in reach it stops, and a stopped
 crew is waiting for orders.
 
+Gold and stone never come back. Neither does wood. Plan on the map running
+down, because it does.
+
+## A farm is a node you built
+
+A FARM is a work site you put where you want one, and a crew is ordered onto
+it exactly as onto a forest. The difference is the direction it moves: a
+field's stock grows back instead of only running down, so a farm is a RATE
+and a forest is a pile.
+
+Two things follow. The only way to raise a rate is to own more fields, so
+farms are the one building you want several of. And a field is worth nothing
+standing empty — an unworked farm feeds nobody, so each one wants a crew.
+
+A farm does not block movement and does not defend itself, which makes a
+field the softest thing you own. Raiding somebody's fields costs them the
+income, not just the harvest sitting in them.
+
 ## The ground says what grows on it
 
 Forests sit where it is wet, orchards through the middle, dry trees and palms
@@ -38,5 +59,5 @@ somebody's resources must be from terrain you have only glimpsed.
 A crew gathers per LIVING soldier. Raiding gatherers is not only denial while
 you are standing there — it is a permanent cut to their rate until the men
 are replaced."
-sources = Array[String](["res://economy.gd", "res://decisions/D-027.md", "res://decisions/D-087-forests-are-made-of-trees-biome.md", "res://buildings/storehouse.tres"])
-stamp = "a3497ec1512e3dcdb97bfbf6ac0cb0c6564e4a522dc30a0c32640c8fa65c7539"
+sources = Array[String](["res://economy.gd", "res://decisions/D-027.md", "res://decisions/D-087-forests-are-made-of-trees-biome.md", "res://buildings/storehouse.tres", "res://buildings/farm.tres", "res://decisions/D-20260828-food-is-grown-not-only-found.md"])
+stamp = "223032dd8433e0ddc93c0633b136a0839c3def86ef474d237e3b8f234ad2d748"
