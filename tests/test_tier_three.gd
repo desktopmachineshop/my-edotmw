@@ -133,6 +133,10 @@ func test_nothing_simulation_side_reads_the_render_state() -> void:
 			# home per drawing surface, never a shared global.
 			or String(reader) == "res://squad_render.gd"
 			or String(reader) == "res://bench_render.gd"
+			# A doc comment, like the three siblings below it: `DrawnIndex`
+			# feeds `ease`'s `others` and explains itself by naming it
+			# (#262). It holds drawn positions and calls nothing.
+			or String(reader) == "res://drawn_index.gd"
 			or String(reader) == "res://animation_state.gd"
 			or String(reader) == "res://cosmetic_duel.gd"
 			or String(reader) == "res://corpse_ledger.gd",
