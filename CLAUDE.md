@@ -102,6 +102,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/fantasy-civs.md
 
+@docs/status/tech-tree.md
+
 @docs/status/m9-plan.md
 
 @docs/status/m10-plan.md
@@ -116,10 +118,30 @@ and measurements belong in the decision entry that took them.
 
 A large-scale real-time strategy game, inspired by *Empires: Dawn of the
 Modern World* and *Rome: Total War* (formations and morale/routing,
-specifically — not a campaign layer), targeting **20 concurrent players
-/ 2,000 soldiers each (40,000 total, ~50 squads/player, ~1,000 squads
-total) on a single seamless map**, 4–6 civilizations at launch, shipping
-on Steam. Built in Godot specifically because its plain-text asset
+specifically — not a campaign layer), on a single seamless map, 4-6
+civilizations at launch, shipping on Steam.
+
+**Scale target, MEASURED and superseding D-018's 20 players / 40,000
+soldiers** (`D-20260828-the-shipping-scale`, #287): **~200 squads and
+~3,100 soldiers in a match**, recommended shape **8 players x 25
+squads**. Both budgets land there from opposite directions — D-020's
+100 ms worst tick crosses between 180 and 240 squads server-side, and
+30 fps on Intel Iris Xe crosses at ~200 client-side. **The budget is a
+TOTAL, not a per-player allowance**, so `squad_cap` should be derived
+from the seat count; at 40 per seat the lobby's own 24-seat ceiling is
+arithmetically impossible. The 13x reduction from D-018 is the bill for
+the trade `D-20260818-battle-quality-outranks-player-count` already
+made. **Nothing may quietly re-quote 20 players.**
+
+**That 200 is a DEDICATED server's number and NOT a host's**
+(`D-20260828-the-host-pays-both-budgets`, #339). D-088 runs the sim
+in-process inside a player's client, so a host pays both budgets out of
+one second: measured, it holds **100-150 squads**, and at 200 it runs at
+19.9-35.6 fps. The cause is structural rather than contention — **the
+authoritative tick runs inside the render frame**, and a 46 ms tick
+cannot fit a 33 ms budget by any scheduling. `just bench-render` in host
+mode (`--host=1`) is the instrument; the three possible responses are #349 and the choice
+is D-088's. Built in Godot specifically because its plain-text asset
 formats (`.tscn`/`.tres`) make the project directly editable by Claude
 Code — that's a design constraint, not an afterthought.
 
@@ -1142,6 +1164,14 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
+- `just profile [ONLY]` — the scale sweep, and since #304 a **steady-state
+  per-phase tick ladder at 120 squads** (`ONLY=ladder`) with a knob per
+  suspect and a `control` row that states the instrument's own noise
+  floor. **Read the control row before believing any small difference**:
+  this host drifts up to 2x between runs minutes apart. It is what
+  attributed M6's long-standing 40.8 -> ~77 debt
+  (`D-20260828-the-m6-rise-has-a-name`) — to combat and separation, and
+  NOT to civs, teams or the economy, none of which is measurable at all.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
   781 tests across 51 scripts, measured 2026-08-17)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).

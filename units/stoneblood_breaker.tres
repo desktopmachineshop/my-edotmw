@@ -8,6 +8,7 @@ id = &"stoneblood_breaker"
 display_name = "Gatebreakers"
 civ = &"stoneblood"
 archetype = &"breaker"
+requires_tech = &"breaking"
 squad_size = 6
 health = 420.0
 damage = 24.0
