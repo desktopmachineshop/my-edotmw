@@ -850,6 +850,17 @@ quick-test SEED="1337" SANDBOX="auto":
 gen-formation-icons: _import
     #!/usr/bin/env bash
     set -euo pipefail
+    # Host admission gate (D-20260818-dev-work-is-admitted-against-a-host-budget).
+    # Waits for room on the machine every other agent is also using. $$ is
+    # THIS recipe's shell and the lock is stamped with it — a lock stamped
+    # with anything shorter-lived is reaped while its job still runs.
+    #
+    # This recipe launches Godot, so it is gated for the same reason as
+    # every other one that does: work on the machine the ledger cannot see
+    # is #153's under-counting arriving through a different door.
+    gate="$(bash host-gate.sh acquire medium 'gen-formation-icons' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
     godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
     if [ ! -x "$godot" ]; then
         echo "FAIL: needs a native Godot. Run: {{just_executable()}} bootstrap" >&2
@@ -860,6 +871,21 @@ gen-formation-icons: _import
     "$godot" --headless --path . --script formation_icon_preview.gd
     echo "look at {{artifacts_dir}}/formation-icons.png"
 
+
+[doc("Regenerate the placeholder sound effects into generated/audio")]
+build-audio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # NOT host-gated and needs NOTHING installed: `wave`, `math` and
+    # `struct` are the standard library, so unlike `build-assets` (a ~1 GB
+    # bpy wheel, blocked host-wide by an Application Control policy at the
+    # time of writing) this runs on a fresh clone. Audio has no such
+    # constraint and should not inherit one.
+    #
+    # Two runs must be byte-identical (D-081): fixed seeds, sorted
+    # iteration, no timestamps.
+    python audio/sfx.py
+    echo "audio: now run   {{just_executable()}} test-unit audio   to check the table still resolves"
 
 # A picture of the PRE-CONNECTION menu (#180).
 #
@@ -997,13 +1023,24 @@ run-bots N DURATION="-1": _import
     gate="$(bash host-gate.sh acquire heavy 'run-bots' $$)"
     export EDOTMW_GATE_HELD="$gate"
     trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    # The bots are told which SCENARIO is being played, if any, so their
+    # verdict can be scoped to what that scenario actually contains
+    # (#230). `test-scenario` already exports EDOTMW_SCENARIO for the
+    # server; empty means a real opening, which is what `test-load` and a
+    # bare `just run-bots` are, and nothing about the run changes there.
+    #
+    # The bots do not act on it — it reaches the VERDICT only. A scenario
+    # that places no buildings cannot satisfy a buildings gate however
+    # healthy the run is, and failing every run identically is not a
+    # check.
+    scenario="${EDOTMW_SCENARIO:-}"
     if [ "{{runtime}}" = "docker" ]; then
         # In-network: the bots reach this project's server as "server:4433",
         # so no host port is involved (D-095).
-        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}}
+        docker compose -p {{compose_project}} run --rm --no-deps bots --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --scenario="$scenario"
     else
         godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
-        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}}
+        "$godot" --headless --script bot_client.gd -- --clients={{N}} --duration={{DURATION}} --port={{port}} --scenario="$scenario"
     fi
 
 # GUT unit tests, headless. Imports the project first so global
@@ -1374,7 +1411,29 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     #    anything HARDER to satisfy mid-game than during the opening —
     #    armies are in reach, so more of the board is visible — which is
     #    what makes it worth asserting on the loop that actually runs.
-    bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    #
+    #    The peak-knowledge comparison is asked only of a scenario that
+    #    can answer it (#230). `fog-squads` says even the MOST-INFORMED
+    #    client knew fewer squads than the server simulated, at every
+    #    moment — and a scenario whose armies all converge has a moment
+    #    when somebody has seen everything. `clash` is that scenario by
+    #    construction, and it is declared so in its own `.tres` rather
+    #    than named here, so a new scenario is covered the day it is
+    #    written.
+    #
+    #    NOT SILENT. gate-check.sh's own header is explicit that "a
+    #    comparison that silently skips is the vacuous pass D-022's audit
+    #    was written against", so the skip is printed with its reason —
+    #    and `fog-nodes` still runs, so fog is asserted here either way,
+    #    as are the conceal/reveal events the bots' own verdict gates on.
+    if grep -q "proves_fog_gating=false" "$server_log"; then
+        echo "gate-check(fog-squads): SKIPPED — scenario '{{SCENARIO}}' declares it cannot prove"
+        echo "  peak fog gating: its armies converge, so the best-informed client ends up"
+        echo "  having seen every squad. Fog is still asserted by fog-nodes below and by the"
+        echo "  bots' own conceal/reveal gates. See #230 and scenario_def.gd."
+    else
+        bash gate-check.sh fog-squads "$bots_log" "$server_log"
+    fi
     bash gate-check.sh fog-nodes "$bots_log" "$server_log"
     bash gate-check.sh civs "$server_log"
     bash gate-check.sh handshake "$bots_log" "$server_log"
@@ -1451,8 +1510,14 @@ scenarios: _import
 # the old one is stale" applied to an ASSET getting heavier, and the honest
 # direction is to lengthen the run rather than to weaken the check.
 # didn't complain (D-022's standing rule).
+# RESOLUTION is a parameter for the same reason `lobby-shot` grew one: this
+# recipe was pinned to 1280x720, which is the reference window `hud_layout.gd`
+# is designed against, and therefore the one size at which a scaling or
+# anchoring defect is a deliberate no-op - #90 was invisible here for exactly
+# that reason. The default is unchanged, so every frame taken before this is
+# still comparable.
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3": _import
+test-client SECONDS="90" BOTS="3" RESOLUTION="1280x720": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -1496,7 +1561,7 @@ test-client SECONDS="90" BOTS="3": _import
         --path . client.tscn \
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
-        --resolution 1280x720 \
+        --resolution {{RESOLUTION}} \
         -- --address=server --run-seconds={{SECONDS}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
@@ -2197,6 +2262,56 @@ gen-terrain-shot HEIGHT="14": _import
         exit 1
     fi
 
+# A rendered picture of the TORUS SEAM, with armies standing on it.
+#
+# Written for playtest #32, which asks whether the wrapped world reads as
+# seamless. Nothing in the estate could frame that question: `test-client`
+# points at a spawn, `gen-terrain-shot` finds a cliff, `gen-forest-preview`
+# finds the densest wood — three deliberate framings of something else, and
+# a seam is no likelier to appear in any of them than any other cell.
+#
+# SEAM is "q" (the width wrap), "r" (the height wrap) or "corner" (both at
+# once). Squads are drawn through the client's own three-call copy pipeline
+# (RenderCull.visible_offsets_of_extent -> LatticeCopies.draw), so a squad
+# straddling the wrap line is drawn exactly where the game would draw it.
+#
+# Software-rasterised, so it needs no GPU and says nothing about speed.
+#
+# LOOK AT the PNG. That is the entire point of the recipe.
+[doc("Render the torus seam with armies on it, to artifacts/seam-<seam>.png")]
+gen-seam-shot SEAM="q" HEIGHT="16": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num HEIGHT "{{HEIGHT}}"
+    gate="$(bash host-gate.sh acquire medium 'gen-seam-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    mkdir -p "{{artifacts_dir}}"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: gen-seam-shot needs the portable Godot in tools/"
+        echo "Run: {{just_executable()}} bootstrap"
+        exit 1
+    fi
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+    out="{{artifacts_dir}}/seam-{{SEAM}}.png"
+    rm -f "$out"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a -s "-screen 0 1400x900x24" "$godot" --path . \
+            --rendering-method gl_compatibility --resolution 1400x900 \
+            playtest_seam_shot.tscn -- --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    else
+        "$godot" --path . --rendering-method gl_compatibility \
+            --resolution 1400x900 playtest_seam_shot.tscn -- \
+            --height={{HEIGHT}} --seam={{SEAM}} \
+            --out=res://artifacts/seam-{{SEAM}}.png
+    fi
+    if [ ! -s "$out" ]; then
+        echo "gen-seam-shot: no frame was written to $out" >&2
+        exit 1
+    fi
+
 # M4's tiered scale sweep (D-027 criterion 17's successor, D-012, D-020).
 #
 # Drives the simulation directly at 100/250/500/1000 squads rather than
@@ -2240,7 +2355,7 @@ profile: _import
 # import, global class_names do not resolve and it dies with parse errors
 # naming unrelated lines.
 [doc("Render benchmark: frame time and draw calls at 0/100/250/500/1000 squads")]
-bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
+bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40" ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh int FRAMES "{{FRAMES}}"
@@ -2259,7 +2374,11 @@ bench-render COUNTS="0,100,250,500,1000" FRAMES="120" HEIGHT="40":
         exit 1
     fi
     "$godot" --headless --path . --import
-    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}}
+    # ARGS is the attribution channel (#229): --clamp=0, --sampler=0,
+    # --copies=0, --cells_wide=84 --cells_high=96. Empty by default, so a
+    # bare `just bench-render` measures the shipping client exactly as it
+    # always did and every number ever quoted stays comparable.
+    "$godot" --path . bench_render.tscn -- --counts={{COUNTS}} --frames={{FRAMES}} --height={{HEIGHT}} {{ARGS}}
 
 # Screenshot the LOBBY (D-048), so its layout can actually be looked at.
 #
@@ -2395,6 +2514,7 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
     : > "$log"
 
     profiles="{{PROFILES}}"
+    died=""
     echo "ai-ladder: {{MATCHES}} matches, {{AI}} AI, {{TEAMS}} teams, {{SECONDS}}s cap, map=ladder, profiles=${profiles:-<default>}"
     for i in $(seq 1 {{MATCHES}}); do
         # A different seed per match: same seed every time would measure
@@ -2406,20 +2526,37 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         # read as an AI weakness through several rounds of AI work. The
         # "match actually started" assertion after the loop is what makes
         # that unrepeatable; this is only the fix.
+        #
+        # --stop-after-match: a decided match stops rather than simulating
+        # its winner gathering against nobody for the rest of the cap
+        # (#224). One ladder match was decided at 95s of a 600s cap and
+        # then simulated 505 further seconds — 84% of its wall clock —
+        # which is why `ai-ladder 3 600` cost a flat half hour however
+        # fast the matches decided. ONLY this recipe passes it, so every
+        # other harness measures the window it always did.
+        #
+        # And the exit status is KEPT rather than discarded with
+        # `|| true`. It was discarded, so a server killed from outside
+        # (this host OOMs — #153) vanished from the results with nothing
+        # anywhere saying so.
+        status=0
         if [ "{{runtime}}" = "docker" ]; then
             docker compose -p {{compose_project}} run --rm --no-deps server \
                 --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
         else
             godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
             "$godot" --headless --path . server.tscn -- \
                 --map=res://maps/ladder.tres --lobby=0 --players=0 \
                 --ai={{AI}} --ai-teams={{TEAMS}} --ai-profiles="$profiles" \
-                --seed=$i --run-seconds={{SECONDS}} \
-                >> "$log" 2>&1 || true
+                --seed=$i --run-seconds={{SECONDS}} --stop-after-match=5 \
+                >> "$log" 2>&1 || status=$?
+        fi
+        if [ "$status" -ne 0 ]; then
+            died="$died seed=$i(exit $status)"
         fi
         printf '.'
     done
@@ -2455,8 +2592,35 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
         exit 1
     fi
 
+    # AND ASSERT IT FINISHED. The mirror of the check above, and the half
+    # D-107 did not write (#224): three matches left the lobby, one of
+    # them died mid-run printing nothing at all, and the ladder reported
+    # "decided: 2 of 2" for a run of THREE — a denominator counted from
+    # the matches that survived, so a vanished match cannot appear in it
+    # by construction.
+    #
+    # None of the existing guards could see it. The started-check passed,
+    # because it did start. The diagnostics grep found nothing, because a
+    # process that is killed prints no ERROR. And `|| true` swallowed the
+    # exit code. This is D-107's own lesson one layer in: that entry made
+    # the ladder assert that matches START, and nothing asserted they END.
+    finished=$(grep -c '^server: MATCH_RESULT' "$log" || true)
+    if [ "$finished" -lt "{{MATCHES}}" ]; then
+        echo "ai-ladder: FAILED — $finished of {{MATCHES}} matches produced a result;" >&2
+        echo "  $(( {{MATCHES}} - finished )) started and then vanished without one." >&2
+        if [ -n "$died" ]; then
+            echo "  servers that exited non-zero:$died" >&2
+            echo "  (137 is SIGKILL — on this project's host that is usually the OOM" >&2
+            echo "   killer rather than a game defect: see #153 and 'just host-status')" >&2
+        else
+            echo "  every server exited 0, so the loss is inside the run, not the process." >&2
+        fi
+        echo "  A missing match is not a drawn match. See $log." >&2
+        exit 1
+    fi
+
     echo "ai-ladder: --- results over {{MATCHES}} matches ---"
-    awk '
+    awk -v asked={{MATCHES}} '
         /MATCH_RESULT/ {
             match($0, /winner=(-?[0-9]+)/, w)
             match($0, /team=(-?[0-9]+)/, wt)
@@ -2501,7 +2665,16 @@ ai-ladder MATCHES="10" SECONDS="600" AI="2" TEAMS="0" PROFILES="": _import
                 printf "  FAILED: %d of %d matches ended still in the lobby — nothing was measured\n", unstarted, matches
                 exit 1
             }
-            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, matches, draws
+            # Denominator is what was ASKED for, never what survived.
+            # The self-referential version is what printed "2 of 2" for a
+            # run of three (#224); the bash check above catches this
+            # first, and this is here so the LINE cannot lie even if
+            # somebody reaches the awk another way.
+            printf "  decided: %d of %d   draws (time cap): %d\n", matches - draws, asked, draws
+            if (asked > 0 && matches != asked) {
+                printf "  FAILED: only %d of %d matches produced a result\n", matches, asked
+                exit 1
+            }
             for (k in n) {
                 printf "  player %-5s civ=%-10s ai=%-11s team=%-2d wins=%-3d squads_peak~%.1f workers_peak~%.1f buildings~%.1f allies_seen~%.1f",
                     k, civ[k], prof[k], team[k], wins[k] + 0, sq[k]/n[k], wkr[k]/n[k], bld[k]/n[k], allies[k]/n[k]

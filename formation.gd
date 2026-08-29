@@ -492,7 +492,11 @@ static func grounded_offset(centre: Vector3, offset: Vector3, space: TorusSpace,
 ## keeps the two sides deriving the same answer.
 static func _stands_on_passable(at: Vector3, space: TorusSpace,
 		passable: PackedByteArray) -> bool:
-	var index := space.index(space.world_to_cell(at))
+	# `world_to_cell` normalises and `index` normalises again — four
+	# `posmod`s where two do, once per drawn man per frame (#229). Same
+	# answer: `index` wraps whatever it is given, which is what its own
+	# docstring promises.
+	var index := space.index(space.round_axial(space.world_to_axial(at)))
 	return index >= 0 and index < passable.size() and passable[index] != 0
 
 
@@ -683,6 +687,18 @@ static func soldier_transforms_sampled(
 	var angle := facing_angle(curve, time, space, ordered_facing)
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
+	# The formation DEF is a property of the squad, like the curve sample
+	# and the basis above — but `slot_offset` resolved it from the roster
+	# once per soldier, converting `shape` to a StringName and hashing it
+	# every time (#229). Hoisted here the answer is identical and the
+	# lookup happens once per squad. The single-soldier path still goes
+	# through `slot_offset`, and
+	# `test_bulk_derivation_matches_the_single_soldier_path` is what keeps
+	# the two spellings honest.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		push_error("Unknown formation '%s' — falling back to line" % shape)
+		def = FormationRoster.by_id(&"line")
 	# Hoisted for the same reason everything else here is: without terrain
 	# there is nothing to clamp against, and this path derives every
 	# soldier on screen every frame.
@@ -694,8 +710,16 @@ static func soldier_transforms_sampled(
 		# division), so the full-detail path is unchanged and stays
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
-		var local := slot_offset(shape, slot, alive, spacing, files)
-		var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+		var local := _offset_for(def, clampi(slot, 0, alive - 1), alive, spacing, files) \
+			if def != null \
+			else _grid_offset(clampi(slot, 0, alive - 1), alive,
+				_files_for_ranks(alive, LINE_RANKS), spacing)
+		# Through the basis this function already built, rather than
+		# `Vector3.rotated`, which constructs `Basis(UP, angle)` again for
+		# every man — the same matrix, so the answer is bit identical and
+		# the construction is not repeated once per drawn man per frame
+		# (#229).
+		var offset := basis * Vector3(local.x, 0.0, local.y)
 		# Clamped BEFORE the height is sampled, so a man pulled back off the
 		# rock takes the height of the ground he ends up on rather than of
 		# the cliff top he was briefly aimed at.

@@ -10,12 +10,15 @@ extends SceneTree
 ## Exits non-zero on an unreadable or empty replay, so it doubles as a
 ## check that a run actually recorded something.
 
+## Where a checkout writes its replays. Resolved through `ArtifactPath`
+## at use, so this reader looks where the server's writer put it in an
+## exported build too (#201).
 const DEFAULT_PATH := "res://artifacts/replay-4433.edmw"
 
 
 func _initialize() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
-	var path := String(args.get("file", DEFAULT_PATH))
+	var path := ArtifactPath.resolve(String(args.get("file", DEFAULT_PATH)))
 	var at_time := float(args.get("at", -1.0))
 
 	var replay := ReplayLog.read(path)

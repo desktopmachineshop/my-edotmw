@@ -83,3 +83,54 @@ Two things to carry:
   a caller.** This is the declared-and-unread family with the roles
   swapped: the code was read constantly and simply never asked the
   question at a coordinate where it mattered.
+
+**And a squad can be told to go and find out on its own
+(`D-20260828-explore-is-an-order-and-the-frontier-is-knowledge`, #120,
+2026-08-28).** A sixth squad order: explore. Issued once, the squad picks
+a destination, walks, reveals, and repicks until it is given another
+order, routs, or dies. `ExploreTarget` is the pure, all-static picker —
+one definition, so a future AI scouting behaviour cannot come to disagree
+with the player's verb about what exploring means (D-051).
+
+Four things to know before touching it, and most are not about scouting:
+
+- **The frontier is a new datum, and it had to be.** `Vision` answers
+  "can this side see it NOW"; a scout needs "has this side EVER been
+  shown it". `TerrainKnowledge.Belief.believed` cannot serve — it starts
+  all-1 because unknown ground reads passable, so it cannot separate
+  "never seen" from "seen, and open". `Belief.explored` is that set,
+  accumulated **in the pass that already folds sight into knowledge**,
+  keyed by SIDE because allies share sight (D-050). Not a second fog
+  query: D-004 forbids a second data-hiding path, and this is one byte
+  per cell written inside a loop that was already running.
+- **The trap in it fired.** `observe()` skips cells whose passability it
+  already agreed with — which on open ground is most of the map. With
+  the explored write after that skip, a scout is told everything is
+  unexplored forever and sent to the cell it is standing on. The write
+  goes FIRST, and the guard was watched to fail with it moved.
+  Separately, `absorb` used to return early when there was no terrain
+  array; passability is unknowable without truth but **what a side has
+  seen is not**, and three tests failed on that one cause.
+- **Targets are REGIONS** (`explore_quantum` 4), snapped exactly as a
+  rout's destination is and for the same D-007/D-038 reason: nobody chose
+  the exact cell, and N scouts each demanding a unique frontier cell is
+  the pathological case for shared fields. 4 rather than the rout's 8 so
+  the worst snap error stays inside every unit's vision radius — the
+  scout can SEE what it was aimed at.
+- **The omniscience question is the sharp one**, and it is #96's in a
+  more dangerous form: here the SIMULATION picks the destination rather
+  than a player clicking one. The picker is handed the side's own
+  explored and believed arrays and nothing else — there is no argument
+  through which truth could arrive. The one honest edge is
+  `_approachable`, which reads truth to snap a destination onto standable
+  ground; that is pre-existing, identical for every order, and explicitly
+  scoped out by the entry above — but its influence is larger here, and
+  the decision says so rather than claiming purity.
+
+**Deliberately left open:** what an exploring squad does when it meets
+something (#120 point 3) — today it fights if engaged and the rout ends
+the mode, and making a scout flee on contact wants its own decision. And
+**the AI does not use the verb yet**: the picker is pure so that it can,
+but `bot_patrol.gd`'s legs are what `test-load`'s fog gates depend on, so
+changing scouting behaviour in the branch that adds the order would make
+any gate movement unattributable.
