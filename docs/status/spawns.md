@@ -131,3 +131,60 @@ server's option channel cycle — and from nothing else. `--preset=islands`
 still generates one, every tuned number survives, and `all_ids()` is what
 tooling means by "every preset". The day armies can cross water it is one
 bool.
+
+**Read that beside the landmass rule below**: `islands` is hidden from
+the lobby because armies cannot cross water, and the largest-component
+rule is what stops a start being marooned on any preset. They answer
+different halves — one removes a map nobody can play, the other makes
+the maps people do play seat honestly — and neither makes the other
+redundant.
+
+**And a start had to be somewhere the OTHERS can walk to
+(`D-20260827-every-start-shares-one-landmass`, #128, 2026-08-27).** From
+the same 2026-08-18 lobby playtest as #125: *"spawn location for me was in
+an unaccessible area isolating my founder from the rest of the map"*.
+D-104's `min_spawn_landmass` is an absolute SIZE and isolation is a
+RELATION, so nothing anywhere asked whether the component holding spawn A
+also held spawn B — and its capped flood fill could not have answered even
+if a caller had wanted it to, since it early-exits at the threshold and
+returned 96 for a 96-cell rock and a 20,000-cell continent alike. Starts
+are now sampled from the LARGEST walkable component and nothing else.
+
+Four things worth carrying:
+
+- **The harm is a silent stalemate, not an unlucky map.** A player nobody
+  can reach cannot be eliminated, so under D-033 the match runs to the
+  time cap — D-055's shape reached through a second door, and
+  `ai-ladder` would have blamed the AI.
+- **It was routine on `islands` and rare on everything else.** Over 96
+  worlds (4 presets x 4 sizes x 6 seeds): `islands` stranded **6 to 19 of
+  every 20 starts**, while `continents`/`plains`/`highlands` stranded
+  none in the sample and only `continents` ever held ground that could
+  (4 worlds of 24). The mainland is 99.3-100% of walkable ground on every
+  preset a human has played, so the fix costs those nothing — 20 of 20
+  seated before and after. `islands` at 20 seats now short-seats
+  honestly (8-17) where it used to report a full house of marooned
+  players.
+- **The cost moved from rejection sampling to map size**, and only at the
+  top of the ladder: `spawn_points` on the shipped default is 12.9 ->
+  13.3 ms, Skirmish gets *faster* (14.0 -> 6.4), and Huge pays 16.6 ->
+  61.5 ms. #128's own claim that a precomputed component map "avoids that
+  trade entirely" was optimistic — the capped fills only ever ran on
+  candidates that had passed two cheaper tests. Both callers are
+  once-per-match or key-guarded, and the decision has the table.
+- **On the shipped default map it is a provable no-op**, which is why
+  `test-load`'s numbers stay comparable across it: `maps/default.tres` at
+  seed 1337 has 17 walkable components and exactly ONE clears the bar, so
+  old predicate and new accept the same candidates off the same rng
+  stream. `just test-load 4 120` on this tree: `VERDICT ok`, 0 desyncs
+  over 462 checks, 0 dropped ticks, all three `gate-check.sh` comparisons
+  green, **263.97 µs/squad at 32 squads** (combat 101.77, fields 62.06,
+  vision 39.28) on a host holding 4.1 GB for three other agents — quote
+  it with its squad count and read it as a host figure.
+- **A fixture that looks like it measures isolation can measure
+  nothing.** The first version of these tests laid two continents against
+  the top and bottom edges of the rectangle — which on a torus is ONE
+  continent, because row `height - 1` is row 0's SE neighbour. It
+  reported a single component and every assertion passed vacuously. Same
+  family as `formation.md`'s "a wall of constant q does not block a
+  torus".

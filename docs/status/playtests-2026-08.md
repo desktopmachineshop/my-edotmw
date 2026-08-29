@@ -290,3 +290,42 @@ not one. Neither harness drops clients deliberately, so no recorded
 figure is known to be affected; worth knowing before trusting an old run
 whose log shows a disconnect.
 
+**And the minimap's clicks never learned about its own crop
+(#130, 2026-08-27, from the 2026-08-18 lobby playtest):** *"if you click
+on the center of it, it doesn't move the viewport to the expected
+location — it moves to a location much more north than where you
+clicked"*. The minimap is cropped to a circle and RE-CENTRED on the
+camera every frame (`shaders/circular_crop.gdshader`), so which cell sits
+under a pixel is a function of where the player is standing.
+`_minimap_cell_at` was written before that shader and kept a plain
+proportional mapping over the whole texture. At the circle's centre the
+correct answer is the camera's own cell — a click there should be a
+**no-op** — and the old code returned the middle of the WORLD, which from
+a southern position reads exactly as "it jumped north". Every other point
+was wrong by the same offset; the centre is only where the error is
+unmistakable.
+
+Three things worth carrying, none of them about minimaps:
+
+- **The doc comment argued for the bug.** It read "a straight
+  proportional mapping with no camera involved — which is exactly why it
+  can jump anywhere", and that was TRUE when written. The crop landed
+  later, to fix the minimap reading as jerky, and nothing revisited the
+  function. Same family as D-058/D-065, D-097 and D-106 — *a comment
+  asserting an invariant is not evidence the invariant still holds* —
+  with the aggravating detail that this one was persuasive.
+- **The arithmetic moved into `minimap_paint.gd` rather than being
+  written a second time in `client.gd`.** GLSL cannot call GDScript, so
+  the shader still carries its own copy; what the move buys is that the
+  copy is one line long, is pinned by tests, and has exactly ONE GDScript
+  counterpart instead of one per caller. D-096's shared-arithmetic rule,
+  third occurrence after the drag preview's `slot_world_offset`.
+- **`fract`, not a clamp.** A click near the rim of the circle can
+  legitimately land on the far side of the torus, because that is what
+  the picture the player is aiming at is drawing (D-008). Clamping would
+  refuse to jump to ground the minimap is visibly showing.
+
+The other half of the issue's question — whether `_update_minimap` also
+has to account for the crop — is **no**, and checked rather than assumed:
+it paints into an uncropped one-pixel-per-cell image which the shader
+then samples, so the two are consistent by construction.

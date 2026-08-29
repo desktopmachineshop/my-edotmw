@@ -361,3 +361,217 @@ func test_the_shipped_default_map_is_valid() -> void:
 	assert_eq(config.validate(), "", "The shipped map must satisfy its own rules")
 	assert_eq(config.spawn_points().size(), 20,
 		"The shipped map should seat twenty players (D-018's target concurrency)")
+
+
+# --- every start shares one landmass (#128) ----------------------------
+
+## The mainland's rows, and the far continent's. Both bands are held OFF
+## the map's own top and bottom edges on purpose: row `height - 1` is the
+## SE neighbour of row 0 (D-008), so two slabs laid against the two edges
+## of the rectangle are one continent joined round the back of the world.
+## The first version of these fixtures did exactly that and reported one
+## component, which is this file's own "a wall of constant q does not
+## block a torus" lesson wearing different clothes — the fixture looked
+## like it measured isolation and measured nothing.
+const MAINLAND_FROM := 4
+const MAINLAND_TO := 24
+const FAR_FROM := 36
+const FAR_TO := 48
+
+
+## A mainland of 2,560 cells and a lesser continent of 1,536 — both legal
+## ground, both far past `min_spawn_landmass`, and no walkable step
+## between them in either direction round the torus.
+func _two_continents(config: MapConfig, space: TorusSpace) -> PackedByteArray:
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(config.height):
+		for x in range(config.width):
+			var land := (y >= MAINLAND_FROM and y < MAINLAND_TO) 				or (y >= FAR_FROM and y < FAR_TO)
+			passable[space.index(Vector2i(x, y))] = 1 if land else 0
+	return passable
+
+
+## Two continents, each comfortably past `min_spawn_landmass`, with open
+## sea between them. Authored rather than generated so the failure is
+## unambiguous: D-104's size bar accepts BOTH — 96 cells is 1.19% of the
+## shipped Standard map — and nothing in it ever compares one candidate's
+## component with another's.
+##
+## Observed to fail before it was trusted: with the mainland test removed
+## the sampler seats players on both slabs (the smaller one takes its
+## share of a uniform draw), and this goes red naming the far continent.
+func test_no_start_is_marooned_on_a_second_continent() -> void:
+	var config := _config()
+	config.min_spawn_landmass = 96
+	var space := config.to_space()
+
+	var passable := _two_continents(config, space)
+
+	var points := config.spawn_points(passable)
+	assert_gt(points.size(), 1, "Fewer than two starts placed, so the check below proves nothing")
+	for point in points:
+		assert_lt(point.y, MAINLAND_TO,
+			"Spawn %s stands on the far continent — roomy, legal, and unable to reach or be reached by anybody (D-033 then cannot decide the match)" % point)
+
+
+## The same map read the other way round: the seating is COMPLETE and
+## still broken, which is exactly what `validate_spawns` could not say
+## before — it compared counts, and twenty of twenty were found.
+##
+## Driven through `disconnected_spawns` with a hand-authored seating
+## rather than through the sampler, because the sampler cannot produce
+## one any more. A check reachable only through the thing it checks is a
+## check nobody can watch fail.
+func test_a_complete_seating_can_still_strand_players() -> void:
+	var config := _config()
+	var space := config.to_space()
+
+	var passable := _two_continents(config, space)
+
+	var together: Array[Vector2i] = [Vector2i(4, 6), Vector2i(40, 10), Vector2i(80, 14)]
+	assert_eq(config.disconnected_spawns(together, passable), 0,
+		"Three starts on one continent must read as connected, or the count below means nothing")
+
+	var apart: Array[Vector2i] = [Vector2i(4, 6), Vector2i(40, 10), Vector2i(80, 40)]
+	assert_eq(config.disconnected_spawns(apart, passable), 1,
+		"A start on the far continent must be counted as stranded")
+
+
+## Connectivity is WRAP-AWARE, like every distance, neighbour and
+## conversion in this project (D-008). A band of sea that does not wrap
+## leaves the two shores joined round the back of the torus, and a check
+## that walked the flat rectangle would call them two continents.
+func test_a_channel_that_does_not_wrap_joins_nothing_apart() -> void:
+	var config := _config()
+	var space := config.to_space()
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	passable.fill(1)
+	# One sea channel all the way across. On a FLAT rectangle that cuts
+	# the world into a northern half and a southern half; on the torus
+	# the two halves meet again over the top, because row `height - 1` is
+	# row 0's SE neighbour (D-008). So a walk that ignored the wrap would
+	# report two components here, and there is only one.
+	for x in range(config.width):
+		for y in range(28, 32):
+			passable[space.index(Vector2i(x, y))] = 0
+
+	var components: Dictionary = config.walkable_components(space, passable)
+	var sizes: PackedInt32Array = components["sizes"]
+	assert_eq(sizes.size(), 1,
+		"The torus seam joins the two shores — a walk that ignored the wrap would report 2")
+
+	var across: Array[Vector2i] = [Vector2i(10, 10), Vector2i(10, 50)]
+	assert_eq(config.disconnected_spawns(across, passable), 0,
+		"Two starts either side of the channel can walk to each other round the seam")
+
+
+## The component walk reports EXACT sizes, which D-104's capped fill
+## structurally could not — it early-exits at `min_spawn_landmass` and
+## returned 96 for a 96-cell rock and for a continent alike. That is what
+## makes "which component is the mainland" a question anyone can ask.
+func test_components_report_their_true_size() -> void:
+	var config := _config()
+	var space := config.to_space()
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for y in range(4, 24):
+		for x in range(config.width):
+			passable[space.index(Vector2i(x, y))] = 1
+	# Three cells that genuinely touch — E then SE off `TorusSpace.DIRECTIONS`.
+	# Two rows apart is NOT adjacent on this lattice, and a rock authored
+	# that way is two components pretending to be one.
+	for cell in [Vector2i(4, 40), Vector2i(5, 40), Vector2i(5, 41)]:
+		passable[space.index(cell)] = 1
+
+	var components: Dictionary = config.walkable_components(space, passable)
+	var sizes: PackedInt32Array = components["sizes"]
+	assert_eq(sizes.size(), 2, "One continent and one rock")
+	var total := 0
+	for size in sizes:
+		total += size
+	assert_eq(total, 20 * config.width + 3, "Every walkable cell is labelled exactly once")
+	assert_eq(sizes[0], 20 * config.width, "The continent is discovered first, in cell-index order")
+	assert_eq(sizes[1], 3, "The rock is three cells, not the 96 the capped fill would have claimed")
+
+
+## Same seed, same terrain, same points — every run (D-016). The
+## component labels are the new input to placement, so their determinism
+## is now load-bearing for replays.
+func test_the_mainland_rule_keeps_placement_deterministic() -> void:
+	var config := _config()
+	var space := config.to_space()
+	var terrain := _terrain(1)
+	var passable := terrain.passability(space)
+
+	var first := config.spawn_points(passable)
+	var second := config.spawn_points(passable)
+	assert_eq(first, second, "Placement must be reproducible from the seed alone")
+
+
+## `validate_spawns` compared COUNTS and nothing else, so twenty of twenty
+## points on two continents read as a healthy map. Reached here through
+## the landmass escape hatch (`min_spawn_landmass <= 1`), which turns the
+## mainland rule off and is therefore the one configuration in which the
+## sampler can still produce a stranded seating — so the branch is
+## observed rather than asserted to be unreachable.
+func test_validate_spawns_reports_a_complete_but_stranded_seating() -> void:
+	var config := _config()
+	config.min_spawn_landmass = 0
+	var space := config.to_space()
+	var passable := _two_continents(config, space)
+
+	assert_eq(config.spawn_points(passable).size(), config.player_slots,
+		"The seating must be COMPLETE, or this is testing the short-seating branch instead")
+	var reason := config.validate_spawns(passable)
+	assert_true(reason.contains("strands"),
+		"A complete seating spread over two continents must be reported, not passed: got '%s'" % reason)
+
+
+## ...and the same map with the rule ON validates clean, so the message
+## above is not something every map says.
+func test_validate_spawns_passes_a_seating_that_shares_one_landmass() -> void:
+	var config := _config()
+	# Eight, not the fixture's twenty: the mainland alone is 2,560 cells
+	# and twenty starts at spacing 12 do not pack into it. That is the
+	# rule working — confining the seating to one component genuinely
+	# reduces how many starts a map holds, and the short-seating branch
+	# above is what says so.
+	config.player_slots = 8
+	var space := config.to_space()
+	assert_eq(config.validate_spawns(_two_continents(config, space)), "",
+		"Every start on the mainland is a valid seating")
+
+
+## The component walk inlines `TorusSpace.DIRECTIONS` against this file's
+## own index layout rather than going through `neighbor_table` (which
+## `walkable_components` explains, with the measurement). An inlined copy
+## of a lattice rule is exactly the kind of second source of truth this
+## project keeps paying for, so it is pinned: a random field, walked both
+## ways, must give the same components.
+func test_the_inlined_neighbours_are_the_ones_torus_space_would_give() -> void:
+	var config := _config()
+	var space := config.to_space()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260827
+
+	var passable := PackedByteArray()
+	passable.resize(config.width * config.height)
+	for i in range(passable.size()):
+		passable[i] = 1 if rng.randf() < 0.55 else 0
+
+	var labels: PackedInt32Array = config.walkable_components(space, passable)["labels"]
+	for i in range(passable.size()):
+		if passable[i] == 0:
+			assert_eq(labels[i], -1, "Impassable ground carries no label")
+			continue
+		for neighbour in space.neighbors(space.from_index(i)):
+			var j := space.index(neighbour)
+			if passable[j] == 0:
+				continue
+			assert_eq(labels[i], labels[j],
+				"Cells %s and %s are neighbours by TorusSpace and were labelled apart" % [
+					space.from_index(i), neighbour])

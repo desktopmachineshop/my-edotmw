@@ -396,3 +396,133 @@ func test_buildings_are_painted_unfogged() -> void:
 	var pass_body := source.substr(start, end - start if end > start else 240)
 	assert_false(pass_body.contains("fogged"),
 		"a known building is drawn at full strength wherever it stands")
+
+
+# --- the crop's mapping, which clicks have to share (#130) -------------
+#
+# `_minimap_cell_at` was a plain proportional mapping over the whole
+# texture, written before `shaders/circular_crop.gdshader` existed and
+# never revisited when it landed. Its own doc comment argued the code was
+# right. These pin the two functions the click now goes through against
+# the shader's arithmetic — the bug is invisible to any check that does
+# not compare against it.
+
+const CROP_RECT := Vector2(216.0, 216.0)
+const CROP_CENTRE := Vector2(108.0, 108.0)
+const MAP_W := 168
+const MAP_H := 194
+
+
+func _focus(cell: Vector2i) -> Vector2:
+	return MinimapPaint.focus_uv_of(cell, MAP_W, MAP_H)
+
+
+## The single clearest statement of what was wrong: at the circle's own
+## centre `delta_uv` is zero, so the cell under it is the camera's cell
+## and a click there is a no-op. The old mapping returned roughly the
+## middle of the WORLD instead, whatever the camera was doing — which
+## from a southern position reads exactly as "it jumped much further
+## north than I clicked".
+func test_the_centre_of_the_crop_is_the_camera_cell() -> void:
+	for camera in [Vector2i(0, 0), Vector2i(57, 42), Vector2i(120, 180),
+			Vector2i(MAP_W - 1, MAP_H - 1)]:
+		var got := MinimapPaint.cell_under(CROP_CENTRE, CROP_CENTRE, CROP_RECT,
+			_focus(camera), MAP_W, MAP_H)
+		assert_eq(got, camera,
+			"Clicking the middle of the minimap must be a no-op, not a jump to the map's middle")
+
+
+## And it is a no-op because of the CAMERA, not because the centre is a
+## special case: the old mapping happens to be right when the camera is
+## at the middle of the map, which is why this could survive any test
+## taken from a lobby-fresh view.
+func test_the_old_proportional_mapping_only_agreed_at_the_map_centre() -> void:
+	var middle := Vector2i(MAP_W / 2, MAP_H / 2)
+	assert_eq(MinimapPaint.cell_under(CROP_CENTRE, CROP_CENTRE, CROP_RECT,
+		_focus(middle), MAP_W, MAP_H), middle,
+		"At the map's centre the two mappings agree — the fixture that would have missed this")
+
+	var south := Vector2i(MAP_W / 2, MAP_H - 20)
+	assert_ne(MinimapPaint.cell_under(CROP_CENTRE, CROP_CENTRE, CROP_RECT,
+		_focus(south), MAP_W, MAP_H), middle,
+		"From anywhere else it must not, or the crop is being ignored again")
+
+
+## A pixel offset moves by the same fraction of the MAP that it is of the
+## rect — the shader's `delta_uv = (pixel - centre_px) / rect_size` — so a
+## quarter of the way across the circle is a quarter of the way across the
+## world. Checked as a displacement rather than an absolute, because that
+## is the part a click has to get right for the jump to land where the
+## player aimed.
+func test_a_pixel_offset_moves_by_the_same_share_of_the_map() -> void:
+	# Deliberately NOT the map's middle. (84, 97) is exactly that on this
+	# map, and it is the one camera position at which the old mapping and
+	# the crop agree — so a fixture placed there passes under the bug.
+	# This test was written with that camera and had to be moved after the
+	# perturbation run showed it green with the crop torn out.
+	var camera := Vector2i(20, 150)
+	var quarter := CROP_CENTRE + Vector2(CROP_RECT.x * 0.25, 0.0)
+	var got := MinimapPaint.cell_under(quarter, CROP_CENTRE, CROP_RECT,
+		_focus(camera), MAP_W, MAP_H)
+	assert_eq(got.y, camera.y, "A horizontal offset must not move north or south")
+	assert_eq(got.x, camera.x + MAP_W / 4,
+		"A quarter of the rect across is a quarter of the map across")
+
+
+## The crop wraps (`fract` in the shader) because the map is a TORUS
+## (D-008) — a click near the rim of the circle can legitimately land on
+## the far side of the world, and the picture the player is aiming at is
+## drawing exactly that. A clamp here would refuse to jump to ground the
+## minimap is visibly showing.
+func test_a_click_near_the_rim_wraps_the_way_the_shader_does() -> void:
+	var camera := Vector2i(4, 6)
+
+	# Offsets stated as a WHOLE NUMBER OF CELLS rather than as a fraction
+	# of the rect. `focus_uv` points at a cell's CENTRE, so an offset of
+	# exactly a quarter of the map lands on a cell BOUNDARY when the map's
+	# height is odd in quarters (194/4 = 48.5) — a genuinely ambiguous
+	# click, which floating point resolves to the lower side. Fine
+	# behaviour; a bad fixture, because it measures rounding rather than
+	# wrapping.
+	var west := CROP_CENTRE - Vector2(CROP_RECT.x * 42.0 / float(MAP_W), 0.0)
+	assert_eq(MinimapPaint.cell_under(west, CROP_CENTRE, CROP_RECT,
+		_focus(camera), MAP_W, MAP_H).x, posmod(camera.x - 42, MAP_W),
+		"West of a western camera is the EAST edge of the map, not column 0")
+
+	var north := CROP_CENTRE - Vector2(0.0, CROP_RECT.y * 48.0 / float(MAP_H))
+	assert_eq(MinimapPaint.cell_under(north, CROP_CENTRE, CROP_RECT,
+		_focus(camera), MAP_W, MAP_H).y, posmod(camera.y - 48, MAP_H),
+		"North of a northern camera is the SOUTH edge of the map, not row 0")
+
+
+## Round trip: the focus a camera cell produces, read back through the
+## crop's centre, is that cell again. The half-cell in `focus_uv_of` is
+## what makes it exact, so this is the check that would go red if either
+## side dropped it.
+func test_focus_and_cell_under_round_trip_on_every_cell_of_a_row() -> void:
+	for x in range(MAP_W):
+		var cell := Vector2i(x, 91)
+		assert_eq(MinimapPaint.cell_under(CROP_CENTRE, CROP_CENTRE, CROP_RECT,
+			_focus(cell), MAP_W, MAP_H), cell,
+			"Cell (%d, 91) did not survive the round trip" % x)
+
+
+## Degenerate inputs answer "not over the minimap" rather than dividing
+## by zero — the state the HUD is in before its first layout.
+func test_an_unlaid_out_minimap_names_no_cell() -> void:
+	assert_eq(MinimapPaint.cell_under(Vector2.ZERO, Vector2.ZERO, Vector2.ZERO,
+		Vector2(0.5, 0.5), MAP_W, MAP_H), Vector2i(-1, -1))
+	assert_eq(MinimapPaint.cell_under(CROP_CENTRE, CROP_CENTRE, CROP_RECT,
+		Vector2(0.5, 0.5), 0, 0), Vector2i(-1, -1))
+
+
+## `client.gd` must actually go through it. A pure module cannot notice
+## that its only caller kept its own copy of the arithmetic — which is
+## precisely how this bug survived, and is the same structural check the
+## building pass at the top of this file needed (D-106's rule).
+func test_the_client_resolves_minimap_clicks_through_the_crop() -> void:
+	var source := FileAccess.get_file_as_string(CLIENT_SCRIPT)
+	assert_true(source.contains("MinimapPaint.cell_under("),
+		"client.gd must resolve a minimap click through the crop's own mapping")
+	assert_true(source.contains("MinimapPaint.focus_uv_of("),
+		"client.gd must set the crop's focus through the same definition the click reads back")
