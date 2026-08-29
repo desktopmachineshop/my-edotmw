@@ -165,6 +165,28 @@ func test_a_levy_pairing_is_not_a_sweep_when_it_is_actually_played() -> void:
 	# control there is no way to tell "these levies are even" from "this
 	# fixture stopped resolving", which is the vacuous-pass shape D-022's
 	# audit block was written against.
+	# A SIDE THAT BREAKS HAS LOST, and scoring by surviving fraction said
+	# the opposite (#396's sibling, traced in
+	# D-20260829-a-routed-squad-is-not-the-winner).
+	#
+	# Measured at seed 11 before this changed: the two squads closed, the
+	# WINDMARCH levy broke at t=6 and withdrew to eight cells, gildedreach
+	# did not pursue, and both sides sat frozen at exactly 20 men for the
+	# remaining fourteen seconds. Gildedreach had lost 10 of 30 and
+	# windmarch 8 of 28 — so the fraction was 0.67 against 0.71 and the
+	# fixture crowned THE SIDE THAT RAN. Routing preserves your fraction,
+	# because a fleeing squad stops taking casualties and nothing chases
+	# it.
+	#
+	# That also inverted the control: doubling gildedreach's damage breaks
+	# windmarch SOONER, so it flees with MORE men and the buff moves the
+	# fraction the wrong way. The control was not insensitive, it was
+	# pointed backwards — which is why it could not see a doubled stat.
+	#
+	# So the engagement is decided by who broke first, which is D-019's own
+	# premise and what `docs/status/rtw-battles.md` already says in words:
+	# "a rout is a defeat rather than a pause". Surviving fraction remains
+	# the tie-break for fights where neither side breaks.
 	var even := _play_pairing(0.0)
 	gut.p("played gildedreach %d - %d windmarch (of 6)" % [even[0], even[1]])
 	assert_gt(even[0] + even[1], 0,
@@ -199,10 +221,20 @@ func _play_pairing(buff: float) -> Array[int]:
 			var outcome := _play(first, second, seed_value)
 			var gilded: float = outcome[1] if swap else outcome[0]
 			var wind: float = outcome[0] if swap else outcome[1]
-			if gilded > wind:
+			var broke: int = int(outcome[2])
+			var gilded_broke := broke == (2 if swap else 1)
+			var wind_broke := broke == (1 if swap else 2)
+			if gilded_broke:
+				losses += 1
+			elif wind_broke:
+				wins += 1
+			elif gilded > wind:
 				wins += 1
 			elif wind > gilded:
 				losses += 1
+			gut.p("    seed %-5d swap=%-5s  gilded %.2f  wind %.2f  broke=%s"
+				% [seed_value, str(swap), gilded, wind,
+					"gilded" if gilded_broke else ("wind" if wind_broke else "-")])
 	return [wins, losses] as Array[int]
 
 
@@ -222,13 +254,23 @@ func _play(a_def: UnitDef, b_def: UnitDef, seed_value: int = 11) -> Array:
 	sim.order_attack_move(a, b_at)
 	sim.order_attack_move(b, a_at)
 	var joined := false
+	var broke := 0  # 0 nobody, 1 the first squad, 2 the second
 	for _i in range(1500):
 		sim.tick()
 		if sim.alive_of(a) < a_start or sim.alive_of(b) < b_start:
 			joined = true
+		if broke == 0:
+			# FIRST to break, latched. A squad can rally afterwards
+			# (D-019), so "is routed at the end" is not the same question
+			# and would score a fight by whether the loser had recovered
+			# yet.
+			if sim.is_routed(a):
+				broke = 1
+			elif sim.is_routed(b):
+				broke = 2
 		if sim.alive_of(a) <= 0 or sim.alive_of(b) <= 0:
 			break
 	assert_true(joined,
 		"the two squads never traded a casualty — they never met, so the " +
 		"result says nothing about the levies")
-	return [float(sim.alive_of(a)) / a_start, float(sim.alive_of(b)) / b_start]
+	return [float(sim.alive_of(a)) / a_start, float(sim.alive_of(b)) / b_start, broke]
