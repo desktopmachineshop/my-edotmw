@@ -482,6 +482,114 @@ func remove_human_seat(player: int) -> void:
 ## eliminate on its own — the caller zeroes that player's squads and the
 ## ordinary elimination rule notices on the next update, so "defeated"
 ## has exactly one definition.
+## --- seat identity and repossession (#186, D-090) --------------------
+##
+## A seat is bound to WHO holds it, never to a connection. D-038's
+## per-connection ownership cache is this project's own precedent for
+## getting that wrong, and it cost a whole 20-player run.
+
+## player -> identity token. Separate from `_players` and from `seats`
+## because it outlives BOTH a connection and an AI takeover: the whole
+## point is that the binding survives the thing that was holding it.
+var _identities := {}
+
+
+## Bind a token to a seat. Anonymous tokens bind nothing — a client that
+## declined to identify (every load-test bot) keeps working exactly as it
+## did before identity existed, and simply cannot be repossessed.
+func bind_identity(player: int, token: String) -> void:
+	if PlayerIdentity.is_anonymous(token):
+		return
+	_identities[player] = PlayerIdentity.normalise(token)
+
+
+func identity_of(player: int) -> String:
+	return String(_identities.get(player, PlayerIdentity.ANONYMOUS))
+
+
+## Which seat this identity holds, or -1.
+##
+## Goes through `PlayerIdentity.same` rather than comparing strings here,
+## so "is this the same player" has ONE definition — including its
+## refusal to match two anonymous tokens, which would otherwise hand a
+## stranger somebody's army.
+func seat_for_identity(token: String) -> int:
+	if PlayerIdentity.is_anonymous(token):
+		return -1
+	for player in _identities:
+		if PlayerIdentity.same(String(_identities[player]), token):
+			return int(player)
+	return -1
+
+
+## Whether this seat is currently waiting for its owner to come back:
+## registered, not eliminated, and nobody connected on it.
+##
+## An AI holding the seat does NOT make it unavailable — the AI is the
+## grace mechanism (D-090), not a new occupant, and repossession is
+## allowed "at any point while the match runs" with no timeout.
+func seat_is_reclaimable(player: int) -> bool:
+	if not _players.has(player):
+		return false
+	if bool(_players[player].get("eliminated", false)):
+		return false
+	return not bool(_players[player].get("connected", false))
+
+
+## The seat passes to an AI, keeping everything that identifies it.
+##
+## `kind` moves so every existing reader — the lobby, the scoreboard,
+## `_on_match_started`'s re-seating — sees an AI seat, which is the
+## D-20260817-an-ai-never-holds-the-lobby lesson: `kind` is read
+## everywhere and one wrong writer is all it takes. The CIV and TEAM are
+## deliberately untouched; #186 names that as the mislabel one writer
+## away, and an AI that inherited a seat and changed its civ would field
+## another civilisation's troops mid-match.
+func hand_seat_to_ai(player: int) -> bool:
+	var index := seat_of(player)
+	if index < 0:
+		return false
+	if String(seats[index].get("kind", "human")) == "ai":
+		return false
+	seats[index]["kind"] = "ai"
+	seats[index]["held_for_human"] = true
+	# Admin never sits with a computer (D-20260817): if this seat held the
+	# badge, it passes to a human who can actually press start.
+	if admin_player == player:
+		_reassign_admin()
+	return true
+
+
+## The owner is back. Returns false if this seat was not being held.
+func reclaim_seat(player: int) -> bool:
+	var index := seat_of(player)
+	if index < 0:
+		return false
+	if not bool(seats[index].get("held_for_human", false)):
+		return false
+	seats[index]["kind"] = "human"
+	seats[index]["held_for_human"] = false
+	_register(player)
+	return true
+
+
+func seat_is_held_for_human(player: int) -> bool:
+	var index := seat_of(player)
+	return index >= 0 and bool(seats[index].get("held_for_human", false))
+
+
+## Hand the admin badge to a connected human, or to nobody.
+func _reassign_admin() -> void:
+	for seat in seats:
+		if String(seat.get("kind", "human")) != "human":
+			continue
+		var who := int(seat["player"])
+		if bool(_players.get(who, {}).get("connected", false)):
+			admin_player = who
+			return
+	admin_player = 0
+
+
 func mark_disconnected(player: int) -> void:
 	if _players.has(player):
 		_players[player]["connected"] = false

@@ -102,12 +102,13 @@ const OPCODES := {
 	"C2S_CHEAT_SPAWN_UNIT": 31,
 	"C2S_CHEAT_SPAWN_BUILDING": 32,
 	"C2S_CHEAT_REGEN_MAP": 38,
-	# 39 and 41 were RESERVATIONS (#362) until #297 and #273 merged. A
-	# reservation graduates to an allocation when its branch lands — that
-	# transition is the whole point of keeping two tables, and this is the
-	# first time it has been performed. 40 is #186's, still in flight on
-	# its own branch, so it is deliberately NOT filled here.
+	# 39, 40 and 41 were RESERVATIONS (#362) until #297, #186 and #273
+	# merged. A reservation graduates to an allocation when its branch
+	# lands — that transition is the whole point of keeping two tables.
+	# 40 was held for #186 across three rebases and nothing else took it,
+	# which is the reservation doing exactly the job it exists for.
 	"C2S_SURRENDER": 39,
+	"C2S_IDENTIFY": 40,
 	"C2S_ORDER_EXPLORE": 41,
 	# The join handshake (#213). Core, not platform: HELLO/REFUSED are the
 	# connection's own lifecycle and predate Steam — 160-179 is for session
@@ -218,6 +219,16 @@ const C2S_CHEAT_SPAWN_BUILDING := OPCODES["C2S_CHEAT_SPAWN_BUILDING"]
 ## the D-075 return-to-lobby edge plus an immediate restart, driven from
 ## the sandbox panel (D-20260821-the-sandbox-panel-runs-the-world).
 const C2S_CHEAT_REGEN_MAP := OPCODES["C2S_CHEAT_REGEN_MAP"]
+
+## IDENTIFY (#186, D-090): the client says WHO it is, once, on connect.
+##
+## An opaque token — a platform id where one exists, a stable local one
+## otherwise. Nothing may parse it (see `player_identity.gd`), and a
+## client that never sends this is ANONYMOUS: it plays exactly as before
+## and simply cannot reclaim a seat. Every load-test bot is in that case,
+## which is deliberate — identity had to be addable without changing what
+## the existing estate does.
+const C2S_IDENTIFY := OPCODES["C2S_IDENTIFY"]
 
 const S2C_WALLET := OPCODES["S2C_WALLET"]
 const S2C_NOTICE := OPCODES["S2C_NOTICE"]
@@ -376,6 +387,24 @@ static func decode_order_explore(data: PackedByteArray) -> Dictionary:
 	buf.get_u8()
 	return {"squad": buf.get_u32()}
 
+
+## IDENTIFY: bind this connection to a persistent identity (#186).
+static func encode_identify(token: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_IDENTIFY)
+	var bytes := token.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_identify(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"token": bytes.get_string_from_utf8()}
 
 ## ATTACK_MOVE: advance, but stop on contact (D-034).
 ##

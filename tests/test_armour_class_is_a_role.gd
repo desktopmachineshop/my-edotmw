@@ -29,13 +29,18 @@ extends GutTest
 ## reason. Not a blanket escape: an entry here is a statement that the
 ## variation is deliberate and understood.
 ##
-## `skirmishers` is here because the ARCHETYPE NAME is the thing that is
-## wrong, not the classes. One civ's is a genuine missile unit and
-## another's is light melee infantry; both are now classed by what they
-## actually do, and the two want different archetype names. That is a
-## rename touching build menus, AI archetype lists and scenarios, and it
-## is filed rather than smuggled in here.
-const CLASS_MAY_VARY: Array[StringName] = [&"skirmishers"]
+## EMPTY, and that is this list working rather than being unused.
+##
+## `skirmishers` sat here because the ARCHETYPE NAME was wrong rather than
+## the classes: one civ's was a genuine missile unit and another's light
+## melee infantry. This entry said the rename was "filed rather than
+## smuggled in here" — #332 is that rename (windmarch's melee pair are
+## `harriers` now), so the archetype stops varying and comes off, exactly
+## as `test_every_documented_exception_is_still_needed` demands.
+##
+## Leave it empty rather than deleting it. The next archetype to vary
+## wants the same escape hatch and the same obligation to justify itself.
+const CLASS_MAY_VARY: Array[StringName] = []
 
 ## Reach at or above which a unit is shooting rather than swinging.
 ## Between the longest melee in the roster (2.4) and the shortest missile

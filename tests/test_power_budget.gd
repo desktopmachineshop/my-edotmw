@@ -46,7 +46,12 @@ const ROLES := {
 	&"levy": "line", &"spearmen": "line", &"heavy": "line",
 	&"sellswords": "line", &"shades": "line",
 	&"archers": "missile", &"greatbow": "missile",
+	# `harriers` is windmarch's melee skirmisher, split from
+	# `skirmishers` by #332 so one label stops meaning two things.
+	# Same ROLE — it screens with the skirmishers it was named out
+	# of — but its own archetype, which is the point of the split.
 	&"skirmishers": "skirmisher", &"bowriders": "skirmisher",
+	&"harriers": "skirmisher",
 	&"cavalry": "cavalry",
 	&"engine": "siege", &"ram": "siege", &"bombard": "siege",
 	&"breaker": "siege",
