@@ -201,6 +201,21 @@ class VirtualClient:
 	## armies in front of each other while reporting zero of these (#123).
 	var raid_orders := 0
 
+	## The renewable economy, as two numbers rather than one
+	## (D-20260828-food-is-grown-not-only-found): the most FIELDS this bot
+	## ever had standing, and the gather orders it issued AT one. Both are
+	## METRICS, not gates — a farm needs an opening plus 80 wood, and the
+	## shipped map already leaves two of four bots short of a barracks at
+	## 420 s, so gating on either would fail honest runs (D-031's stale
+	## timing trap, which this project has now re-set three times).
+	##
+	## Two, for the reason `military_peak` sits beside `raid_orders`:
+	## "it never built a field" and "it built fields and never worked one"
+	## are different faults with the same symptom, and only the pair can
+	## tell them apart.
+	var farms_peak := 0
+	var field_orders := 0
+
 	## The squad sent to found the town hall, or -1 before that has
 	## happened. Read by `_issue_order` to keep the raid-order pool from
 	## ever picking this squad while it is still walking to build.
@@ -432,6 +447,10 @@ class VirtualClient:
 		squads_peak = maxi(squads_peak, state.squads.size())
 		if first_soldier_at < 0.0 and fighting > 0:
 			first_soldier_at = now
+		# Own fields standing. `farm_cells(true)` includes an ally's, and a
+		# load-test bot has none (every bot is its own side), so this is
+		# this bot's own count.
+		farms_peak = maxi(farms_peak, state.farm_cells(true).size())
 
 	func _run_patrol(now: float) -> void:
 		if state.space == null or player_count <= 0:
@@ -678,6 +697,17 @@ class VirtualClient:
 	## a move order would cancel the haul (D-034) every pass. One split, two
 	## halves, no squad in both.
 	func _put_gatherers_to_work() -> void:
+		# The bot's own FIELDS (D-20260828-food-is-grown-not-only-found),
+		# one crew each. Without this the load test would raise farms and
+		# never work one — the "the configuration nothing runs" gap that
+		# #119 and #123 were both about, arriving a third time.
+		var fields: Dictionary = state.farm_cells(true)
+		var field_taken := {}
+		for assigned_squad in _gather_assigned:
+			var at := int(_gather_assigned[assigned_squad])
+			if fields.has(at):
+				field_taken[at] = true
+
 		for squad in BotPatrol.assign(state.squads, _founding_squad)["workers"]:
 			if squad == _builder_squad:
 				continue  # walking to a building site; see `_builder_squad`
@@ -685,18 +715,34 @@ class VirtualClient:
 				String(state.composition.get(squad, {}).get("def_id", ""))))
 			if def == null or def.carry_capacity <= 0:
 				continue
-			if _gather_assigned.has(squad) and state.nodes.has(_gather_assigned[squad]):
+			# A field is a work site the server keeps and `state.nodes` does
+			# not, so the still-valid test has to ask both — otherwise a crew
+			# standing in a farm is re-ordered onto it every single pass.
+			if _gather_assigned.has(squad) \
+					and (state.nodes.has(_gather_assigned[squad])
+						or fields.has(_gather_assigned[squad])):
 				continue
 			var best := -1
 			var best_distance := 1 << 30
 			var here := state.squad_cell(squad, 0.0)
-			for cell in state.nodes:
-				if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+			for cell in fields:
+				if field_taken.has(int(cell)):
 					continue
-				var d := state.space.distance(here, state.space.from_index(int(cell)))
-				if d < best_distance:
-					best_distance = d
+				var fd := state.space.distance(here, state.space.from_index(int(cell)))
+				if fd < best_distance:
+					best_distance = fd
 					best = int(cell)
+			if best >= 0:
+				field_taken[best] = true
+				field_orders += 1
+			else:
+				for cell in state.nodes:
+					if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+						continue
+					var d := state.space.distance(here, state.space.from_index(int(cell)))
+					if d < best_distance:
+						best_distance = d
+						best = int(cell)
 			if best < 0:
 				continue
 			_gather_assigned[squad] = best
@@ -1390,7 +1436,7 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d refused=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d farms_peak=%d field_orders=%d refused=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
@@ -1398,7 +1444,8 @@ func _report() -> void:
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
 		_patrol_legs(), _scouts_peak(), _raid_orders(), _military_squads(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
-		_nodes_felled(), _refused_count()])
+		_nodes_felled(), _farms_peak(), _field_orders(), _refused_count()])
+
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
@@ -1411,13 +1458,13 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d squads_peak=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
+		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d squads_peak=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f farms_peak=%d field_orders=%d build=%s" % [
 			vc.state.player, vc.state.squads.size(), vc.military_squads(),
 			vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
 			vc.squads_peak, vc.military_peak, vc.wood_peak, vc.second_building_at,
-			vc.first_soldier_at, vc.build_block])
+			vc.first_soldier_at, vc.farms_peak, vc.field_orders, vc.build_block])
 
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:
@@ -1450,4 +1497,23 @@ func _nodes_felled() -> int:
 	var total := 0
 	for vc in _clients:
 		total += vc.state.felled.size()
+	return total
+
+
+## The renewable half, summed across bots
+## (D-20260828-food-is-grown-not-only-found). Both are METRICS — read them
+## together: `farms_peak=0` is "nobody could afford a field", while
+## `farms_peak>0 field_orders=0` is "fields were raised and never worked",
+## and only the pair separates those.
+func _farms_peak() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.farms_peak
+	return total
+
+
+func _field_orders() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.field_orders
 	return total
