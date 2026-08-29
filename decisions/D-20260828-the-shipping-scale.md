@@ -1,4 +1,4 @@
-### D-20260828-the-shipping-scale · 2026-08-28 · Provisional — the shipping scale target, measured: ~200 squads, and the budget is a TOTAL
+### D-20260828-the-shipping-scale · 2026-08-28 · Accepted — the shipping scale target, measured: ~200 squads, and the budget is a TOTAL
 
 **Supersedes D-018's number.** The shipping target is **~200 squads and
 ~3,100 soldiers in a match**, not 1,000 squads and 40,000 soldiers.
@@ -240,6 +240,27 @@ The free recovery in this area was taken in
 `D-20260828-the-m6-rise-has-a-name` (separation's stale scan radius).
 What dominates now is combat, which is a priced design trade, and the
 water layer, which costs nothing. There was no third thing.
+
+#### Owner ratified 2026-08-29
+
+**The owner ratified this entry outright** ("ratify all", against the
+recommendation on page 5 of `docs/plans/owner-decisions.md`), which moves
+it from Provisional to **Accepted** and supersedes D-018's 20-player /
+40,000-soldier number as the figure this project builds against.
+
+**The seat-derived `squad_cap` is ratified WITH it, and that is the half
+worth naming.** The recommendation put the two together deliberately: a
+scale target that did not say where the cap comes from would leave the
+same number written down twice and free to disagree — which is the shape
+this repo has paid for repeatedly (D-058/D-065, and `civ-knobs.md`'s
+three knobs read by nothing). Ratifying the target without the
+derivation would have re-opened exactly that gap.
+
+**What this does NOT ratify:** the hosted figure. That is #339's, and it
+is ratified separately in
+`D-20260828-the-host-pays-both-budgets` — dedicated ~200, hosted
+100-150. A single "the scale is 200" would have quietly claimed a number
+the host measurement contradicts.
 
 #### Rejected alternatives
 

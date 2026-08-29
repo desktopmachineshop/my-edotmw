@@ -175,6 +175,30 @@ None is built here. Each is a small proposed ticket.
 - **The alpha loop (#183) inherits a known, unmitigated property.**
   Whoever writes the tester runbook should state it in the runbook.
 
+## Owner ratified 2026-08-29 — dedicated-first for long matches
+
+**The owner ratified the recommendation and #289 is closed.** The answer
+is **dedicated-first for long matches**: host-quit stays as D-088
+specifies for casual and playtest sessions, and a 1-2 hour match is
+expected to run on a dedicated server rather than on a player's machine.
+
+This is recorded here because it is **the answer to the revisit this
+entry opened against D-088 and D-092**, and those two entries should be
+read with it. It resolves the question without migration and without
+saves: migration was priced as expensive-not-dangerous above, and D-092's
+rejection of saves was about the CEREMONY, which a dedicated server does
+not need.
+
+**It is also cheap because of #339.** That measurement already shows a
+player-hosted match holding 100-150 squads against a dedicated ~200, so
+"long matches want a dedicated server" is a conclusion the hardware had
+already reached — this ratification names it rather than discovering it.
+
+**Still unmeasured, and still the thing to fix:** the actual length of a
+full match. This entry's whole finding is that host-quit is priced
+against a number nobody has taken, and ratifying dedicated-first does not
+take it. Cycle 2 opens with that measurement.
+
 ## Revisit trigger
 
 **The measurement, stated so it can actually be taken:** once #159 and
