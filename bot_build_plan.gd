@@ -122,6 +122,47 @@ static func wanted_count(def: BuildingDef) -> int:
 	return FIELDS_WANTED if grows_something(def) else 1
 
 
+## The ONE gate a load-test bot builds, or null once it has one (#337).
+##
+## Support buildings are excluded from `wanted_building` above, under a
+## comment saying a bot that started raising walls "would spend its wood
+## on scenery" — and that is still right. This is the deliberate
+## exception, and it is bounded at exactly one for the reason that comment
+## gives.
+##
+## It exists because D-076's gate wire — `C2S_ORDER_GATE_MODE` and
+## `C2S_ORDER_GATE_STATE` — had never been driven by `test-load`. Not
+## rarely: never. No bot built a gate, so the two opcodes existed, were
+## validated server-side, were tested in isolation, and had never crossed
+## a real socket under load. That is the shape of gap #337 was filed
+## about, in the harness rather than in the AI.
+##
+## Found by RULE (`is_gate`), never by id, exactly as `wanted_building`
+## finds a barracks: a civ shipping its own gate is picked up with no
+## edit here (D-047).
+##
+## Ordered only AFTER something that trains is standing, so it can never
+## outbid the barracks — the same precondition `StaticDefence` applies to
+## the AI, for the same reason.
+static func wanted_gate(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
+	var trains := false
+	for id in owned_def_ids:
+		var owned := BuildingSim.def_by_id(StringName(id))
+		if owned != null and not owned.produces.is_empty() and not owned.consumes_builder:
+			trains = true
+	if not trains:
+		return null
+	for def in BuildingSim.all_defs():
+		if not def.is_gate:
+			continue
+		if not BuildingSim.can_build(def, builder_archetype):
+			continue
+		if owned_def_ids.has(String(def.id)):
+			return null
+		return def
+	return null
+
+
 ## Whether `wallet` covers `def`, in the order `Economy.ResourceKind`
 ## declares.
 ##

@@ -15,4 +15,5 @@ attack_squads_minimum = 2
 attack_regroup_thinks = 8.0
 food_floor = 180
 wood_floor = 200
+defence_appetite = 0.5
 farms_wanted = 4
