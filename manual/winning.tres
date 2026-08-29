@@ -1,0 +1,43 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"winning"
+title = "Winning and losing"
+order = 120
+summary = "Elimination needs both your army and your buildings gone."
+body = "You are ELIMINATED when you have no living squads AND no living buildings.
+Either one alone keeps you in.
+
+That cuts both ways. A player with one gatherer crew and no town can found
+another and carry on. And a base razed to nothing while the army is still in
+the field has cost its owner an economy, not a match.
+
+The match ends when one player — or one team — is the last left standing.
+
+## So razing is not enough
+
+Take the buildings and the troops. Whichever you leave is what they rebuild
+from.
+
+## Leaving, and being cut off
+
+Leaving a match returns you to the lobby, and it leaves nothing behind:
+every squad AND every building you own is removed the moment you go, so
+by the rule above you are eliminated at once. There is nothing special
+about quitting — it is the ordinary rule applied to a player who no
+longer has anything.
+
+## Conceding
+
+If you are beaten and would rather not be chased down, you can concede.
+It razes what you own, so the same rule notices on the next tick and the
+match can end — which is the point: a lost position should not cost
+everybody else another twenty minutes.
+
+If you were HOSTING, the match ends for everybody. A hosted game runs inside
+the host's own client, so there is nothing left to play on."
+sources = Array[String](["res://match_state.gd", "res://decisions/D-027.md", "res://decisions/D-075-leaving-a-match-returns-to-the.md"])
+stamp = "c2f3d904461faa17202686ab88aa3f1c9b8b389191abcc8bff95cd05530920e8"

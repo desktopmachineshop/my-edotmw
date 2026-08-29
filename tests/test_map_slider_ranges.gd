@@ -28,6 +28,17 @@ func _lobby() -> MatchState:
 	return m
 
 
+## The LOBBY's index for a preset — `ids()` on purpose, because that is
+## the list the picker and the option channel cycle
+## (`D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross`).
+##
+## Every other use in this file is `all_ids()`, and the difference
+## matters: the tests below assert things about the shipped `.tres` DATA,
+## which stay true of a preset the lobby has retired. Retiring `islands`
+## silently dropped it from two of them until this was noticed — a change
+## narrowing a test's scope as a side effect, which is the "what can no
+## longer be reached" family (D-20260817-selection-bar-three-columns)
+## pointed at coverage instead of at a control.
 func _preset_index(id: StringName) -> int:
 	return TerrainPresetRoster.ids().find(id)
 
@@ -38,7 +49,7 @@ func test_a_shipped_preset_keeps_its_beach_exactly_where_it_put_it() -> void:
 	# The band is stored and the level derived, so every preset generates
 	# the world it generated before this changed — that is the claim which
 	# makes deriving it a fix rather than a re-tuning of four maps.
-	for id in TerrainPresetRoster.ids():
+	for id in TerrainPresetRoster.all_ids():
 		var preset := TerrainPresetRoster.by_id(id)
 		var settings := MapSettings.new()
 		settings.apply_preset(preset)
@@ -65,7 +76,7 @@ func test_no_point_of_any_slider_breaks_the_ordering() -> void:
 	# Before the beach became a band this failed on the first sample past
 	# the preset's own beach line — on `plains`, at 0.28 of a slider drawn
 	# to 0.90.
-	for id in TerrainPresetRoster.ids():
+	for id in TerrainPresetRoster.all_ids():
 		for key in MapSettings.SLIDER_LIMITS.keys():
 			var settings := MapSettings.new()
 			settings.apply_preset(TerrainPresetRoster.by_id(id))
@@ -213,7 +224,7 @@ func test_every_shipped_preset_generates_a_map_at_every_size() -> void:
 	# The other half: the check must not refuse anything the game ships
 	# with. Four presets x four sizes, through the real generator.
 	for entry in MapSettings.sizes():
-		for id in TerrainPresetRoster.ids():
+		for id in TerrainPresetRoster.all_ids():
 			var settings := MapSettings.new()
 			settings.width = int(entry["width"])
 			settings.height = int(entry["height"])
@@ -228,7 +239,7 @@ func test_the_sampled_ground_estimate_matches_the_real_generation() -> void:
 	# rather than calling it — so this compares the two on the far side of
 	# the boundary (the VAT-compression rule), and a drift in either
 	# fails here instead of quietly moving where the check bites.
-	for id in TerrainPresetRoster.ids():
+	for id in TerrainPresetRoster.all_ids():
 		var settings := MapSettings.new()
 		settings.width = 84
 		settings.height = 96
