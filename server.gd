@@ -692,9 +692,9 @@ func _build_world() -> void:
 	# exported build's .pck, and the first ever exported build recorded no
 	# replay at all while playing a complete match (#201,
 	# D-20260828-artifacts-are-written-where-the-build-can-write).
-	var replay_path := ArtifactPath.of("replay-%d.edmw" % _port)
+	var replay_path := ArtifactPath.of("replay-%d%s" % [_port, ReplayLog.SUFFIX])
 	if _matches_played > 0:
-		replay_path = ArtifactPath.of("replay-%d-match%d.edmw" % [_port, _matches_played + 1])
+		replay_path = ArtifactPath.of("replay-%d-match%d%s" % [_port, _matches_played + 1, ReplayLog.SUFFIX])
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % ArtifactPath.describe(_replay.path))
