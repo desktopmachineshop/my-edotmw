@@ -168,9 +168,15 @@ jobs:
           set -uo pipefail
           head_sha='${{ github.event.pull_request.head.sha || github.sha }}'
           merge_sha='${{ github.sha }}'
+          # NO COMMA in anything that reaches a `title=`. A workflow
+          # command is `::error title=A,file=B::msg` — commas separate
+          # PROPERTIES, so a comma in the title silently truncates it
+          # there and drops the rest. Observed: a title reading
+          # "head <sha>, merged as <sha>" arrived cut mid-sha with the
+          # closing bracket gone.
           where="head ${head_sha}"
           if [ "${head_sha}" != "${merge_sha}" ]; then
-            where="head ${head_sha}, merged as ${merge_sha}"
+            where="head ${head_sha} (merged as ${merge_sha})"
           fi
 
           if [ ! -s /tmp/test-unit.log ]; then
@@ -179,7 +185,12 @@ jobs:
           fi
 
           strip() { sed 's/\x1b\[[0-9;]*m//g' /tmp/test-unit.log; }
-          fails=$(strip | grep -F '[Failed]' | head -20) || fails=""
+          # `grep -m` and NOT `| head`. Under `pipefail`, `head` closing
+          # the pipe early SIGPIPEs grep, the pipeline reports failure,
+          # and `|| fails=""` then throws the matches away — so a run with
+          # five failing tests reported "no failing assertion". Observed
+          # before this line was written the other way round.
+          fails=$(strip | grep -m 20 -F '[Failed]') || fails=""
           totals=$(strip | sed -n '/^Totals/,/^Time/p' | tr '\n' ' ') || totals=""
 
           if [ -n "${totals}" ]; then
@@ -189,12 +200,12 @@ jobs:
           if [ -z "${fails}" ]; then
             # Do not claim a failing assertion that is not there: the job
             # can go red for a reason the suite never reached.
-            echo "::error title=test-unit (${where})::Job failed with no failing assertion in the suite log. The cause is outside the tests - read the log artifact."
+            echo "::error title=test-unit failed::${where} - job failed with no failing assertion in the suite log. The cause is outside the tests - read the log artifact."
             exit 0
           fi
 
           echo "${fails}" | while IFS= read -r line; do
-            echo "::error title=test-unit failed (${where})::${line}"
+            echo "::error title=test-unit failed::${where} - ${line}"
           done
 
       # D-20260818-every-file-has-a-line-ending-rule. A Godot recipe that
