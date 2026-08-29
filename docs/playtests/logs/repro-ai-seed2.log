@@ -1,0 +1,38 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+server: world 42x48, preset continents, seed 2 — 4 spawn points
+economy: 4 of 6 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+server: 256 resource nodes generated
+server: recording replay to res://artifacts/replay-27543.edmw
+server: SIM_CIVS 1000=emberdeep
+server: player 1000 joined with 2 squads (0 connected) — match lobby (1/2 players)
+server: AI seated as player 1000 (emberdeep, balanced)
+server: SIM_CIVS 1000=emberdeep, 1001=gildedreach
+server: player 1001 joined with 2 squads (0 connected) — match running (2 active of 2)
+server: AI seated as player 1001 (gildedreach, balanced)
+server: SIM_TEAMS 1000=0, 1001=0
+server: SIM_CIVS 1000=emberdeep, 1001=gildedreach
+server: match started — AI 1000=emberdeep, AI 1001=gildedreach
+server: listening on 0.0.0.0:27543 — map ladder, tick 10 Hz
+server: will stop after 150.0 simulated seconds
+server: player 1000 began town_centre at (35, 33)
+server: AI_REFUSED player=1000 — Moving to build a Town Centre
+server: AI_REFUSED player=1001 — Cannot build there — a food source is in the way
+server: AI_UNREACHABLE player=1000 gave up on node 1586
+server: AI_UNREACHABLE player=1000 gave up on node 1717
+server: AI_UNREACHABLE player=1000 gave up on node 1586
+server: AI_UNREACHABLE player=1000 gave up on node 1717
+server: MATCH_ELIMINATED player=1001
+server: MATCH_OVER winner=1000
+server: reached 150.0s, stopping
+server: bandwidth — 1381 B/client/s over 1 client(s), budget_overruns=0
+server: MEMORY 43.4 MB static, 64.0 MB peak — 2 player(s), 16 squad(s), 42x48 = 2016 cells
+server: transport — peak RTT 0.0ms, peak loss 0.000%, min throttle 1.00 of 1.00, all reliable on channel 0
+server: CIVS_FIELDED 2 of 6 — emberdeep=14, gildedreach=2
+server: AI_STATS player=1000 civ=emberdeep profile=balanced team=0 squads_peak=12 workers_peak=11 buildings=1 enemy_buildings_seen=0 allies_seen=0 ally_objectives=0 attacks=0 first_attack=-1.0 first_attack_soldiers=0 peak_stockpile=510 peak_food=250 peak_wood=160 substituted=0 unreachable=4 scout_legs=0 afford_refusals=0 cap_refusals=0
+server: AI_STATS player=1001 civ=gildedreach profile=balanced team=0 squads_peak=2 workers_peak=1 buildings=0 enemy_buildings_seen=1 allies_seen=0 ally_objectives=0 attacks=0 first_attack=-1.0 first_attack_soldiers=0 peak_stockpile=510 peak_food=250 peak_wood=200 substituted=0 unreachable=0 scout_legs=0 afford_refusals=0 cap_refusals=0
+server: MATCH_RESULT winner=1000 team=0 phase=2
+server: ticks over D-020's 100ms budget: 0 of 1501, worst 19.8ms at tick 1358
+server: FOG_TOTAL_SQUADS=16
+server: FOG_TOTAL_NODES=256
+server: wrote 153 replay records

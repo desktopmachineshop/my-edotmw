@@ -29,9 +29,15 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Pinned for reproducibility — bump deliberately, not incidentally.
-$JustVersion = '1.57.0'
-
+#
+# THE pin lives in .just-version, not here, for the same reason
+# .godot-version exists: CI has to fetch the same `just` this script does
+# and cannot run this script to find out which one (it is Windows-only by
+# design — see the architecture note below). A version written in two
+# places is two versions waiting to disagree, which is the defect family
+# this project keeps paying for.
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$JustVersion = (Get-Content (Join-Path $RepoRoot '.just-version')).Trim()
 $ToolsDir = Join-Path $RepoRoot 'tools'
 $JustExe = Join-Path $ToolsDir 'just.exe'
 
@@ -50,6 +56,12 @@ if ([System.Environment]::Is64BitOperatingSystem) {
 } else {
     throw "Unsupported architecture: this project targets 64-bit Windows for local dev."
 }
+
+# Deliberately Windows-only: local development on this project is Windows
+# (D-014 — the GUI client is native and needs the dev machine's GPU), and
+# a cross-platform bootstrapper would be a second code path nobody runs.
+# CI fetches its own Linux `just` from the SAME .just-version pin — see
+# .github/workflows/ and docs/ci.md.
 
 $JustUrl = "https://github.com/casey/just/releases/download/$JustVersion/$JustAsset"
 $ZipPath = Join-Path $ToolsDir 'just.zip'

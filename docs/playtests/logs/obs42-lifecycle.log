@@ -1,0 +1,30 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS42: begin
+
+OBS42 ELIMINATION - D-033: a player is out when they have NO living
+  squads AND no living buildings. All four combinations, through
+  the real MatchState.update().
+  squads=true  buildings=true  -> eliminated=false standing=PLAYING
+  squads=true  buildings=false -> eliminated=false standing=PLAYING
+  squads=false buildings=true  -> eliminated=false standing=PLAYING
+  squads=false buildings=false -> eliminated=true  standing=ELIMINATED
+
+OBS42 VICTORY - one side razed to nothing; who is told what.
+  events: []
+  finished at never, winner=-1, phase=RUNNING
+  standing: player1=PLAYING player2=PLAYING
+  victim building destroyed=false, victim squads alive=0
+  scoreboard: [{ "kind": "human", "player": 1, "civ": &"gravesworn", "team": 0, "name": "Player 1", "choice": &"random", "standing": 0 }, { "kind": "human", "player": 2, "civ": &"gildedreach", "team": 0, "name": "Player 2", "choice": &"random", "standing": 0 }]
+
+OBS42 LOBBY ROUND TRIP - RUNNING -> FINISHED -> LOBBY -> RUNNING,
+  through MatchState's own transitions.
+  start phase=RUNNING players=2 seats=2 admin=1
+  return_to_lobby() -> true, phase now LOBBY, winner reset to -1
+  start_match()     -> true, phase now RUNNING
+  is_running=true, eliminated flags cleared: p1=false p2=false
+
+  NOTE: what a rematch does to the CLIENT's carried-over state is
+  #157's territory (building desync in the second match, owned
+  elsewhere). Deliberately not investigated here.
+OBS42: end
