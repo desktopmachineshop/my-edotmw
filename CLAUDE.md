@@ -84,6 +84,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/main-menu.md
 
+@docs/status/steam-boundary.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/renewable-economy.md
@@ -433,6 +435,17 @@ bot_patrol.gd            What a load-test bot's scouting detachment does
                         where two starts are 13 cells apart against 11
                         cells of town-centre sight, "am I home yet" is not
                         the same question.
+steam_platform.gd        THE one script allowed to name Steam (D-093,
+                        #181). A test fails if any other .gd names the
+                        API — the D-046-criterion-3 pattern, and what
+                        keeps D-021's one-category amendment from being a
+                        hole. Absent Steam reports unavailable and costs
+                        Steam FEATURES, never the game; that is the
+                        configuration every automated context here runs
+                        in, so the fallback is the constantly-tested path.
+                        Note D-093's GDExtension premise is measured FALSE
+                        (D-20260828) — GodotSteam ships a modified engine
+                        — and the replacement is the owner's call.
 cmd_args.gd              The one parse of `--key=value`, and the one check
                         that a value about to be read as a NUMBER is one
                         (D-20260817-recipe-args-are-positional). All three
