@@ -218,6 +218,35 @@ func casualties_to_rout() -> float:
 @export var slot_models: Array[StringName] = []
 @export var model_mix: Array[StringName] = []
 
+# Naval (#301, `docs/plans/naval.md` §2.2 and §5). Schema addition
+# 2026-08-28, against D-010.
+
+## Which movement DOMAIN this unit lives in. Ground is every unit that has
+## ever existed here; water is a ship.
+##
+## A domain rather than a flag because `SquadSim._tier` gains a third
+## value (`DOMAIN_GROUND` / `DOMAIN_WALL_TOP` / `DOMAIN_WATER`) and the
+## three are mutually exclusive by construction — a ship is never on a
+## wall, and a land squad is never on open water except as cargo, which is
+## not in the world at all.
+##
+## The PATHING half of this is naval stage 2 and is not in the tree yet.
+## The field is here because ten ship `.tres` files are, and a `.tres`
+## naming a property its schema lacks is a value that silently becomes a
+## default. Its first reader is `tests/test_naval_roster.gd`, which
+## screens by it and asserts every land unit in the roster is `ground`.
+@export_enum("ground", "water") var movement_domain: String = "ground"
+
+## How many SQUADS this unit can carry as cargo. Zero for everything that
+## is not a transport, which is every unit outside `/units/*_*` naval defs.
+##
+## Squads rather than soldiers, because a carried squad is removed from
+## the world whole (naval design §3.1) — there is no partial load and so
+## nothing to count in men. Read by the roster screen, which prices a
+## transport in capacity per resource point because V cannot price
+## carrying.
+@export var transport_capacity: int = 0
+
 # Economy
 # Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).
 # A unit with carry_capacity > 0 IS a gatherer — no separate boolean to
