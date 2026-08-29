@@ -48,3 +48,31 @@ against a client whose world had been torn down and whose building ids
 restart at 0. Present since leave-to-lobby existed; the Regen button
 made it reproducible in one click. **Read a building-only desync as a
 question about the ever-revealed SET before reading it as arithmetic.**
+
+**And the same defect had two more instances, found by looking for them
+(D-20260827-a-client-record-forgets-the-match-it-left, #157).** The
+building-hash leak above was fixed key by key; `nodes_known` and
+`nodes_depleted_told` — D-061/D-087's persistent-explored RESOURCE sets,
+written eleven hundred lines away in `_send_visible_nodes` — were not,
+and were still live. They are invisible to the desync counter because
+nodes are not hashed at all, so their symptom is the second match
+missing forests from a patch of ground, or a tree that never falls.
+
+A per-client record has ONE definition of its birth shape now
+(`server._fresh_record`) and `_return_to_lobby` scrubs to it rather than
+naming keys, because **the list is the defect**: it was incomplete twice,
+in a codebase whose whole discipline is writing rules down.
+`tests/test_client_record.gd` reads server.gd for every key anything ever
+writes onto a record and fails if the birth shape does not mint it — so
+the next baseline goes red there rather than in somebody's second match.
+
+Two things worth carrying. **#157's four-desync report and the 106-desync
+one are the same bug at different volumes**: match two's town centre
+takes match one's id, the server finds it already known, sends no
+`BUILDING_INFO`, and hashes it anyway — then HEALS the moment anything
+marks that building dirty and the ordinary resend delivers it. A
+transient self-correcting desync produces no artefact most of the time,
+which is why it outlived the loud one. And **`just test-load` still
+cannot reach any of it**, because it never returns to a lobby; every one
+of these was found by a human playing twice.
+
