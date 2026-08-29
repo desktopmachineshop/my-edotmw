@@ -224,7 +224,19 @@ func _play_pairing(buff: float) -> Array[int]:
 			var broke: int = int(outcome[2])
 			var gilded_broke := broke == (2 if swap else 1)
 			var wind_broke := broke == (1 if swap else 2)
-			if gilded_broke:
+			# ANNIHILATION OUTRANKS BREAKING (#406). A rout is not final:
+			# a broken squad can rally (D-019) and go on to destroy the
+			# side that held. Scoring by who broke first alone credited
+			# gildedreach a win in a fight it ended at 0.00 — wiped, after
+			# windmarch broke and came back. A squad reduced to nothing has
+			# lost, whatever the morale ledger says, so the wipe is read
+			# first and first-to-break decides only among survivors.
+			var decided := true
+			if gilded <= 0.0 and wind > 0.0:
+				losses += 1
+			elif wind <= 0.0 and gilded > 0.0:
+				wins += 1
+			elif gilded_broke:
 				losses += 1
 			elif wind_broke:
 				wins += 1
@@ -232,9 +244,12 @@ func _play_pairing(buff: float) -> Array[int]:
 				wins += 1
 			elif wind > gilded:
 				losses += 1
-			gut.p("    seed %-5d swap=%-5s  gilded %.2f  wind %.2f  broke=%s"
+			else:
+				decided = false
+			gut.p("    seed %-5d swap=%-5s  gilded %.2f  wind %.2f  broke=%-6s %s"
 				% [seed_value, str(swap), gilded, wind,
-					"gilded" if gilded_broke else ("wind" if wind_broke else "-")])
+					"gilded" if gilded_broke else ("wind" if wind_broke else "-"),
+					"" if decided else "(undecided)"])
 	return [wins, losses] as Array[int]
 
 
@@ -274,3 +289,14 @@ func _play(a_def: UnitDef, b_def: UnitDef, seed_value: int = 11) -> Array:
 		"the two squads never traded a casualty — they never met, so the " +
 		"result says nothing about the levies")
 	return [float(sim.alive_of(a)) / a_start, float(sim.alive_of(b)) / b_start, broke]
+
+
+## TEMPORARY (#406) — measures which buff factor actually sweeps under the
+## corrected metric, so the control is calibrated rather than guessed.
+## Deleted in the same PR once the number is recorded.
+func test_TEMP_which_factor_sweeps() -> void:
+	for buff in [2.0, 3.0, 4.0, 6.0]:
+		var r := _play_pairing(buff)
+		gut.p("FACTOR x%.1f -> gilded %d - %d wind  (sweep needs wind = 0)"
+			% [1.0 + buff, r[0], r[1]])
+	assert_true(true)
