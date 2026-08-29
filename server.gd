@@ -1381,14 +1381,36 @@ func _on_disconnect(peer) -> void:
 		if _sim != null:
 			_sim.replicator.forget_client(player)
 
-			# An abandoned army does not get to keep standing on the field
+			# Nothing a player abandons gets to keep standing on the field
 			# (D-033). Wiping it is the *cause* of defeat; MatchState's
-			# ordinary "no living squads" rule notices the effect on the next
-			# tick, so "defeated" keeps exactly one definition. The wipe comes
-			# back as casualty events, which replicate through the path
-			# clients already understand.
+			# ordinary rule notices the effect on the next tick, so
+			# "defeated" keeps exactly one definition. Both wipes come back
+			# through paths clients already understand — casualty events for
+			# the army, the ordinary dirty/BUILDING_INFO destruction for the
+			# base.
+			#
+			# BOTH, and that is #292/#318 rather than thoroughness. This
+			# comment used to name the ordinary rule as "no living squads",
+			# which it stopped being when
+			# D-20260823-the-opening-is-a-crew-and-a-general added the
+			# buildings clause — correctly, because a crew is consumed by
+			# the town hall it founds. Wiping only the army left a quitter's
+			# undefended base standing, which kept them ACTIVE, so
+			# `_check_victory` never fired and a 1v1 somebody rage-quit ran
+			# to the time cap. Nothing failed; the comment simply described
+			# a rule that had moved underneath it (the D-065 family).
 			_match.mark_disconnected(player)
 			_pending_events.append_array(_sim.eliminate_player(player))
+			var razed := _buildings.eliminate_player(player) if _buildings != null else []
+			if not razed.is_empty():
+				# Rubble is walkable. The TICK refreshes passability when
+				# combat destroys something; a disconnect arrives outside
+				# the tick, so without this the remaining players path
+				# around an invisible wall where an abandoned town hall
+				# used to be — and it reads as a pathfinding bug.
+				_refresh_passability()
+				print("server: razed %d abandoned building(s) of player %d" % [
+					razed.size(), player])
 		else:
 			# Gone from the lobby, so the seat goes too — otherwise it sits
 			# there forever as a player who will never arrive, and the admin
