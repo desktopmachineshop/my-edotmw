@@ -6,12 +6,14 @@
 script = ExtResource("1_civ")
 id = &"stoneblood"
 display_name = "Stoneblood"
-summary = "Quality over everything. Few, mighty foot who win any fight they are allowed to stand in — and cannot be in two places. No cavalry, no engines: a giant is his own siege train."
+summary = "Quality over everything. Few, mighty foot who win any fight they are allowed to stand in â€” and cannot be in two places. No cavalry, no engines: a giant is his own siege train."
+signature_unit = &"breaker"
 colour = Color(0.45, 0.5, 0.58, 1)
 starting_food = 250
 starting_wood = 180
 starting_gold = 0
 starting_stone = 60
-squad_cap_bonus = 0
+squad_cap_bonus = -6
 production_speed = 1.0
 gather_speed = 1.0
+epoch_names = Array[String](["Scattered Hill-Clans", "Thrall Levies", "Giants Walk to War", "Gatebreaker Broods", "The Old Blood Wakes"])

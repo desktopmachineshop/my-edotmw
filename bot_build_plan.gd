@@ -39,21 +39,126 @@ extends RefCounted
 const MAX_HAULING_CREWS := 8
 
 
-## The building this bot most wants and does not have, or null.
+## How many FIELDS a load-test bot raises
+## (D-20260828-food-is-grown-not-only-found).
+##
+## A constant rather than a knob, unlike `AiProfileDef.farms_wanted`: a
+## load test has no difficulty setting, and the number here answers "is
+## the renewable economy exercised at all" rather than "how well does this
+## opponent play". Three, because one would leave a single crew's whole
+## behaviour resting on one building surviving, and the bots build slowly
+## enough on the shipped map that more would rarely be reached.
+const FIELDS_WANTED := 3
+
+
+## The building this bot most wants and does not have enough of, or null.
 ##
 ## Anything its crews can raise that TRAINS something comes first, because
 ## that is what turns an economy into a player. Support buildings are not
-## considered at all: a load test has no use for a storehouse, and every
-## wall in the roster is `built_by` gatherers too — a bot that started
-## raising walls would spend its wood on scenery.
+## considered — a load test has no use for a storehouse, and every wall in
+## the roster is `built_by` gatherers too, so a bot that started raising
+## walls would spend its wood on scenery — with ONE exception: a building
+## that GROWS something. That is the only support structure whose absence
+## would leave a whole mechanism unexercised by the load test, which is
+## this project's most-repeated defect (D-055 and its four siblings).
+##
+## Named through `Economy.grows_kind` rather than by id, so a civ's own
+## field or a later woodlot is covered without this file learning a name.
+## The ORDER is one field, then the producers, then the rest of the
+## fields, and that first clause was bought by a measurement rather than
+## reasoned to.
+##
+## The obvious order — producers first, fields after — was written first
+## and shipped a rule nothing could ever reach. `_raise_buildings` saves
+## for what it wants rather than falling through to something cheaper
+## (`ai_player.gd` records why), and a barracks is 150 wood against a
+## bot's 140-200 `wood_peak` in a 120 s run and 140-270 mid-game from a
+## scenario. Measured on both: `farms_peak=0 field_orders=0`, every bot
+## reporting `cannot afford barracks`. That is D-061's harder variant —
+## a rule fully written, correctly called, and standing behind a branch
+## nothing reaches — arriving in the change that was written to avoid it.
+##
+## ONE field first, not all of them: at 80 wood it delays the barracks by
+## about half a hauling round trip, where three would delay it past the
+## end of most runs, and the shipped map already leaves two of four bots
+## short of a barracks at 420 s (`docs/status/load-testing.md`).
 static func wanted_building(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
+	var fields: Array = []
+	var producers: Array = []
 	for def in BuildingSim.all_defs():
-		if def.produces.is_empty():
+		if not BuildingSim.can_build(def, builder_archetype):
+			continue
+		if grows_something(def):
+			fields.append(def)
+		elif not def.produces.is_empty():
+			producers.append(def)
+
+	var have_a_field := false
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) > 0:
+			have_a_field = true
+			break
+	if not have_a_field and not fields.is_empty():
+		return fields[0]
+
+	for def in producers:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
+	return null
+
+
+## Does this building grow a resource — is it a field?
+static func grows_something(def: BuildingDef) -> bool:
+	return def != null and Economy.grows_kind(def) >= 0 and def.grow_per_second > 0.0
+
+
+## How many of `def` a bot wants standing. One of anything that trains, and
+## `FIELDS_WANTED` fields — a field is the one building whose whole point
+## is that there are several of them, because its output is a rate.
+static func wanted_count(def: BuildingDef) -> int:
+	return FIELDS_WANTED if grows_something(def) else 1
+
+
+## The ONE gate a load-test bot builds, or null once it has one (#337).
+##
+## Support buildings are excluded from `wanted_building` above, under a
+## comment saying a bot that started raising walls "would spend its wood
+## on scenery" — and that is still right. This is the deliberate
+## exception, and it is bounded at exactly one for the reason that comment
+## gives.
+##
+## It exists because D-076's gate wire — `C2S_ORDER_GATE_MODE` and
+## `C2S_ORDER_GATE_STATE` — had never been driven by `test-load`. Not
+## rarely: never. No bot built a gate, so the two opcodes existed, were
+## validated server-side, were tested in isolation, and had never crossed
+## a real socket under load. That is the shape of gap #337 was filed
+## about, in the harness rather than in the AI.
+##
+## Found by RULE (`is_gate`), never by id, exactly as `wanted_building`
+## finds a barracks: a civ shipping its own gate is picked up with no
+## edit here (D-047).
+##
+## Ordered only AFTER something that trains is standing, so it can never
+## outbid the barracks — the same precondition `StaticDefence` applies to
+## the AI, for the same reason.
+static func wanted_gate(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
+	var trains := false
+	for id in owned_def_ids:
+		var owned := BuildingSim.def_by_id(StringName(id))
+		if owned != null and not owned.produces.is_empty() and not owned.consumes_builder:
+			trains = true
+	if not trains:
+		return null
+	for def in BuildingSim.all_defs():
+		if not def.is_gate:
 			continue
 		if not BuildingSim.can_build(def, builder_archetype):
 			continue
 		if owned_def_ids.has(String(def.id)):
-			continue
+			return null
 		return def
 	return null
 
@@ -88,13 +193,26 @@ static func can_afford(wallet: PackedInt32Array, def: BuildingDef) -> bool:
 ## then correctly offers nothing, and a barracks is unaffected.
 ##
 ## `civ` may be EMPTY, and for a load-test bot it always is — see `_resolve`.
+## `known_techs` is what the bot has RESEARCHED. Empty means nothing, which
+## is the SAFE default and matches what the server would say
+## (`D-20260827-the-tree-is-the-ladder`): a gated archetype is refused, so
+## offering one here would spend a production order on a refusal.
+##
+## Worth filtering rather than relying on order. Both this and the AI's
+## picker take the FIRST match, and `barracks.produces` happens to start
+## with the one ungated archetype — so without this the bots would keep
+## working purely by accident of roster ordering, which is the exact
+## fragility D-20260823 recorded when five test fixtures broke on
+## "whatever sorts first".
 static func archetype_for(building_def: BuildingDef, civ: StringName,
-		hauling_crews: int) -> StringName:
+		hauling_crews: int, known_techs: Array = []) -> StringName:
 	if building_def == null:
 		return &""
 	for archetype in building_def.produces:
 		var def := _resolve(archetype, civ)
 		if def == null:
+			continue
+		if def.requires_tech != &"" and not known_techs.has(def.requires_tech):
 			continue
 		if def.carry_capacity > 0 and hauling_crews >= MAX_HAULING_CREWS:
 			continue

@@ -8,6 +8,7 @@ id = &"thornwood_greatbow"
 display_name = "Dawnfletch Sentinels"
 civ = &"thornwood"
 archetype = &"greatbow"
+requires_tech = &"breaking"
 squad_size = 16
 health = 55.0
 damage = 16.0

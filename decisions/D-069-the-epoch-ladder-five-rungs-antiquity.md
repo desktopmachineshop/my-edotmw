@@ -1,4 +1,15 @@
-### D-069 · 2026-08-04 · Superseded by D-20260823-fantasy-civs-on-a-four-epoch-ladder (was Provisional) — the epoch ladder: five rungs, antiquity to high medieval
+### D-069 · 2026-08-04 · Superseded by D-20260828-the-epoch-ladder (was Provisional) — the epoch ladder: five rungs, antiquity to high medieval
+
+> **Superseded twice, and the second one is the ladder in force.**
+> `D-20260823-fantasy-civs-on-a-four-epoch-ladder` replaced this with four
+> rungs; `D-20260828-the-epoch-ladder` is now the single description of the
+> ladder and supersedes both. **What survives from this entry verbatim** is
+> the new-verb filter and the advance-cost table — the ladder entry re-derives
+> neither. What is dead is the five *historical* rungs and the `EpochDef`
+> advance gate carrying a cost: completing a tech line is the age-up now,
+> and there is no button. Kept whole rather than edited, per
+> `decisions/README.md` rule 3.
+
 **Decision:** **Five epochs**, spanning antiquity to the high medieval
 period. The ladder is **shared by every civ** — same count, same gate
 shape — and civs differ in what each rung *contains*, never in its

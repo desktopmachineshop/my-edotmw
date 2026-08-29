@@ -106,7 +106,12 @@ const RE_RALLY_AT_SECONDS := 40.0
 ## enough that an empty scene cannot pass.
 const MIN_DISTINCT_COLOURS := 24
 
-var _host: ENetConnection
+## How this client reaches a server (#184). ENet today; D-088's Steam
+## relay is the second implementation. Null when there is no connection
+## at all — which is a real state since #180 — and also null when this
+## player is HOSTING, because then the server it owns holds the socket
+## and this client reaches it through the loopback (#182).
+var _transport: NetTransport = null
 ## The other end of this client's connection. UNTYPED since #182,
 ## because there are now two kinds: an `ENetPacketPeer` when joined over
 ## a socket, and a `HostLink` when this player is hosting the match in
@@ -169,6 +174,19 @@ var _browser_rows: VBoxContainer = null
 var _browser_status: Label = null
 
 var _menu_layer: CanvasLayer = null
+## The controls screen (#282). One panel, reachable from BOTH menus —
+## the main menu for a player who has not connected yet, and the in-game
+## menu for one mid-match who will not go back to the main menu to read
+## them. Built once and shown/hidden, so the two entry points cannot
+## drift into two screens.
+var _controls_layer: CanvasLayer = null
+## The manual (#305). `_manual_page` survives a close, so a player who
+## opens Help twice lands where they left off rather than back at page one.
+var _manual_layer: CanvasLayer = null
+var _manual_contents: VBoxContainer = null
+var _manual_scroll: ScrollContainer = null
+var _manual_body: VBoxContainer = null
+var _manual_page: StringName = &""
 var _menu_address: LineEdit = null
 var _menu_status: Label = null
 ## Where this client last pointed itself, remembered across launches, so
@@ -194,6 +212,11 @@ var _hosted_server: Node = null
 ## hosting from the menu — one number to tell a friend — and overridden
 ## by `--host-port` for the recipes, which are per-instance (D-095).
 var _host_port := DEFAULT_SERVER_PORT
+
+## Capture-only: do not found the opening town centre, so a frame can
+## show the state before a player has acted (#284). Never set by
+## `run-client`; `just test-client HOLD=1` is the one caller.
+var _hold_opening := false
 
 var _host_ai_wanted := 0
 ## Whether `_drive_host_lobby` has already run. It is a ONE-SHOT: the
@@ -262,6 +285,12 @@ var _world_environment: WorldEnvironment = null
 ## issue #58.
 var _fog: TerrainFog = null
 
+## Audio (#344). Client-only and one-way: nothing the simulation, the
+## wire or the composition hash reads depends on a sound having played
+## (D-006 clause 2). The DECISIONS live in `audio_cue.gd`, which is pure
+## and tested headless; this reference is only the device half.
+var _audio: AudioDirector = null
+
 ## The one terrain material (`TerrainChunk.make_material`), kept so the
 ## fog field above can be pushed into it, and the texture it is pushed
 ## through — updated in place four times a second rather than rebuilt, so
@@ -284,40 +313,45 @@ var _fog_updated_at := -1.0
 ## exactly the maps with the most ground to cross.
 const FOG_INTERVAL := 0.25
 
-## Render LOD tiers (D-045): distance from the camera in world units, and
-## the most soldiers a squad past that distance is drawn with.
-##
-## Tuned against `just bench-render` rather than chosen: at D-018's full
-## scale the client was at 17.8 fps with every visible soldier derived,
-## and per-soldier derivation was ~96% of the frame.
-##
-## Nothing here touches `alive`. A thinned squad keeps its true frontage
-## because `slot_offset` is still asked for the real size, so this reads
-## as a distant formation being sparse rather than as a smaller unit —
-## which matters, because unit size is tactical information a player is
-## entitled to read off the screen correctly.
 ## Below this ground speed a squad is standing still as far as animation is
 ## concerned. Not zero: a curve sampled either side of a keyframe produces a
 ## little numerical drift, and a squad that flickered between idle and walk on
 ## that drift would twitch.
-const MOVING_SPEED_EPSILON := 0.15
+## One definition, in `squad_render.gd` beside the code that reads it —
+## the constant was here while the pipeline that consulted it moved out
+## (#240).
+const MOVING_SPEED_EPSILON := SquadRender.MOVING_SPEED_EPSILON
 
-const LOD_TIERS := [
-	{"distance": 55.0, "soldiers": 1 << 30},
-	{"distance": 110.0, "soldiers": 12},
-	{"distance": INF, "soldiers": 5},
-]
+## Which LOD tier each squad was drawn at last frame — the MEMORY
+## `RenderCull.detail_tier`'s hysteresis band needs, and the client's only
+## part in the ladder. The tiers, the band and the arithmetic all live in
+## `render_cull.gd`, where they can be tested without a GPU (D-014); this
+## is a dictionary of one int per squad, cleared with the match exactly as
+## `_drawn_cache` is.
+##
+## Legal under D-006 for the same reason that cache is: it decides nothing
+## about where a soldier stands — the same slots come back — and nothing
+## in it reaches the simulation, the wire or the composition hash.
+var _lod_tier := {}
 
 
-## How many soldiers to draw for a squad at `world` (D-045).
-func _detail_for(world: Vector3) -> int:
+## How many soldiers to draw for the squad drawn at `offsets` (D-045).
+##
+## Hysteretic, and it is asked about the NEAREST visible copy rather than
+## about the one `nearest_offset` picked for placement. Both halves are
+## #155: a squad hovering near 55 flipped between forty men and twelve on
+## the smallest movement, and since every copy is drawn
+## (D-20260818-entities-are-drawn-at-every-visible-copy) an argmin between
+## two near-equidistant copies could move the distance a whole map period
+## with the camera perfectly still.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
 	if _camera == null:
-		return 1 << 30
-	var distance := _camera.global_position.distance_to(world)
-	for tier in LOD_TIERS:
-		if distance < float(tier["distance"]):
-			return int(tier["soldiers"])
-	return int(LOD_TIERS[LOD_TIERS.size() - 1]["soldiers"])
+		return RenderCull.lod_soldiers(0)
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 ## Squads derived and drawn this frame, against the number known. Shown in
@@ -393,7 +427,7 @@ func _ready() -> void:
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
 		["port", "lobby-ai", "lobby-preset-steps", "menu", "host", "host-ai",
-		"host-port"])
+		"host-port", "hold-opening", "controls"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
@@ -416,6 +450,8 @@ func _ready() -> void:
 	# around in them, and the human tests the wrong agent's build.
 	_instance = String(args.get("instance", ""))
 	_run_seconds = float(args.get("run-seconds", -1.0))
+	# Capture-only, and only for photographing the opening hint (#284).
+	_hold_opening = int(args.get("hold-opening", 0)) == 1
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
 	# lobby with something in it rather than one empty seat.
@@ -455,8 +491,40 @@ func _ready() -> void:
 	_build_debug_panel()
 	_build_defeat_screen()
 	_build_loading_screen()
+	_build_connection_lost_screen()
 
+	_build_controls_screen()
+	_build_manual_screen()
 	_build_main_menu()
+	# `--controls=1` opens the controls screen at startup, for the one
+	# caller that has to photograph it (`just menu-shot CONTROLS=1`).
+	# Same reasoning as `--menu=1`: every screen somebody looks at gets an
+	# instrument aimed at it deliberately, because this project has now
+	# been unable to photograph something four times over.
+	if int(args.get("controls", 0)) == 1:
+		_toggle_controls()
+	# `--manual=<page>` opens the manual at a named page, for the
+	# instrument that has to photograph it. A PAGE rather than a flag,
+	# because "the manual" is twelve different screens and a shot of the
+	# first one says nothing about the eleven with tables on them.
+	var manual_page := String(args.get("manual", ""))
+	if manual_page != "":
+		var known := false
+		for entry in Manual.pages():
+			if String(entry["id"]) == manual_page:
+				known = true
+		if known:
+			_manual_page = StringName(manual_page)
+			_toggle_manual()
+			# A marker the recipe reads, rather than a screenshot it
+			# trusts. `just menu-shot` fails without it.
+			print("client: MANUAL page=%s" % manual_page)
+		else:
+			# Loudly, because the alternative is a screenshot of a blank
+			# page that every automated check calls a success — the
+			# `--menu` bare-flag defect (#180) with a different argument.
+			push_error("--manual=%s is not a page; known pages: %s"
+				% [manual_page, ", ".join(Manual.page_ids())])
 	# `--host=1` starts the in-process server and joins it, exactly as the
 	# menu's Host button does (#182). It exists so hosting can be driven
 	# headlessly — by `just test-host`, which points real bots at a real
@@ -496,9 +564,9 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if _peer != null and _connected:
 		_peer.peer_disconnect_now(0)
-	if _host != null:
-		_host.destroy()
-		_host = null
+	if _transport != null:
+		_transport.close()
+		_transport = null
 	# The one line every interactive session ends with, whatever else
 	# happened. A playtest asked to judge "zero desyncs across the session"
 	# was previously judging it by console SILENCE, and silence is what a
@@ -555,7 +623,7 @@ func _process(delta: float) -> void:
 	# has one, and this client reaches it through the loopback (#182) — so
 	# the test is "is there a connection", not "is there a socket". Read
 	# as the latter, a host would tick its server and render nothing.
-	if _host == null and _hosted_server == null:
+	if _transport == null and _hosted_server == null:
 		# Looking for games is the ONE thing this client does while it is
 		# not connected, and it belongs above the capture return below:
 		# a capture run with no server is exactly the menu-shot case
@@ -604,6 +672,13 @@ func _process(delta: float) -> void:
 	_update_loading_screen()
 
 	_home_camera_once()
+	# Which cells are FIELDS, once per frame rather than once per squad
+	# (D-20260828-food-is-grown-not-only-found). Derived from buildings
+	# this client already knows about, so it costs no wire and no state —
+	# but `_activity_for` asks per squad and `_resource_cell_at` asks per
+	# click, and rebuilding it in either would be the M4 `by_id` defect
+	# with a smaller constant.
+	_farm_cells = _state.farm_cells()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -684,9 +759,14 @@ func _finish_capture() -> void:
 		# otherwise the capture races rendering and yields an empty image.
 		await RenderingServer.frame_post_draw
 		image = get_viewport().get_texture().get_image()
-		var directory := _screenshot_path.get_base_dir()
-		if directory != "" and not DirAccess.dir_exists_absolute(directory):
-			DirAccess.make_dir_recursive_absolute(directory)
+		# `res://` is read-only in an exported build (#201); the identity
+		# in a checkout, so `--screenshot=res://artifacts/client-frame.png`
+		# still lands where `just test-client` looks for it.
+		_screenshot_path = ArtifactPath.resolve(_screenshot_path)
+		var dir_error := ArtifactPath.ensure_dir_for(_screenshot_path)
+		if dir_error != OK:
+			push_error("client: could not create %s (error %d)"
+				% [_screenshot_path.get_base_dir(), dir_error])
 		if image.save_png(_screenshot_path) == OK:
 			print("client: wrote %s (%dx%d)" % [
 				_screenshot_path, image.get_width(), image.get_height()])
@@ -791,16 +871,17 @@ func _distinct_colours(image: Image) -> int:
 
 
 func _service_network() -> void:
-	if _host == null:
+	if _transport == null:
 		return
 	while true:
-		var event := _host.service(0)
+		var event := _transport.poll()
 		var type: int = event[0]
-		if type == ENetConnection.EVENT_NONE:
+		if type == NetTransport.EVENT_NONE:
 			return
 		match type:
-			ENetConnection.EVENT_CONNECT:
+			NetTransport.EVENT_CONNECT:
 				_connected = true
+				_ever_connected = true
 				print("client: connected")
 				# The version handshake, first thing and before any order
 				# (#179, D-094 criterion 3). The server admits nobody
@@ -808,11 +889,26 @@ func _service_network() -> void:
 				# a client that never sends it is refused after
 				# NetProtocol.HELLO_TIMEOUT_SECONDS.
 				_send_hello()
-			ENetConnection.EVENT_DISCONNECT:
+			NetTransport.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
-			ENetConnection.EVENT_RECEIVE:
-				var from_peer: ENetPacketPeer = event[1]
+				# #162: `print` goes to stdout and nowhere a player can
+				# see. Until this, a client whose server had shut down
+				# kept its window, kept burning a core and kept drawing a
+				# world that could no longer change — which from the
+				# chair is indistinguishable from a hang, and is how it
+				# was reported.
+				_on_connection_lost()
+			NetTransport.EVENT_RECEIVE:
+				# UNTYPED, and read through `NetTransport` rather than
+				# through the concrete library — both are #264's seam, not
+				# a slip. A peer is duck-typed to `send`'s shape so that
+				# LoopbackPeer (D-051) and HostLink (#182) can stand in
+				# it, and a test fails if this file names the ENet class
+				# at all. (Which is why this comment does not: the guard
+				# reads the file, and a comment is text like any other —
+				# #184 records the same trap in the Steam boundary.)
+				var from_peer = event[1]
 				while from_peer.get_available_packet_count() > 0:
 					_state.handle_packet(from_peer.get_packet())
 				# Checked after the packets are drained rather than
@@ -821,8 +917,8 @@ func _service_network() -> void:
 				# would leave the rest of it unread.
 				if not _state.refusal.is_empty() and not _refusal_shown:
 					_show_refusal()
-			ENetConnection.EVENT_ERROR:
-				push_error("client: ENet reported a host error")
+			NetTransport.EVENT_ERROR:
+				push_error("client: %s reported a host error" % _transport.describe())
 
 
 ## The chunk size the ground is meshed at (D-017).
@@ -952,6 +1048,13 @@ func _begin_terrain() -> void:
 	# every lattice copy — and the drain that feeds it only records while
 	# this flag says a renderer is reading (D-20260819).
 	_state.record_corpses = true
+	# Only something that DRAINS the queue may set this — bots and AI
+	# seats run this same ClientState and leave it off, so their list
+	# stays empty for the length of a run.
+	_state.record_audio = true
+	_audio = AudioDirector.new()
+	_audio.name = "AudioDirector"
+	add_child(_audio)
 	_corpse_layer = CorpseLayer.new()
 	add_child(_corpse_layer)
 	_corpse_layer.set_offsets(space.lattice_offsets())
@@ -1039,6 +1142,10 @@ func _bind_terrain_fields() -> void:
 	var surface := fields.surface
 	_state.terrain_sampler = func(x: float, z: float) -> float:
 		return TerrainChunk.height_at(space, surface, x, z)
+	# The field itself as well as a sampler over it (#245): with it,
+	# per-man derivation reads height and footing from one cell
+	# derivation rather than two. Same numbers, same mesh, same source.
+	_state.terrain_surface = surface
 	# The other half of the terrain sample (#97): a formation slot that
 	# lands in the sea or up a mountain is pulled back onto ground the
 	# squad could actually walk on, instead of being stamped there and
@@ -1261,11 +1368,16 @@ func _refresh_squads() -> void:
 	var offsets := _state.space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
 
+	# Last frame's drawn men are gone: what is not re-`put` below is not
+	# on screen, and D-20260821's jostle is about men who ARE (#262).
+	_drawn.begin()
+
 	# The fallen, before the living: casualty events recorded this frame
 	# become corpses at the slots the restamp is about to vacate
 	# (D-20260819-a-casualty-is-visible), and the falls still playing get
 	# their one phase write.
 	_drain_casualty_sites()
+	_drain_audio_events()
 	if _corpse_layer != null:
 		_corpse_layer.update(_now)
 
@@ -1356,7 +1468,7 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var detail := _detail_for(centre + offset)
+		var detail := _detail_for(squad_id, drawn, centre)
 		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
@@ -1374,100 +1486,16 @@ func _refresh_squads() -> void:
 		# pairing against men the enemy is not drawing would aim strikes
 		# at empty ground.
 		var doing := _activity_for(squad_id)
-		var dueling: bool = int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
-			and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0
-		var paired := PackedInt32Array()
 		var enemy_transforms: Array[Transform3D] = []
-		if dueling:
+		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
+				and not bool(doing["is_ranged"]) and int(doing["enemy_squad"]) >= 0:
+			# The opponent squad is derived at THIS squad's detail tier —
+			# the two are adjacent, and pairing against men the enemy is
+			# not drawing would aim strikes at empty ground. It needs
+			# `ClientState`, so it is gathered here and handed over.
 			enemy_transforms = _state.soldier_transforms_lod(
 				int(doing["enemy_squad"]), _now, detail)
-			dueling = not enemy_transforms.is_empty()
-		elif (doing.has("ring_centre") or doing.has("rect_centre")) \
-				and not transforms.is_empty():
-			# A STATIC target (D-20260820-men-gather-round-what-they-
-			# strike): perimeter points stand in for the duel's
-			# defenders, dealt ONE PER MAN so the squad wraps the target
-			# instead of piling onto the near arc. A building is a BOX
-			# and gets its rectangle (second amendment); a tree keeps
-			# the ring. Everything downstream — engage's bounds, the
-			# strike, the easing — is the same pipeline a melee runs.
-			var ring: Array[Transform3D]
-			if doing.has("rect_centre"):
-				ring = Engagement.rect_points(doing["rect_centre"],
-					(doing["rect_half"] as Vector2)
-						+ Vector2(Engagement.CONTACT_GAP, Engagement.CONTACT_GAP),
-					float(doing["rect_yaw"]), transforms.size())
-			else:
-				ring = Engagement.ring_points(doing["ring_centre"],
-					float(doing["ring_radius"]) + Engagement.CONTACT_GAP,
-					transforms.size())
-			var men := PackedVector3Array()
-			men.resize(transforms.size())
-			for i in range(transforms.size()):
-				men[i] = transforms[i].origin
-			# The deal HOLDS while the target and the strength hold
-			# (D-20260821): recomputing it every frame hopped every
-			# man's mark along the wall as his slot drifted.
-			var deal_key: String = str(doing.get("target_key", "")) 				+ "|" + str(transforms.size())
-			var cached: Dictionary = _static_deal.get(squad_id, {})
-			if String(cached.get("key", "")) == deal_key:
-				paired = cached["paired"]
-			else:
-				var ring_positions := PackedVector3Array()
-				ring_positions.resize(ring.size())
-				for i in range(ring.size()):
-					ring_positions[i] = ring[i].origin
-				paired = SoldierMotion.assign(ring_positions, transforms)
-				_static_deal[squad_id] = {"key": deal_key, "paired": paired}
-			enemy_transforms = ring
-			dueling = true
-		if dueling and not transforms.is_empty():
-			# The torus tax (Engagement's own note): an enemy engaged
-			# across the seam derives a whole map away in canonical
-			# coordinates, and unaligned the duel would pair every man
-			# with a phantom on the far side of the world.
-			enemy_transforms = Engagement.shifted(enemy_transforms,
-				Engagement.aligning_offset(transforms[0].origin,
-					enemy_transforms[0].origin, offsets))
-			var surround := doing.has("rect_centre") or doing.has("ring_centre")
-			if paired.is_empty():
-				paired = CosmeticDuel.opponents(transforms, enemy_transforms)
-			# A static target grants the SURROUND budget (D-20260820,
-			# third amendment): a building does not hit back, so men may
-			# leave formation properly to wrap it — "they hold formation
-			# too hard" was the owner's exact reading of the tight melee
-			# bound applied to a siege.
-			transforms = CosmeticDuel.engage(
-				transforms, enemy_transforms, paired, _state.terrain_sampler,
-				SURROUND_STEP if surround else Engagement.MAX_STEP)
 
-		# No drawn man stands inside a building (D-20260820, third
-		# amendment): slots clamp against terrain only, so a line's slots
-		# can land inside a footprint — projected out to the nearest face
-		# here, BEFORE easing, so men walk out rather than popping.
-		if not transforms.is_empty():
-			var boxes := _nearby_building_boxes(centre, world_radius + 6.0)
-			# Trees are obstacles for drawn men too (D-20260821, amended):
-			# a marching line filters around a wood man by man and the
-			# velocity clamp walks each one back to his slot beyond it.
-			# A crew's OWN worked node is exempt — standing at the tree
-			# is the job.
-			var discs := _nearby_node_discs(centre, world_radius,
-				String(doing.get("target_key", "")))
-			if not boxes.is_empty() or not discs.is_empty():
-				for i in range(transforms.size()):
-					var pushed := transforms[i]
-					for box in boxes:
-						pushed.origin = Engagement.push_out_of_box(
-							pushed.origin, box["centre"], box["half"], box["yaw"])
-					for disc in discs:
-						pushed.origin = Engagement.push_out_of_disc(
-							pushed.origin, disc["centre"], disc["radius"])
-					transforms[i] = pushed
-
-		# Eased so soldiers walk to their slots when the squad turns
-		# instead of the whole block snapping round (D-059), then decorated
-		# with sway, footfall and whatever the squad is visibly doing.
 		# Foreign drawn men within overlap range (previous frame's — one
 		# frame of lag), so OUR men adjust to THEIRS individually
 		# (D-20260821) instead of squads snapping apart. Two bounds keep
@@ -1479,68 +1507,63 @@ func _refresh_squads() -> void:
 		var speed := _state.squad_speed(squad_id, _now)
 		var neighbours := PackedVector3Array()
 		if speed <= MOVING_SPEED_EPSILON:
-			var own_at := centre + offset
-			for other_id in _drawn_cache:
-				if other_id == squad_id:
-					continue
-				var record: Dictionary = _drawn_cache[other_id]
-				if (record["centre"] as Vector3).distance_to(own_at) 						> world_radius + float(record["radius"]) + 1.0:
-					continue
-				var men: PackedVector3Array = record["men"]
-				for k in range(men.size()):
-					if Vector2(men[k].x - own_at.x, men[k].z - own_at.z).length() 							<= world_radius + 1.0:
-						neighbours.append(men[k])
-		# The speed cap is MAIN's `_pursuit_speed_of` (1.35x this unit's
-		# walk) rather than the local sprint computation this branch
-		# carried: same knob, one shared definition with two callers, and
-		# it sits BELOW the squad's sprint, so "a man may rise to the
-		# squad's sprint to catch up, but no faster" still holds.
-		var eased := _motion.ease(squad_id, transforms, _frame_delta,
-			_pursuit_speed_of(squad_id), neighbours)
-		var drawn_men := PackedVector3Array()
-		drawn_men.resize(eased.size())
-		for i in range(eased.size()):
-			drawn_men[i] = eased[i].origin
-		_drawn_cache[squad_id] = {"men": drawn_men,
-			"centre": centre + offset, "radius": world_radius}
-		# The REAL speed, not a literal 1.0 — which is what sat here and is
-		# why every standing squad in every match bobbed on the spot.
-		# `footfall_bob`'s own doc says speed scales the bob "so a stationary
-		# squad stops bobbing", `test_formation.gd` asserts exactly that of
-		# the function, and this caller then handed it a constant. The D-061
-		# family: the mechanism correct and tested, the one live call site
-		# feeding it the wrong input. Noticed only when an authored model
-		# with a real VAT idle clip made the extra whole-body bounce read as
-		# a defect instead of as capsule-era "life".
-		# A model that draws its own work stroke takes NO cosmetic lunge or
-		# sway — see `CosmeticDuel.strike_decorate`. Only the WORKING case
-		# can have one: a soldier's `attack` clip is a stroke at an enemy,
-		# not at the tree he is standing on.
-		var self_animated := int(doing["activity"]) == CosmeticOffset.Activity.WORKING \
-			and UnitMesh.animates_work(_model_id_of(squad_id))
-		var decorated := CosmeticDuel.strike_decorate(
-				eased, enemy_transforms, paired, _now, speed,
-				0.0 if self_animated else float(doing["swing"])) if dueling \
-			else CosmeticOffset.decorate_activity(
-				eased, _now, speed, int(doing["activity"]), doing["toward"],
-				float(doing["swing"]))
+			# Through the index, not by walking every squad ever drawn
+			# (#262): that walk was quadratic in drawn squads and 39% of
+			# the frame at 1,000 of them, and it fired for squads that are
+			# STANDING — which is when the battle has started. Same men,
+			# same predicate; only how they are found changed.
+			neighbours = _drawn.neighbours_of(
+				squad_id, centre + offset, world_radius)
+
+		# Everything from here to the MultiMesh is `SquadRender.frame`
+		# (#240) — the duel pass, the static-target deal, the building and
+		# tree push-outs, the easing, the decoration and the clip. It was
+		# inline here, which meant `bench_render.gd` measured a client
+		# missing all of it while its own comment claimed otherwise. One
+		# definition, called by both, so the benchmark cannot drift from
+		# the client again.
+		var drawn_render := SquadRender.frame({
+			"transforms": transforms,
+			"doing": doing,
+			"enemy_transforms": enemy_transforms,
+			"deal": _static_deal.get(squad_id, {}),
+			"offsets": offsets,
+			"boxes": _nearby_building_boxes(centre, world_radius + 6.0),
+			"discs": _nearby_node_discs(centre, world_radius,
+				String(doing.get("target_key", ""))),
+			"terrain_sampler": _state.terrain_sampler,
+			"motion": _motion,
+			"squad_id": squad_id,
+			"delta": _frame_delta,
+			"now": _now,
+			# The REAL speed, not a literal 1.0 — which is what sat here
+			# and is why every standing squad in every match bobbed on the
+			# spot. `footfall_bob`'s own doc says speed scales the bob "so
+			# a stationary squad stops bobbing", `test_formation.gd`
+			# asserts exactly that of the function, and this caller then
+			# handed it a constant. The D-061 family: the mechanism correct
+			# and tested, the one live call site feeding it the wrong
+			# input.
+			"speed": speed,
+			# The speed cap is `_pursuit_speed_of` (1.35x this unit's walk),
+			# which sits BELOW the squad's sprint, so "a man may rise to
+			# the squad's sprint to catch up, but no faster" still holds.
+			"pursuit_speed": _pursuit_speed_of(squad_id),
+			"neighbours": neighbours,
+			"routed": _state.routed_of(squad_id),
+			"model_id": _model_id_of(squad_id),
+			"surround_step": SURROUND_STEP,
+		})
+		var decorated: Array[Transform3D] = drawn_render["transforms"]
+		_static_deal[squad_id] = drawn_render["deal"]
+		_drawn.put(squad_id, centre + offset, world_radius,
+			drawn_render["drawn_men"])
 		unit.set_slot_transforms(decorated)
 
-		# Which clip these soldiers play (D-065). Derived from state the
-		# client already holds — the curve gives speed, `_activity_for` gives
-		# fighting, `routed_of` gives the rout — so nothing is sent for it and
-		# every client agrees by construction, the same shape as D-052's
-		# colour. Writes into the MultiMesh only when the clip or the rate
-		# actually changes; the per-frame cost here is a comparison.
-		var clip := AnimationState.clip_for(
-			_state.routed_of(squad_id),
-			int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING,
-			speed > MOVING_SPEED_EPSILON,
-			int(doing["working"]))
 		# Per-man cadence from the motion layer's own measurements
 		# (D-20260824): each drawn man strides at the pace HE moves, not
 		# the squad's — the squad speed is the fallback inside.
-		unit.set_clip_data(int(squad_id), clip, speed,
+		unit.set_clip_data(int(squad_id), int(drawn_render["clip"]), speed,
 			_motion.speeds(squad_id))
 
 		if int(doing["activity"]) == CosmeticOffset.Activity.FIGHTING \
@@ -1798,6 +1821,20 @@ func _neighbor_player_candidates() -> Array:
 ## rather than the middle of the map, which is where a player actually
 ## starts looking.
 func _found_home_town() -> void:
+	# `--hold-opening=1` makes the capture deliberately NOT act, so a
+	# frame can show the state a player is in BEFORE they have founded
+	# anything (#284). Without it this instrument structurally cannot
+	# photograph the opening objective: the capture founds within a
+	# second or two of being welcomed, and the hint's whole job is to
+	# disappear once a town centre exists.
+	#
+	# That is the fourth time `test-client`'s framing has been unable to
+	# show something — after cliffs (a spawn is walkable by
+	# construction), forest interiors (a spawn is open ground) and the
+	# fog edge. The lesson each time was the same: when a rendered check
+	# has to see something specific, frame it on purpose.
+	if _hold_opening:
+		return
 	if _founded or not _state.welcomed or _state.squads.is_empty():
 		return
 	_founded = true
@@ -2056,6 +2093,10 @@ var _menu_button: Button = null
 ## The in-game menu, and the settings pane inside it. Its own CanvasLayer
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
+## The two-press surrender guard (D-20260828-a-player-may-concede): the
+## first press swaps one button for the other, the second sends.
+var _surrender_button: Button = null
+var _surrender_confirm: Button = null
 var _settings_panel: Control = null
 ## The player scoreboard (D-102), a sibling of the settings pane inside
 ## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
@@ -3017,11 +3058,72 @@ func _to_hud(at: Vector2) -> Vector2:
 ## HUD, so the keys a player is told about are by construction the keys
 ## that work. They were previously a `match` statement and a hand-written
 ## hint string listing the same letters twice.
+## Letters claimed by the hand-written `event.keycode == KEY_x` branches
+## in `_handle_key`, declared so something can NOTICE a table taking one
+## (#302).
+##
+## They were only ever written as branches, which is how `G` came to be in
+## BUILD_KEYS *and* handled below it: the build table is consulted first,
+## so pressing G armed a garrison wall and `_gather_selected()` could
+## never be reached from the keyboard at all. The file predicted it twice
+## in prose — "a letter added to BUILD_KEYS or TRAIN_KEYS silently steals
+## it from here", and "L/K/G/F/U avoid ... every existing
+## BUILD_KEYS/TRAIN_KEYS letter" — and the second comment checked the new
+## letters against the two TABLES rather than against these branches, so
+## `G` cleared the check it was measured against.
+##
+## The value is a human-readable name, not a callable: this table exists
+## to be COMPARED against the other two, and `tests/test_hotkeys.gd`
+## fails both if a letter is claimed twice and if a branch here is not
+## declared. A third comment would have been the third prose guard for a
+## thing prose has now got wrong twice.
+##
+## Not exhaustive of every key `_handle_key` reads — ESC and the digits
+## are not LETTERS and cannot collide with a table keyed by
+## `OS.get_keycode_string`.
+const RESERVED_KEYS := {
+	"X": "stop the selection",
+	"V": "rotate the placement ghost (D-076)",
+	"G": "gather at the cursor's node",
+}
+
+# `RESERVED_FOR_IN_FLIGHT` stood here and is deliberately NOT carried
+# forward: #246 bound O to `farm` on `main` and retired the table in the
+# same commit, which is exactly the rule the table stated for itself — an
+# entry leaves when its real binding lands. Its two guards on `main`
+# already tolerate the absence; resurrecting it here would hold O against
+# the branch that has already taken it.
+
+## The manual's key (#305). ONE definition: `_handle_key` resolves it back
+## to a keycode, `controls_reference.gd` prints it, and the opening
+## objective points at it — so the three cannot disagree.
+##
+## A FUNCTION key rather than a letter, deliberately. Every letter this
+## game could plausibly want is in BUILD_KEYS or TRAIN_KEYS or one commit
+## away from being taken by one, and #302 is what that looks like when it
+## happens: H, the obvious key for Help, has built a storehouse since M3.
+const MANUAL_KEY := "F1"
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
-	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
-	# existing BUILD_KEYS/TRAIN_KEYS letter.
-	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
+	# took J (#302) because G is the letter a player reaches for to
+	# GATHER, and both branches picked their letter against the tables as
+	# they stood on main, neither able to see the other. O is the letter
+	# `RESERVED_FOR_IN_FLIGHT` was holding O for this PR; binding it here
+	# is what retired that reservation, and the table went with its last
+	# entry rather than being left empty — which is what its own test
+	# required.
+	"O": &"farm",
+	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
+	# together deliberately; F and U continue it.
+	#
+	# `garrison_wall` was on G and has moved to J (#302): G is what a
+	# player reaches for to GATHER, that is the verb they use from the
+	# first minute of a match, and a niche wall piece has the weaker claim
+	# on the letter. Every letter here is checked against RESERVED_KEYS
+	# and TRAIN_KEYS by a test now, rather than by a comment.
+	"L": &"wall", "K": &"gate", "J": &"garrison_wall", "F": &"garrison_gate",
 	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
@@ -3143,6 +3245,13 @@ var _tree_chunks := {}
 ## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
 
+## cell -> `Economy.ResourceKind` for every FIELD this client knows about
+## (D-20260828-food-is-grown-not-only-found), refreshed once a frame from
+## `ClientState.farm_cells()`. A field is a BUILDING, so it is drawn by the
+## building pass and grows no props — this is only what tells the click
+## test and the working-crew animation that the cell is worked ground.
+var _farm_cells := {}
+
 ## Cells the server has revealed and this client has not grown yet, and the
 ## per-frame budget that drains them (`node_placement.gd`). Growing a cell
 ## costs ~87 us — a terrain sample, a biome classification, its six
@@ -3193,6 +3302,51 @@ var _frame_delta := 0.0
 ## (D-024), and their transforms are derived here exactly as the living
 ## are drawn — same curve, same formation function, same sampler — so a
 ## body lies where the man was standing.
+## Turn what happened into what is heard (#344).
+##
+## The resolution is `AudioCue`'s, not this function's: fog, distance,
+## rate and voice caps are all decided there, purely, and this only
+## supplies the three things that need a live client — the fog LEVEL for
+## the cell, where the camera is looking, and the clock.
+##
+## Fog is read through `TerrainFog.level_at`, which is the ONE vision
+## query this client already has (D-106) and the one the ground shader
+## and the minimap read. #344 is explicit that ears must not invent a
+## second: a sound whose cause a player cannot SEE must not play.
+func _drain_audio_events() -> void:
+	if _audio == null or _state.space == null:
+		return
+	_audio.reap()
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var listener := _state.space.index(_state.space.world_to_cell(_camera_target))
+	for event in _state.take_audio_events():
+		var def := SoundRoster.by_event(StringName(event["event"]))
+		if def == null:
+			continue
+		var cell := int(event["cell"])
+		var level := _fog.level_at(cell) if _fog != null and cell >= 0 else TerrainFog.VISIBLE
+		var cue := AudioCue.resolve(def, cell, listener, _state.space, level, now,
+			_audio.ledger(), float(event.get("magnitude", 1.0)))
+		_audio.play(cue, now)
+
+
+## Play an interface cue — a click, an order acknowledgement, a stinger.
+##
+## Never fog gated (the DATA says so, `SoundDef.fog_gated`), because a UI
+## sound has no cause on the map: gating it on sight would silence the
+## one category that is unambiguously the player's own.
+func _play_ui(event: StringName) -> void:
+	if _audio == null:
+		return
+	var def := SoundRoster.by_event(event)
+	if def == null:
+		return
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var cue := AudioCue.resolve(def, -1, -1, _state.space, TerrainFog.VISIBLE,
+		now, _audio.ledger())
+	_audio.play(cue, now, true)
+
+
 func _drain_casualty_sites() -> void:
 	if _corpse_layer == null:
 		return
@@ -3299,7 +3453,14 @@ func _activity_for(squad_id) -> Dictionary:
 	if def.carry_capacity > 0:
 		var crew_at := _state.squad_world_position(squad_id, _now)
 		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
-		if _state.nodes.has(crew_cell):
+		# A FIELD is worked ground too (D-20260828-food-is-grown-not-only-
+		# found), and it is the same question with a second source: the
+		# crew is standing somewhere this client knows yields something.
+		# Without this a crew in a farm reads as idle and stands about in
+		# its crop with its tools on its back.
+		var working_kind := int(_state.nodes[crew_cell]) if _state.nodes.has(crew_cell) \
+			else int(_farm_cells.get(crew_cell, -1))
+		if working_kind >= 0:
 			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
 			return {
 				"activity": CosmeticOffset.Activity.WORKING,
@@ -3309,7 +3470,7 @@ func _activity_for(squad_id) -> Dictionary:
 				# hand — so the axe/pickaxe/bare-hands choice costs one
 				# dictionary read and nothing on the wire
 				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
-				"working": int(_state.nodes[crew_cell]),
+				"working": working_kind,
 				"swing": CosmeticOffset.SWING_AMPLITUDE,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
@@ -3382,9 +3543,11 @@ const ORDER_MARK_LIFT := 0.08
 # of hopping along the wall as his slot drifts. Per-soldier render
 # memory — the amendment's territory. squad -> {"key", "paired"}
 var _static_deal := {}
-# Last frame's drawn men per squad, for the cross-squad jostle:
-# squad -> {"men": PackedVector3Array, "centre": Vector3, "radius": float}
-var _drawn_cache := {}
+# Last frame's drawn men, indexed for the cross-squad jostle (#262).
+# Bounded to the squads DRAWN — the dictionary this replaces was never
+# pruned, so the jostle walked every squad the match had ever drawn
+# rather than the ones on screen.
+var _drawn := DrawnIndex.new()
 
 ## Every known building's box, resolved ONCE per frame — canonical
 ## position, half extents, yaw, owner. The first version resolved defs
@@ -3394,6 +3557,11 @@ var _drawn_cache := {}
 ## exists to prevent exactly this.
 var _building_scan: Array = []
 var _building_scan_at := -1.0
+## The same buildings, bucketed by position (#325). `_nearby_building_boxes`
+## walked the whole scan per drawn squad and paid an `aligning_offset` on
+## every entry — one millisecond per building per frame at 630 drawn
+## squads, measured, and buildings only ever accumulate (D-030).
+var _building_index := WorldIndex.new()
 
 
 func _refresh_building_scan() -> void:
@@ -3401,6 +3569,7 @@ func _refresh_building_scan() -> void:
 		return
 	_building_scan_at = _now
 	_building_scan = []
+	_building_index.begin()
 	if _state.space == null:
 		return
 	for id in _state.buildings:
@@ -3416,15 +3585,24 @@ func _refresh_building_scan() -> void:
 		else:
 			var span := maxf(1.0, float(def.footprint_radius)) * 1.9
 			half = Vector2(span, span)
+		var reach := maxf(half.x, half.y)
+		var cell := int(info.get("cell", 0))
 		_building_scan.append({
 			"id": int(id),
-			"at": _state.space.to_world(
-				_state.space.from_index(int(info.get("cell", 0)))),
+			"at": _state.space.to_world(_state.space.from_index(cell)),
 			"half": half,
 			"yaw": PlacementJitter.radians_of_byte(int(info.get("facing", 0))),
 			"owner": int(info.get("owner", -1)),
-			"reach": maxf(half.x, half.y),
+			"reach": reach,
+			"cell": cell,
 		})
+		# Bucketed as it is resolved, so the per-squad lookup below is a
+		# neighbourhood scan rather than a walk of every building the
+		# match has ever shown this client (#325). Once per frame, beside
+		# the scan it indexes — a second pass would be a second thing to
+		# keep in step.
+		_building_index.put(_building_scan[-1]["at"],
+			_building_scan.size() - 1, reach)
 
 
 ## How far a drawn man's centre must stay from a TRUNK, scaled by that
@@ -3465,8 +3643,12 @@ func _nearby_node_discs(centre: Vector3, radius: float,
 		return out
 	var centre_cell := _state.space.world_to_cell(centre)
 	var cells := ceili(radius / (_state.space.hex_size * TorusSpace.SQRT_3)) + 1
-	for offset in TorusSpace.disk_offsets(mini(cells, 6)):
-		var cell := _state.space.index(centre_cell + offset)
+	# One call for the whole disk rather than one per cell (#325): at this
+	# radius that is sixty-one `index()` calls per drawn squad per frame,
+	# and a GDScript call costs more than the wrap arithmetic inside it
+	# (D-20260828-inside-the-derive-phase). Same cells, same order.
+	for cell in _state.space.disk_indices(
+			_state.space.index(centre_cell), mini(cells, 6)):
 		if not _state.nodes.has(cell):
 			continue
 		if worked_key == "n:%d" % cell:
@@ -3510,8 +3692,15 @@ func _node_cell_discs(cell: int) -> Array:
 func _nearby_building_boxes(centre: Vector3, search: float) -> Array:
 	_refresh_building_scan()
 	var out := []
+	if _state.space == null:
+		return out
 	var offsets := _state.space.lattice_offsets()
-	for entry in _building_scan:
+	# Candidates from the cell index, then EXACTLY the test this function
+	# always applied (#325). The index narrows; it does not decide, so the
+	# set is unchanged and `test_cell_index.gd` holds it to that against
+	# the walk it replaces.
+	for which in _building_index.near(centre, search):
+		var entry: Dictionary = _building_scan[which]
 		var at: Vector3 = entry["at"]
 		at += Engagement.aligning_offset(centre, at, offsets)
 		if Vector2(at.x - centre.x, at.z - centre.z).length() \
@@ -3535,7 +3724,13 @@ func _building_box_near(here: Vector3, mine: int, reach: float) -> Dictionary:
 	var best := {}
 	var best_d := INF
 	var offsets := _state.space.lattice_offsets()
-	for entry in _building_scan:
+	# Through the index, exactly as `_nearby_building_boxes` above (#325):
+	# this walked every known building too, once per squad looking for a
+	# target, and buildings only ever accumulate. Same candidates, same
+	# test, same answer — the index narrows, the test below decides, and
+	# ties still break on the nearest because the test is unchanged.
+	for which in _building_index.near(here, reach + 0.4):
+		var entry: Dictionary = _building_scan[which]
 		if int(entry["owner"]) == mine:
 			continue
 		var centre: Vector3 = entry["at"]
@@ -5245,9 +5440,79 @@ func _update_hud() -> void:
 	if _state.notices_received != _notice_seen:
 		_notice_seen = _state.notices_received
 		_notice_until = _now + 5.0
-	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
+	if _now < _notice_until:
+		_hud_notice.text = _state.last_notice
+		_hud_notice.modulate = HudTheme.WARNING
+	else:
+		# The same slot carries the OPENING OBJECTIVE when the server has
+		# nothing to say (#284). One banner rather than two: this is
+		# already where a player looks for "the game is telling me
+		# something", a refusal must win while it is up, and a second
+		# permanent strip would cost the battlefield height for a line
+		# that is empty for all but the first minute of a match.
+		#
+		# Dimmer than a refusal on purpose: a standing instruction at full
+		# warning strength reads as an error the player cannot clear.
+		# `modulate` MULTIPLIES the label's own colour rather than
+		# replacing it, so this is a muted version of the same hue rather
+		# than a different one — checked in the rendered frame, not
+		# assumed.
+		_hud_notice.text = _opening_objective()
+		_hud_notice.modulate = HudTheme.TEXT_DIM
 
 	_update_selection_panel()
+
+
+## What this player should do first, or "" once they have done it (#284).
+##
+## Derived from what they OWN rather than from a match clock, which is
+## what makes it survive the three cases a timed tutorial gets wrong: a
+## player who founded late, one who lost their crew, and one who was
+## razed and is resettling (which
+## `D-20260823-the-opening-is-a-crew-and-a-general` made possible).
+##
+## The rule itself is `opening_brief.gd`'s — asked of the same
+## `BuildingDef.built_by` the server's order gate reads, so the banner
+## cannot tell a player to do something that will be refused.
+func _opening_objective() -> String:
+	if not _state.welcomed or _state.in_lobby():
+		return ""
+	var owned: Array = []
+	for squad in _state.squads:
+		if _state.alive_of(squad) <= 0:
+			continue
+		var def := UnitRoster.by_id(StringName(String(
+			_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and not owned.has(def):
+			owned.append(def)
+	var objective := OpeningBrief.first_objective(owned, _owns_a_founding_building())
+	if objective == "":
+		return ""
+	# The pointer that closes the onboarding loop (#305): the one moment
+	# this project KNOWS a player is new is while they still have no town,
+	# and it is already saying something to them. Appended here rather
+	# than inside `OpeningBrief`, which is about the opening and has no
+	# business naming a keybind — that is the #302 family, and this file
+	# owns the key.
+	return "%s  (%s: manual)" % [objective, MANUAL_KEY]
+
+
+## Whether this player owns a LIVING building of the kind that founding
+## spends a crew on. Asked by def rather than by id for the same reason
+## `opening_brief.gd` never names one.
+func _owns_a_founding_building() -> bool:
+	var town := OpeningBrief.founding_building()
+	if town == null:
+		return false
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info.get("owner", -1)) != _state.player:
+			continue
+		if bool(info.get("destroyed", false)):
+			continue
+		if StringName(String(info.get("def_id", ""))) == town.id:
+			return true
+	return false
 
 
 ## Fill the context panel from whatever is selected.
@@ -5339,6 +5604,24 @@ func _update_selection_panel() -> void:
 
 	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
 	_selection_detail.text = "%d soldiers" % strength
+
+	# What this squad is FOR, when it is one of the two openers (#284).
+	#
+	# The opening is a gatherer crew and a general, only the crew can
+	# found, and ordering the general to build fails SILENTLY — the
+	# server refuses it because `built_by` lists the general nowhere, so
+	# a new player clicks, nothing happens, and their economy has not
+	# started. `OpeningBrief` asks the same rule the order gate asks, so
+	# this line cannot promise something that will be refused.
+	#
+	# Only shown for a SINGLE selection: a mixed one is counted rather
+	# than described (see the comment above), and a role line about
+	# "3 squads" would be about whichever def happened to sort first.
+	if _selected.size() == 1 and counts.size() == 1:
+		var only := UnitRoster.by_id(StringName(counts.keys()[0]))
+		var role := OpeningBrief.role_line(only)
+		if not role.is_empty():
+			_selection_detail.text = "%d soldiers — %s" % [strength, role]
 
 	# The build menu's category drill-down (playtest fix, see
 	# _build_menu_category's doc) is client state that outlives one panel
@@ -5730,6 +6013,17 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 		var unit := UnitRoster.for_civ_archetype(civ, archetype)
 		if unit == null:
 			continue
+		# The tech gate (`D-20260827-the-tree-is-the-ladder`). Hidden
+		# rather than greyed out: an unaffordable unit is a decision about
+		# money and belongs on screen, but a unit four rungs away is not a
+		# choice yet, and listing every one of them is D-069's own
+		# unlock-overload warning arriving early.
+		#
+		# The client is not trusted (D-002) and the server refuses the
+		# order too — this is so the panel tells the truth, not so the
+		# rule is enforced.
+		if not _state.has_tech(unit.requires_tech):
+			continue
 		out.append({
 			"label": "%s  ·  %s" % [unit.display_name, _cost_text(
 				unit.cost_food, unit.cost_wood, unit.cost_gold, unit.cost_stone)],
@@ -5741,6 +6035,34 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 			"enabled": _can_afford(unit.cost_food, unit.cost_wood,
 				unit.cost_gold, unit.cost_stone),
 		})
+	# What can be RESEARCHED here (`D-20260827-the-tree-is-the-ladder`).
+	#
+	# These sit in the ORDERS column rather than the chip strip because
+	# the chips are already a building's train orders and are a fixed
+	# width — `D-20260817-selection-bar-three-columns`'s trap was a strip
+	# that could not show a barracks' whole list, and adding research to
+	# it would make that worse rather than better.
+	#
+	# Availability comes from `ClientState.research_view()`, which is a
+	# real `ResearchState` — the SAME object the server reasons with. The
+	# panel does not get its own copy of the prerequisite and epoch rules
+	# (the D-058/D-065 lesson, paid for before it costs anything).
+	var here := BuildingSim.archetype_of_def(def)
+	if bool(info.get("destroyed", false)) == false \
+			and float(info.get("progress", 0.0)) >= 0.999:
+		for tech in _state.research_view().available(_state.player, civ):
+			var t := tech as TechDef
+			if t.research_at != here:
+				continue
+			out.append({
+				"label": "%s  ·  %s" % [t.display_name, _cost_text(
+					t.cost_food, t.cost_wood, t.cost_gold, t.cost_stone)],
+				"hint": t.description,
+				"kind": "research", "id": t.line,
+				"enabled": _can_afford(t.cost_food, t.cost_wood,
+					t.cost_gold, t.cost_stone),
+			})
+
 	# Only an ARMED building offers this (D-032's `damage` gate, the same
 	# one Combat.resolve_buildings itself checks) — a storehouse has
 	# nothing to focus-fire with.
@@ -5769,6 +6091,19 @@ func _building_actions(info: Dictionary, def: BuildingDef) -> Array:
 				"kind": "gate_set", "id": mode_entry["key"],
 			})
 	return out
+
+
+## Start a tech at the selected building
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## Sends a LINE, never a tech id — the server resolves it against this
+## player's civ, exactly as `_train_selected` sends an archetype. A client
+## therefore cannot name another civ's version of a tech at all.
+func _research_selected(line: StringName) -> void:
+	if not _connected or _selected_building < 0:
+		return
+	_peer.send(0, NetProtocol.encode_order_research(_selected_building, String(line)),
+		ENetPacketPeer.FLAG_RELIABLE)
 
 
 ## Costs with the ZEROES left out. "50 food 0 wood 0 gold 0 stone" is four
@@ -5820,6 +6155,15 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	# Explore (#120): a standing order, so the button shows whether it is
+	# ON — and the pressed state comes off the WIRE (`ClientState`), not
+	# from remembering that we sent it, because a rout cancels the mode
+	# server-side and a locally-guessed light would go on claiming the
+	# squad was scouting. Same discipline as the stance buttons below.
+	out.append({"label": "Explore",
+		"hint": "Explore: go and uncover the map, until given another order",
+		"current": _state.is_exploring(int(_selected[0])),
+		"kind": "explore", "id": &""})
 	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
 		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
 			"kind": "charge_arm", "id": &""})
@@ -5900,8 +6244,19 @@ func _squad_build_actions(def_id: StringName) -> Array:
 	var unit := UnitRoster.by_id(def_id)
 	var archetype := unit.archetype if unit != null else def_id
 	var by_category := {}
-	for building in BuildingSim.all_defs():
+	# This player's civ's defs, not every def
+	# (`D-20260827-a-research-site-is-a-building`). The research sites are
+	# per-civ, so `all_defs()` would offer a player a research site their
+	# own people do not build — and the server would refuse it, which is
+	# the "looking
+	# available and then being refused" failure `_building_actions`
+	# already records for training.
+	for building in BuildingSim.defs_for_civ(_state.civ_of(_state.player)):
 		if not BuildingSim.can_build(building, archetype):
+			continue
+		# And not a building whose tech is still unresearched. Hidden
+		# rather than greyed, for the same reason a rung-4 unit is.
+		if not _state.has_tech(building.requires_tech):
 			continue
 		var category := building.category
 		if not by_category.has(category):
@@ -6063,10 +6418,13 @@ func _can_afford(food: int, wood: int, gold: int, stone: int) -> bool:
 func _on_action_pressed(index: int) -> void:
 	if index < 0 or index >= _actions.size():
 		return
+	_play_ui(&"ui_click")
 	var action: Dictionary = _actions[index]
 	match String(action["kind"]):
 		"train":
 			_train_selected(StringName(action["id"]))
+		"research":
+			_research_selected(StringName(action["id"]))
 		"build":
 			_build_selected(String(action["id"]))
 		"build_group":
@@ -6076,6 +6434,8 @@ func _on_action_pressed(index: int) -> void:
 			_gather_selected()
 		"stop":
 			_stop_selected()
+		"explore":
+			_explore_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
 		"width":
@@ -7194,6 +7554,19 @@ func _recall_control_group(group: int) -> void:
 
 
 func _handle_key(event: InputEventKey) -> void:
+	# F1 opens the manual, and closes it (#305). A function key rather
+	# than a letter deliberately: every letter this game could want is
+	# either in BUILD_KEYS, in TRAIN_KEYS, or one keystroke away from
+	# being stolen by one — which is exactly how #302 happened to G. H,
+	# the obvious choice for Help, already builds a storehouse.
+	#
+	# It is here rather than only on a menu button because the moment a
+	# player wants the counter table is mid-fight, and making them stop
+	# to open a menu first is making them not read it.
+	if event.keycode == OS.find_keycode_from_string(MANUAL_KEY):
+		_toggle_manual()
+		return
+
 	if event.keycode == KEY_X:
 		_stop_selected()
 		return
@@ -7249,6 +7622,8 @@ func _handle_key(event: InputEventKey) -> void:
 	if TRAIN_KEYS.has(key):
 		_train_selected(TRAIN_KEYS[key])
 		return
+	# Reached only because no table above claims G — see RESERVED_KEYS,
+	# which is what makes that a checked fact rather than a hope (#302).
 	if event.keycode == KEY_G:
 		_gather_selected()                   # workers, at the cursor's node
 		return
@@ -8263,8 +8638,18 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
 	var offsets := _state.space.lattice_offsets()
-	for cell in _node_placed:
-		var world: Vector3 = _node_placed[cell]["world"]
+	# Fields rank beside forests (D-20260828-food-is-grown-not-only-found).
+	# A farm grows no props, so it is in no chunk and `_node_placed` cannot
+	# know about it — and a work site nothing here returns is a work site
+	# right-click marches your crews onto and leaves standing.
+	# Own and allied fields only: an enemy's is refused server-side
+	# (`Economy.may_work`), and offering it here would swallow the ordinary
+	# move order a player meant by clicking there.
+	var candidates := _node_placed.keys()
+	candidates.append_array(_state.farm_cells(true).keys())
+	for cell in candidates:
+		var world: Vector3 = _node_placed[cell]["world"] if _node_placed.has(cell) \
+			else _ground_world_of(int(cell))
 		for offset in offsets:
 			var drawn := world + offset
 			if _camera.is_position_behind(drawn):
@@ -8274,6 +8659,16 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 				best_distance = distance
 				best = _state.space.from_index(int(cell))
 	return best
+
+
+## A cell's centre in world space, on the ground. `_node_placed` caches
+## this for a grown node; a field has no entry there, and sampling is
+## cheap because this runs on a click.
+func _ground_world_of(cell_index: int) -> Vector3:
+	var world := _state.space.to_world(_state.space.from_index(cell_index))
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	return world
 
 
 ## Whether anything selected can actually gather. Right-clicking a forest
@@ -8301,6 +8696,7 @@ func _train_selected(archetype: StringName) -> void:
 
 
 func _stop_selected() -> void:
+	_play_ui(&"order_move")
 	var sent := 0
 	for squad in _selected:
 		var order := _state.encode_stop(squad)
@@ -8309,6 +8705,24 @@ func _stop_selected() -> void:
 			sent += 1
 	if sent > 0:
 		print("client: stopped %d squad(s)" % sent)
+
+
+## Send every selected squad off to hunt fog (#120).
+##
+## Modelled on `_stop_selected` exactly — one order per squad through
+## `ClientState`, reliable, with a count printed. Several squads ordered
+## at once deliberately do NOT coordinate here: the server spreads them,
+## because it is the side that knows what has been explored and what the
+## other scouts are already walking towards.
+func _explore_selected() -> void:
+	var sent := 0
+	for squad in _selected:
+		var order := _state.encode_explore(squad)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			sent += 1
+	if sent > 0:
+		print("client: exploring with %d squad(s)" % sent)
 
 
 ## WASD pans relative to WHERE THE CAMERA IS LOOKING, not to world axes.
@@ -8491,6 +8905,10 @@ var _lobby_seat_scroll: ScrollContainer
 var _lobby_seat_list: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
+## What the civ this player picked actually is (#283) — its own one-line
+## pitch and the unit it is known for. Empty on Random, which is a real
+## choice and has nothing true to say about itself yet.
+var _lobby_civ_identity: Label
 var _map_rows: VBoxContainer
 var _map_preview: TextureRect
 var _map_blurb: Label
@@ -8667,6 +9085,11 @@ const SETTINGS_PATH := "user://settings.cfg"
 ## to see it (#91). `SEAT_ROW_HEIGHT` moved with them.
 
 
+## Where `_on_report_a_problem_pressed` reports back when the in-match
+## menu is the screen on show (#288).
+var _report_status: Label = null
+
+
 func _build_game_menu() -> void:
 	_game_menu_layer = CanvasLayer.new()
 	# Above the HUD (0) but BELOW the lobby (10): the lobby is a screen
@@ -8720,6 +9143,22 @@ func _build_game_menu() -> void:
 	players.pressed.connect(_toggle_scoreboard)
 	column.add_child(players)
 
+	# Mid-match, because a player who has forgotten which key builds a
+	# barracks will not go back to the main menu to look (#282). Same
+	# screen, same list.
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.tooltip_text = "Camera, selection, orders, and every build and train key."
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
+
+	# Beside Controls, same family, same reason (#305). Mid-match is when
+	# a player wants the counter table, not before they have met anything
+	# to counter.
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -8734,6 +9173,46 @@ func _build_game_menu() -> void:
 	save.disabled = true
 	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
 	column.add_child(save)
+
+	# Conceding is NOT leaving, and the two sit next to each other so the
+	# difference is visible (D-20260828-a-player-may-concede). Surrender
+	# ends YOUR match and leaves you watching; Leave match ends the match
+	# for everyone and returns to the lobby.
+	#
+	# It asks first. A concession is irreversible and one misclick from
+	# the Resume button, and the server deliberately does not arbitrate
+	# whether a player meant it — that would be a second round trip for a
+	# decision already made, so the confirmation belongs here.
+	_surrender_button = _styled_button("Surrender", HudTheme.DANGER)
+	_surrender_button.tooltip_text = "Concede the match. Your army and buildings are lost."
+	_surrender_button.pressed.connect(_on_surrender_pressed)
+	column.add_child(_surrender_button)
+
+	_surrender_confirm = _styled_button("Surrender — are you sure?", HudTheme.DANGER)
+	_surrender_confirm.tooltip_text = "This cannot be undone."
+	_surrender_confirm.visible = false
+	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
+	column.add_child(_surrender_confirm)
+
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding this session's logs, replays and "
+		+ "your system details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
+	# Where the answer lands when the button is pressed from IN a match.
+	# Beside the button rather than in the HUD's notice line: that line is
+	# the SERVER's channel, overwritten every frame from
+	# `_state.last_notice`, and it is one centred row — a file path would
+	# be clobbered and would not fit.
+	_report_status = Label.new()
+	_report_status.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	_report_status.modulate = HudTheme.TEXT_DIM
+	_report_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_report_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_report_status.custom_minimum_size = Vector2(320.0, 0.0)
+	_report_status.visible = false
+	column.add_child(_report_status)
 
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
@@ -8979,6 +9458,7 @@ func _toggle_game_menu() -> void:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
 	if not _game_menu_layer.visible:
+		_disarm_surrender()
 		if _settings_panel != null:
 			_settings_panel.visible = false
 		if _scoreboard_panel != null:
@@ -9036,6 +9516,39 @@ func _on_hud_auto_toggled(automatic: bool) -> void:
 ## reappears because `_state.in_lobby()` is true again. Nothing here has
 ## to draw a lobby, and nothing here decides a match is over — a client
 ## that could would be a client that decides for everyone (D-002).
+## First press ARMS the concession; the second sends it.
+##
+## Two buttons rather than a modal, because the game menu is already a
+## column of buttons and a modal would be a second dialogue system for one
+## question. The armed button says what it is: a player who came here for
+## Resume and misclicked sees a question, not a lost match.
+func _on_surrender_pressed() -> void:
+	if _surrender_confirm == null:
+		return
+	_surrender_confirm.visible = true
+	if _surrender_button != null:
+		_surrender_button.visible = false
+
+
+func _on_surrender_confirmed() -> void:
+	_disarm_surrender()
+	_toggle_game_menu()
+	print("client: surrendering")
+	if _peer != null and _connected:
+		_peer.send(0, NetProtocol.encode_surrender(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Put the confirmation away again. Called when the menu closes, so a
+## player who armed it, changed their mind and pressed ESC does not find
+## it still armed the next time they open the menu — which would turn a
+## deliberate two-press guard into a single press at the worst moment.
+func _disarm_surrender() -> void:
+	if _surrender_confirm != null:
+		_surrender_confirm.visible = false
+	if _surrender_button != null:
+		_surrender_button.visible = true
+
+
 func _on_leave_match_pressed() -> void:
 	_toggle_game_menu()
 	print("client: leaving match")
@@ -9127,7 +9640,13 @@ func _teardown_match() -> void:
 		_order_drag_marks = null
 	_order_press = Vector2.INF
 	_static_deal.clear()
-	_drawn_cache.clear()
+	# `_drawn.begin()` REPLACES `_drawn_cache.clear()` (#262 — the jostle
+	# index supersedes the flat cache). `_lod_tier.clear()` does not go
+	# with it: that is #155's one-int-per-squad LOD memory, and the next
+	# match re-uses squad ids at different distances, so a tier carried
+	# across a teardown is a squad that opens on the wrong rung.
+	_drawn.begin()
+	_lod_tier.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
@@ -9239,6 +9758,368 @@ func _load_settings() -> void:
 	# fighting that would make screenshots depend on whoever ran last.
 	if _run_seconds <= 0.0 and bool(config.get_value("client", "fullscreen", false)):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+# --- the controls screen (#282) -----------------------------------------
+#
+# `decisions/D-20260828-the-controls-are-written-down-once.md`. A stranger
+# who installed the alpha met a lobby, then a map, with nothing anywhere
+# telling them that WASD pans or that right-click orders. D-094 criterion
+# 10 — a human playing end to end through an installed build — cannot be
+# discharged honestly against a game whose controls are undocumented.
+#
+# The LIST is `controls_reference.gd`, all-static and pure, and its build
+# and train rows are derived from this file's own `BUILD_KEYS` and
+# `TRAIN_KEYS`, so a letter that moves cannot leave the screen behind.
+
+
+func _build_controls_screen() -> void:
+	_controls_layer = CanvasLayer.new()
+	# Above the in-game menu (5) and the main menu (20) alike, because it
+	# is opened FROM both and must sit on top of whichever asked.
+	_controls_layer.layer = 24
+	_controls_layer.visible = false
+	add_child(_controls_layer)
+
+	# OPAQUE. At 0.94 the main menu behind it bled through hard enough to
+	# read — "eDotMW", "Join", "Host a match" all legible under the key
+	# list — which the rendered picture showed and no number could. A
+	# reference screen a player is reading is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_controls_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_controls_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	centre.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Controls"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	# Two columns of groups, because the four groups stacked are taller
+	# than a 720-high window — the same fit question `lobby_layout.gd`
+	# exists for, answered here by splitting rather than by scaling, since
+	# this screen has no other content to trade against.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 40)
+	column.add_child(columns)
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 10)
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 10)
+	columns.add_child(left)
+	columns.add_child(right)
+
+	# Split at the point that leaves the TALLER column shortest, keeping
+	# the groups in reading order.
+	#
+	# Two groups each was the obvious split and it put "Building and
+	# training" — sixteen rows, nine buildings and five units — in a
+	# column that had already spent five on Orders, so the last rows and
+	# the Close button ran off the bottom of a 720-high window. A greedy
+	# "fill the left until it has half" was the next attempt and was
+	# worse: it put ALL of them left, because fourteen of thirty is still
+	# under half until the sixteen-row group has been added.
+	#
+	# Both were caught by looking, and the fit test in
+	# `tests/test_controls_reference.gd` is what makes looking optional
+	# next time.
+	#
+	# It fired on the very next change (#305 added a Reference group for
+	# the manual's key) at 731 px against 720, and the split was rebuilt
+	# to put the screen at 705.
+	#
+	# An earlier version of this comment then predicted that the NEXT row
+	# added would red it again, reasoning that 705 of 720 was the OPTIMUM:
+	# two contiguous columns over 31 rows cannot balance better than
+	# 15/16, and the tall column is one group dealt whole.
+	#
+	# That prediction is measured FALSE. #363 put `farm` on O and freed
+	# the gather key, adding two rows, and the screen went 705 -> 684.
+	# Adding a row can MOVE the split point, and the better balance on the
+	# far side of it more than pays for the row. The 15/16 bound was true
+	# of 31 rows and said nothing about 33.
+	#
+	# So the honest statement is narrower: it fits today with room, the
+	# TEST measures that rather than anyone predicting it, and the fix if
+	# it ever does red is to let a GROUP break across columns, repeating
+	# its title — how a printed reference does it. Roughly ten lines here;
+	# still not written, because nothing needs it.
+	var groups := ControlsReference.groups()
+	var total_rows := 0
+	for group in groups:
+		total_rows += (group["rows"] as Array).size()
+	var split := groups.size()
+	var best := total_rows
+	var running := 0
+	for i in range(groups.size()):
+		running += (groups[i]["rows"] as Array).size()
+		var taller: int = maxi(running, total_rows - running)
+		if taller < best:
+			best = taller
+			split = i + 1
+	for i in range(groups.size()):
+		var group: Dictionary = groups[i]
+		var into: VBoxContainer = left if i < split else right
+
+		var title := Label.new()
+		title.text = String(group["title"]).to_upper()
+		title.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		title.modulate = HudTheme.ACCENT
+		into.add_child(title)
+
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 18)
+		grid.add_theme_constant_override("v_separation", 4)
+		into.add_child(grid)
+
+		for row in group["rows"]:
+			var keys := Label.new()
+			keys.text = String(row[0])
+			keys.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			keys.modulate = HudTheme.TEXT_BRIGHT
+			keys.custom_minimum_size = Vector2(130.0, 0.0)
+			grid.add_child(keys)
+
+			var what := Label.new()
+			what.text = String(row[1])
+			what.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			what.modulate = HudTheme.TEXT_DIM
+			what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			what.custom_minimum_size = Vector2(330.0, 0.0)
+			grid.add_child(what)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_controls)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+
+func _toggle_controls() -> void:
+	if _controls_layer == null:
+		return
+	_controls_layer.visible = not _controls_layer.visible
+
+
+# --- the manual (#305) ---------------------------------------------------
+#
+# `decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md`. The
+# CONTENT lives in `manual.gd` and `/manual/*.tres`, all-static and pure
+# for the D-061 reason; what is here is the drawing.
+#
+# The screen is a contents list on the left and one page on the right,
+# because a manual that is one long scroll is a manual nobody navigates.
+# Both halves scroll: the contents list because pages are added by
+# dropping a `.tres` in a folder and it must not be the thing that stops
+# working, and the page because a roster table is taller than any window
+# and there is no fitting it.
+#
+# The page body is drawn from `Manual.page()`'s sections and nothing else.
+# Two kinds — "text" and "table" — and no parser, which is what makes the
+# fit a property of the DATA rather than of this code, so
+# `tests/test_manual.gd` can measure it without a picture.
+
+
+func _build_manual_screen() -> void:
+	_manual_layer = CanvasLayer.new()
+	# Above the in-game menu (5), the main menu (20) and the controls
+	# screen (24) alike: it is opened FROM the first two and sits beside
+	# the third, so whichever asked, this is on top.
+	_manual_layer.layer = 25
+	_manual_layer.visible = false
+	add_child(_manual_layer)
+
+	# OPAQUE, for the reason the controls screen is (#282): at 0.94 the
+	# menu behind bled through hard enough to read under the text, which
+	# the rendered picture showed and no number could. A reference screen
+	# somebody is READING is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_manual_layer.add_child(backdrop)
+
+	var frame := MarginContainer.new()
+	frame.anchor_right = 1.0
+	frame.anchor_bottom = 1.0
+	frame.add_theme_constant_override("margin_left", 28)
+	frame.add_theme_constant_override("margin_right", 28)
+	frame.add_theme_constant_override("margin_top", 18)
+	frame.add_theme_constant_override("margin_bottom", 18)
+	_manual_layer.add_child(frame)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	frame.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Manual"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	var split := HBoxContainer.new()
+	split.add_theme_constant_override("separation", 24)
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(split)
+
+	# Contents. Scrolls, because pages arrive by dropping a file in a
+	# folder and the list is the thing that must keep working when the
+	# thirteenth one does.
+	var contents_scroll := ScrollContainer.new()
+	contents_scroll.custom_minimum_size = Vector2(230.0, 0.0)
+	contents_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	split.add_child(contents_scroll)
+	_manual_contents = VBoxContainer.new()
+	_manual_contents.add_theme_constant_override("separation", 2)
+	_manual_contents.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	contents_scroll.add_child(_manual_contents)
+
+	var rule := ColorRect.new()
+	rule.color = HudTheme.ACCENT_DIM
+	rule.custom_minimum_size = Vector2(1.0, 0.0)
+	split.add_child(rule)
+
+	_manual_scroll = ScrollContainer.new()
+	_manual_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(_manual_scroll)
+	_manual_body = VBoxContainer.new()
+	_manual_body.add_theme_constant_override("separation", 8)
+	_manual_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.add_child(_manual_body)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_manual)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+	_fill_manual_contents()
+
+
+## The contents list, rebuilt from the registry.
+##
+## Built once here rather than on every open: `Manual.pages()` reads the
+## `/manual` directory, and a player opening Help is not a reason to walk
+## a filesystem. The pages themselves ARE rebuilt on every open, which is
+## the point — a page is derived from the shipped data at the moment it is
+## read.
+func _fill_manual_contents() -> void:
+	for child in _manual_contents.get_children():
+		child.queue_free()
+	var first := true
+	for entry in Manual.pages():
+		var id: StringName = entry["id"]
+		var button := Button.new()
+		button.text = String(entry["title"])
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.tooltip_text = String(entry["summary"])
+		button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		button.flat = true
+		button.pressed.connect(func(): _show_manual_page(id))
+		_manual_contents.add_child(button)
+		if first:
+			_manual_page = id
+			first = false
+
+
+func _show_manual_page(id: StringName) -> void:
+	_manual_page = id
+	for child in _manual_body.get_children():
+		child.queue_free()
+
+	var built := Manual.page(id)
+	var title := Label.new()
+	title.text = String(built["title"])
+	title.add_theme_font_size_override("font_size", HudTheme.TITLE_SIZE)
+	title.modulate = HudTheme.TEXT_BRIGHT
+	_manual_body.add_child(title)
+
+	if String(built["summary"]) != "":
+		var summary := Label.new()
+		summary.text = String(built["summary"])
+		summary.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		summary.modulate = HudTheme.ACCENT
+		summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_manual_body.add_child(summary)
+
+	for section in built["sections"]:
+		if String(section["heading"]) != "":
+			var heading := Label.new()
+			heading.text = String(section["heading"]).to_upper()
+			heading.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+			heading.modulate = HudTheme.ACCENT
+			_manual_body.add_child(heading)
+		if section["kind"] == "table":
+			_manual_body.add_child(_manual_table(section))
+			continue
+		var paragraph := Label.new()
+		paragraph.text = "\n".join(section["lines"])
+		paragraph.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		paragraph.modulate = HudTheme.TEXT_DIM
+		paragraph.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		paragraph.custom_minimum_size = Vector2(520.0, 0.0)
+		_manual_body.add_child(paragraph)
+
+	_manual_scroll.scroll_vertical = 0
+
+
+func _manual_table(section: Dictionary) -> Control:
+	var columns: Array = section["columns"]
+	var grid := GridContainer.new()
+	grid.columns = columns.size()
+	grid.add_theme_constant_override("h_separation", 16)
+	grid.add_theme_constant_override("v_separation", 3)
+	for name in columns:
+		var head := Label.new()
+		head.text = String(name)
+		head.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		head.modulate = HudTheme.TEXT_BRIGHT
+		grid.add_child(head)
+	for row in section["rows"]:
+		for i in range((row as Array).size()):
+			var cell := Label.new()
+			cell.text = String(row[i])
+			cell.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			cell.modulate = HudTheme.TEXT_BRIGHT if i == 0 else HudTheme.TEXT_DIM
+			# The last column of the buildings and formations tables is a
+			# sentence, not a number, so it wraps and everything else does
+			# not. Deciding that per COLUMN INDEX rather than per page
+			# keeps the renderer's two cases at two.
+			if i == columns.size() - 1 and columns.size() > 2:
+				cell.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				# 400 rather than 240: at the narrower width the barracks
+				# row wrapped to six lines with ~380 px of the window
+				# unused beside it. The rendered frame is what showed
+				# that; no assertion here could have.
+				cell.custom_minimum_size = Vector2(400.0, 0.0)
+			grid.add_child(cell)
+	return grid
+
+
+func _toggle_manual() -> void:
+	if _manual_layer == null:
+		return
+	_manual_layer.visible = not _manual_layer.visible
+	if _manual_layer.visible:
+		_show_manual_page(_manual_page)
 
 
 # --- the pre-connection menu (#180) --------------------------------------
@@ -9370,6 +10251,26 @@ func _build_main_menu() -> void:
 	host_note.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	column.add_child(host_note)
 
+	# Before Quit, because a player who does not know how to play is more
+	# likely to leave than to ask (#282).
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
+
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
+
+	# Here as well as in the in-match menu, and that is the placement that
+	# matters: the reports hardest to act on are the ones from somebody
+	# who never got INTO a match, and they have no other screen to reach.
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding your logs, replays and system "
+		+ "details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
 	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
@@ -9406,7 +10307,7 @@ func _browser_begin() -> void:
 	# name the platform (D-093, #181), and this is not it. Absent, the
 	# array simply has one provider in it and there is no second code
 	# path to be broken by.
-	var boundary := load("res://steam_platform.gd")
+	var boundary := load("res://platform.gd")
 	if boundary != null:
 		var provided = boundary.lobby_provider()
 		if provided != null:
@@ -9585,24 +10486,29 @@ func _connect_to(address: String, port: int) -> void:
 	# A fresh attempt is not carrying the last one's refusal.
 	_state.refusal = {}
 	_menu_last_endpoint = MainMenu.format_endpoint(address, port)
+	# What the connection-lost screen names when it cannot reach the
+	# server (#162). It used to be set inline in `_ready`, which is the
+	# block #180 replaced with the menu flow — so taking the menu side of
+	# that merge whole would have left this empty and the screen saying
+	# "could not reach " with nothing after it. Connecting is centralised
+	# here now, so the endpoint belongs here too.
+	_server_endpoint = MainMenu.format_endpoint(address, port)
 	_save_settings()
 	_set_title(MainMenu.format_endpoint(address, port))
 
-	_host = ENetConnection.new()
-	var err := _host.create_host(1, CHANNELS)
-	if err != OK:
-		push_error("client: could not create ENet host (error %d)" % err)
-		_return_to_menu("Could not open a network socket (error %d)." % err)
-		return
-	_peer = _host.connect_to_host(address, port, CHANNELS)
-	if _peer == null:
-		push_error("client: could not reach %s:%d" % [address, port])
+	var dialled := EnetTransport.connect_to(address, port, CHANNELS)
+	_transport = dialled["transport"]
+	_peer = dialled["peer"]
+	if _peer == null or not _transport.is_open():
+		push_error("client: %s" % _transport.describe())
+		_transport = null
+		_peer = null
 		_return_to_menu("Could not reach %s. Check the address, and that the server is running."
 			% _menu_last_endpoint)
 		return
 	_connect_started_at = _wall_now
 	_hide_main_menu()
-	print("client: connecting to %s:%d" % [address, port])
+	print("client: connecting to %s:%d [%s]" % [address, port, _transport.describe()])
 
 
 ## Drop the socket, leaving the scene alone. Split out from
@@ -9612,9 +10518,9 @@ func _connect_to(address: String, port: int) -> void:
 func _close_connection() -> void:
 	if _peer != null and _connected:
 		_peer.peer_disconnect_now(0)
-	if _host != null:
-		_host.destroy()
-	_host = null
+	if _transport != null:
+		_transport.close()
+	_transport = null
 	_peer = null
 	_connected = false
 	_connect_started_at = -1.0
@@ -9751,6 +10657,134 @@ func _show_refusal() -> void:
 # opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
+## The connection-lost screen (#162). Built once at start-up like every
+## other overlay, because the moment it is needed there is no server to
+## ask for anything.
+var _connection_lost_layer: CanvasLayer = null
+var _connection_lost_headline: Label = null
+var _connection_lost_detail: Label = null
+## Latched: ENet can report a disconnect more than once, and this must
+## not rebuild or re-log on every service() call.
+var _connection_lost := false
+## Whether a connection was ever ESTABLISHED. A never-answered connect
+## attempt also arrives as EVENT_DISCONNECT, and "the server went away"
+## and "there was never a server there" are different things to tell a
+## player.
+var _ever_connected := false
+## "host:port", as `_ready` resolved it.
+var _server_endpoint := ""
+
+
+## The client has no server any more, and the player is told (#162).
+##
+## Deliberately the SMALL version. The right home for this is the
+## pre-lobby main menu (#180) — that ticket names this issue as its
+## sibling and says the disconnect should land on the menu — so this
+## does the part that cannot wait, in a way that ticket can absorb: one
+## overlay, one message, one way out.
+##
+## What it deliberately does NOT do is tear the match down.
+## `_teardown_match()` frees the terrain, the squads and the buildings,
+## and a player who has just lost the server would be shown a black
+## screen instead of the last thing that happened. The world underneath
+## is frozen and stale, and the banner says exactly that.
+##
+## The backdrop DOES take mouse input, though, and that is load-bearing
+## rather than cosmetic: it is what stops a click reaching the world and
+## issuing an order down a dead socket. Guarding each of the twenty-odd
+## `_peer.send` sites individually would be the same rule written twenty
+## times, which is how it comes to be written wrongly once.
+func _on_connection_lost() -> void:
+	if _connection_lost:
+		return
+	_connection_lost = true
+
+	# A capture run's screenshot is an INSTRUMENT (`just test-client`),
+	# and every check it makes is over the pixels. Covering the frame
+	# with a banner would change what those measure, so an unattended
+	# render says it on the console — where its verdict already reads —
+	# and keeps drawing what it was asked to draw.
+	if _run_seconds > 0.0:
+		push_warning("client: lost the server mid-capture")
+		return
+
+	if _connection_lost_layer == null:
+		return
+	if _connection_lost_headline != null:
+		_connection_lost_headline.text = "Connection lost" if _ever_connected \
+			else "Could not reach the server"
+	if _connection_lost_detail != null:
+		_connection_lost_detail.text = ("The server is no longer there. "
+			+ "Nothing on screen can change, and no order will reach anyone.") \
+			if _ever_connected else \
+			("Nothing answered at %s. The server may not be running yet."
+				% _server_endpoint)
+	_connection_lost_layer.visible = true
+
+
+func _build_connection_lost_screen() -> void:
+	_connection_lost_layer = CanvasLayer.new()
+	# Above the lobby (10), which is the only overlay that outranks the
+	# defeat screen. With no server there is no lobby to go back to, so
+	# nothing this client can draw may sit on top of this.
+	_connection_lost_layer.layer = 12
+	_connection_lost_layer.visible = false
+	add_child(_connection_lost_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.color.a = 0.82
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	# STOP, unlike the defeat screen's IGNORE, and see `_on_connection_lost`
+	# for why: this is what keeps a click from ordering a squad that
+	# nothing is listening for.
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_connection_lost_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_connection_lost_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "DISCONNECTED"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	_connection_lost_headline = Label.new()
+	_connection_lost_headline.text = "Connection lost"
+	_connection_lost_headline.add_theme_font_size_override("font_size",
+		HudTheme.DISPLAY_SIZE + 16)
+	_connection_lost_headline.modulate = HudTheme.TEXT_BRIGHT
+	_connection_lost_headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_connection_lost_headline)
+
+	_connection_lost_detail = Label.new()
+	_connection_lost_detail.text = "The server is no longer there."
+	_connection_lost_detail.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_connection_lost_detail.modulate = HudTheme.TEXT_DIM
+	_connection_lost_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connection_lost_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_connection_lost_detail.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_connection_lost_detail)
+
+	var button_row := CenterContainer.new()
+	button_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	var quit := _styled_button("Quit to desktop", HudTheme.DANGER)
+	quit.pressed.connect(_on_quit_pressed)
+	button_row.add_child(quit)
+	column.add_child(button_row)
+
+
 func _build_defeat_screen() -> void:
 	_defeat_layer = CanvasLayer.new()
 	# Above the HUD and the in-game menu, below the lobby (which replaces
@@ -9985,6 +11019,22 @@ func _build_lobby_ui() -> void:
 	_start_button.pressed.connect(_on_start_pressed)
 	actions.add_child(_start_button)
 
+	# What the civ THIS player has chosen actually is (#283). Six civs
+	# sit on six distinct mechanical axes and the lobby showed names
+	# only — `CivDef.summary` has promised "a one-line pitch for the
+	# lobby" since the field existed and nothing read it, which is how it
+	# sat cp1252-corrupted for six milestones (#214).
+	#
+	# The player's OWN seat, not every seat: this is the choice they are
+	# making, and a line under all twenty-four would cost the seat list
+	# the height LobbyLayout gives it. Every other seat's civ is on its
+	# picker as a tooltip.
+	_lobby_civ_identity = Label.new()
+	_lobby_civ_identity.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_lobby_civ_identity.modulate = HudTheme.TEXT_DIM
+	_lobby_civ_identity.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_lobby_civ_identity)
+
 	_lobby_help = Label.new()
 	_lobby_help.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 	_lobby_help.modulate = HudTheme.TEXT_GHOST
@@ -10068,11 +11118,92 @@ func _civ_colour(civ: String) -> Color:
 	return def.colour if def != null else HudTheme.TEXT_DIM
 
 
+## Say what the civ in THIS player's seat is, under the seat list.
+##
+## Everything here is derived from the `.tres` through `CivIdentity`, so
+## a seventh civ is a file and this function never learns a name (D-046
+## criterion 3).
+func _refresh_civ_identity(seats: Array) -> void:
+	if _lobby_civ_identity == null:
+		return
+	var mine := _state.my_seat()
+	if mine < 0 or mine >= seats.size():
+		_lobby_civ_identity.text = ""
+		return
+	var chosen := StringName(seats[mine].get("civ", ""))
+	if chosen == CivRoster.RANDOM or chosen == &"":
+		# Random is a real choice (D-048) and resolves to nothing until
+		# the match starts. Saying so beats saying nothing, because the
+		# blank would read as a missing feature.
+		_lobby_civ_identity.text = "Random — your civilisation is drawn when the match starts."
+		return
+	var shown := CivIdentity.describe(CivRoster.by_id(chosen))
+	var summary := String(shown["summary"])
+	var signature := String(shown["signature"])
+	if summary.is_empty() and signature.is_empty():
+		_lobby_civ_identity.text = ""
+		return
+	if signature.is_empty():
+		_lobby_civ_identity.text = summary
+		return
+	_lobby_civ_identity.text = "%s\nSignature unit: %s" % [summary, signature]
+
+
+## The one-line form for a seat's civ picker, shown on hover. Every OTHER
+## seat's civ is readable this way without giving twenty-four rows a
+## second line each.
+func _civ_tooltip(civ: String) -> String:
+	var id := StringName(civ)
+	if id == CivRoster.RANDOM:
+		return "Drawn when the match starts."
+	var def := CivRoster.by_id(id)
+	if def == null:
+		return ""
+	var shown := CivIdentity.describe(def)
+	var signature := String(shown["signature"])
+	var headline := CivIdentity.headline(String(shown["summary"]))
+	if signature.is_empty():
+		return headline
+	return "%s\nSignature unit: %s" % [headline, signature]
+
+
 func _civ_label(civ: String) -> String:
 	if StringName(civ) == CivRoster.RANDOM:
 		return "Random"
 	var def := CivRoster.by_id(StringName(civ))
 	return def.display_name if def != null else civ
+
+
+## The civ's own pitch, for the control a player CHOOSES a civ with
+## (D-20260828-a-summary-is-shown-or-it-is-deleted, #214).
+##
+## `CivDef.summary` shipped saying, in its own doc comment, that it was
+## "shown in the lobby so a player choosing a civ knows what they are
+## picking", and the lobby had never shown it — the sixth instance of this
+## project's declared-and-unread defect class, and the reason the cp1252
+## corruption in all six of those strings (#231) went a milestone
+## unnoticed.
+##
+## A tooltip rather than a blurb label, deliberately: a label in the
+## lobby's preview column would move `LobbyLayout.DESIGN_HEIGHT`, which
+## D-20260817-lobby-fits-the-window pins with a test that builds the lobby
+## and measures it — that page has run off the bottom of a window once
+## already, and flavour text is the wrong thing to spend the budget on.
+##
+## There are TWO of these and that is deliberate, because they answer at
+## different moments. This one is the LIST ITEM, shown per row while the
+## picker is open — a player scanning six civs wants six comparable
+## pitches. `_civ_tooltip` is the CLOSED CONTROL, and adds the signature
+## unit (#283), which is the thing you want confirmed after choosing
+## rather than while comparing. Collapsing them would cost one of the two
+## readings; both have a caller-exists test, which is what would fail.
+func _civ_summary(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "A civ is drawn for you when the match starts."
+	var def := CivRoster.by_id(StringName(civ))
+	if def == null or def.summary.strip_edges() == "":
+		return _civ_label(civ)
+	return "%s — %s" % [def.display_name, def.summary]
 
 
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
@@ -10113,6 +11244,8 @@ func _refresh_lobby() -> void:
 	_add_ai_button.disabled = not admin
 	_start_button.disabled = not admin or seats.size() < 2
 	_start_button.text = "Start match" if admin else "Waiting for host"
+
+	_refresh_civ_identity(seats)
 
 	if admin:
 		_lobby_help.text = "Click a civilisation to change it. Only you can seat AI players and start the match."
@@ -10548,8 +11681,16 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	picker.disabled = not editable
 	var choices := _civ_choices()
 	for c in choices:
+		var at := picker.item_count
 		picker.add_item(_civ_label(String(c)))
+		# Per ITEM as well as on the control, so the pitch is readable
+		# while the list is open — which is the moment a player is
+		# actually choosing (#214).
+		picker.set_item_tooltip(at, _civ_summary(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	# What THIS seat picked, on hover — so every seat's civ is readable
+	# without giving each row a second line (#283).
+	picker.tooltip_text = _civ_tooltip(String(civ))
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)
@@ -10896,6 +12037,14 @@ func _seat_capture_ai() -> void:
 		return
 	_lobby_ai_asked = true
 	var civs := CivRoster.ids()
+	# The capture's OWN seat takes a real civ rather than staying on
+	# Random (#283). Random is the one state in which the identity line
+	# has nothing to say about a civilisation, so a lobby screenshot left
+	# on it photographs the least informative version of the screen —
+	# the same "aim the instrument at the thing" rule `gen-terrain-shot`
+	# and `gen-forest-preview` exist under.
+	if not civs.is_empty():
+		_send_lobby(NetProtocol.LOBBY_SET_CIV, _state.my_seat(), String(civs[0]))
 	for i in range(_lobby_ai_wanted):
 		# Spread the AI across civs rather than leaving them all Random,
 		# so the capture shows what a mixed lobby looks like.

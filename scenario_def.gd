@@ -39,6 +39,18 @@ extends Resource
 ## Squads every player starts with, placed relative to their home.
 @export var squads: Array[ScenarioSquad] = []
 
+## Tech LINES every player is granted at scenario start
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## A scenario skips the opening, and once the tree exists it must be able
+## to skip the tree too — otherwise every scenario is permanently epoch 1
+## and the siege loop cannot reach a siege engine. Granted through
+## `ResearchState.grant`, the same call the server makes when research
+## completes, for D-098's governing reason: a scenario is applied through
+## the game's own calls and never through a faster path that builds the
+## world its own way.
+@export var techs: Array[StringName] = []
+
 ## Starting wallet: food, wood, gold, stone. A scenario about combat
 ## should not also be a scenario about saving up.
 @export var food: int = 0
@@ -55,6 +67,34 @@ extends Resource
 ## overrides the map's spawn points rather than adjusting them, because
 ## "near each other" is not a property any real map has.
 @export var separation: int = 0
+
+## Whether a run of this scenario can prove FOG GATING in the sense
+## `gate-check.sh fog-squads` means it: even the single most-informed
+## client knows FEWER squads than the server simulates, at every moment of
+## the run.
+##
+## True for anything resembling a real match, and FALSE for a scenario
+## whose armies all converge on one another — because that comparison is
+## about the PEAK, and the moment every army meets, the best-informed
+## client has seen everything there is. `clash` is exactly that scenario
+## by construction: "two armies already within reach" is a description of
+## armies that will shortly all be in one place.
+##
+## This does NOT mean such a scenario proves nothing about fog. `clash`
+## reports `conceal_events=137 reveal_events=86` over a 4-bot run — squads
+## leaving and re-entering vision constantly — and the bots' own verdict
+## gates on both. What it cannot support is the stronger peak-knowledge
+## comparison, and `test-scenario` says which one it skipped rather than
+## skipping it quietly (gate-check.sh's own header: "a comparison that
+## silently skips is the vacuous pass D-022's audit was written against").
+##
+## Worth knowing before changing it: this became FALSE for `clash` only
+## once the load-test bots started actually fighting there (#230). While
+## they sat still, `clash`'s armies were 8 cells apart against a 12-unit
+## vision range and never saw each other, so the peak comparison passed on
+## a run in which nothing happened — a gate satisfied by the bots being
+## broken.
+@export var proves_fog_gating: bool = true
 
 ## How far from an intended cell the applier may look for a free passable
 ## one. Offsets are authored against no particular terrain, so some will

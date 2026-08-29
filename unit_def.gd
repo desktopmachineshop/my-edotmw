@@ -27,6 +27,23 @@ class_name UnitDef
 ## more archetypes than armour classes.
 @export var archetype: StringName = &"militia"
 
+## The tech LINE that makes this unit producible, or empty for "always"
+## (`D-20260827-the-tree-is-the-ladder`). Names a LINE, never a tech id,
+## so one entry covers every civ's version of the tech exactly as
+## `built_by` covers every civ's version of a builder.
+##
+## Empty is the default and every `gatherers`, `general` and `levy` def
+## leaves it so: the opening does not change, and a build with no /techs
+## at all plays exactly as it did before the tree existed. That is D-070's
+## own safe-default reasoning ("an unaware .tres is free to keep"),
+## applied to a gate rather than to an epoch number.
+##
+## Deliberately the ONLY availability gate. D-070 also proposed
+## `UnitDef.epoch`; two gates on one question is one too many and the pair
+## would be free to disagree — the D-058/D-065 family, which this project
+## has now paid for four times. Epoch gates TECHS; techs gate this.
+@export var requires_tech: StringName = &""
+
 # Squad composition (D-005: squads are the atomic sim unit; D-018: full
 # scale target is ~40 soldiers/squad, ~50 squads/player).
 @export var squad_size: int = 40
@@ -83,6 +100,58 @@ class_name UnitDef
 @export var rout_rally_margin: float = 15.0
 # Morale lost per soldier this squad loses to casualties.
 @export var morale_loss_per_casualty: float = 4.0
+
+## The squad size `morale_loss_per_casualty` is authored against.
+##
+## 36 because that is what the old legion/northmen line squad was when
+## the shipped 4.0 was written, so a 36-man squad behaves exactly as it
+## always has and every other size is normalised to it rather than to a
+## number picked now.
+const MORALE_REFERENCE_SQUAD := 36.0
+
+
+## Morale lost for ONE casualty, scaled to this squad's size (#266).
+##
+## The authored field is a flat per-man number, and this roster runs from
+## 3 men to 48. Flat, the casualties needed to break are a CONSTANT —
+## `(morale - rout_threshold) / morale_loss_per_casualty`, which at the
+## shipped 100/25/4.0 is 18.75 — so **any squad of 18 men or fewer is
+## annihilated before it can be frightened.** Not rarely: never, at any
+## level of beating, from any direction, with recovery disabled entirely.
+## Measured: 12 of 27 combat defs, including EVERY cavalry def in the
+## game and the whole of one civ's non-levy roster.
+##
+## Scaled, the casualties needed become a constant FRACTION of the squad
+## instead: `(morale - rout_threshold) / (loss * REFERENCE)`, about half
+## the squad at the shipped numbers, whatever its size. A six-man breaker
+## and a forty-eight-man levy now break at comparable attrition, which is
+## what "morale" was always supposed to mean.
+##
+## Fearlessness survives untouched and for free: a fearless def ships
+## `morale_loss_per_casualty = 0`, and zero times any scale is zero
+## (#191, `tests/test_fearless.gd`). That matters more than it looks —
+## the defect this fixes was silently sharing the fearless civ's one
+## distinguishing feature with twelve units belonging to the other five.
+##
+## An APPLIED accessor rather than the raw field, per
+## `D-20260823-a-civs-knobs-are-read-by-the-simulation`: both readers are
+## in combat and `x * REFERENCE / squad_size` written out twice is two
+## copies of one rule, free to drift.
+func morale_loss_for(casualties: int) -> float:
+	if squad_size <= 0:
+		return float(casualties) * morale_loss_per_casualty
+	return float(casualties) * morale_loss_per_casualty \
+		* MORALE_REFERENCE_SQUAD / float(squad_size)
+
+
+## Casualties this squad can take before it breaks, or a very large
+## number if it never will. The reachability question #266 is about,
+## answerable without running a fight.
+func casualties_to_rout() -> float:
+	var per := morale_loss_for(1)
+	if per <= 0.0:
+		return INF
+	return (morale - rout_threshold) / per
 # Stochastic spread on this unit's damage roll: output is drawn uniformly
 # from [damage * (1 - variance), damage * (1 + variance)] per D-024's
 # "rolled stochastically". 0 would make combat deterministic attrition,

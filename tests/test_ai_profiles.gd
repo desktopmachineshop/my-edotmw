@@ -37,8 +37,14 @@ func test_the_shipped_profiles_load_and_validate() -> void:
 	for def in profiles:
 		assert_eq(def.validate(), "", "profile %s is invalid" % def.id)
 		assert_ne(def.display_name, "", "profile %s has no display name" % def.id)
-		assert_ne(def.summary, "",
-			"profile %s says nothing about itself, so a lobby cannot describe it" % def.id)
+		# `summary` used to be asserted non-empty here, and that assert is
+		# WHY the field survived unread for a milestone: it proved the
+		# string existed and never looked at what was in it, so it stayed
+		# green over a replacement character describing a lobby control
+		# that did not exist. The field is gone
+		# (D-20260828-a-summary-is-shown-or-it-is-deleted); the three
+		# pitches live in docs/status/ai-opponent.md, and the field comes
+		# back with its READER when per-seat difficulty selection lands.
 
 
 func test_exactly_one_profile_is_the_default() -> void:
@@ -126,6 +132,19 @@ func test_the_default_profile_is_the_ai_that_already_shipped() -> void:
 	assert_eq(built_in.attack_regroup_thinks, 8.0)
 	assert_eq(built_in.food_floor, 180)
 	assert_eq(built_in.wood_floor, 200)
+	# #337 added this one, and it is the ONE field on which the shipped
+	# default is deliberately NOT the AI that already shipped: the old one
+	# built no static defence at all, because it could not — every wall,
+	# gate and tower costs stone and it never gathered any.
+	#
+	# 0.0 would have preserved the letter of the clause above and shipped
+	# a knob no profile exercises, which is `gather_speed` sitting at 1.0
+	# on every civ for a milestone (#158). So the default USES the
+	# feature, and the honest consequence is stated where it belongs:
+	# **every ladder figure taken before #337 was taken against an AI that
+	# never fortified**, and the standing "quote a result with its cap"
+	# rule gains a clause — quote which side of this change it came from.
+	assert_eq(built_in.defence_appetite, 0.5)
 
 	# ...and the shipped default is those defaults written out, so a
 	# missing /ai costs difficulty and never the game (clause 2).
@@ -135,6 +154,7 @@ func test_the_default_profile_is_the_ai_that_already_shipped() -> void:
 	assert_eq(shipped.train_cooldown, built_in.train_cooldown)
 	assert_eq(shipped.attack_squads_minimum, built_in.attack_squads_minimum)
 	assert_eq(shipped.attack_regroup_thinks, built_in.attack_regroup_thinks)
+	assert_eq(shipped.defence_appetite, built_in.defence_appetite)
 
 
 func test_every_profile_carries_the_same_resource_floors() -> void:

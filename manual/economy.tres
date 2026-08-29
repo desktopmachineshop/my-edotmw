@@ -1,0 +1,69 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"economy"
+title = "Resources and gathering"
+order = 80
+summary = "Four resources, why the walk back costs you, and the one you can grow."
+body = "Four resources: FOOD, WOOD, GOLD and STONE. What each thing costs is on the
+Troops and Buildings pages.
+
+Three of the four are FOUND and never replaced. Food is the exception: it is
+also GROWN, and that is what keeps a long match from ending in an empty map.
+
+Gathering is a ROUND TRIP. A crew walks to a node, works it, fills up, walks
+back to a drop-off and unloads. So distance is income: a node across the map
+earns a fraction of what the same node beside your town does, and the
+difference is the walk, every trip, all match.
+
+A storehouse is a drop-off you can put anywhere. It is usually far cheaper
+than moving your economy to the resources.
+
+## Nodes run out
+
+Trees hold little and go quickly; gold and stone last a long time. When a
+crew works a tree out it retargets itself to the nearest surviving node of
+the SAME kind close by — it will never switch you from wood to food behind
+your back. When nothing of that kind is left in reach it stops, and a stopped
+crew is waiting for orders.
+
+Wood never comes back. Plan on the map running down, because it does.
+
+Gold and stone are the exception, and only just. A worked-out vein is not
+dead: it regrows, slowly and permanently, toward a small tail — 150 gold or
+240 stone, about ten minutes' worth. That is a FLOOR, not a replacement. A
+live seam pays a crew several times faster and holds 2,400, so the opening is
+still a race for rich ground; a regrown vein buffers a raid or a rebuild and
+nothing more.
+
+## A farm is a node you built
+
+A FARM is a work site you put where you want one, and a crew is ordered onto
+it exactly as onto a forest. The difference is the direction it moves: a
+field's stock grows back instead of only running down, so a farm is a RATE
+and a forest is a pile.
+
+Two things follow. The only way to raise a rate is to own more fields, so
+farms are the one building you want several of. And a field is worth nothing
+standing empty — an unworked farm feeds nobody, so each one wants a crew.
+
+A farm does not block movement and does not defend itself, which makes a
+field the softest thing you own. Raiding somebody's fields costs them the
+income, not just the harvest sitting in them.
+
+## The ground says what grows on it
+
+Forests sit where it is wet, orchards through the middle, dry trees and palms
+on sand, and stone at the foot of mountains. Which means you can read where
+somebody's resources must be from terrain you have only glimpsed.
+
+## Casualties cut income
+
+A crew gathers per LIVING soldier. Raiding gatherers is not only denial while
+you are standing there — it is a permanent cut to their rate until the men
+are replaced."
+sources = Array[String](["res://economy.gd", "res://decisions/D-027.md", "res://decisions/D-087-forests-are-made-of-trees-biome.md", "res://buildings/storehouse.tres", "res://buildings/farm.tres", "res://decisions/D-20260828-food-is-grown-not-only-found.md"])
+stamp = "3ef15c88bac7000913dc570c44a46849c4f6f217e994138b47b2587c1c1be9b6"

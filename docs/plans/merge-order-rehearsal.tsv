@@ -1,0 +1,109 @@
+222	ao/my-edotmw-82/d067-siege-rule	CLEAN	5
+243	ao/my-edotmw-86/red-main	CLEAN	63
+335	ao/my-edotmw-86/small-fixes	CLEAN	17
+294	ao/my-edotmw-86/ci-pipeline	CLEAN	8
+273	ao/my-edotmw-86/explore-command	CONFLICT	squad_sim.gd 
+273	ao/my-edotmw-86/explore-command	CONFLICT-RESOLVED	squad_sim.gd: siblings of #243 both add squad state and both clear it in order/stop/flee_move; kept BOTH sides in all 4 hunks
+345	ao/my-edotmw-86/audio-foundations	CLEAN	54
+265	ao/my-edotmw-80/gap-assessment	CLEAN	1
+238	ao/my-edotmw-81/issue-153-gate-reconciles-containers	CONFLICT	justfile tests/test_multi_agent_isolation.gd 
+238	ao/my-edotmw-81/issue-153-gate-reconciles-containers	CONFLICT-RESOLVED	justfile + tests/test_multi_agent_isolation.gd: DUPLICATE FIX - #335 and #238 both fix #209 (--name scan matching art/attach_kit.py) with different implementations; kept #335's per-line scan, dropped #238's whole-file regex. Not additive: one must be chosen.
+226	ao/my-edotmw-81/issue-157-second-match-state	CLEAN	6
+232	ao/my-edotmw-81/issue-162-disconnect-notice	CLEAN	5
+235	ao/my-edotmw-87/model-preview-framing	CLEAN	5
+237	ao/my-edotmw-87/artifacts-are-writable	CLEAN	18
+234	ao/my-edotmw-85/playtest-visual-infra	CLEAN	26
+251	ao/my-edotmw-82/ladder-instrument	CLEAN	6
+248	ao/my-edotmw-82/clash-reports-its-army	CLEAN	9
+255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT	docs/status/ai-opponent.md docs/status/playtests-2026-08.md 
+255	ao/my-edotmw-80/ai-founding-and-gates	CONFLICT-RESOLVED	docs/status/{ai-opponent,playtests-2026-08}.md: two PRs appending sections at the same point; kept BOTH. Trivial, and the shape CLAUDE.md predicts for status docs.
+322	ao/my-edotmw-81/issue-292-disconnect-eliminates	CONFLICT	docs/status/playtests-2026-08.md 
+322	ao/my-edotmw-81/issue-292-disconnect-eliminates	CONFLICT-RESOLVED	docs/status/playtests-2026-08.md: third PR appending at the same point; kept BOTH. Trivial.
+221	ao/my-edotmw-82/lod-hysteresis	CLEAN	6
+252	ao/my-edotmw-82/d067-garrison	CLEAN	3
+260	ao/my-edotmw-82/d072-screen	CLEAN	3
+261	ao/my-edotmw-82/counters-are-felt	CLEAN	3
+321	ao/my-edotmw-82/civ-can-open	CLEAN	3
+324	ao/my-edotmw-82/formations-granted	CONFLICT	units/emberdeep_heavy.tres 
+324	ao/my-edotmw-82/formations-granted	RULED-#324-FIRST	CLOSED #360, end state = origin tip 741eb68: all four grants dropped, #324 merges BEFORE #243, ZERO conflicts and ZERO operator decisions (with four dropped #243 makes no net change on those lines against origin/main). Verified by performing it: main -> #324 -> #243 is CLEAN at both steps, final set emberdeep_heavy=testudo, emberdeep_levy=shield_wall, gildedreach_spearmen=shield_wall, test_fighting_styles 6/6. Old note below described the superseded two-deletion form.
+324	ao/my-edotmw-82/formations-granted	CONFLICT-RESOLVED	units/emberdeep_heavy.tres: DUPLICATE FIX with CONTRADICTORY data - #243 grants shield_wall, #324 grants testudo, both fixing #309. Resolved to the UNION; a duplicated key would be invalid .tres so 'keep both' is not available. Needs an author decision - filed.
+330	ao/my-edotmw-82/gatherers-differ	CONFLICT	units/emberdeep_gatherers.tres units/gildedreach_gatherers.tres units/gravesworn_gatherers.tres units/stoneblood_gatherers.tres units/thornwood_gatherers.tres units/windmarch_gatherers.tres 
+330	ao/my-edotmw-82/gatherers-differ	CONFLICT-RESOLVED	all six units/*_gatherers.tres: DUPLICATE FIX - #243 also differentiates the gatherers (#269) with different numbers. Took #330's values (the dedicated PR, which carries the decision entry and the guard). Third instance of #243 duplicating a dedicated PR.
+334	ao/my-edotmw-82/armour-is-role	CLEAN	6
+347	ao/my-edotmw-82/levies-are-sidegrades	CLEAN	10
+328	ao/my-edotmw-82/morale-scales	CLEAN	6
+257	ao/my-edotmw-82/fortifications-frighten	CLEAN	5
+297	ao/my-edotmw-82/surrender	CONFLICT	building_sim.gd 
+297	ao/my-edotmw-82/surrender	CONFLICT-RESOLVED	building_sim.gd: DUPLICATE - #322 and #297 both add BuildingSim.eliminate_player, semantically identical (same signature, same damage(i,INF) loop, both citing #292 and D-033). Kept HEAD's (#322's). Fourth duplicate-fix pair found.
+336	ao/my-edotmw-82/civ-knobs	CLEAN	13
+233	ao/my-edotmw-84/playtest-bot-findings	CONFLICT	docs/playtests/README.md 
+233	ao/my-edotmw-84/playtest-bot-findings	CONFLICT-RESOLVED	docs/playtests/README.md: index file appended by several PRs; kept BOTH. Trivial.
+293	ao/my-edotmw-88/playtest-207	CLEAN	6
+299	ao/my-edotmw-80/three-decisions	CLEAN	15
+225	ao/my-edotmw-83/tech-tree	CONFLICT	civ_def.gd net_protocol.gd 
+225	ao/my-edotmw-83/tech-tree	CONFLICT-RESOLVED	net_protocol.gd: WIRE OPCODE COLLISION - C2S_SURRENDER(#297), C2S_ORDER_EXPLORE(#273) and C2S_ORDER_RESEARCH(#225) ALL claim opcode 39. Renumbered explore=41, research=42 to continue. civ_def.gd: additive fields, kept both.
+296	ao/my-edotmw-83/ladder-and-pacing	CLEAN	15
+319	ao/my-edotmw-83/tick-ladder	CLEAN	8
+341	ao/my-edotmw-83/shipping-scale	CLEAN	8
+250	ao/my-edotmw-87/render-cost-attribution	CONFLICT	bench_render.gd justfile 
+250	ao/my-edotmw-87/render-cost-attribution	CONFLICT-RESOLVED	justfile: bench-render POSITIONAL SIGNATURE diverged - one PR adds HOST/PRESET/HULLS, #250 adds ARGS. Combined into one signature. D-20260817 says just args are positional, so two signatures for one recipe silently re-points every invocation. bench_render.gd: 5 additive hunks, kept both.
+263	ao/my-edotmw-87/bench-is-the-client	CONFLICT	bench_render.gd 
+263	ao/my-edotmw-87/bench-is-the-client	CONFLICT-RESOLVED	bench_render.gd: CROSS-CHAIN - my-edotmw-83 (#341 host budgets, #339) and my-edotmw-87 (#250/#263 render attribution) both restructure the benchmark. Kept both; the 87 chain re-conflicts on this file at every step.
+272	ao/my-edotmw-87/one-cell-per-drawn-man	CLEAN	11
+274	ao/my-edotmw-87/the-clamp-after-one-cell	CLEAN	4
+298	ao/my-edotmw-87/render-cost-has-a-baseline	CLEAN	12
+307	ao/my-edotmw-87/the-jostle-looks-where-the-men-are	CONFLICT	client.gd 
+307	ao/my-edotmw-87/the-jostle-looks-where-the-men-are	CONFLICT-RESOLVED	client.gd: REFACTOR vs ADDITION - #307 replaces _drawn_cache with a DrawnIndex, while #221 (lod-hysteresis) adds _lod_tier beside it. 'Keep both' would call .clear() on a variable #307 deleted; kept _drawn.begin() + _lod_tier.clear(). One stale doc-comment reference to _drawn_cache survives at client.gd:207.
+310	ao/my-edotmw-87/every-tres-is-utf8	CLEAN	9
+317	ao/my-edotmw-87/inside-the-derive-phase	CLEAN	5
+326	ao/my-edotmw-87/inside-the-decoration-phase	CLEAN	9
+329	ao/my-edotmw-87/the-gather-stops-repeating	CLEAN	6
+331	ao/my-edotmw-87/inside-the-pipeline	CLEAN	3
+-	bench_render.gd	HAND-MERGE-REQUIRED	NO mechanical merge of bench_render.gd compiles: my-edotmw-83 (#339/#341 host budgets) and my-edotmw-87 (#250-#331 render attribution) both restructure it, renaming variables (target) and changing _detail_for()'s signature. Keeping both sides gives 3 parse errors. Rehearsal took the 87 chain's file wholesale, LOSING #341's host-budget bench work.
+293	ao/my-edotmw-88/playtest-207	SINGLE-PR-RED	adds playtest_obs/obs_civs.gd which names civ ids; tests/test_civs.gd EXEMPT_PREFIXES is only tests/ and addons/, and #293 does not touch that test -> test_no_script_mentions_a_civ_id is red on its OWN branch (D-046 criterion 3). Not a merge issue.
+205	ao/my-edotmw-79/export	CLEAN	15
+213	ao/my-edotmw-79/handshake	CONFLICT	bot_client.gd 
+213	ao/my-edotmw-79/handshake	CONFLICT-RESOLVED	bot_client.gd: the load-test VERDICT line is extended by THREE PRs - #248 (_scenario), #225 (techs_ordered/techs_held) and #213 (refused). Format string and its argument array both conflict; merged all three tails by hand. Mechanically resolvable but not by any keep-ours/keep-theirs rule.
+239	ao/my-edotmw-79/main-menu	CONFLICT	client.gd justfile 
+239	ao/my-edotmw-79/main-menu	CONFLICT-RESOLVED	client.gd: REFACTOR DEFEATS A FEATURE - #239 moves the connect out of _ready() into _connect_to(), deleting the site where #232 assigns _server_endpoint. #239's branch has ZERO references to it. Merged naively the connection-lost screen (#162) shows an empty endpoint and NOTHING fails. Re-attached the assignment inside _connect_to. justfile: additive recipes, kept both.
+242	ao/my-edotmw-79/steam-boundary	CLEAN	9
+256	ao/my-edotmw-79/host-in-process	CONFLICT	server.gd 
+256	ao/my-edotmw-79/host-in-process	CONFLICT-RESOLVED	server.gd 4 hunks: #256 (_local_clients / in-process host) vs #226 (_fresh_record, _recipients()) and #336 (_civ_effects_for). Took HEAD throughout - _recipients() already merges _local_clients and _fresh_record generalises #256's key-by-key clearing, so the newer refactors subsume #256's versions. #256's explanatory comment about the recipients drift is lost.
+258	ao/my-edotmw-79/alpha-loop	CLEAN	8
+264	ao/my-edotmw-79/steam-transport	CONFLICT	client.gd server.gd 
+264	ao/my-edotmw-79/steam-transport	CONFLICT-RESOLVED	client.gd + server.gd: REFACTOR DEFEATS A FEATURE (2nd time for the same feature) - #264 replaces ENetConnection with a NetTransport seam, deleting BOTH the _host field and the connect site. #232's #162 disconnect handling and _server_endpoint had to be re-attached again, on top of the same re-attachment #239 already forced. server.gd: _host.destroy() -> _transport.close(), keeping #237's replay print.
+295	ao/my-edotmw-79/onboarding	CONFLICT	civs/emberdeep.tres civs/gildedreach.tres civs/gravesworn.tres civs/stoneblood.tres civs/thornwood.tres civs/windmarch.tres 
+295	ao/my-edotmw-79/onboarding	CONFLICT-RESOLVED	all six civs/*.tres: additive - #295 adds signature_unit alongside #336's knobs; kept both. This is the 5-chain civs/*.tres contention the merge plan predicted.
+300	ao/my-edotmw-79/opening-hint	CONFLICT	justfile 
+300	ao/my-edotmw-79/opening-hint	CONFLICT-RESOLVED	justfile: SECOND positional-signature divergence - test-client is RESOLUTION="1280x720" on one side and HOLD="0" on the other. A keep-both resolution produces TWO test-client recipes and just refuses the file; combined into one signature. Same trap as bench-render (#250).
+306	ao/my-edotmw-79/controls-screen	CLEAN	9
+320	ao/my-edotmw-79/manual	CONFLICT	client.gd 
+320	ao/my-edotmw-79/manual	CONFLICT-RESOLVED	client.gd: additive doc/table block (#302 keyboard-letter registry); kept both.
+348	ao/my-edotmw-79/ai-fortifies	CONFLICT	
+348	ao/my-edotmw-79/ai-fortifies	CONFLICT	ai_player.gd bot_client.gd 
+348	ao/my-edotmw-79/ai-fortifies	CONFLICT-RESOLVED	ai_player.gd (4 hunks) + bot_client.gd (3): keep-both does NOT compile. AI_STATS and the load-test VERDICT are each a single format string + arg array extended by FOUR different PRs (#248 scenario, #225 techs, #348 gates, #213 refused); every pair conflicts and the tails must be merged by hand. Also a real semantic merge in the AI building loop: #225 filters per-civ and by tech, #348 excludes wall-like/damaging defs - both filters are needed.
+271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT	CLAUDE.md justfile 
+246	ao/my-edotmw-88/renewable-food	CONFLICT	CLAUDE.md justfile 
+271	ao/my-edotmw-81/issue-185-steam-depot	CONFLICT-RESOLVED	CLAUDE.md (status-doc @import list) + justfile (doctor block): both additive; kept both. CLAUDE.md's import list conflicts on nearly every PR that adds a status doc - 8 chains touch it.
+303	ao/my-edotmw-81/issue-288-report-a-problem	CONFLICT	client.gd 
+303	ao/my-edotmw-81/issue-288-report-a-problem	CONFLICT-RESOLVED	client.gd: two PRs adding buttons to the same ESC menu column (#297 Surrender, #303 Report a problem); additive, kept both.
+246	ao/my-edotmw-88/renewable-food	CONFLICT	ai/balanced.tres ai/cautious.tres ai/relentless.tres bot_build_plan.gd bot_client.gd civs/emberdeep.tres civs/gildedreach.tres civs/gravesworn.tres civs/stoneblood.tres civs/thornwood.tres civs/windmarch.tres client.gd 
+246	ao/my-edotmw-88/renewable-food	CONFLICT-RESOLVED	12 files. REAL: KEYBINDING COLLISION - #302 (in #243/#335) moves garrison_wall to J, #246 independently assigns J to farm; both checked J against the tables as they stood on main. Moved farm to O. Also bot_client.gd gather loop rewritten by #246 (took theirs) and the VERDICT/BOT lines extended by a FIFTH pair of counters; ai/*.tres and civs/*.tres additive.
+312	ao/my-edotmw-82/renewable-metals	CLEAN	5
+216	ao/my-edotmw-80/map-spawn-fixes	CONFLICT	docs/status/playtests-2026-08.md docs/status/spawns.md 
+216	ao/my-edotmw-80/map-spawn-fixes	CONFLICT-RESOLVED	two status docs appended by several PRs; kept both. Trivial.
+313	ao/my-edotmw-81/naval-1-water-graph	CLEAN	8
+323	ao/my-edotmw-88/naval-3-docks	CONFLICT	decisions/D-010.md server.gd 
+323	ao/my-edotmw-88/naval-3-docks	CONFLICT-RESOLVED	server.gd: same add_building() call extended by two PRs - #336 adds a civ build_time argument, #323 adds a following water-side block. Both kept. decisions/D-010.md: the schema log is appended by every PR adding a field (naval, #328, #336) - kept both.
+333	ao/my-edotmw-88/naval-4-embark	CONFLICT	client_state.gd net_protocol.gd squad_sim.gd 
+333	ao/my-edotmw-88/naval-4-embark	CONFLICT-RESOLVED	net_protocol.gd/client_state.gd/squad_sim.gd: SQUAD_INFO extended by two PRs at once - #273 adds an 'exploring' byte, #333 adds a variable-length 'cargo' block. Keep-both duplicated the decoder's files/stance keys AND would have read the bytes in the wrong order; hand-merged to files->stance->exploring->cargo to match the encoder. A wire-order mistake here desyncs every field after it.
+343	ao/my-edotmw-88/naval-2-domain	CONFLICT	squad_sim.gd 
+343	ao/my-edotmw-88/naval-2-domain	CONFLICT-RESOLVED	squad_sim.gd: #343 replaces _tier_for_destination with _wanted_domain_for at a line where #273 clears _explore; keep-both declared wanted_tier twice. Kept the explore clear plus #343's domain call.
+342	ao/my-edotmw-81/naval-7-ai-and-bots	CONFLICT	ai_player.gd ai_profile.gd gate-check.sh 
+342	ao/my-edotmw-81/naval-7-ai-and-bots	CONFLICT-RESOLVED	ai_player.gd: AI_STATS extended a THIRD time (ladder #225, fortify #348, naval #342) - format string and arg array hand-merged again. ai_profile.gd and gate-check.sh additive.
+327	ao/my-edotmw-81/naval-5-shoreline-combat	ALREADY	
+314	ao/my-edotmw-88/naval-6-content	ALREADY	
+308	ao/my-edotmw-80/naval-design	CONFLICT	CLAUDE.md decisions/D-20260828-water-is-a-second-movement-domain.md squad_sim.gd terrain_knowledge.gd 
+308	ao/my-edotmw-80/naval-design	RULED-DESIGN-ONLY	ORCHESTRATOR RULING 2026-08-28: #343 wins stage 2. #308 merges DESIGN ONLY. Delete on merge: squad_sim.gd, terrain_knowledge.gd, tests/test_water_domain.gd(+.uid), decisions/D-20260828-water-is-a-second-movement-domain.md (add/add against #343), plus (ADOPTED into the ruling 2026-08-28) unit_def.gd (rival naval fields, collides with 5 naval branches) and #308's naval entry in decisions/D-010.md. RIVALS conflict and a merge will raise them; terrain_knowledge.gd and test_water_domain.gd are ORPHANS that collide with nothing and must be deleted deliberately. Survives: docs/plans/naval.md, docs/status/naval-plan.md + its CLAUDE.md import, and the three design entries a-carried-squad-is-cargo / a-dock-stands-on-a-shore / a-map-a-player-can-pick-is-a-map-an-army-can-cross.
+340	ao/my-edotmw-87/naval-8-presentation	CONFLICT	docs/status/naval.md justfile 
+340	ao/my-edotmw-87/naval-8-presentation	CONFLICT-RESOLVED	docs/status/naval.md additive. justfile: a keep-both INTERLEAVED two distinct recipes (gen-seam-shot from #234 and gen-naval-shot from #340) into one broken body - just refused the file; had to lift #340's recipe out whole and append it. CORRECTION to the merge plan: naval stages 1/3/4 ARE genuine ancestors of #340, so it is NOT a duplicate of the naval chain - once that chain is merged first, #340 costs two trivial conflicts. Only stage 2 (#343) is not an ancestor.

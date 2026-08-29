@@ -369,3 +369,74 @@ func test_neighbor_table_is_cached_and_survives_a_reshape() -> void:
 		for dir in range(6):
 			assert_eq(reshaped[cell * 6 + dir], t.neighbor_index(cell, dir),
 				"Cell %d direction %d kept a table built for the old shape" % [cell, dir])
+
+
+func test_index_and_normalize_are_the_same_wrap() -> void:
+	# `index` writes its own two `posmod`s rather than calling
+	# `normalize`, because the delegation cost more than the arithmetic
+	# it wrapped (0.19 us of a 0.41 us call, once per drawn man per frame
+	# and once per cell in every disk scan). D-008 is untouched — the wrap
+	# rule still lives in one FILE and every caller still comes through
+	# this class — but two spellings of one rule is exactly the shape this
+	# project keeps having to undo, so they are held to the same answer
+	# here.
+	var space := TorusSpace.new(W, H, 1.0)
+	for q in range(-2 * W, 2 * W, 3):
+		for r in range(-2 * H, 2 * H, 3):
+			var coord := Vector2i(q, r)
+			var wrapped := space.normalize(coord)
+			assert_eq(space.index(coord), wrapped.y * space.width + wrapped.x,
+				"index(%s) is the index OF normalize(%s)" % [coord, coord])
+
+
+func test_round_axial_still_cube_rounds() -> void:
+	# The body moved out of a private helper into `round_axial` itself for
+	# the same measured reason. Cube rounding is what makes the plane
+	# partition into HEXAGONS rather than rhombi
+	# (D-20260818-a-curve-samples-the-hex-not-the-rhombus), so the
+	# property is asserted rather than the implementation: the rounded
+	# cell must be the nearest cell centre, which independent per-axis
+	# rounding is not.
+	var space := TorusSpace.new(W, H, 1.0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 0xF00D
+	for _i in range(4000):
+		var fractional := Vector2(rng.randf_range(0.0, float(W)),
+			rng.randf_range(0.0, float(H)))
+		var cell := space.round_axial(fractional)
+		var at := space.axial_offset_to_world(fractional - Vector2(cell))
+		# Inside its own hex: no point of a unit hexagon is further than
+		# its circumradius from the centre.
+		assert_lte(Vector2(at.x, at.z).length(), space.hex_size * 1.0001,
+			"%s rounds into the hex it is in" % fractional)
+
+
+func test_disk_indices_is_disk_offsets_through_index() -> void:
+	# The one-call form of "every cell within radius r", added because the
+	# per-offset `index()` call was most of the cost of the client's tree
+	# lookup and none of its work. Same cells, same ORDER — a caller that
+	# swapped to it must not find anything different.
+	var space := TorusSpace.new(W, H, 1.0)
+	for cell_index in range(space.cell_count()):
+		for radius in [0, 1, 3, 5]:
+			var want := PackedInt32Array()
+			var origin := space.from_index(cell_index)
+			for offset in TorusSpace.disk_offsets(radius):
+				want.append(space.index(origin + offset))
+			assert_eq(space.disk_indices(cell_index, radius), want,
+				"cell %d, radius %d" % [cell_index, radius])
+
+
+func test_disk_indices_wraps_at_the_seam() -> void:
+	# The half a non-wrapping implementation gets wrong, and the reason
+	# this lives in TorusSpace rather than in the caller that wanted it.
+	var space := TorusSpace.new(W, H, 1.0)
+	var corner := space.index(Vector2i(0, 0))
+	var indices := space.disk_indices(corner, 1)
+	assert_eq(indices.size(), 7, "a radius-1 disk is seven cells")
+	for i in indices:
+		assert_gte(i, 0, "every index is in range")
+		assert_lt(i, space.cell_count())
+	# The neighbour across the west seam is a real cell on the far side.
+	assert_true(indices.has(space.index(Vector2i(-1, 0))),
+		"the cell west of the origin is the one at x = width - 1")

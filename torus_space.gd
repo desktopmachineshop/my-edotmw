@@ -96,9 +96,48 @@ func normalize(coord: Vector2i) -> Vector2i:
 ## Cell index for packed-array storage (D-009). Normalizes first, so an
 ## out-of-domain coordinate maps to its wrapped cell rather than blowing
 ## up or silently indexing out of bounds.
+##
+## The wrap is written out rather than delegated to `normalize`, and that
+## is a measurement rather than a preference: a GDScript call costs
+## 0.174 us on this hardware, `normalize` costs 0.214 total, and the two
+## `posmod`s it performs cost 0.095 — so the delegation was more call
+## than arithmetic. `index` runs once per drawn man per frame (and once
+## per cell in every disk scan in the project), which is where 0.19 us
+## stops being nothing.
+##
+## D-008 is untouched: the wrap rule still lives in exactly one FILE, and
+## every caller still goes through this class. What is gone is a stack
+## frame, not a definition — `normalize` remains the answer for anyone
+## who wants the coordinate rather than the index, and
+## `test_torus_space.gd` holds the two to the same answer.
 func index(coord: Vector2i) -> int:
-	var c := normalize(coord)
-	return c.y * width + c.x
+	return posmod(coord.y, height) * width + posmod(coord.x, width)
+
+
+## Every cell index within `radius` of `cell_index`, wrapped.
+##
+## `disk_offsets` gives the OFFSETS and a caller then converts each to an
+## index — sixty-one `index()` calls per query at the radius the client's
+## tree lookup uses, once per drawn squad per frame. A GDScript call
+## costs 0.174 us on the hardware this was measured on
+## (D-20260828-inside-the-derive-phase), so at 630 drawn squads that is
+## most of the cost of the scan and none of its work.
+##
+## Same answer, one call: `index(origin + offset)` for each offset, in
+## the same order, so a caller swapping to this cannot change what it
+## finds — `test_torus_space.gd` holds the two to each other.
+##
+## Not cached, deliberately: the offsets are (they are translation
+## invariant, which is `disk_offsets`' whole point), but the INDICES
+## depend on where the disk is centred and a table per origin would be
+## the map over again.
+func disk_indices(cell_index: int, radius: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var origin := from_index(cell_index)
+	for offset in TorusSpace.disk_offsets(radius):
+		out.append(posmod(origin.y + offset.y, height) * width
+			+ posmod(origin.x + offset.x, width))
+	return out
 
 
 func from_index(i: int) -> Vector2i:
@@ -217,11 +256,13 @@ func world_to_axial(world: Vector3) -> Vector2:
 ##
 ## Cube rounding rather than rounding q and r independently — see
 ## `world_to_cell`, which this is factored out of.
+##
+## The body is here rather than in a private helper for the same measured
+## reason as `index` above: the delegation was a whole extra call
+## (0.174 us of the 0.621 this used to cost) around arithmetic that is
+## cheaper than the frame it sat in, on a function that runs once per
+## drawn man per frame.
 func round_axial(fractional: Vector2) -> Vector2i:
-	return _axial_round(fractional)
-
-
-func _axial_round(fractional: Vector2) -> Vector2i:
 	# Convert to cube, round, then repair the component with the largest
 	# rounding error so x + y + z == 0 still holds.
 	var x := fractional.x

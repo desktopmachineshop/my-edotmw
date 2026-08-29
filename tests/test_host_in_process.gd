@@ -185,7 +185,10 @@ func test_hosting_ends_with_the_connection() -> void:
 	var client := _read("res://client.gd")
 	assert_true(client.contains("_hosted_server.free()"),
 		"leaving must free the embedded server")
-	assert_true(client.contains("if _host == null and _hosted_server == null:"),
+	# #184 moved the socket behind `net_transport.gd`, so the test is
+	# "is there a CONNECTION" rather than "is there an ENet host" — the
+	# rule is unchanged and the thing it reads moved.
+	assert_true(client.contains("if _transport == null and _hosted_server == null:"),
 		"and a hosting client must not be mistaken for a disconnected one — "
 		+ "read as 'is there a socket', a host ticks its server and renders nothing")
 

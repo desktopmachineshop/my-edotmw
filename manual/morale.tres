@@ -1,0 +1,44 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"morale"
+title = "Morale and routing"
+order = 110
+summary = "Squads break, breaking spreads, and your general is what holds it."
+body = "Squads break. Casualties cost morale as a SHARE of the squad, not as a
+count of men — losing four out of eight shakes a squad exactly as much as
+losing twenty out of forty, so a small elite unit is no braver than a big
+cheap one for being small. A squad pushed past its own threshold ROUTS: it stops fighting, runs, and takes
+{Combat.PURSUIT_DAMAGE_MULT} times damage while it does. A rout is a defeat,
+not a pause — chasing one down is usually worth more than the fight that
+caused it.
+
+A squad that breaks costs every ALLIED squad within
+{Combat.CHAIN_ROUT_RADIUS_CELLS} cells {Combat.CHAIN_ROUT_MORALE_LOSS}
+morale, and one of those can break in turn. Lines do not lose a squad at a
+time. They lose a section, and then the rest.
+
+## Your general
+
+Within {Combat.GENERAL_AURA_CELLS} cells of your general, squads recover
+morale at double rate and take half the shock when a neighbour breaks. That
+is the difference between a line that bends and one that folds, and it is why
+he belongs behind the centre rather than out scouting once the fighting
+starts.
+
+His death costs every squad in that circle
+{Combat.GENERAL_DEATH_MORALE_LOSS} morale. He is a target — theirs, and
+yours. Losing him does not lose you the match; it loses you the battle you
+were standing in.
+
+## Some troops never break
+
+Troops with no morale to lose cannot be routed by anything: not casualties,
+not a flank, not a general dying beside them. The Civilisations page names
+which army that is, because it reads it off the troop data rather than being
+told."
+sources = Array[String](["res://combat.gd", "res://decisions/D-20260819-morale-reads-the-fight.md", "res://decisions/D-20260819-a-general-holds-the-line.md"])
+stamp = "c63d5c0177fd254aee6bcab4dd753816f3e449dc115fd7f96e17be5131154f1b"

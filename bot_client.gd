@@ -45,6 +45,12 @@ const BUILD_SITE_SEARCH_CELLS := 3
 ## gatherer's 1.96 cells/s.
 const BUILDER_COOLDOWN_SECONDS := 20.0
 
+## How often a bot works its gate (#337). Slow on purpose: a gate change
+## flushes the flow fields that cross it (D-076's own revisit trigger
+## names exactly that interaction), so a bot hammering it would be
+## measuring the flush rather than the wire.
+const GATE_WORK_SECONDS := 12.0
+
 # WHY a handful of each bot's squads march on a neighbouring player's
 # start rather than wandering. Left as random
 # single-squad orders (the pre-existing periodic behaviour below), two
@@ -130,6 +136,15 @@ class VirtualClient:
 	var _site_attempts := 0
 	var _builder_free_at := 0.0
 
+	# The one gate this bot builds and works (#337). `gate_orders` is the
+	# INTENT and `gate_toggles` the state changes actually asked for;
+	# both are reported, because "never decided to" and "asked and was
+	# refused" are different faults with the same symptom.
+	var gate_orders := 0
+	var gate_toggles := 0
+	var _gate_next_at := 0.0
+	var _gate_wanted_open := false
+
 	## The crew currently walking to raise something, or -1.
 	##
 	## Held explicitly because the alternative did not work and failed in
@@ -162,11 +177,59 @@ class VirtualClient:
 	var wood_peak := 0
 	var military_peak := 0
 
+	## The most squads this bot ever OWNED, against `squads` in the BOT
+	## line, which is the count at the END.
+	##
+	## Two lines, and they turn "one squad" from ambiguous into evidence.
+	## A terminal count of 1 is equally consistent with *crews were
+	## produced and then lost* and with *no crew was ever produced*, and
+	## those want opposite investigations — the first is combat or
+	## consumption, the second is production. #376 cost real time to
+	## separate, and only by reading the SERVER's per-tick squad
+	## trajectory, which a bot log does not have.
+	##
+	## READ IT AGAINST THE OPENING SIZE, which is TWO — a gatherer crew
+	## AND a general since D-20260823.
+	##
+	## The natural reading of "peak 2, now 1" is a COMBAT LOSS, and it is
+	## not: it is the crew being CONSUMED founding the town hall, by
+	## design. Naming the wrong meaning the eye reaches for first is
+	## worth more here than the table below, because the table is only
+	## consulted by somebody who already suspects they are misreading it
+	## (phrasing from worker 87, who ran the counter and hit this).
+	##
+	##   peak 2 / end 1 / military 1        founded, and produced nothing since
+	##   peak 2 / end 2 / build='no hall'   never founded, crew still standing (#247)
+	##   peak > 2                           production happened at least once
+	##
+	## The first row is #376's signature, stated by the harness instead of
+	## reconstructed afterwards from a server log. An earlier version of
+	## this comment said `peak == 1`, which is wrong and would have read a
+	## healthy opening as a dead one — corrected by worker 87 from having
+	## run the counter on a real union match, which is the difference
+	## between a diagnostic that was reasoned about and one that was used.
+	var squads_peak := 0
+
 	## Raid orders actually issued. The verdict gates on this, because
 	## `raid_pool` was empty on every tick of every match and everything
 	## below it was unreachable — a load test cannot claim to have put two
 	## armies in front of each other while reporting zero of these (#123).
 	var raid_orders := 0
+
+	## The renewable economy, as two numbers rather than one
+	## (D-20260828-food-is-grown-not-only-found): the most FIELDS this bot
+	## ever had standing, and the gather orders it issued AT one. Both are
+	## METRICS, not gates — a farm needs an opening plus 80 wood, and the
+	## shipped map already leaves two of four bots short of a barracks at
+	## 420 s, so gating on either would fail honest runs (D-031's stale
+	## timing trap, which this project has now re-set three times).
+	##
+	## Two, for the reason `military_peak` sits beside `raid_orders`:
+	## "it never built a field" and "it built fields and never worked one"
+	## are different faults with the same symptom, and only the pair can
+	## tell them apart.
+	var farms_peak := 0
+	var field_orders := 0
 
 	## The squad sent to found the town hall, or -1 before that has
 	## happened. Read by `_issue_order` to keep the raid-order pool from
@@ -377,16 +440,32 @@ class VirtualClient:
 					owned += 1
 			if owned >= 2:
 				second_building_at = now
-		# Only once the founding crew is IDENTIFIED, so the settler can be
-		# excluded from the army count (`_is_military`). A bot fields a real
-		# military squad from tick one now — the opening general
-		# (D-20260823-the-opening-is-a-crew-and-a-general) — so this
-		# latching early is honest rather than the t=0 artefact it used to
-		# be when the founder was the thing being miscounted.
-		var fighting := military_squads() if _founding_squad >= 0 else 0
+		# NOT gated on the founding crew being identified (#230). It was,
+		# and `_is_military` already excludes the founder on its own — no
+		# squad has id -1, so the extra guard bought nothing and cost the
+		# whole metric on any scenario with no crew to identify. On
+		# `scenarios/clash.tres` a bot reported `military=5` and
+		# `military_peak=0` in the same line.
+		#
+		# The guard outlived its reason twice over: it was added against a
+		# t=0 artefact from an opening in which the founder was the only
+		# squad, and D-20260823-the-opening-is-a-crew-and-a-general has
+		# since given every player a general from tick one, which is what
+		# the comment here used to say made latching early honest.
+		#
+		# #123 made this a METRIC so that "there was nothing to send" and
+		# "there was something and it was never sent" could be told apart.
+		# Reporting zero beside five said the first when the second was
+		# true, which is worse than not reporting it.
+		var fighting := military_squads()
 		military_peak = maxi(military_peak, fighting)
+		squads_peak = maxi(squads_peak, state.squads.size())
 		if first_soldier_at < 0.0 and fighting > 0:
 			first_soldier_at = now
+		# Own fields standing. `farm_cells(true)` includes an ally's, and a
+		# load-test bot has none (every bot is its own side), so this is
+		# this bot's own count.
+		farms_peak = maxi(farms_peak, state.farm_cells(true).size())
 
 	func _run_patrol(now: float) -> void:
 		if state.space == null or player_count <= 0:
@@ -397,7 +476,7 @@ class VirtualClient:
 		# on the order having gone out, for the same reason `_issue_order`
 		# is — a refused opening leaves a bot with one squad, and that squad
 		# is the founder.
-		if not _owns_a_building():
+		if _opening_pending():
 			return
 		var home := state.spawn_cell_of(state.player)
 		var watching := _spawn_cell_of((state.player % player_count) + 1)
@@ -476,8 +555,124 @@ class VirtualClient:
 	## freeze it — and gating production on a counter that stops moving
 	## exactly when a bot has nothing to move is the same deadlock this
 	## function was just lifted out of, one level down.
+	## Climb the tree, cheapest first
+	## (`D-20260827-the-tree-is-the-ladder`).
+	##
+	## Deliberately simpler than `AiPlayer._research`: a bot is a LOAD
+	## instrument, not an opponent, so there is no bias, no priority and no
+	## retry latch — it buys whatever it can. What it is here for is that
+	## without it `just test-load` would exercise STRICTLY LESS than it did
+	## before the tree existed: every archetype past the levy is gated now,
+	## so four bots would field levies and gatherers for the whole run and
+	## the research path would never be touched under load at all.
+	##
+	## That is this project's own recurring shape — a gate landing and the
+	## harness quietly asserting less afterwards (#123's empty `raid_pool`,
+	## and D-20260818's "the fast loop carries the gate") — so it is fixed
+	## here rather than discovered later.
+	## Lines this bot has already asked for. The server refuses a repeat
+	## (`ResearchState.is_pending`) and the CLIENT cannot see pending —
+	## `research_view()` holds completed lines only — so without this a bot
+	## would re-order the same tech every fourth tick for the whole run and
+	## collect a refusal notice each time.
+	var _research_ordered := {}
+
+	## How many techs this bot ordered, and how many it has been told it
+	## HOLDS. Two counters, not one, because they answer different
+	## questions: "it never asked" and "it asked and was refused" are
+	## different faults with the same symptom — the same split
+	## `AI_STATS` makes, and the reason #123's `raid_orders` became a gate.
+	var techs_ordered: int = 0
+
+	## The cheapest tech this bot could start and has not asked for yet, or
+	## null. One definition, so the banking rule below and the order above
+	## can never disagree about which tech is "next".
+	func _next_tech() -> TechDef:
+		var civ := state.civ_of(state.player)
+		var candidates := state.research_view().available(state.player, civ)
+		candidates = candidates.filter(
+			func(t): return not _research_ordered.has((t as TechDef).line))
+		if candidates.is_empty():
+			return null
+		candidates.sort_custom(func(a: TechDef, b: TechDef) -> bool:
+			if a.resource_points() != b.resource_points():
+				return a.resource_points() < b.resource_points()
+			return a.id < b.id)
+		return candidates[0]
+
+
+	## Hold the purse shut until the next tech is paid for.
+	##
+	## Without this the bots research NOTHING, measured twice: `4 300` and
+	## `4 480` both came back `VERDICT ok` with `techs_ordered=0`. It is
+	## STRUCTURAL rather than a duration problem — a bot enqueues at every
+	## building every other tick, so its wallet never simultaneously holds
+	## one tech's cost, however long the run is. That is the whole reason
+	## the counter was added before this rule was.
+	##
+	## Bounded three ways, because a load instrument that starves itself is
+	## worse than one that skips a code path:
+	##
+	## - only after THREE hauling crews, or a bot that just spent its
+	##   opening crew founding a hall would bank instead of training the
+	##   gatherers that earn the money — a deadlock, not a delay;
+	## - only for the first two techs, so the load profile is perturbed
+	##   early and briefly rather than for the whole run;
+	## - and never when there is nothing to bank FOR.
+	func _banking_for_research() -> bool:
+		if techs_ordered >= 2 or _hauling_crew_count() < 3:
+			return false
+		var next := _next_tech()
+		return next != null and not _can_afford_tech(next)
+
+
+	func _issue_research() -> void:
+		if _order_ticks % 4 != 0:
+			return
+		var candidates := [_next_tech()] if _next_tech() != null else []
+		if candidates.is_empty():
+			return
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) != state.player or bool(info["destroyed"]):
+				continue
+			# A SHORT queue is fine to join. Requiring an idle building
+			# looked right and was wrong: a bot enqueues gatherers every
+			# other tick, so its town centre is never idle and research
+			# was never ordered ONCE in a 300 s run. One queue holding
+			# both kinds is the design (D-20260827) — research waiting its
+			# turn behind two units is exactly what should happen.
+			if float(info["progress"]) < 1.0 or (info.get("queue", []) as Array).size() > 2:
+				continue
+			var def := BuildingSim.def_by_id(StringName(info["def_id"]))
+			if def == null:
+				continue
+			var here := BuildingSim.archetype_of_def(def)
+			for tech in candidates:
+				var t := tech as TechDef
+				if t.research_at != here or not _can_afford_tech(t):
+					continue
+				peer.send(0, NetProtocol.encode_order_research(
+					int(wire_id), String(t.line)), ENetPacketPeer.FLAG_RELIABLE)
+				_research_ordered[t.line] = true
+				techs_ordered += 1
+				return
+
+
+	func _can_afford_tech(tech: TechDef) -> bool:
+		if state.wallet.size() < 4:
+			return false
+		return state.wallet[0] >= tech.cost_food and state.wallet[1] >= tech.cost_wood \
+			and state.wallet[2] >= tech.cost_gold and state.wallet[3] >= tech.cost_stone
+
+
 	func _issue_production() -> void:
+		_issue_research()
 		if _order_ticks % 2 != 0:
+			return
+		# Research before troops, briefly and early — see
+		# `_banking_for_research`.
+		if _banking_for_research():
 			return
 		var crews := _hauling_crew_count()
 		for wire_id in state.buildings:
@@ -494,7 +689,7 @@ class VirtualClient:
 			# never a barracks to find out.
 			var archetype := BotBuildPlan.archetype_for(
 				BuildingSim.def_by_id(StringName(info["def_id"])),
-				state.civ_of(state.player), crews)
+				state.civ_of(state.player), crews, state.techs)
 			if archetype == &"":
 				continue
 			peer.send(0, NetProtocol.encode_order_produce(int(wire_id), String(archetype)),
@@ -566,6 +761,12 @@ class VirtualClient:
 			return
 		var def := BotBuildPlan.wanted_building(owned, &"gatherers")
 		if def == null:
+			# Nothing that TRAINS is outstanding, so the one gate (#337).
+			# Deliberately last: a gate must never outbid a barracks, and
+			# reaching this line at all means there is no barracks left to
+			# outbid.
+			def = BotBuildPlan.wanted_gate(owned, &"gatherers")
+		if def == null:
 			build_block = "nothing wanted"
 			return
 		if not BotBuildPlan.can_afford(state.wallet, def):
@@ -596,6 +797,52 @@ class VirtualClient:
 		_builder_squad = builder
 		_site_attempts += 1
 		_builder_free_at = now + BUILDER_COOLDOWN_SECONDS
+
+	## Work the gate this bot built (#337).
+	##
+	## D-076's two gate opcodes had never crossed a real socket under
+	## load — no bot built a gate, so nothing drove them. That is the
+	## same gap #337 names in the AI, in the harness.
+	##
+	## It CLOSES and re-opens rather than setting AUTO, and the
+	## difference is the whole point. New gates start in auto mode
+	## (`BuildingSim._gate_mode`'s own comment), so a bot ordering AUTO
+	## would send a packet that changed nothing and a verdict counting
+	## those packets would pass against a bot that never used a gate.
+	## Closing is a state change the server can refuse, the sim has to
+	## re-path around, and the client has to redraw.
+	##
+	## Latched on the EFFECT — the replicated `gate_mode` and `gate_open`
+	## coming back — never on having sent. D-107.
+	func work_the_gate(now: float) -> void:
+		if now < _gate_next_at:
+			return
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) != state.player or bool(info["destroyed"]):
+				continue
+			var def := BuildingSim.def_by_id(StringName(String(info["def_id"])))
+			if def == null or not def.is_gate:
+				continue
+			var mode := int(info.get("gate_mode", BuildingSim.GATE_MODE_AUTO))
+			# Manual first: the server refuses a state order on a gate
+			# still in auto mode, so the two orders are two ticks apart
+			# and the second is only sent once the first has ARRIVED.
+			if mode != BuildingSim.GATE_MODE_MANUAL:
+				gate_orders += 1
+				peer.send(0, NetProtocol.encode_order_gate_mode(
+					int(wire_id), BuildingSim.GATE_MODE_MANUAL),
+					ENetPacketPeer.FLAG_RELIABLE)
+				_gate_next_at = now + GATE_WORK_SECONDS
+				return
+			gate_orders += 1
+			gate_toggles += 1
+			_gate_wanted_open = not bool(info.get("gate_open", false))
+			peer.send(0, NetProtocol.encode_order_gate_state(
+				int(wire_id), _gate_wanted_open), ENetPacketPeer.FLAG_RELIABLE)
+			_gate_next_at = now + GATE_WORK_SECONDS
+			return
+
 
 	## A crew that can be spared to build: a hauler that is not scouting.
 	## The LAST one, so this does not fight the patrol over the first —
@@ -633,6 +880,19 @@ class VirtualClient:
 	## a move order would cancel the haul (D-034) every pass. One split, two
 	## halves, no squad in both.
 	func _put_gatherers_to_work() -> void:
+		# ONE crew may be diverted off wood per pass; see `_kind_wanted`.
+		var diverted := false
+		# The bot's own FIELDS (D-20260828-food-is-grown-not-only-found),
+		# one crew each. Without this the load test would raise farms and
+		# never work one — the "the configuration nothing runs" gap that
+		# #119 and #123 were both about, arriving a third time.
+		var fields: Dictionary = state.farm_cells(true)
+		var field_taken := {}
+		for assigned_squad in _gather_assigned:
+			var at := int(_gather_assigned[assigned_squad])
+			if fields.has(at):
+				field_taken[at] = true
+
 		for squad in BotPatrol.assign(state.squads, _founding_squad)["workers"]:
 			if squad == _builder_squad:
 				continue  # walking to a building site; see `_builder_squad`
@@ -640,23 +900,140 @@ class VirtualClient:
 				String(state.composition.get(squad, {}).get("def_id", ""))))
 			if def == null or def.carry_capacity <= 0:
 				continue
-			if _gather_assigned.has(squad) and state.nodes.has(_gather_assigned[squad]):
+			# A field is a work site the server keeps and `state.nodes` does
+			# not, so the still-valid test has to ask both — otherwise a crew
+			# standing in a farm is re-ordered onto it every single pass.
+			if _gather_assigned.has(squad) 					and (state.nodes.has(_gather_assigned[squad])
+						or fields.has(_gather_assigned[squad])):
 				continue
 			var best := -1
 			var best_distance := 1 << 30
 			var here := state.squad_cell(squad, 0.0)
-			for cell in state.nodes:
-				if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+			# THREE sources, in order, and the order is the whole merge of
+			# #159 and #337: a FIELD first, because a farm nobody works is the
+			# scenery that made building one meaningless; then the SCARCEST
+			# kind, so the bot's wallet is not four piles of wood; then wood,
+			# so a crew whose scarce kind has no visible node still hauls
+			# something. #337's version had no third step and idled that crew
+			# for the pass; #159's had no second and gathered only wood.
+			for cell in fields:
+				if field_taken.has(int(cell)):
 					continue
-				var d := state.space.distance(here, state.space.from_index(int(cell)))
-				if d < best_distance:
-					best_distance = d
+				var fd := state.space.distance(here, state.space.from_index(int(cell)))
+				if fd < best_distance:
+					best_distance = fd
 					best = int(cell)
+			if best >= 0:
+				field_taken[best] = true
+				field_orders += 1
+			else:
+				var wanted := _kind_wanted(diverted)
+				if wanted != Economy.ResourceKind.WOOD:
+					diverted = true
+				for cell in state.nodes:
+					if int(state.nodes[cell]) != wanted:
+						continue
+					var d := state.space.distance(here, state.space.from_index(int(cell)))
+					if d < best_distance:
+						best_distance = d
+						best = int(cell)
+				if best < 0 and wanted != Economy.ResourceKind.WOOD:
+					for cell in state.nodes:
+						if int(state.nodes[cell]) != Economy.ResourceKind.WOOD:
+							continue
+						var wd := state.space.distance(here, state.space.from_index(int(cell)))
+						if wd < best_distance:
+							best_distance = wd
+							best = int(cell)
 			if best < 0:
 				continue
 			_gather_assigned[squad] = best
 			peer.send(0, NetProtocol.encode_order_gather(squad, best),
 				ENetPacketPeer.FLAG_RELIABLE)
+
+	## Which squad this bot could found its town hall with, or -1.
+	##
+	## Whichever squad `built_by` actually admits — the crew, not whichever
+	## id sorts first. `state.squads[0]` was fine while the opening was one
+	## squad; with a general in the list it is a coin toss between the
+	## settler and a squad the server will refuse ("general cannot build a
+	## Town Centre") forever.
+	##
+	## Extracted from `_found_town_hall` so `_opening_pending` can ask the
+	## same question rather than a second version of it (#230).
+	func _founding_builder() -> int:
+		if _founding_squad in state.squads:
+			return _founding_squad
+		var hall := BuildingSim.def_by_id(&"town_centre")
+		for squad in state.squads:
+			var def: UnitDef = UnitRoster.by_id(StringName(
+				String(state.composition.get(squad, {}).get("def_id", ""))))
+			if def != null and BuildingSim.can_build(hall, def.archetype):
+				return squad
+		return -1
+
+
+	## Whether this bot still has an OPENING to complete, and so must not
+	## be marched anywhere (D-031: a move order cancels a pending build).
+	##
+	## Its two callers used to ask `_owns_a_building()` alone, which is the
+	## same question only while every match starts from the opening. A
+	## SCENARIO (D-098) can hand a bot five fighting squads, no crew and no
+	## buildings — `scenarios/clash.tres` does exactly that — and there the
+	## plain question answers "no building" on every tick forever. So the
+	## bot spent the whole run trying to found a town hall it had nobody to
+	## found with, and never reached the raid order or the patrol at all:
+	## `raid_orders=0 scouts_peak=0 patrol_legs=0` beside five military
+	## squads, and `test-scenario clash` could not pass (#230).
+	##
+	## Stated as what the guard's own comment always said it meant — "a bot
+	## still trying to plant its town hall" — rather than as a proxy for it.
+	## A bot whose crew has DIED also falls through now, and raids with what
+	## it has left, which is better than standing still forever.
+	func _opening_pending() -> bool:
+		if _owns_a_building():
+			return false
+		return _founding_builder() >= 0
+
+	## Which resource the next crew should be sent after (#337).
+	##
+	## WOOD unless something the bot wants to BUY is short of something
+	## else, and then exactly ONE crew is diverted per pass.
+	##
+	## The bots gathered wood and nothing else — not even food — which was
+	## fine while the only thing they bought was a barracks. It stopped
+	## being fine the moment they were asked to build a gate: `gate.tres`
+	## costs 45 STONE, so the gate was unaffordable forever and the bot
+	## half of #337 would have shipped as dead code exercising nothing.
+	## Measured before this: `test-load 4 300` came back clean with
+	## `gate_orders=0 gate_toggles=0`.
+	##
+	## That is the SAME root cause as the AI half, and it reuses the same
+	## shared function rather than a second copy of the rule
+	## (`StaticDefence.scarcest_shortfall`, which naval stage 7 also
+	## reads).
+	##
+	## ONE crew, and only while the purchase is unaffordable, because
+	## every timing in `docs/status/load-testing.md` is tuned against
+	## these bots gathering wood — this must move the economy as little as
+	## it can while still reaching the thing it has to exercise.
+	func _kind_wanted(already_diverted: bool) -> int:
+		if already_diverted:
+			return Economy.ResourceKind.WOOD
+		var owned: Array = []
+		for wire_id in state.buildings:
+			var info: Dictionary = state.buildings[wire_id]
+			if int(info["owner"]) == state.player and not bool(info["destroyed"]):
+				owned.append(String(info["def_id"]))
+		var next := BotBuildPlan.wanted_building(owned, &"gatherers")
+		if next == null:
+			next = BotBuildPlan.wanted_gate(owned, &"gatherers")
+		if next == null or BotBuildPlan.can_afford(state.wallet, next):
+			return Economy.ResourceKind.WOOD
+		var short := StaticDefence.scarcest_shortfall(
+			state.wallet, StaticDefence.cost_of(next))
+		return Economy.ResourceKind.WOOD if short < 0 else short
+
 
 	## Ask for a town hall, and keep asking until there IS one.
 	##
@@ -700,15 +1077,7 @@ class VirtualClient:
 		# while the opening was one squad; with a general in the list it is
 		# a coin toss between the settler and a squad the server will
 		# refuse ("general cannot build a Town Centre") forever.
-		var builder := _founding_squad if _founding_squad in state.squads else -1
-		if builder < 0:
-			var hall := BuildingSim.def_by_id(&"town_centre")
-			for squad in state.squads:
-				var def: UnitDef = UnitRoster.by_id(StringName(
-					String(state.composition.get(squad, {}).get("def_id", ""))))
-				if def != null and BuildingSim.can_build(hall, def.archetype):
-					builder = squad
-					break
+		var builder := _founding_builder()
 		if builder < 0:
 			return  # the crew is dead; nothing this bot owns may settle
 		var home := state.spawn_cell_of(state.player)
@@ -746,6 +1115,11 @@ class VirtualClient:
 		# symptoms cancelled; fixing the honest one exposed this.
 		_issue_production()
 		_raise_buildings(now)
+		# Beside the build step, and BEFORE the "no squads" guard below:
+		# working a gate needs no squad, and putting it after that guard
+		# is precisely how `_issue_production` became a deadlock the
+		# moment a bot could legitimately own nothing (D-031).
+		work_the_gate(now)
 		_put_gatherers_to_work()
 
 		if state.squads.is_empty():
@@ -760,7 +1134,7 @@ class VirtualClient:
 		# exactly the bot that has not managed it yet. Observed, one run
 		# after the retry itself was written: `build_attempts=1 buildings=0`
 		# on a bot that asked once, was refused, and never got another turn.
-		if not _owns_a_building():
+		if _opening_pending():
 			_found_town_hall()
 			return
 
@@ -891,6 +1265,15 @@ var _elapsed := 0.0
 var _duration := -1.0
 ## The protocol version the bots claim (#179). See `--protocol`.
 var _protocol := NetProtocol.PROTOCOL_VERSION
+
+## The ScenarioDef this run is playing, or null for a real opening.
+##
+## A scenario is an opening POSITION (D-098), and a verdict that gates on
+## something the position does not contain is a vacuous FAILURE — the
+## mirror of the vacuous passes D-022's audit block was written about, and
+## it fails the same way every time, which teaches the next person to
+## ignore the result.
+var _scenario: ScenarioDef = null
 var _reported := false
 var _finished := false
 
@@ -906,6 +1289,12 @@ func _initialize() -> void:
 	# that did not run: `int()` strips non-digits, so a mistyped --clients
 	# reads as a plausible count and the verdict quotes it as fact
 	# (D-20260817-recipe-args-are-positional, #89/#98).
+	# The SCENARIO this run is playing, or "" for a real opening. Read only
+	# to scope the verdict below to what the scenario actually contains
+	# (#230) — nothing about it reaches the wire or a bot's decisions, so
+	# a harness reading its own fixture is not a client learning something
+	# it should not know.
+	_scenario = Scenario.by_id(StringName(String(args.get("scenario", ""))))
 	var bad_args := CmdArgs.invalid_integers(args, ["clients", "port", "protocol"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["duration"]))
 	if not bad_args.is_empty():
@@ -1161,6 +1550,28 @@ func _refused_count() -> int:
 	return count
 
 
+## Gate orders and state changes across all bots (#337). Reported rather
+## than gated, and the reasoning is #123's `nodes_felled` verbatim: a bot
+## reaches its gate only after a barracks is standing and a crew is spare,
+## which needs minutes of match — so gating on it would re-set D-031's
+## stale-timing trap, where a duration that no longer reaches the
+## condition fails an honest run. `just test-scenario` starts mid-game and
+## is where the gate belongs once somebody measures the duration that
+## always reaches it.
+func _gate_orders() -> int:
+	var count := 0
+	for vc in _clients:
+		count += vc.gate_orders
+	return count
+
+
+func _gate_toggles() -> int:
+	var count := 0
+	for vc in _clients:
+		count += vc.gate_toggles
+	return count
+
+
 func _max_known_squads() -> int:
 	var most := 0
 	for vc in _clients:
@@ -1213,11 +1624,49 @@ func _verdict_ok() -> bool:
 	# and the persistent-explored hash agreed about it throughout. A run
 	# where nobody built anything proves nothing about buildings, exactly
 	# as a run where nobody died proves nothing about combat.
-	if _buildings_known() <= 0:
+	#
+	# ASKED ONLY OF A RUN THAT COULD HAVE BUILDINGS (#230). A scenario
+	# that places none, and hands out no squad that could found one,
+	# cannot satisfy this however healthy the run is —
+	# `scenarios/clash.tres` is two armies and nothing else, deliberately,
+	# and it is the scenario `docs/status/ai-opponent.md` tells you to
+	# reach for. Gating on it there fails every run identically, which is
+	# not a check.
+	#
+	# What replaces it is not nothing: a scenario with no buildings must
+	# still field the army it was given (below). The desync clause stays
+	# unconditional — it says "if any building WAS seen, both sides agreed
+	# about it", which is true and cheap on a run with none.
+	if _expects_buildings() and _buildings_known() <= 0:
 		return false
 	if _building_desyncs() != 0:
 		return false
+	# And the army the scenario DID hand out has to be real. On a run with
+	# buildings this is implied by `raid_orders` above; on `clash` it is
+	# the gate that replaces the buildings one, and it is exactly the
+	# number that read 0 beside `military=5` before #230.
+	if not _expects_buildings() and _military_squads() <= 0:
+		return false
 	return true
+
+
+## Whether this run could produce a building at all: a real opening always
+## can, and a scenario can only if it places one or hands out a squad that
+## could found one.
+##
+## Derived from the SCENARIO RESOURCE rather than from a list of scenario
+## NAMES, so a new `.tres` is covered the day it is written rather than
+## the day somebody remembers to add it here.
+func _expects_buildings() -> bool:
+	if _scenario == null:
+		return true
+	if not _scenario.buildings.is_empty():
+		return true
+	var hall := BuildingSim.def_by_id(&"town_centre")
+	for entry in _scenario.squads:
+		if BuildingSim.can_build(hall, entry.archetype):
+			return true
+	return false
 
 
 func _report() -> void:
@@ -1255,7 +1704,7 @@ func _report() -> void:
 		per_soldier = float(derive_usec) / float(derived_total)
 	print("bot_client.gd: DERIVE — %.3f us/soldier over %d soldier-derivations, worst single pass %.2f ms" % [
 		per_soldier, derived_total, float(worst_derive) / 1000.0])
-	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d refused=%d" % [
+	print("bot_client.gd: VERDICT %s — %d/%d bots connected, %d curve packets received, %d squad curves held, %d soldiers derived client-side, %d state-hash checks, %d desyncs, casualties_applied=%d conceal_events=%d reveal_events=%d ghosts_peak=%d patrol_legs=%d scouts_peak=%d raid_orders=%d military_peak=%d known_squads_max=%d buildings_known=%d building_desyncs=%d nodes_known_max=%d nodes_felled=%d farms_peak=%d field_orders=%d gate_orders=%d gate_toggles=%d refused=%d techs_ordered=%d techs_held=%d" % [
 		"ok" if _verdict_ok() else "failed",
 		_ever_connected_count(), _clients.size(),
 		_packets_received(), curves, soldiers,
@@ -1263,7 +1712,9 @@ func _report() -> void:
 		_casualties_applied(), _conceal_events(), _reveal_events(), _ghosts_peak(),
 		_patrol_legs(), _scouts_peak(), _raid_orders(), _military_squads(),
 		_max_known_squads(), _buildings_known(), _building_desyncs(), _max_known_nodes(),
-		_nodes_felled(), _refused_count()])
+		_nodes_felled(), _farms_peak(), _field_orders(),
+		_gate_orders(), _gate_toggles(), _refused_count(),
+		_techs_ordered(), _techs_held()])
 
 	# Printed only on failure, and containing the word the log scan looks
 	# for — which now actually appears when something is wrong.
@@ -1276,12 +1727,15 @@ func _report() -> void:
 	# five defects behind #69/#84 were "one of them is not doing the thing",
 	# and each cost a three-minute run to localise from sums alone.
 	for vc in _clients:
-		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f build=%s" % [
+		print("bot_client.gd: BOT player=%d squads=%d military=%d buildings=%d build_attempts=%d scouts_peak=%d patrol_legs=%d raid_orders=%d conceal=%d reveal=%d squads_peak=%d military_peak=%d wood_peak=%d second_building_at=%.0f first_soldier_at=%.0f farms_peak=%d field_orders=%d techs=%d/%d epoch=%d build=%s" % [
 			vc.state.player, vc.state.squads.size(), vc.military_squads(),
 			vc.state.buildings.size(),
 			vc.build_attempts(), vc.scouts_peak, vc.patrol_legs(), vc.raid_orders,
 			vc.state.conceal_events, vc.state.reveal_events,
-			vc.military_peak, vc.wood_peak, vc.second_building_at, vc.first_soldier_at, vc.build_block])
+			vc.squads_peak, vc.military_peak, vc.wood_peak, vc.second_building_at,
+			vc.first_soldier_at, vc.farms_peak, vc.field_orders,
+			vc.state.techs.size(), vc.techs_ordered, vc.state.epoch,
+			vc.build_block])
 
 	var awaiting := _squads_awaiting_composition()
 	if awaiting > 0:
@@ -1290,6 +1744,34 @@ func _report() -> void:
 
 ## Minimal `--key=value` CLI parser for user args (after `--`).
 ## Example: godot --headless --script bot_client.gd -- --clients=20 --address=127.0.0.1 --port=4433
+## Techs the bots ORDERED and techs they were told they HOLD
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## A METRIC, not a gate, and deliberately so — for `nodes_felled`'s reason.
+## Research costs a real bank, and how long a bot takes to afford one is a
+## property of the map, the seed and the duration; gating on it would
+## re-set D-031's stale-timing trap the first time the map ladder moved.
+##
+## What it is FOR is that the bots' research is the only thing keeping
+## `test-load` from exercising strictly less of the roster than it did
+## before the tree: every archetype past the levy is gated now. A run
+## reporting `techs_held=0` means that coverage is gone, whatever else is
+## green — which is precisely the shape of #123's empty `raid_pool`, and
+## the reason this is printed rather than assumed.
+func _techs_ordered() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.techs_ordered
+	return total
+
+
+func _techs_held() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.state.techs.size()
+	return total
+
+
 ## The best-informed bot's resource-node count (D-061).
 ##
 ## A MAX rather than a union, for the same reason `_max_known_squads` is:
@@ -1314,4 +1796,23 @@ func _nodes_felled() -> int:
 	var total := 0
 	for vc in _clients:
 		total += vc.state.felled.size()
+	return total
+
+
+## The renewable half, summed across bots
+## (D-20260828-food-is-grown-not-only-found). Both are METRICS — read them
+## together: `farms_peak=0` is "nobody could afford a field", while
+## `farms_peak>0 field_orders=0` is "fields were raised and never worked",
+## and only the pair separates those.
+func _farms_peak() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.farms_peak
+	return total
+
+
+func _field_orders() -> int:
+	var total := 0
+	for vc in _clients:
+		total += vc.field_orders
 	return total

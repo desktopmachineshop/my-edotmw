@@ -26,7 +26,7 @@ extends GutTest
 ## learn to edit rather than obey, and this project has already recorded
 ## exactly that failure once (#204's `--name "{{TARGET}}"`).
 
-const BOUNDARY := "res://steam_platform.gd"
+const BOUNDARY := "res://platform.gd"
 
 
 func _read(path: String) -> String:
@@ -84,12 +84,25 @@ func test_the_boundary_exists_and_names_it_once() -> void:
 	var code := _code_only(_read(BOUNDARY))
 	assert_true(code.contains("SINGLETON := \"Steam\""),
 		"the boundary must name the singleton in exactly one constant")
-	# Counted rather than merely present: the point of a boundary is that
-	# the string appears where the detection is, not scattered through
-	# calls that each decide for themselves what "present" means.
-	var occurrences := code.count("\"Steam\"")
-	assert_eq(occurrences, 1,
-		"the literal \"Steam\" should appear once in the boundary, not %d times" % occurrences)
+	# Every DETECTION and every CALL must go through that constant, never
+	# through a literal of its own — the point of a boundary is that one
+	# place decides what "Steam is present" means, rather than three call
+	# sites each deciding for themselves.
+	#
+	# Deliberately not "the word appears once": #184 added
+	# `display_name()`, which returns the word as USER-FACING PROSE so
+	# that #187's lobby UI can put it on a button without naming it
+	# itself. That is a second legitimate literal, and a count would have
+	# forbidden it — the rule is about reaching Steamworks, not about the
+	# word.
+	for reach in ["Engine.has_singleton(", "ClassDB.class_exists(", "Engine.get_singleton("]:
+		var at := code.find(reach)
+		while at >= 0:
+			var argument := code.substr(at + reach.length(), 12)
+			assert_true(argument.begins_with("SINGLETON"),
+				"%s must be called with SINGLETON, not a literal — found %s"
+				% [reach, argument])
+			at = code.find(reach, at + 1)
 
 
 # --- absent Steam costs Steam, never the game --------------------------
@@ -99,17 +112,17 @@ func test_steam_is_absent_here_and_that_is_the_point() -> void:
 	# Every automated context this repo has is Steam-less — docker, CI,
 	# the bots, this suite — which is the right way round: the fallback is
 	# the constantly-exercised path.
-	assert_false(SteamPlatform.available(),
+	assert_false(Platform.available(),
 		"the test estate must run with no Steam present (D-093's fallback rule)")
 
 
 func test_every_answer_is_safe_with_no_steam() -> void:
 	# Not "does not crash" — that is what a stub would give. These are the
 	# specific values the callers to come are entitled to rely on.
-	assert_eq(SteamPlatform.steam_id(), 0,
+	assert_eq(Platform.steam_id(), 0,
 		"absent Steam must report NO identity, never a made-up one: D-090 rebinds a "
 		+ "seat by SteamID, and a seat rebound by a fabricated id is a seat anybody could claim")
-	assert_eq(SteamPlatform.persona_name(), "",
+	assert_eq(Platform.persona_name(), "",
 		"and no name either")
 
 
@@ -134,7 +147,7 @@ func test_the_godotsteam_version_is_pinned_beside_the_engine_version() -> void:
 	# down even though nothing enforces it yet.
 	assert_true(FileAccess.file_exists("res://.godotsteam-version"),
 		".godotsteam-version must exist beside .godot-version")
-	assert_false(SteamPlatform.pinned_version().is_empty(),
+	assert_false(Platform.pinned_version().is_empty(),
 		"and the boundary must be able to read it")
 
 
@@ -148,7 +161,7 @@ func test_doctor_reports_steam_without_requiring_it() -> void:
 	var doctor := _recipe_body(justfile, "doctor:")
 	assert_true(doctor.contains("{{godotsteam_version}}"),
 		"doctor must print the pin")
-	assert_true(doctor.contains("steam_platform.gd"),
+	assert_true(doctor.contains("platform.gd"),
 		"and must name the boundary as what decides availability, rather than deciding itself")
 	# And it must not FAIL on absent Steam, which would make every
 	# Steam-less context — that is, all of them — fail preflight.
