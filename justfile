@@ -1218,6 +1218,176 @@ menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0" MANUAL="": _import
 # client. It runs headless — the point here is the wire and the tick, not
 # the picture — so it needs no GPU and opens no window.
 #
+# The menu with a REAL game in the list — the picture for #187.
+#
+# `menu-shot`'s sibling, and deliberately its opposite: that one is only
+# honest with nothing running, because it photographs the screen a player
+# sees before anything exists. This one is only honest with a server up,
+# because what it photographs is a game that was FOUND.
+#
+# Docker, like `menu-shot`, for the same two reasons: the software-GL
+# image, and that a native run would open a real window on somebody's
+# desktop. A compose bridge is not a LAN and need not carry a broadcast,
+# so the client is pointed at the `server` service BY NAME — the same
+# `--browser-probe=` a player would use for a machine on another subnet,
+# resolved once by `LanDiscovery`.
+#
+# LOOK AT THE PNG. The rest of the browser is asserted headlessly
+# (`just browser-check`, `just test-unit game_browser`); this is the half
+# that is a screen.
+[doc("Photograph the menu with a real discovered game in it (#187)")]
+browser-shot SECONDS="6" RESOLUTION="1280x720": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    gate="$(bash host-gate.sh acquire heavy 'browser-shot' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    if [ "{{runtime}}" != "docker" ]; then
+        echo "browser-shot requires the docker runtime (it needs the software-GL image)." >&2
+        echo "A native run would open a real window on somebody's desktop, which an" >&2
+        echo "instrument has no business doing." >&2
+        exit 1
+    fi
+    mkdir -p "{{artifacts_dir}}"
+    shot="{{artifacts_dir}}/game-browser.png"
+    log="{{artifacts_dir}}/browser-shot.log"
+    rm -f "$shot"
+    trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
+
+    "{{just_executable()}}" up
+
+    status=0
+    # `--menu=1` forces the screen: this service sets EDOTMW_SERVER_ADDRESS,
+    # which is a connection ASKED FOR (`MainMenu.autoconnect`), so without
+    # it the client would join the very server it is supposed to be
+    # browsing for. `--host-port=4433` is the IN-CONTAINER port, which is
+    # the one the server binds inside the compose network (D-095 makes
+    # only the HOST side per-instance).
+    timeout 240 docker compose -p {{compose_project}} run --rm client-test \
+        --path . client.tscn \
+        --rendering-method gl_compatibility \
+        --audio-driver Dummy \
+        --resolution {{RESOLUTION}} \
+        -- --menu=1 --run-seconds={{SECONDS}} \
+        --host-port=4433 --browser-probe=server \
+        --screenshot=res://artifacts/game-browser.png \
+        > "$log" 2>&1 || status=$?
+
+    if [ ! -s "$shot" ]; then
+        echo "browser-shot: no screenshot written (see $log)" >&2
+        exit 1
+    fi
+    # A frame that rendered NOTHING still saves as a valid PNG.
+    colours="$(grep -oE 'distinct_colours=[0-9]+' "$log" | tail -1 | cut -d= -f2 || true)"
+    if [ -z "$colours" ] || [ "$colours" -lt 8 ]; then
+        echo "browser-shot: the frame has ${colours:-no} distinct colours — nothing was drawn (see $log)" >&2
+        exit 1
+    fi
+    # And the point: the picture must contain a GAME. A shot of an empty
+    # list would be a perfectly valid PNG of the feature not working.
+    if ! grep -q "BROWSER_GAME" "$log"; then
+        echo "browser-shot: the client found no game, so the picture shows an empty list (see $log)" >&2
+        grep "BROWSER" "$log" | tail -3 >&2 || true
+        exit 1
+    fi
+    echo "browser-shot: wrote $shot — $colours distinct colours, $(grep -c 'BROWSER_GAME' "$log") listing line(s), client exit $status"
+    echo "browser-shot: LOOK AT IT"
+
+# Prove the game browser end to end: a server announces, a client FINDS it.
+#
+# The gate for #187's LAN half, and it needs no GPU, no docker and no
+# second machine — a headless client still builds its menu, still polls
+# its providers, and prints a structured `BROWSER_GAME` line per row
+# (client.gd), so "the list found the game" is a thing a recipe can
+# assert rather than a thing somebody looked at.
+#
+# NATIVE, because docker's bridge is not a LAN and this is about a LAN.
+# It probes 127.0.0.1 as well as broadcasting, so it proves the exchange
+# on any machine — including one whose network drops broadcasts, which is
+# the one thing it therefore CANNOT prove. Two players on one wifi is the
+# owner's playtest.
+#
+# The server binds THIS INSTANCE's port (D-095), so two agents running it
+# at once cannot find each other's game — and the discovery port is
+# derived from that one, which is the whole reason it is derived.
+[doc("Prove the game browser: a server announces, a client finds it (#187)")]
+browser-check SECONDS="8": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh int SECONDS "{{SECONDS}}"
+    gate="$(bash host-gate.sh acquire medium 'browser-check' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    mkdir -p "{{artifacts_dir}}"
+    server_log="{{artifacts_dir}}/browser-check-server.log"
+    client_log="{{artifacts_dir}}/browser-check-client.log"
+    godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+    if [ ! -x "$godot" ]; then
+        echo "FAIL: browser-check needs the portable Godot in tools/" >&2
+        echo "Run: {{just_executable()}} bootstrap" >&2
+        exit 1
+    fi
+    server_pid=""
+    cleanup () {
+        if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; fi
+        bash host-gate.sh release "$gate"
+    }
+    trap cleanup EXIT INT TERM
+
+    name="browser-check {{instance}}"
+    "$godot" --headless --path . server.tscn -- \
+        --port={{port}} --lobby=1 --name="$name" \
+        --run-seconds=$(( {{SECONDS}} + 30 )) > "$server_log" 2>&1 &
+    server_pid=$!
+
+    # Wait for the socket rather than sleeping a guess (test-host's
+    # lesson: world generation is tens of seconds on the shipped map).
+    waited=0
+    until grep -q "server: listening on" "$server_log" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -gt 120 ]; then
+            echo "browser-check: the server never started listening (see $server_log)" >&2
+            exit 1
+        fi
+    done
+
+    "$godot" --headless --path . client.tscn -- \
+        --menu=1 --run-seconds={{SECONDS}} --host-port={{port}} \
+        --browser-probe=127.0.0.1 > "$client_log" 2>&1 || true
+
+    fail=0
+    # 1. The server offered itself at all. A beacon that never bound is
+    #    the honest failure this must not report as "no games found".
+    if ! grep -q "server: answering on port" "$server_log"; then
+        echo "browser-check: the server opened no discovery socket (see $server_log)" >&2
+        fail=1
+    fi
+    # 2. The client FOUND it — by name, at this instance's port, joinable.
+    #    Structured markers, never a scary-word scan (CLAUDE.md).
+    found="$(grep -cE "BROWSER_GAME name=$name address=[0-9.]+ port={{port}} joinable=true" "$client_log" || true)"
+    if [ "${found:-0}" -lt 1 ]; then
+        echo "browser-check: the client never listed this game (see $client_log)" >&2
+        grep "BROWSER" "$client_log" | tail -5 >&2 || true
+        fail=1
+    fi
+    # 3. And it listed it ONCE. A machine answers a broadcast on every
+    #    interface it has, so the first end-to-end run of this listed one
+    #    server three times — the defect that put a host token in the
+    #    metadata (GameBrowser.entry_id), and the check that keeps it
+    #    fixed.
+    most="$(grep -oE "BROWSER games=[0-9]+" "$client_log" | grep -oE "[0-9]+" | sort -n | tail -1 || true)"
+    if [ -n "${most:-}" ] && [ "$most" -gt 1 ]; then
+        echo "browser-check: one server was listed $most times — the dedupe is broken" >&2
+        fail=1
+    fi
+    # 4. The beacon really was asked. Zero questions and zero answers is
+    #    what a browser that never sent anything also looks like.
+    asked="$(grep -oE "answering on port [0-9]+ \([0-9]+ asked\)" "$server_log" | tail -1 || true)"
+    if [ "$fail" -eq 0 ]; then
+        echo "browser-check: ok — \"$name\" found on udp {{port}}, listed once ($asked at start)"
+    fi
+    exit "$fail"
+
 # The host binds THIS INSTANCE's port (D-095), never the shared 4433: two
 # agents running this at once must not find each other's match.
 [doc("Prove in-process hosting: a hosting client, real bots joining it (#182)")]

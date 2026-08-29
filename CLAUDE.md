@@ -114,6 +114,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/audio.md
 
+@docs/status/game-browser.md
+
 ## What this project is
 
 A large-scale real-time strategy game, inspired by *Empires: Dawn of the
@@ -529,6 +531,31 @@ platform.gd              THE one script allowed to name Steam (D-093,
                         measured FALSE (D-20260828) — GodotSteam ships a
                         modified engine — and the replacement is the
                         owner's call.
+                        Note D-093's GDExtension premise is measured FALSE
+                        (D-20260828) — GodotSteam ships a modified engine
+                        — and the replacement is the owner's call.
+lan_protocol.gd          THE definition of how a game announces itself on
+                        a LOCAL NETWORK (#187): a query, a reply, and the
+                        discovery port DERIVED from the game port so
+                        D-095's per-instance ports keep two agents' dev
+                        servers out of each other's lists. Deliberately
+                        not net_protocol.gd's wire — that one is spoken
+                        to a peer that has already joined.
+lan_beacon.gd            The server end: answers "is anybody there" with
+                        what this game currently is, freshly per reply. A
+                        bind failure is NOT fatal — a game nobody can
+                        find is still a game anybody can join by address.
+lan_discovery.gd         The client end, and the reference implementation
+                        of the PROVIDER duck type the browser holds an
+                        array of (id/label/poll/take_seen/status). The
+                        platform's provider comes from platform.gd
+                        and is absent in every context this repo
+                        automates, so the array simply has one in it.
+game_browser.gd          What the pre-lobby's game list SAYS: merge,
+                        expire, order, and whether a row can be pressed.
+                        All-static and pure, like hud_layout.gd, because
+                        a row that offers a join it cannot complete looks
+                        exactly like a list that works.
 cmd_args.gd              The one parse of `--key=value`, and the one check
                         that a value about to be read as a NUMBER is one
                         (D-20260817-recipe-args-are-positional). All three
@@ -1256,6 +1283,16 @@ Dev loop and tests:
   and files for a milestone with every number healthy, and neither
   existing instrument could show it: `gen-terrain-preview`'s PNG is
   top-down with no trees in it, and `test-client` points at a spawn.
+- `just browser-check [SECONDS]` — the game browser's gate (#187): a
+  server announces on this instance's port, a headless client FINDS it,
+  and the recipe fails unless it was listed by name, at that port, ONCE.
+  Native, no GPU, no docker — a headless client still builds its menu and
+  prints a `BROWSER_GAME` line per row.
+- `just browser-shot [SECONDS] [RESOLUTION]` — the same thing as a
+  PICTURE: the menu with a real discovered game in it, software-GL in
+  docker like `menu-shot`. Fails if the list is empty, because a
+  photograph of a feature not working is still a valid PNG. **Look at
+  `artifacts/game-browser.png`.**
 - `just replay-info [FILE]` — read a replay back and reconstruct state.
 - `just bootstrap-art` — fetch the pinned `bpy` into a gitignored venv.
   ~1 GB, and ONLY asset work needs it: everything else, including running
