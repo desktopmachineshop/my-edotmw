@@ -559,6 +559,13 @@ func _process(delta: float) -> void:
 	_update_loading_screen()
 
 	_home_camera_once()
+	# Which cells are FIELDS, once per frame rather than once per squad
+	# (D-20260828-food-is-grown-not-only-found). Derived from buildings
+	# this client already knows about, so it costs no wire and no state —
+	# but `_activity_for` asks per squad and `_resource_cell_at` asks per
+	# click, and rebuilding it in either would be the M4 `by_id` defect
+	# with a smaller constant.
+	_farm_cells = _state.farm_cells()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -3034,33 +3041,17 @@ const RESERVED_KEYS := {
 	"G": "gather at the cursor's node",
 }
 
-## Letters claimed by work IN FLIGHT on another branch (#363).
-##
-## The half that PREVENTS a collision rather than detecting one, and the
-## gap #302's guard structurally could not close: that test checks
-## BUILD_KEYS against RESERVED_KEYS and TRAIN_KEYS, and cannot check
-## against a letter that does not exist yet on its own branch.
-##
-## It bit immediately. #302 moved `garrison_wall` G -> J on the reasoning
-## that G is what a player reaches for to GATHER; #246 added `farm` on J
-## with the comment "J is free of WASD, Q/E and every other letter in
-## this table and TRAIN_KEYS", which was true when it was written. Both
-## checked J against the tables AS THEY STOOD ON MAIN, and neither could
-## see the other. Merged, `BUILD_KEYS` has a duplicate key and `client.gd`
-## does not even PARSE — a Dictionary literal cannot hold one letter
-## twice, so the collision is not a subtle wrong binding, it is the
-## client failing to load.
-##
-## A claim here is visible to every branch that rebases. An entry leaves
-## this table in the same commit that adds its real binding.
-const RESERVED_FOR_IN_FLIGHT := {
-	# #246, renewable food. `farm` was on J, which `garrison_wall` had
-	# already taken; O is free and is what the merge rehearsal used.
-	"O": &"farm",
-}
-
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
+	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
+	# took J (#302) because G is the letter a player reaches for to
+	# GATHER, and both branches picked their letter against the tables as
+	# they stood on main, neither able to see the other. O is the letter
+	# `RESERVED_FOR_IN_FLIGHT` was holding O for this PR; binding it here
+	# is what retired that reservation, and the table went with its last
+	# entry rather than being left empty — which is what its own test
+	# required.
+	"O": &"farm",
 	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
 	# together deliberately; F and U continue it.
 	#
@@ -3190,6 +3181,13 @@ var _tree_chunks := {}
 ## means by the node, and trees stand inside their own cell by
 ## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
+
+## cell -> `Economy.ResourceKind` for every FIELD this client knows about
+## (D-20260828-food-is-grown-not-only-found), refreshed once a frame from
+## `ClientState.farm_cells()`. A field is a BUILDING, so it is drawn by the
+## building pass and grows no props — this is only what tells the click
+## test and the working-crew animation that the cell is worked ground.
+var _farm_cells := {}
 
 ## Cells the server has revealed and this client has not grown yet, and the
 ## per-frame budget that drains them (`node_placement.gd`). Growing a cell
@@ -3392,7 +3390,14 @@ func _activity_for(squad_id) -> Dictionary:
 	if def.carry_capacity > 0:
 		var crew_at := _state.squad_world_position(squad_id, _now)
 		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
-		if _state.nodes.has(crew_cell):
+		# A FIELD is worked ground too (D-20260828-food-is-grown-not-only-
+		# found), and it is the same question with a second source: the
+		# crew is standing somewhere this client knows yields something.
+		# Without this a crew in a farm reads as idle and stands about in
+		# its crop with its tools on its back.
+		var working_kind := int(_state.nodes[crew_cell]) if _state.nodes.has(crew_cell) \
+			else int(_farm_cells.get(crew_cell, -1))
+		if working_kind >= 0:
 			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
 			return {
 				"activity": CosmeticOffset.Activity.WORKING,
@@ -3402,7 +3407,7 @@ func _activity_for(squad_id) -> Dictionary:
 				# hand — so the axe/pickaxe/bare-hands choice costs one
 				# dictionary read and nothing on the wire
 				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
-				"working": int(_state.nodes[crew_cell]),
+				"working": working_kind,
 				"swing": CosmeticOffset.SWING_AMPLITUDE,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
@@ -8370,8 +8375,18 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
 	var offsets := _state.space.lattice_offsets()
-	for cell in _node_placed:
-		var world: Vector3 = _node_placed[cell]["world"]
+	# Fields rank beside forests (D-20260828-food-is-grown-not-only-found).
+	# A farm grows no props, so it is in no chunk and `_node_placed` cannot
+	# know about it — and a work site nothing here returns is a work site
+	# right-click marches your crews onto and leaves standing.
+	# Own and allied fields only: an enemy's is refused server-side
+	# (`Economy.may_work`), and offering it here would swallow the ordinary
+	# move order a player meant by clicking there.
+	var candidates := _node_placed.keys()
+	candidates.append_array(_state.farm_cells(true).keys())
+	for cell in candidates:
+		var world: Vector3 = _node_placed[cell]["world"] if _node_placed.has(cell) \
+			else _ground_world_of(int(cell))
 		for offset in offsets:
 			var drawn := world + offset
 			if _camera.is_position_behind(drawn):
@@ -8381,6 +8396,16 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 				best_distance = distance
 				best = _state.space.from_index(int(cell))
 	return best
+
+
+## A cell's centre in world space, on the ground. `_node_placed` caches
+## this for a grown node; a field has no entry there, and sampling is
+## cheap because this runs on a click.
+func _ground_world_of(cell_index: int) -> Vector3:
+	var world := _state.space.to_world(_state.space.from_index(cell_index))
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	return world
 
 
 ## Whether anything selected can actually gather. Right-clicking a forest
@@ -10235,6 +10260,30 @@ func _civ_label(civ: String) -> String:
 	return def.display_name if def != null else civ
 
 
+## The civ's own pitch, for the control a player CHOOSES a civ with
+## (D-20260828-a-summary-is-shown-or-it-is-deleted, #214).
+##
+## `CivDef.summary` shipped saying, in its own doc comment, that it was
+## "shown in the lobby so a player choosing a civ knows what they are
+## picking", and the lobby had never shown it — the sixth instance of this
+## project's declared-and-unread defect class, and the reason the cp1252
+## corruption in all six of those strings (#231) went a milestone
+## unnoticed.
+##
+## A tooltip rather than a blurb label, deliberately: a label in the
+## lobby's preview column would move `LobbyLayout.DESIGN_HEIGHT`, which
+## D-20260817-lobby-fits-the-window pins with a test that builds the lobby
+## and measures it — that page has run off the bottom of a window once
+## already, and flavour text is the wrong thing to spend the budget on.
+func _civ_summary(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "A civ is drawn for you when the match starts."
+	var def := CivRoster.by_id(StringName(civ))
+	if def == null or def.summary.strip_edges() == "":
+		return _civ_label(civ)
+	return "%s — %s" % [def.display_name, def.summary]
+
+
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
 ## appears here with no code change (D-046 criterion 3).
 func _civ_choices() -> Array:
@@ -10708,8 +10757,14 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	picker.disabled = not editable
 	var choices := _civ_choices()
 	for c in choices:
+		var at := picker.item_count
 		picker.add_item(_civ_label(String(c)))
+		# Per ITEM as well as on the control, so the pitch is readable
+		# while the list is open — which is the moment a player is
+		# actually choosing (#214).
+		picker.set_item_tooltip(at, _civ_summary(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	picker.tooltip_text = _civ_summary(civ)
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)
