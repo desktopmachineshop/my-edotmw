@@ -8,6 +8,7 @@ id = &"emberdeep_archers"
 display_name = "Tunnel Quarrels"
 civ = &"emberdeep"
 archetype = &"archers"
+requires_tech = &"mustering"
 squad_size = 22
 health = 60.0
 damage = 11.0

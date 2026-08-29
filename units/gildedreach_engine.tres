@@ -8,6 +8,7 @@ id = &"gildedreach_engine"
 display_name = "Contract Engines"
 civ = &"gildedreach"
 archetype = &"engine"
+requires_tech = &"breaking"
 squad_size = 4
 health = 100.0
 damage = 26.0

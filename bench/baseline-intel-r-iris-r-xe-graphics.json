@@ -1,0 +1,63 @@
+{
+	"adapter": "Intel(R) Iris(R) Xe Graphics",
+	"camera_height": 40.0,
+	"fingerprint": {
+		"generated": "8d348929",
+		"godot": "4.7.1-stable (official)",
+		"map": "168x194",
+		"map_path": "res://maps/default.tres",
+		"render_path": "407dbb6e",
+		"roster": "73f113bc",
+		"roster_units": 39
+	},
+	"frames": 90,
+	"headless": false,
+	"knobs": {
+		"clamp": 1,
+		"copies": 1,
+		"decorate": 1,
+		"sampler": 1
+	},
+	"recorded": "2026-08-28",
+	"rows": {
+		"1000": {
+			"cpu_ms": 115.970266666667,
+			"cull_ms": 9.30063333333333,
+			"decorate_ms": 66.4083222222222,
+			"derive_ms": 29.8087,
+			"draw_calls": 228,
+			"drawn": 4385,
+			"fighting": 167,
+			"jostle_ms": 5.5463,
+			"keys_worst": 16,
+			"marching": 666,
+			"soldiers": 15756,
+			"squads_drawn": 630,
+			"upload_ms": 7.46868888888889,
+			"wall_ms": 119.665166666667,
+			"working": 167,
+			"worst_ms": 122.222
+		},
+		"250": {
+			"cpu_ms": 28.2975777777778,
+			"cull_ms": 2.35041111111111,
+			"decorate_ms": 15.7374444444444,
+			"derive_ms": 7.52086666666667,
+			"draw_calls": 88,
+			"drawn": 1067,
+			"fighting": 42,
+			"jostle_ms": 0.859677777777778,
+			"keys_worst": 16,
+			"marching": 166,
+			"soldiers": 3919,
+			"squads_drawn": 155,
+			"upload_ms": 1.91756666666667,
+			"wall_ms": 28.9972222222222,
+			"working": 42,
+			"worst_ms": 30.0
+		}
+	},
+	"vendor": "Intel",
+	"version": 1,
+	"viewport": "1600x900"
+}

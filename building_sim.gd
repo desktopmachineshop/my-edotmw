@@ -48,6 +48,10 @@ var _defs: Array[BuildingDef] = []
 var _health := PackedFloat32Array()
 var _progress := PackedFloat32Array()  # 0..1; 1.0 means complete
 var _destroyed := PackedByteArray()
+## Seconds this building takes to raise, for ITS owner's civ (#270).
+## Banked at placement rather than read off the def per tick, so the
+## progress a client draws and the progress the server keeps agree.
+var _build_time := PackedFloat32Array()
 var _last_attack_tick := PackedInt32Array()  # -1 = never fired
 
 ## Player-assigned focus-fire target (a squad id), or -1 for "automatic —
@@ -104,8 +108,19 @@ var _facing := PackedInt32Array()
 # Ids whose replicated state changed and have not been sent yet.
 var _dirty := {}
 
-# building -> Array of { "def_id": StringName, "remaining": float }
+# building -> Array of { "def_id": StringName, "remaining": float,
+#                        "kind": KIND_UNIT | KIND_TECH }
+#
+# One queue, two kinds of entry, so a building either TRAINS or RESEARCHES
+# and never both (`D-20260827-the-tree-is-the-ladder`, and D-069's
+# "occupying it for the duration" — which is what stops the tree being
+# free). A second queue beside this one would need a second definition of
+# "is this building busy", and `CivDef.production_time` would have to be
+# applied in both.
 var _queues := {}
+
+const KIND_UNIT := 0
+const KIND_TECH := 1
 
 # Which squad founded each building, or -1. Parallel to the rest.
 var _builder := PackedInt32Array()
@@ -208,9 +223,18 @@ func building_count() -> int:
 ## `offset` is the sub-cell displacement in WORLD units (D-096) — where
 ## inside `at` this structure actually stands. Zero means dead centre,
 ## which is what every non-wall building and every existing caller gets.
+## `build_time` is how long the OWNER'S CIV takes to raise this, resolved
+## by the caller (`CivDef.construction_time`, D-047) exactly as `enqueue`
+## already takes its production time -- and stored as REAL SECONDS for
+## the same reason: construction progress is replicated, and a multiplier
+## applied per tick would make the bar a client draws disagree with the
+## server. Negative means "the def's own time", which is every caller
+## that has no civ to ask.
 func add_building(def: BuildingDef, owner: int, at: Vector2i, complete := false,
-		builder: int = -1, facing: int = 0, offset: Vector2 = Vector2.ZERO) -> int:
+		builder: int = -1, facing: int = 0, offset: Vector2 = Vector2.ZERO,
+		build_time: float = -1.0) -> int:
 	var id := _cell.size()
+	_build_time.append(maxf(build_time if build_time >= 0.0 else def.build_time, 0.001))
 	_builder.append(builder)
 	_rally.append(-1)
 	_cell.append(space.index(at))
@@ -445,6 +469,14 @@ func blocking_cells() -> PackedInt32Array:
 			continue
 		if _defs[i].footprint_radius == 0 and _progress[i] < 1.0:
 			continue
+		# A FIELD is ground, not a wall (D-20260828-food-is-grown-not-only-
+		# found). A crew is ordered onto a farm the way it is ordered onto a
+		# forest, and `Economy` decides it has arrived by comparing its cell
+		# with the work cell — so a farm that blocked its own cell would be
+		# a building nobody could ever work. This is the only reader of
+		# `blocks_movement`, and every def but the farm keeps the default.
+		if not _defs[i].blocks_movement:
+			continue
 		out.append_array(span_cells(i))
 	return out
 
@@ -522,6 +554,65 @@ static func is_building_id(wire: int) -> bool:
 
 ## Can this building make that unit at all? Data again (D-010): the
 ## `produces` list on the BuildingDef, never a match statement here.
+## What TYPE of building this def is, with `id` as the fallback
+## (`D-20260827-a-research-site-is-a-building`).
+##
+## The fallback is what made `BuildingDef.archetype` free to add: every
+## shipped def leaves the field empty and answers with its own id, so
+## `barracks.tres` is archetype `barracks` and nothing had to be edited.
+## Only the per-civ research sites — six civs' stables and forges, which
+## cannot share one id in one directory — set it.
+##
+## One definition of the fallback, here, because a second copy written
+## `def.archetype if def.archetype != &"" else def.id` at a call site is
+## the D-058/D-065 family waiting to happen.
+static func archetype_of_def(def: BuildingDef) -> StringName:
+	if def == null:
+		return &""
+	return def.archetype if def.archetype != &"" else def.id
+
+
+func archetype_of(building: int) -> StringName:
+	return archetype_of_def(def_of(building))
+
+
+## Every BuildingDef `civ` may found, in the roster's stable id order.
+##
+## `UnitRoster._available_to`'s sibling: a def is available to a civ when
+## it names that civ or is neutral. Before the research sites every def
+## was neutral, so `all_defs()` was the answer and four callers used it
+## directly — the AI, the client's build menu, the placement ghost and the
+## tests. Each of those now has to ask this instead, or a player is
+## offered a research site their own people do not build.
+static func defs_for_civ(civ: StringName) -> Array[BuildingDef]:
+	var out: Array[BuildingDef] = []
+	for def in all_defs():
+		if def.civ == civ or def.civ == &"neutral":
+			out.append(def)
+	return out
+
+
+## This civ's version of a building archetype, or null if it has none —
+## `UnitRoster.for_civ_archetype`'s exact sibling.
+##
+## An exact civ match WINS over neutral, checked explicitly rather than by
+## id order. There is deliberately no neutral `stables.tres` or
+## `forge.tres` (a test asserts it), because a neutral def SHADOWS every
+## per-civ one under id-order resolution — which is how the per-civ
+## gatherers went quietly absent in
+## `D-20260823-the-opening-is-a-crew-and-a-general`.
+static func for_civ_archetype(civ: StringName, archetype: StringName) -> BuildingDef:
+	var fallback: BuildingDef = null
+	for def in all_defs():
+		if archetype_of_def(def) != archetype:
+			continue
+		if def.civ == civ:
+			return def
+		if def.civ == &"neutral" and fallback == null:
+			fallback = def
+	return fallback
+
+
 ## A building site cannot produce, and neither can rubble.
 ## `produces` lists ARCHETYPES, not unit ids (D-047).
 ##
@@ -535,6 +626,19 @@ func can_produce(building: int, archetype: StringName) -> bool:
 		return false
 	var def := def_of(building)
 	return def != null and def.produces.has(archetype)
+
+
+## Is this the kind of building `tech` is researched at, and is it able to
+## do anything at all right now?
+##
+## Deliberately says nothing about whether the PLAYER may research it —
+## that is `ResearchState.can_research`, and keeping the two apart is what
+## lets the server ask "is this a valid site" and "is this a valid tech
+## for you" as separate refusals with separate messages.
+func can_research(building: int, tech: TechDef) -> bool:
+	if tech == null or is_destroyed(building) or not is_complete(building):
+		return false
+	return archetype_of(building) == tech.research_at
 
 
 ## Queue a unit. The CALLER has already taken the payment and checked the
@@ -560,10 +664,52 @@ func enqueue(building: int, def: UnitDef, instant: bool = false,
 		_queues[building] = []
 	(_queues[building] as Array).append({
 		"def_id": def.id, "remaining": 0.001 if instant else maxf(build_time, 0.001),
+		"kind": KIND_UNIT,
 	})
 	# The queue is replicated now, so a change to it has to reach clients
 	# — otherwise a player queues a unit and the panel shows nothing.
 	_dirty[building] = true
+
+
+## Queue a tech at this building (`D-20260827-the-tree-is-the-ladder`).
+##
+## The caller has already taken the payment and asked `ResearchState`
+## whether this player may — `enqueue`'s rule, for `enqueue`'s reason:
+## one place decides affordability rather than two that can disagree.
+##
+## The entry records the tech's LINE, not its id, because that is what
+## every gate in the game names and what the granting call takes. Resolving
+## an id back to a line on completion would be a second lookup that could
+## return a different civ's tech.
+##
+## `research_time` is the time this player's CIV takes, resolved by the
+## caller through `CivDef.production_time` exactly as a unit's build time
+## is — so a civ that trains fast also researches fast, through the one
+## definition of that knob.
+func enqueue_tech(building: int, tech: TechDef, instant: bool = false,
+		research_time: float = -1.0) -> void:
+	if research_time < 0.0:
+		research_time = tech.research_time
+	if not _queues.has(building):
+		_queues[building] = []
+	(_queues[building] as Array).append({
+		"def_id": tech.line,
+		"remaining": 0.001 if instant else maxf(research_time, 0.001),
+		"kind": KIND_TECH,
+	})
+	_dirty[building] = true
+
+
+## Every tech LINE queued at this building, finished or not — so a razed
+## research site can hand its unfinished lines back to the player
+## (`ResearchState.abandon`) instead of locking them as permanently
+## in progress.
+func queued_tech_lines(building: int) -> Array:
+	var out := []
+	for item in (_queues.get(building, []) as Array):
+		if int(item.get("kind", KIND_UNIT)) == KIND_TECH:
+			out.append(item["def_id"])
+	return out
 
 
 func queue_length(building: int) -> int:
@@ -588,7 +734,8 @@ func advance_production(dt: float) -> Array:
 		head["remaining"] = float(head["remaining"]) - dt
 		if float(head["remaining"]) <= 0.0:
 			queue.pop_front()
-			done.append({"building": building, "def_id": head["def_id"]})
+			done.append({"building": building, "def_id": head["def_id"],
+				"kind": int(head.get("kind", KIND_UNIT))})
 			# Queue shortened — tell clients, or the panel keeps showing a
 			# unit that already walked out of the door.
 			_dirty[building] = true
@@ -625,8 +772,10 @@ func info_entries(ids: Array) -> Array:
 			continue
 		var queue: Array = _queues.get(id, [])
 		var queued_ids := []
+		var queued_kinds := []
 		for item in queue:
 			queued_ids.append(String(item["def_id"]))
+			queued_kinds.append(int(item.get("kind", KIND_UNIT)))
 		out.append({
 			"id": wire_id(id),
 			"def_id": String(_defs[id].id),
@@ -639,6 +788,11 @@ func info_entries(ids: Array) -> Array:
 			"health_fraction": _health[id] / maxf(_defs[id].max_health, 0.001),
 			"head_remaining": float(queue[0]["remaining"]) if not queue.is_empty() else 0.0,
 			"queue": queued_ids,
+			# Parallel to `queue`, because an entry's STRING is an
+			# archetype for a unit and a tech LINE for a research — the
+			# same field meaning two things, which the client has to be
+			# able to tell apart to label the panel.
+			"queue_kinds": queued_kinds,
 			# So the client can draw where troops will muster.
 			"rally": space.index(rally_of(id)),
 			# D-076. Harmless defaults (false/MANUAL) on every non-gate
@@ -736,7 +890,8 @@ func advance_construction(dt: float) -> Array:
 	for i in range(_cell.size()):
 		if _destroyed[i] == 1 or _progress[i] >= 1.0:
 			continue
-		var build_time: float = maxf(_defs[i].build_time, 0.001)
+		# The OWNER'S civ's time, banked when the site was placed (D-047).
+		var build_time: float = _build_time[i]
 		_progress[i] = minf(_progress[i] + dt / build_time, 1.0)
 		if _progress[i] >= 1.0:
 			completed.append(i)
@@ -790,6 +945,30 @@ func damage(building: int, amount: float) -> bool:
 ## two calls in `damage` cannot drift apart.
 func _health_step(health: float, full: float) -> int:
 	return int(floor(clampf(health / full, 0.0, 1.0) * HEALTH_REPLICATION_STEPS))
+
+
+## Raze everything `player` owns. Returns the LOCAL ids destroyed, so the
+## caller replicates them exactly as it replicates a razing by an enemy.
+##
+## `SquadSim.eliminate_player`'s sibling, and it exists because that one
+## alone is not enough: D-033's defeat rule is "no living squads AND no
+## living buildings", so wiping only the army leaves a player standing
+## with a town centre and the match unable to end. Measured on the
+## disconnect path, which has that gap today (#292) — after the wipe,
+## `squads=0 buildings=1 eliminated=false phase=RUNNING`.
+##
+## Goes through `damage()` rather than setting `_destroyed` directly, so
+## there is ONE way a building dies: the health step, the dirty flag and
+## the replication that follows are the same ones a razing by an army
+## produces, and a client needs no new handling to see it happen.
+func eliminate_player(player: int) -> Array:
+	var destroyed := []
+	for i in range(_destroyed.size()):
+		if _destroyed[i] == 1 or _owner[i] != player:
+			continue
+		if damage(i, INF):
+			destroyed.append(i)
+	return destroyed
 
 
 func living_building_count(player: int) -> int:

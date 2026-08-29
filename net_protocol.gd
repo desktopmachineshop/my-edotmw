@@ -1,6 +1,138 @@
 extends RefCounted
 class_name NetProtocol
 
+## THE opcode allocation table — one place, and the only place (#362).
+##
+## Every `C2S_*`/`S2C_*` constant below is DERIVED from this dictionary
+## rather than written beside its encoder. That is the difference
+## between a duplicate being detectable and being inexpressible: an
+## opcode now has exactly one home, so two workstreams cannot each
+## write `:= 39` in different regions of the file and have git merge
+## both without a word.
+##
+## It happened. Three open PRs each defined a different message at 39 —
+## surrender (#297), explore (#273) and research (#225) — and the suite
+## could not see it, because it checks encode/decode ROUND TRIPS and a
+## round trip is self-consistent even when two messages share a number.
+## The failure that escapes is silent and total: a client sends "I
+## surrender" and the server reads "start researching".
+##
+## `net_protocol.gd` is "the one definition of the wire protocol, shared
+## by server, client and bots so they can't drift" (CLAUDE.md). This is
+## that sentence made structural, the way D-046 criterion 3 made "no
+## script names a civ" structural.
+##
+## ## RESERVED RANGES — read before allocating
+##
+## Allocating "the next free number on main" is what collided: several
+## workers branch from one commit and every one of them sees the same
+## next free number. So the space is carved up, and a workstream takes
+## the next free number IN ITS OWN RANGE:
+##
+##    1-99    core: movement, combat, lobby, chat, the sandbox cheats
+##  100-119   naval (#301)
+##  120-139   techs and epochs (#206)
+##  140-159   audio, if it ever needs the wire (it does not today)
+##  160-179   Steam / platform and session identity (#181, #186)
+##  180-199   spare — claim a range HERE, in this comment, first
+##
+## A range is claimed by editing this comment, which is a one-line
+## add/add conflict two people can see, rather than by discovering a
+## clash at merge.
+##
+## The values below are FROZEN for anything already on `main`: an opcode
+## is a wire format, and renumbering one silently breaks every client
+## that has not been rebuilt.
+## Ranges, as DATA rather than as prose, so the rule above is checked
+## rather than remembered.
+const OPCODE_RANGES := {
+	"core": [1, 99],
+	"naval": [100, 119],
+	"techs": [120, 139],
+	"audio": [140, 159],
+	"platform": [160, 179],
+	"spare": [180, 199],
+}
+
+## Opcodes claimed by work that is IN FLIGHT on another branch (#362).
+##
+## This is the half that actually prevents the collision, as opposed to
+## detecting it. Three PRs each took 39 because each looked at `main` and
+## saw 39 free — none of them could see the others. A claim recorded HERE
+## is visible to every branch that rebases, and the duplicate test below
+## covers reservations exactly as it covers live opcodes.
+##
+## An entry leaves this table in the same commit that adds its `const`.
+## Removing one without adding the constant frees a number somebody is
+## still using, so treat this as a promise rather than a note.
+const OPCODES_RESERVED := {
+}
+
+const OPCODES := {
+	"S2C_WELCOME": 1,
+	"S2C_CURVE": 2,
+	"S2C_SQUAD_INFO": 3,
+	"S2C_STATE_HASH": 4,
+	"S2C_SQUAD_COMBAT": 5,
+	"S2C_SQUAD_CONCEAL": 6,
+	"S2C_BUILDING_INFO": 7,
+	"S2C_BUILDING_STATE_HASH": 8,
+	"C2S_ORDER_MOVE": 10,
+	"C2S_ORDER_STOP": 11,
+	"C2S_ORDER_ATTACK_MOVE": 12,
+	"C2S_ORDER_BUILD": 13,
+	"C2S_ORDER_PRODUCE": 14,
+	"C2S_ORDER_GATHER": 16,
+	"C2S_ORDER_RALLY": 23,
+	"C2S_ORDER_FORMATION": 24,
+	"C2S_ORDER_BUILDING_TARGET": 25,
+	"C2S_ORDER_GATE_STATE": 27,
+	"C2S_ORDER_GATE_MODE": 28,
+	"C2S_ORDER_BUILD_QUEUE": 29,
+	"C2S_ORDER_FACING": 34,
+	"C2S_ORDER_WIDTH": 35,
+	"C2S_ORDER_CHARGE": 36,
+	"C2S_ORDER_STANCE": 37,
+	"C2S_CHEAT_ADD_RESOURCES": 30,
+	"C2S_CHEAT_SPAWN_UNIT": 31,
+	"C2S_CHEAT_SPAWN_BUILDING": 32,
+	"C2S_CHEAT_REGEN_MAP": 38,
+	# 39, 40 and 41 were RESERVATIONS (#362) until #297, #186 and #273
+	# merged. A reservation graduates to an allocation when its branch
+	# lands — that transition is the whole point of keeping two tables.
+	# 40 was held for #186 across three rebases and nothing else took it,
+	# which is the reservation doing exactly the job it exists for.
+	"C2S_SURRENDER": 39,
+	"C2S_IDENTIFY": 40,
+	"C2S_ORDER_EXPLORE": 41,
+	# The join handshake (#213). Core, not platform: HELLO/REFUSED are the
+	# connection's own lifecycle and predate Steam — 160-179 is for session
+	# IDENTITY. 40 is left alone because the comment above claims it for
+	# #186, in flight on its own branch; honouring a claim recorded in the
+	# registry is the whole point of there being one. Renumbering REFUSED
+	# off 40 costs nothing, because no shipped build has ever spoken either
+	# of these.
+	"C2S_HELLO": 42,
+	"S2C_REFUSED": 43,
+	# #225, the tech tree, graduating out of OPCODES_RESERVED in the same
+	# commit that declares its constants — which is what that table asks
+	# for. These were 39 and 40 until #362; 39 is C2S_SURRENDER above, so
+	# the reservation is why this is a rebase and not a wire collision.
+	"C2S_ORDER_RESEARCH": 120,
+	"S2C_TECH_STATE": 121,
+	"S2C_WALLET": 9,
+	"S2C_NOTICE": 15,
+	"S2C_NODES": 17,
+	"S2C_NODES_DEPLETED": 33,
+	"S2C_LOBBY": 18,
+	"C2S_LOBBY": 19,
+	"C2S_LEAVE_MATCH": 26,
+	"S2C_MAP_SETTINGS": 20,
+	"S2C_CHAT": 21,
+	"C2S_CHAT": 22,
+}
+
+
 ## Single definition of the wire protocol, shared by the server, the real
 ## client, and the load-test bots.
 ##
@@ -15,41 +147,41 @@ class_name NetProtocol
 ## (D-016).
 
 # Server -> client
-const S2C_WELCOME := 1
-const S2C_CURVE := 2
-const S2C_SQUAD_INFO := 3
-const S2C_STATE_HASH := 4
-const S2C_SQUAD_COMBAT := 5
-const S2C_SQUAD_CONCEAL := 6
+const S2C_WELCOME := OPCODES["S2C_WELCOME"]
+const S2C_CURVE := OPCODES["S2C_CURVE"]
+const S2C_SQUAD_INFO := OPCODES["S2C_SQUAD_INFO"]
+const S2C_STATE_HASH := OPCODES["S2C_STATE_HASH"]
+const S2C_SQUAD_COMBAT := OPCODES["S2C_SQUAD_COMBAT"]
+const S2C_SQUAD_CONCEAL := OPCODES["S2C_SQUAD_CONCEAL"]
 
 # Client -> server
-const S2C_BUILDING_INFO := 7
-const S2C_BUILDING_STATE_HASH := 8
+const S2C_BUILDING_INFO := OPCODES["S2C_BUILDING_INFO"]
+const S2C_BUILDING_STATE_HASH := OPCODES["S2C_BUILDING_STATE_HASH"]
 
-const C2S_ORDER_MOVE := 10
-const C2S_ORDER_STOP := 11
-const C2S_ORDER_ATTACK_MOVE := 12
-const C2S_ORDER_BUILD := 13
-const C2S_ORDER_PRODUCE := 14
-const C2S_ORDER_GATHER := 16
-const C2S_ORDER_RALLY := 23
-const C2S_ORDER_FORMATION := 24
-const C2S_ORDER_BUILDING_TARGET := 25
+const C2S_ORDER_MOVE := OPCODES["C2S_ORDER_MOVE"]
+const C2S_ORDER_STOP := OPCODES["C2S_ORDER_STOP"]
+const C2S_ORDER_ATTACK_MOVE := OPCODES["C2S_ORDER_ATTACK_MOVE"]
+const C2S_ORDER_BUILD := OPCODES["C2S_ORDER_BUILD"]
+const C2S_ORDER_PRODUCE := OPCODES["C2S_ORDER_PRODUCE"]
+const C2S_ORDER_GATHER := OPCODES["C2S_ORDER_GATHER"]
+const C2S_ORDER_RALLY := OPCODES["C2S_ORDER_RALLY"]
+const C2S_ORDER_FORMATION := OPCODES["C2S_ORDER_FORMATION"]
+const C2S_ORDER_BUILDING_TARGET := OPCODES["C2S_ORDER_BUILDING_TARGET"]
 
 ## Gates (D-076): open/close it directly (only honored server-side in
 ## manual mode), or switch which mode it's in. Two opcodes rather than one
 ## overloaded message, matching how ORDER_RALLY and ORDER_BUILDING_TARGET
 ## are already separate single-purpose building orders rather than one
 ## "building command" envelope.
-const C2S_ORDER_GATE_STATE := 27
-const C2S_ORDER_GATE_MODE := 28
+const C2S_ORDER_GATE_STATE := OPCODES["C2S_ORDER_GATE_STATE"]
+const C2S_ORDER_GATE_MODE := OPCODES["C2S_ORDER_GATE_MODE"]
 
 ## Append one more site to a squad's build queue instead of replacing it
 ## (D-076's drag-to-build-a-line tool) — same payload shape as
 ## C2S_ORDER_BUILD, decoded by the same `decode_order_build`, distinguished
 ## only by opcode so the server knows which of `_handle_order_build` /
 ## `_handle_order_build_queue` to route it to.
-const C2S_ORDER_BUILD_QUEUE := 29
+const C2S_ORDER_BUILD_QUEUE := OPCODES["C2S_ORDER_BUILD_QUEUE"]
 
 ## Dev-testing cheats. Refused server-side unless MatchState.sandbox is on
 ## for this match — see server.gd's handlers, every one of which checks
@@ -61,26 +193,74 @@ const C2S_ORDER_BUILD_QUEUE := 29
 ## Facing and width orders (D-20260819-facing-and-width-are-orders):
 ## which way a standing squad faces (1/4096 of a turn) and how many files
 ## its grid formation forms (0 = the formation's default).
-const C2S_ORDER_FACING := 34
-const C2S_ORDER_WIDTH := 35
+const C2S_ORDER_FACING := OPCODES["C2S_ORDER_FACING"]
+const C2S_ORDER_WIDTH := OPCODES["C2S_ORDER_WIDTH"]
 ## A charge (D-20260819-a-charge-is-spent-on-its-impact): attack-move at
 ## sprint speed with one impact blow waiting at the end.
-const C2S_ORDER_CHARGE := 36
+const C2S_ORDER_CHARGE := OPCODES["C2S_ORDER_CHARGE"]
 ## The stance byte (D-20260819-stances-are-standing-orders).
-const C2S_ORDER_STANCE := 37
+const C2S_ORDER_STANCE := OPCODES["C2S_ORDER_STANCE"]
 
-const C2S_CHEAT_ADD_RESOURCES := 30
-const C2S_CHEAT_SPAWN_UNIT := 31
-const C2S_CHEAT_SPAWN_BUILDING := 32
+## ORDER_EXPLORE (#120): hunt fog until told to stop. Carries a squad and
+## NOTHING else — the destination is the server's to choose, repeatedly,
+## which is the whole point of the order. Shaped like ORDER_STOP for that
+## reason rather than like ORDER_MOVE.
+##
+## 41, not 39. Three PRs each took 39 off `main` — surrender (#297), this,
+## and research (#225) — because each saw 39 free and none could see the
+## others (#362). Surrender keeps it, being first in the published merge
+## order; this moved. The literal is gone now that the registry is here,
+## which is exactly what the note on it promised would happen.
+const C2S_ORDER_EXPLORE := OPCODES["C2S_ORDER_EXPLORE"]
+
+## Start researching a tech LINE at one of your buildings
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## The wire carries a LINE, never a tech id, for exactly the reason
+## C2S_ORDER_PRODUCE carries an archetype: the server resolves it against
+## the acting player's civ, so a client structurally cannot name another
+## civ's version of a tech and D-046 criterion 4 needs no check anyone has
+## to remember to write.
+## 120 rather than the next free number after the core block: #374 carves
+## the opcode space per workstream (core 1-99, naval 100-119, techs
+## 120-139, ...) so two chains cannot each take "the next free number on
+## main" and both be right. Three PRs took 39 — surrender, explore and
+## this — and the suite could not see it, because a round-trip test is
+## self-consistent even when two messages share an id (#362). Surrender
+## keeps 39, being first in the published merge order.
+const C2S_ORDER_RESEARCH := OPCODES["C2S_ORDER_RESEARCH"]
+
+const C2S_CHEAT_ADD_RESOURCES := OPCODES["C2S_CHEAT_ADD_RESOURCES"]
+const C2S_CHEAT_SPAWN_UNIT := OPCODES["C2S_CHEAT_SPAWN_UNIT"]
+const C2S_CHEAT_SPAWN_BUILDING := OPCODES["C2S_CHEAT_SPAWN_BUILDING"]
 ## Tear the world down and regenerate it on a fresh seed, seats held —
 ## the D-075 return-to-lobby edge plus an immediate restart, driven from
 ## the sandbox panel (D-20260821-the-sandbox-panel-runs-the-world).
-const C2S_CHEAT_REGEN_MAP := 38
+const C2S_CHEAT_REGEN_MAP := OPCODES["C2S_CHEAT_REGEN_MAP"]
 
-const S2C_WALLET := 9
-const S2C_NOTICE := 15
-const S2C_NODES := 17
-const S2C_NODES_DEPLETED := 33
+## IDENTIFY (#186, D-090): the client says WHO it is, once, on connect.
+##
+## An opaque token — a platform id where one exists, a stable local one
+## otherwise. Nothing may parse it (see `player_identity.gd`), and a
+## client that never sends this is ANONYMOUS: it plays exactly as before
+## and simply cannot reclaim a seat. Every load-test bot is in that case,
+## which is deliberate — identity had to be addable without changing what
+## the existing estate does.
+const C2S_IDENTIFY := OPCODES["C2S_IDENTIFY"]
+
+const S2C_WALLET := OPCODES["S2C_WALLET"]
+const S2C_NOTICE := OPCODES["S2C_NOTICE"]
+const S2C_NODES := OPCODES["S2C_NODES"]
+const S2C_NODES_DEPLETED := OPCODES["S2C_NODES_DEPLETED"]
+
+## What THIS PLAYER has researched, and which epoch that puts them in
+## (`D-20260827-the-tree-is-the-ladder`).
+##
+## Own lines and allies' (D-050 shares a front), and nobody else's. An
+## enemy's research is exactly the thing a scout is for, and a client that
+## learned it would be able to hash an upgrade the server never told it
+## about — D-099's ghost rule pointed at a different field.
+const S2C_TECH_STATE := OPCODES["S2C_TECH_STATE"]
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -215,6 +395,44 @@ static func decode_order_stop(data: PackedByteArray) -> Dictionary:
 	return {"squad": buf.get_u32()}
 
 
+## ORDER_EXPLORE: put a squad into the fog-hunting mode (#120).
+##
+## A squad id and no destination, because a destination is exactly what
+## the player is declining to choose. The server holds the mode (#120
+## point 5 — explore extends this channel rather than opening a second
+## one) and re-picks for as long as it lasts.
+static func encode_order_explore(squad: int) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_EXPLORE)
+	buf.put_u32(squad)
+	return buf.data_array
+
+
+static func decode_order_explore(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	return {"squad": buf.get_u32()}
+
+
+## IDENTIFY: bind this connection to a persistent identity (#186).
+static func encode_identify(token: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_IDENTIFY)
+	var bytes := token.to_utf8_buffer()
+	buf.put_u16(bytes.size())
+	buf.put_data(bytes)
+	return buf.data_array
+
+
+static func decode_identify(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var length := buf.get_u16()
+	var bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"token": bytes.get_string_from_utf8()}
+
 ## ATTACK_MOVE: advance, but stop on contact (D-034).
 ##
 ## Squads already engage anything that comes into range, so this is not
@@ -333,6 +551,12 @@ static func encode_squad_info(entries: Array) -> PackedByteArray:
 		# The stance byte (D-20260819-stances): panel display, not hashed
 		# (the owner/tier family).
 		buf.put_u8(int(entry.get("stance", 0)) & 0xFF)
+		# Whether the squad is exploring (#120), carried the same way and
+		# for the same reason: explore is a MODE, so a player who cannot
+		# see that it is still on cannot tell "scouting" from "stopped
+		# somewhere odd". Not hashed — it is a display fact, and the
+		# positions it produces are replicated as ordinary curves.
+		buf.put_u8(1 if bool(entry.get("exploring", false)) else 0)
 	return buf.data_array
 
 
@@ -362,6 +586,10 @@ static func decode_squad_info(data: PackedByteArray) -> Array:
 			"facing": -1 if facing_wire == 0xFFFF else facing_wire,
 			"files": int(buf.get_u8()),
 			"stance": int(buf.get_u8()),
+			# Read INSIDE the literal like the two above it — GDScript
+			# evaluates dictionary values in source order, which is what
+			# keeps these three aligned with the encoder's three writes.
+			"exploring": buf.get_u8() == 1,
 		})
 	return out
 
@@ -406,11 +634,17 @@ static func encode_building_info(entries: Array) -> PackedByteArray:
 		buf.put_float(float(entry.get("head_remaining", 0.0)))
 		buf.put_u32(int(entry.get("rally", 0)))
 		var queue: Array = entry.get("queue", [])
+		var queue_kinds: Array = entry.get("queue_kinds", [])
 		buf.put_u16(queue.size())
-		for queued in queue:
-			var queued_id := String(queued).to_utf8_buffer()
+		for i in range(queue.size()):
+			var queued_id := String(queue[i]).to_utf8_buffer()
 			buf.put_u16(queued_id.size())
 			buf.put_data(queued_id)
+			# A queue entry's STRING is an archetype when it is a unit and
+			# a tech LINE when it is a research, so the client cannot tell
+			# them apart without this. Defaults to KIND_UNIT, which is
+			# every entry any build before the tech tree ever queued.
+			buf.put_u8(int(queue_kinds[i]) if i < queue_kinds.size() else 0)
 		# D-076: harmless (false/MANUAL) on every non-gate building — sent
 		# uniformly, same as every other per-building field above.
 		buf.put_u8(1 if bool(entry.get("gate_open", false)) else 0)
@@ -455,11 +689,14 @@ static func decode_building_info(data: PackedByteArray) -> Array:
 			"rally": buf.get_u32(),
 		}
 		var queue := []
+		var queue_kinds := []
 		for _q in range(buf.get_u16()):
 			var queued_length := buf.get_u16()
 			var queued_bytes: PackedByteArray = buf.get_data(queued_length)[1]
 			queue.append(queued_bytes.get_string_from_utf8())
+			queue_kinds.append(buf.get_u8())
 		entry["queue"] = queue
+		entry["queue_kinds"] = queue_kinds
 		entry["gate_open"] = buf.get_u8() == 1
 		entry["gate_mode"] = int(buf.get_u8())
 		entry["facing"] = int(buf.get_u8())
@@ -711,6 +948,89 @@ static func decode_notice(data: PackedByteArray) -> String:
 
 ## ORDER_PRODUCE: a building is told to make a unit (D-028/D-031).
 ## Carries the building's wire id and the unit's def id.
+## ORDER_RESEARCH: start a tech line at a building you own.
+##
+## Deliberately the same shape as ORDER_PRODUCE — a building and a name —
+## because it is the same kind of act: spending a building's time on
+## something the server resolves against your civ. The two are separate
+## opcodes rather than one flag on ORDER_PRODUCE for ORDER_RALLY and
+## ORDER_BUILDING_TARGET's reason: single-purpose building orders, not one
+## overloaded envelope.
+static func encode_order_research(building_wire_id: int, line: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_ORDER_RESEARCH)
+	buf.put_u32(building_wire_id)
+	var name_bytes := line.to_utf8_buffer()
+	buf.put_u16(name_bytes.size())
+	buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_order_research(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var building := buf.get_u32()
+	var length := buf.get_u16()
+	var name_bytes: PackedByteArray = buf.get_data(length)[1]
+	return {"building": building, "line": name_bytes.get_string_from_utf8()}
+
+
+## TECH_STATE: this player's own researched lines and their epoch.
+##
+## Sent on CHANGE, never per tick — a player researches perhaps twenty
+## things in ninety minutes, so this is among the cheapest messages on the
+## wire and D-003's "an idle thing costs nothing" claim is untouched.
+##
+## The whole set every time rather than a delta. It is at most a few
+## dozen short strings, and a delta stream would need a sequence number
+## the curve protocol deliberately does not have (D-042's note that
+## in-order delivery is load-bearing) — a dropped delta would leave a
+## client permanently one tech behind with nothing able to notice.
+## `civ` rides along because a tech set is meaningless without it: every
+## line resolves to a DIFFERENT TechDef per civ, so a client holding
+## `breaking` and not knowing whose it is cannot name it, price it or draw
+## it. The lobby carries civs too (D-048), but a match started with
+## `--lobby=0` broadcasts no lobby at all — and the load-test bots run
+## that way, so `ClientState.civ_of` answers "" for every bot in every
+## run (docs/status/load-testing.md, where that blind spot already cost a
+## run to find). One field here closes it for everything downstream of the
+## tree.
+static func encode_tech_state(epoch: int, lines: Array,
+		civ: StringName = &"") -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_TECH_STATE)
+	buf.put_u32(epoch)
+	var civ_bytes := String(civ).to_utf8_buffer()
+	buf.put_u16(civ_bytes.size())
+	buf.put_data(civ_bytes)
+	buf.put_u16(lines.size())
+	for line in lines:
+		var name_bytes := String(line).to_utf8_buffer()
+		buf.put_u16(name_bytes.size())
+		buf.put_data(name_bytes)
+	return buf.data_array
+
+
+static func decode_tech_state(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var epoch := buf.get_u32()
+	var civ_length := buf.get_u16()
+	var civ_bytes: PackedByteArray = buf.get_data(civ_length)[1]
+	var lines := []
+	for i in range(buf.get_u16()):
+		var length := buf.get_u16()
+		var name_bytes: PackedByteArray = buf.get_data(length)[1]
+		lines.append(StringName(name_bytes.get_string_from_utf8()))
+	return {
+		"epoch": epoch,
+		"civ": StringName(civ_bytes.get_string_from_utf8()),
+		"lines": lines,
+	}
+
+
 static func encode_order_produce(building_wire_id: int, unit_def_id: String) -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_ORDER_PRODUCE)
@@ -1133,8 +1453,8 @@ static func seed_from(text: String, a: int, b: int) -> int:
 ## the entire state is a few hundred bytes. D-003's incremental machinery
 ## exists because squad state changes ten times a second — spending that
 ## complexity here would be paying a cost the problem does not have.
-const S2C_LOBBY := 18
-const C2S_LOBBY := 19
+const S2C_LOBBY := OPCODES["S2C_LOBBY"]
+const C2S_LOBBY := OPCODES["C2S_LOBBY"]
 
 ## What a client can ask the lobby to do. The server checks every one of
 ## them against MatchState's rules; these are requests, not commands.
@@ -1239,12 +1559,33 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 ## No payload. Who is leaving is read from the connection it arrived on,
 ## for the same reason chat attaches its speaker server-side: a client
 ## that named its own player could send another player home.
-const C2S_LEAVE_MATCH := 26
+const C2S_LEAVE_MATCH := OPCODES["C2S_LEAVE_MATCH"]
 
 
 static func encode_leave_match() -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(C2S_LEAVE_MATCH)
+	return buf.data_array
+
+
+## SURRENDER (D-20260828-a-player-may-concede). "I have lost this match."
+##
+## Deliberately NOT the same thing as C2S_LEAVE_MATCH above, which is "I
+## am done with this match". A player who concedes stays connected and
+## watching; a player who leaves goes back to the lobby. Folding the two
+## together would mean the only way to admit defeat is to stop watching
+## it.
+##
+## No payload, for the same reason leaving has none: who is conceding is
+## read from the connection it arrived on. A client that named its own
+## player id could surrender on somebody else's behalf, which is the one
+## thing a concession must never allow.
+const C2S_SURRENDER := OPCODES["C2S_SURRENDER"]
+
+
+static func encode_surrender() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_SURRENDER)
 	return buf.data_array
 
 
@@ -1288,7 +1629,7 @@ static func _get_string(buf: StreamPeerBuffer) -> String:
 ## the two sides will quietly disagree about which cells a squad may
 ## enter". Sending "islands" would leave two implementations of what that
 ## means, one per side, free to drift apart.
-const S2C_MAP_SETTINGS := 20
+const S2C_MAP_SETTINGS := OPCODES["S2C_MAP_SETTINGS"]
 
 
 static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
@@ -1341,8 +1682,8 @@ static func decode_map_settings(data: PackedByteArray) -> Dictionary:
 ## client name its own speaker would let it put words in someone's mouth,
 ## which is the same "the client is not trusted" rule (D-002) that governs
 ## orders — it is just less obvious when the payload is prose.
-const S2C_CHAT := 21
-const C2S_CHAT := 22
+const S2C_CHAT := OPCODES["S2C_CHAT"]
+const C2S_CHAT := OPCODES["C2S_CHAT"]
 
 ## Longest message accepted. Bounded because it arrives on the same
 ## reliable channel as everything else (D-042), so an unbounded message
@@ -1394,3 +1735,121 @@ static func sanitise_chat(text: String) -> String:
 	if out.length() > CHAT_MAX_CHARS:
 		out = out.substr(0, CHAT_MAX_CHARS)
 	return out
+
+
+## --- the join handshake (D-094 criterion 3, #179) ---------------------
+##
+## THE protocol version. Bump it whenever a change would make an older
+## build misread this one's packets — a new opcode, a changed payload
+## shape, a field that gains or loses a byte. It is NOT the build version
+## (build_version.gd): two builds can differ in art, balance or a bug fix
+## and still speak the same wire, and refusing those would make every
+## hotfix a flag day.
+##
+## Before this existed the protocol had no version field at all, and a
+## stale client meeting a new server produced confusing DESYNCS rather
+## than a refusal — a symptom that costs a debugging session and ends in
+## "you were on last week's build". Steam's rolling updates make mixed
+## versions routine (D-094's own rationale); alpha testers self-updating
+## from zips are worse at staying current than Steam is.
+const PROTOCOL_VERSION := 1
+
+## HELLO is the FIRST thing a client sends after connecting, and the
+## server admits nobody until it arrives. Deliberately client-first: the
+## server would otherwise have to spend a player id, a seat and a lobby
+## broadcast on a peer it is about to refuse, and D-033's seat lifecycle
+## is not something to run backwards.
+# The NUMBERS live in OPCODES above, not here. This pair is the reason
+# #362's registry exists: both this PR and #297 picked "the next free
+# value on `main`" and both got 39, because neither branch could see the
+# other — the exact collision #363 predicted for the other scarce
+# namespace (keybindings) and named wire opcodes as the first instance
+# of. THIS side moved, twice, and neither move cost anything: no shipped
+# build has ever spoken either opcode, so no PROTOCOL_VERSION bump is
+# needed. A third collision is now inexpressible rather than merely
+# unlucky.
+const C2S_HELLO := OPCODES["C2S_HELLO"]
+const S2C_REFUSED := OPCODES["S2C_REFUSED"]
+
+## Why a join was refused. On the wire as an integer rather than as
+## prose, so the client composes the message with `refusal_text` from its
+## OWN version — one definition of the wording, and no untrusted string
+## from the network reaching a label.
+const REFUSED_PROTOCOL := 1
+const REFUSED_SILENT := 2
+
+## How long a connected peer may go without saying hello before it is
+## refused. It exists for exactly one client: one built before this
+## handshake did, which will never send HELLO and would otherwise sit
+## connected forever, admitted to nothing, with no message anywhere.
+const HELLO_TIMEOUT_SECONDS := 5.0
+
+
+static func encode_hello(protocol: int, build: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(C2S_HELLO)
+	buf.put_u32(protocol)
+	_put_string(buf, build)
+	return buf.data_array
+
+
+static func decode_hello(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var protocol := buf.get_u32()
+	return {"protocol": protocol, "build": _get_string(buf)}
+
+
+## The refusal carries the SERVER's numbers and nothing else. The client
+## already knows its own, and a message assembled from both ends'
+## constants at the receiving end cannot be half a build old the way a
+## sentence composed on the far side can.
+static func encode_refused(reason: int, server_protocol: int,
+		server_build: String) -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.put_u8(S2C_REFUSED)
+	buf.put_u8(reason)
+	buf.put_u32(server_protocol)
+	_put_string(buf, server_build)
+	return buf.data_array
+
+
+static func decode_refused(data: PackedByteArray) -> Dictionary:
+	var buf := StreamPeerBuffer.new()
+	buf.data_array = data
+	buf.get_u8()
+	var reason := buf.get_u8()
+	var protocol := buf.get_u32()
+	return {"reason": reason, "protocol": protocol, "build": _get_string(buf)}
+
+
+## The one wording of a refusal, used by the client that displays it AND
+## by the server that logs it — so the sentence a player reads and the
+## sentence in the log a bug report quotes cannot disagree.
+##
+## `mine`/`my_protocol` are the READER's own build, which is why this
+## takes them rather than reading BuildVersion itself: the server calls
+## it about a client, and the client calls it about itself.
+##
+## It must say BOTH builds and what to do. "Version mismatch" is a
+## message a player cannot act on; "your build is X, the server is Y —
+## update" is one they can.
+static func refusal_text(reason: int, server_protocol: int, server_build: String,
+		mine: String, my_protocol: int) -> String:
+	match reason:
+		REFUSED_PROTOCOL:
+			return ("This build cannot join that server.\n"
+				+ "Your build: %s (protocol %d)\n" % [mine, my_protocol]
+				+ "Server build: %s (protocol %d)\n" % [server_build, server_protocol]
+				+ "Update to the same build as the server and join again.")
+		REFUSED_SILENT:
+			return ("The server refused this connection: it never received a "
+				+ "version handshake.\n"
+				+ "Server build: %s (protocol %d)\n" % [server_build, server_protocol]
+				+ "This build is too old to say which build it is. Update and "
+				+ "join again.")
+		_:
+			return ("The server refused this connection (reason %d).\n" % reason
+				+ "Your build: %s (protocol %d)\n" % [mine, my_protocol]
+				+ "Server build: %s (protocol %d)" % [server_build, server_protocol])

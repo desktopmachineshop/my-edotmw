@@ -43,10 +43,6 @@ class_name AiProfileDef
 @export var id: StringName
 @export var display_name: String = ""
 
-## Flavour for the lobby, so a player choosing an opponent knows what
-## they are picking. Not mechanics.
-@export_multiline var summary: String = ""
-
 ## Where this sits in a list a player is shown, easiest first. Sorted on,
 ## so the roster's order is the file's business rather than the UI's.
 @export var order: int = 0
@@ -121,8 +117,59 @@ class_name AiProfileDef
 ## A floor is where the economy stalls, and moving one without measuring
 ## is how the AI spent a whole session gathering zero wood while its food
 ## pile looked perfectly healthy (D-054's `substituted` counter).
+## How readily this AI spends its bank on RESEARCH rather than troops
+## (`D-20260827-the-tree-is-the-ladder`), in (0, 1].
+##
+## Not a probability — nothing in an AI decision may be random, because a
+## replay has to reproduce (D-016). It is a SURPLUS threshold: an optional
+## branch tech is bought only once the wallet holds `cost / research_bias`,
+## so 1.0 buys the moment it is affordable and 0.4 waits until the AI has
+## two and a half times the price sitting idle.
+##
+## A DEFINING tech ignores this and is bought as soon as it is affordable,
+## on purpose. An AI that could talk itself out of climbing would sit at
+## epoch 1 against an opponent that did not, and every ladder number after
+## this would be measuring that instead of the civs — which is exactly the
+## D-107 failure this project has already paid for once.
+@export var research_bias: float = 0.7
+
 @export var food_floor: int = 180
 @export var wood_floor: int = 200
+
+## How many FIELDS this opponent wants standing
+## (D-20260828-food-is-grown-not-only-found). Unlike the floors above this
+## IS a difficulty axis, and for the reason that decision is about: a farm
+## is a one-time wood cost bought against perpetual food, so how many an
+## opponent is willing to fund is exactly the long-game ambition that
+## separates the easy end of the ladder from the hard end.
+##
+## A farm is the only building an AI wants more than one of, which is why
+## `_wanted_count` exists rather than `_owned_building_count(id) > 0`.
+@export var farms_wanted: int = 4
+
+
+## How much of a CASE this opponent needs before it spends on something
+## that cannot chase anybody: walls, gates, a tower (#337).
+##
+## 1.0 fortifies at the first sign of a threat; 0.0 never fortifies at
+## all. `StaticDefence.wants_to_invest` reads it as `pressure >= 1.0 -
+## appetite`, which is monotone in both and statable in one sentence.
+##
+## A genuine difficulty axis, unlike the floors above, and it is safe to
+## be one — which is the test `ai_profile.gd` applies to every candidate
+## knob. It CANNOT starve an opening: `StaticDefence.pressure` returns 0
+## until something that trains is standing, so no appetite buys a wall
+## before the barracks; and `can_afford_with_reserve` holds back a share
+## of the economy's own floors on top of the price. The worst a wrong
+## value can do is an opponent that turtles or one that does not, and both
+## of those are opponents.
+##
+## The DEFAULT is the pre-#337 AI's behaviour in spirit — it built no
+## defences at all — but not in letter: 0.0 would ship a knob no shipped
+## profile exercises, which is how `gather_speed` sat at 1.0 on every civ
+## and could not be tested from the roster (#158). The middle value is a
+## deliberate choice to make the default profile use the feature.
+@export_range(0.0, 1.0) var defence_appetite: float = 0.5
 
 
 ## Returns "" if valid, else the reason. Called at load, so a broken
@@ -132,6 +179,8 @@ class_name AiProfileDef
 func validate() -> String:
 	if id == &"":
 		return "ai profile has no id"
+	if defence_appetite < 0.0 or defence_appetite > 1.0:
+		return "ai profile %s has a defence appetite outside 0..1" % id
 	if think_interval <= 0.0:
 		return "ai profile %s thinks at or below zero seconds" % id
 	if train_cooldown < 0.0:
@@ -144,6 +193,8 @@ func validate() -> String:
 		return "ai profile %s re-orders its army every think" % id
 	if food_floor < 0 or wood_floor < 0:
 		return "ai profile %s has a negative resource floor" % id
+	if farms_wanted < 0:
+		return "ai profile %s wants a negative number of fields" % id
 	return ""
 
 

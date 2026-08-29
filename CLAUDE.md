@@ -42,6 +42,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/ai-opponent.md
 
+@docs/status/ai-fortification.md
+
 @docs/status/m7.md
 
 @docs/status/art-pipeline.md
@@ -78,24 +80,68 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m8-plan.md
 
+@docs/status/m8-export.md
+
+@docs/status/join-handshake.md
+
+@docs/status/main-menu.md
+
+@docs/status/steam-boundary.md
+
+@docs/status/host-in-process.md
+
+@docs/status/alpha-loop.md
+
+@docs/status/transport-seam.md
+
+@docs/status/onboarding.md
+
 @docs/status/civ-knobs.md
 
+@docs/status/renewable-economy.md
+
 @docs/status/fantasy-civs.md
+
+@docs/status/tech-tree.md
 
 @docs/status/m9-plan.md
 
 @docs/status/m10-plan.md
 
+@docs/status/client-render.md
+
 @docs/status/server-memory.md
+
+@docs/status/audio.md
 
 ## What this project is
 
 A large-scale real-time strategy game, inspired by *Empires: Dawn of the
 Modern World* and *Rome: Total War* (formations and morale/routing,
-specifically — not a campaign layer), targeting **20 concurrent players
-/ 2,000 soldiers each (40,000 total, ~50 squads/player, ~1,000 squads
-total) on a single seamless map**, 4–6 civilizations at launch, shipping
-on Steam. Built in Godot specifically because its plain-text asset
+specifically — not a campaign layer), on a single seamless map, 4-6
+civilizations at launch, shipping on Steam.
+
+**Scale target, MEASURED and superseding D-018's 20 players / 40,000
+soldiers** (`D-20260828-the-shipping-scale`, #287): **~200 squads and
+~3,100 soldiers in a match**, recommended shape **8 players x 25
+squads**. Both budgets land there from opposite directions — D-020's
+100 ms worst tick crosses between 180 and 240 squads server-side, and
+30 fps on Intel Iris Xe crosses at ~200 client-side. **The budget is a
+TOTAL, not a per-player allowance**, so `squad_cap` should be derived
+from the seat count; at 40 per seat the lobby's own 24-seat ceiling is
+arithmetically impossible. The 13x reduction from D-018 is the bill for
+the trade `D-20260818-battle-quality-outranks-player-count` already
+made. **Nothing may quietly re-quote 20 players.**
+
+**That 200 is a DEDICATED server's number and NOT a host's**
+(`D-20260828-the-host-pays-both-budgets`, #339). D-088 runs the sim
+in-process inside a player's client, so a host pays both budgets out of
+one second: measured, it holds **100-150 squads**, and at 200 it runs at
+19.9-35.6 fps. The cause is structural rather than contention — **the
+authoritative tick runs inside the render frame**, and a 46 ms tick
+cannot fit a 33 ms budget by any scheduling. `just bench-render` in host
+mode (`--host=1`) is the instrument; the three possible responses are #349 and the choice
+is D-088's. Built in Godot specifically because its plain-text asset
 formats (`.tscn`/`.tres`) make the project directly editable by Claude
 Code — that's a design constraint, not an afterthought.
 
@@ -367,11 +413,58 @@ ground_cover.gd          Which decorative props dress a cell (D-100).
                         that fact rather than the module reading sim
                         state.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
-                        identical to the wire format.
+                        identical to the wire format. Opens its file
+                        through ArtifactPath, so a shipped build records
+                        one at all.
+artifact_path.gd         WHERE this project writes what it produces
+                        (D-20260828). `res://` is a real directory in a
+                        checkout and a READ-ONLY virtual filesystem
+                        inside an exported build's .pck, so the first
+                        ever exported build played a complete match and
+                        recorded NO REPLAY, with the only notice a
+                        push_error nobody in a release build can see
+                        (#201). One base, decided once: `res://artifacts`
+                        from a checkout, `user://artifacts` from a build,
+                        and a path handed in from outside is REBASED
+                        rather than refused — so every recipe, every
+                        `--out=` and `just replay-info` keep finding
+                        files exactly where they look for them today.
+                        All-static.
 
 --- networking ---
+net_transport.gd         What the server and client need of a TRANSPORT
+                        and nothing more (D-20260828, #184). ENet today
+                        (`enet_transport.gd`), D-088's Steam relay
+                        second. Its event constants are ENet's value for
+                        value, so the seam was an addition beside the
+                        netcode rather than a rewrite of it; peers stay
+                        duck-typed to `ENetPacketPeer.send`, the shape
+                        LoopbackPeer and HostLink already share. The
+                        contract is RELIABLE-ORDERED (D-042: curves carry
+                        no sequence number), and
+                        tests/test_transport_ordering.gd drives a
+                        deliberately reordering fake through it and FAILS
+                        if the client does not diverge — the first time
+                        that dependency has been falsifiable.
 net_protocol.gd          The one definition of the wire protocol, shared
                         by server, client and bots so they can't drift.
+                        Owns PROTOCOL_VERSION and the JOIN HANDSHAKE
+                        (D-20260827, #179): a client's first packet is a
+                        HELLO and the server admits nobody before it, so
+                        a mismatched build is refused with a sentence
+                        naming both builds instead of producing desyncs.
+                        The version is its OWN number, never the build
+                        string — two builds can differ and speak the
+                        same wire.
+host_link.gd             The CLIENT end of an in-process connection
+                        (D-20260828, #182) — `loopback_peer.gd`'s mirror
+                        image. That one carries packets to a client inside
+                        the process; this one carries its ORDERS back, so
+                        the ~30 ordering sites in client.gd are the same
+                        code whether the player is hosting or joined over
+                        a socket. A host cannot be handed a rule a guest
+                        does not have, because there is no branch in which
+                        to give it one.
 client_state.gd          Everything a client knows, with no rendering
                         attached. The GUI client and the load-test bots
                         both run THIS — so test-load exercises the real
@@ -379,9 +472,39 @@ client_state.gd          Everything a client knows, with no rendering
                         headless even though the client itself isn't.
 server.gd / server.tscn  Headless authoritative server (D-002).
 client.gd / client.tscn  GUI client. Native-only, needs a GPU (D-014).
+                        Starts at a MAIN MENU when no connection was asked
+                        for on the command line (D-20260827, #180), so an
+                        installed build has a way in; every failed,
+                        refused or lost connection returns there with a
+                        message. `main_menu.gd` is the pure half — which
+                        endpoint a launch means, how a typed address
+                        parses, what the title says.
 bot_client.gd            Headless load-test bot. Runs N *virtual*
                         clients in one process, not N processes (memory
                         budget — see D-018).
+static_defence.gd        WHEN an AI spends on something that cannot chase
+                        anybody (D-20260828, #337). All-static, pure, and
+                        it NAMES NO DOMAIN — no wall, gate, dock or ship —
+                        because naval stage 7 answers the same question
+                        about shore defences and #337 asked that the two
+                        share it. A source scan in the tests enforces
+                        that, since "knows nothing about walls" is not
+                        something a behavioural test can see. A missing
+                        threat key is NO evidence, never alarming
+                        evidence, so a caller that has not learned to
+                        report something new cannot start fortifying
+                        because of it.
+wall_plan.gd             WHERE a wall goes, and where its gate goes
+                        (D-20260828). The half that knows what a wall is.
+                        A SCREEN across the approach, not a ring: a ring
+                        at radius 5 is 900 wood and 1,200 stone at the
+                        shipped price, which no match of this length can
+                        afford. Built from the MIDDLE outward, so a
+                        half-built screen is a screen with short ends
+                        rather than a fence with a hole in the road. Walls
+                        and gates are found by their FIELDS, never by id
+                        (D-047), and bearings go through `space.delta` so
+                        a screen faces the short way round the seam.
 bot_patrol.gd            What a load-test bot's scouting detachment does
                         (D-20260817-load-test-bots-must-manoeuvre). All-
                         static and pure, like formation.gd, so the half of
@@ -399,6 +522,22 @@ bot_patrol.gd            What a load-test bot's scouting detachment does
                         where two starts are 13 cells apart against 11
                         cells of town-centre sight, "am I home yet" is not
                         the same question.
+platform.gd              THE one script allowed to name Steam (D-093,
+                        #181). A test fails if any other .gd names the
+                        API — the D-046-criterion-3 pattern, and what
+                        keeps D-021's one-category amendment from being a
+                        hole. Absent Steam reports unavailable and costs
+                        Steam FEATURES, never the game; that is the
+                        configuration every automated context here runs
+                        in, so the fallback is the constantly-tested path.
+                        Called `Platform`, not `SteamPlatform`: the rule
+                        is that no other .gd names Steam, so a boundary
+                        whose own class name contains the word cannot be
+                        CALLED from anywhere (#184 found this the moment
+                        it tried). Note D-093's GDExtension premise is
+                        measured FALSE (D-20260828) — GodotSteam ships a
+                        modified engine — and the replacement is the
+                        owner's call.
 cmd_args.gd              The one parse of `--key=value`, and the one check
                         that a value about to be read as a NUMBER is one
                         (D-20260817-recipe-args-are-positional). All three
@@ -423,6 +562,71 @@ unit_def.gd             UnitDef schema — extend fields here when a new
                         knobs EVERY civ has — never a per-civ branch, and
                         a test fails if any .gd file names a civ at all.
 civ_def.gd              CivDef schema; civ_roster.gd loads them.
+controls_reference.gd    THE list of what the controls do (D-20260828,
+                        #282). One list, shown by BOTH the main menu and
+                        the in-game menu, so they cannot drift. Its build
+                        and train rows are DERIVED from client.gd's own
+                        BUILD_KEYS/TRAIN_KEYS, and it documents BEHAVIOUR
+                        rather than intent — writing it is how #302 was
+                        found (G is a build key AND has a dead gather
+                        branch, so the gather shortcut is unreachable).
+opening_brief.gd         What a squad is FOR in the opening, and what to
+                        do first (D-20260828, #284). All-static and pure,
+                        and it names NO archetype and NO building: "can
+                        this squad found" is `BuildingSim.can_build`
+                        against `built_by` — the same call the ORDER GATE
+                        makes, so the panel cannot promise something the
+                        server will refuse. The founding building is
+                        found by its RULE (`consumes_builder`).
+civ_identity.gd          What a player is TOLD about a civ before they
+                        pick it (D-20260828, #283) — its one-line pitch
+                        and its signature unit, both from the .tres.
+                        All-static and pure. `signature_unit` is an
+                        ARCHETYPE (D-047), so a civ naming one it does
+                        not field advertises NOTHING rather than somebody
+                        else's troops. `CivDef.summary` was
+                        declared-and-unread for six milestones, which is
+                        why nobody noticed its cp1252 em dash arriving as
+                        U+FFFD on every load (#214).
+manual.gd                THE in-game instructions manual (D-20260828,
+                        #305), menu -> Help and F1. Every page is one of
+                        two things and there is no third. GENERATED —
+                        rosters, stats, counters, costs, buildings,
+                        formations — is computed from the shipped .tres
+                        when the page OPENS, so there is no copy for the
+                        data to disagree with and nothing to rebuild;
+                        that is `TerrainGen.biome_color()`'s rule applied
+                        to text. STAMPED is prose that cannot be derived,
+                        under /manual as ManualPageDef. All-static and
+                        pure. Prose may write `{Combat.CONST}` and gets
+                        whatever combat.gd says — the same constant-map
+                        lookup controls_reference.gd uses for its build
+                        rows, so a page quoting a number quotes the real
+                        one. Markup is `## `, `- `, and a blank line;
+                        anything more would be a manual whose fit nobody
+                        could check.
+manual_page_def.gd       One hand-written page, and the STALENESS RULE.
+                        A page names the files it describes and carries a
+                        sha256 over them; `just build-manual` writes it,
+                        `tests/test_manual.gd` recomputes it, so a
+                        gameplay PR that moves a rule and forgets the page
+                        goes red. PER PAGE, never one manifest — a single
+                        hash would red every page on any gameplay change,
+                        and a guard that fires on things it has nothing to
+                        say about is one people learn to silence (#204).
+                        `.tres` and not `.md` because export_presets.cfg
+                        excludes *.md from every shipping build.
+civ_standing.gd          Where a civ stands against the rest of the
+                        shipped roster, MEASURED (D-20260828, #305).
+                        Every advantage and disadvantage in the manual is
+                        a comparison computed from the data: a knob
+                        against `CivDef.new()`'s default, an archetype
+                        against a count over /units, quality vs quantity
+                        against D-072's V and V/RP. Six sentences keyed by
+                        civ id would rot within two milestones AND break
+                        D-046 criterion 3 — so a seventh civ writes its
+                        own entry. A claim clears an 8% MARGIN rather than
+                        merely differing.
 unit_roster.gd          Loads /units in a stable order. Server, client
                         and tests all discover units through this.
 /maps/*.tres            MapConfig resources (torus dimensions, squads
@@ -521,6 +725,22 @@ forest_preview.gd        The same idea again for WOODS (D-108), framed on
                         own idea of a forest.
 
 --- tooling ---
+build_version.gd         THE one definition of which build this is
+                        (D-20260827). The number lives in project.godot's
+                        `application/config/version` and NOWHERE else —
+                        `just export` greps the same line, so a binary and
+                        the artifact it was written into cannot disagree.
+                        All-static; a test fails if a second script names
+                        the setting, and forbids a git sha or a timestamp
+                        (D-081: two clean clones of one commit must export
+                        the same bytes).
+export_presets.cfg       The shipping builds, COMMITTED — Windows Client,
+                        Windows Server, Linux Server. An exported binary
+                        cannot be handed a scene on the command line, so
+                        which one it starts in is a FEATURE TAG
+                        (`custom_features="server"` against
+                        `run/main_scene.server`); either half alone
+                        exports a working client under the server's name.
 justfile                 The full command vocabulary for local dev,
                         testing, and export. Use these recipes rather
                         than reconstructing godot/steamcmd invocations.
@@ -590,7 +810,73 @@ scenario_world.gd        A complete headless world for a GUT test, in one
                         second one.
 /scenarios/*.tres        The shipped mid-game starts. `just scenarios`.
 bench_render.gd          Client render benchmark (D-045). NATIVE — it
-                        needs a real GPU, and prints which one.
+                        needs a real GPU, and prints which one. Runs the
+                        client's OWN render pipeline through
+                        `squad_render.gd` (D-20260828), because for a
+                        milestone it did not and said it did: every frame
+                        time recorded in that window was a floor for a
+                        client nobody was timing. Reports the frame in
+                        PHASES with a residual, and the MIX that produced
+                        it — a frame with nothing fighting prices no
+                        duels.
+world_index.gd           Things at WORLD positions, bucketed so "what is
+                        near me" is a neighbourhood scan
+                        (D-20260828-a-squad-looks-up-its-buildings, #325).
+                        The client's building lookups walked EVERY known
+                        building per drawn squad per frame — one
+                        millisecond per building, measured, and buildings
+                        only ever accumulate (D-030, D-076). A cell-disk
+                        index was tried first, because `disk_offsets`
+                        before `distance()` is the standing rule, and
+                        measured TEN TIMES WORSE: a fourteen-unit reach
+                        on a 1.73-unit cell pitch is a 469-cell disk.
+                        So the rule has a boundary — `disk_offsets` is
+                        for a radius of a FEW CELLS, not for sparse
+                        things over many. The index NARROWS; every caller
+                        still applies the test it always applied.
+drawn_index.gd           Where every squad's men were DRAWN last frame,
+                        indexed so the cross-squad jostle finds its
+                        neighbours without walking the match
+                        (D-20260828-the-jostle-looks-where-the-men-are,
+                        #262). The walk it replaces was QUADRATIC in
+                        drawn squads — 152 ms of a 387 ms frame at 630 of
+                        them — and it fired for STANDING squads, i.e.
+                        once the battle started. A uniform grid over
+                        WORLD positions, deliberately NOT a torus disk
+                        scan: these are lattice COPIES (D-20260818), and
+                        normalising them would merge what the renderer
+                        keeps separate. Per-soldier render state, legal
+                        under D-006 clause 2 as amended, bounded by the
+                        squads drawn (`begin` empties it every frame) and
+                        readable only by a drawing surface — a test scans
+                        for that.
+bench_baseline.gd        The RECORDED render baseline and what a fresh
+                        run may differ from it by (D-20260828, #286).
+                        COUNTS gate — soldiers, drawn men, drawn squads,
+                        draw calls are deterministic given the map,
+                        roster, viewport and render path. MILLISECONDS
+                        report and decide nothing: three recordings gave
+                        identical counts while the wall clock moved 13%.
+                        A FINGERPRINT (map, roster, generated manifest,
+                        Godot version, and the SOURCE of the render path)
+                        separates "re-record" from "regression", because
+                        a check that calls a roster change a fault is a
+                        check that gets muted. All-static and pure, so
+                        the arithmetic that decides pass/fail is testable
+                        without the GPU the measurement needs.
+                        `just bench-stale` is the per-PR half and needs
+                        no GPU at all.
+squad_render.gd          THE per-squad render pipeline: duels, the
+                        static-target deal, the building and tree
+                        push-outs, the survivor easing, the decoration
+                        and the clip. One definition, called by client.gd
+                        and by the benchmark that claims to measure it
+                        (D-20260828, #240) — a harness cannot drift from
+                        a client whose function it runs. All-static and
+                        pure over its inputs, except the `SoldierMotion`
+                        the caller owns and passes in: D-006's amended
+                        clause 2 puts the eased per-soldier positions
+                        there and nowhere else.
 terrain_preview.gd       Headless terrain preview + chunk profiling. The
                         PNG is a TOP-DOWN biome map, so it can show a
                         palette drifting and cannot show how the ground
@@ -862,6 +1148,19 @@ Three rules come with it:
 
 Lifecycle:
 
+- `just package [TARGET]` — wrap an exported build into the zip a tester
+  downloads (#183): versioned filename, `docs/alpha/testers.md` inside as
+  README.txt, sha256 printed. Packed by GODOT's ZIPPacker, because `zip`
+  is not on Git Bash's PATH and a fresh clone must need nothing but
+  `./bootstrap.ps1`.
+- `just publish-itch [TARGET] [PROJECT]` — push a package to a PRIVATE
+  itch.io channel via butler. **Never run against a real target**; what
+  is verified is its refusal path. `docs/alpha/runbook.md` has the rest.
+- `just export [TARGET]` — the shipping builds (D-094 criterion 1).
+  Native only, and needs `just bootstrap-export-templates` first (~1.3 GB,
+  into `tools/`, once). TARGET is `all` (default), `windows-client`,
+  `windows-server` or `linux-server`. Prints the version it stamped;
+  `docs/status/m8-export.md` has the rules that came out of it.
 - `just doctor` — preflight: runtime prerequisites actually met?
 - `just up` / `just down` / `just status` — all scoped to this instance
 - `just instance` — this checkout's instance name, udp port and compose
@@ -879,7 +1178,18 @@ Dev loop and tests:
   camera looks), wheel zooms, **Q/E and Ctrl+wheel turn the view**, the
   compass snaps back to north, right-click orders, ESC opens the game
   menu (D-063).
-- `just test-client [SECONDS]` — the same client, rendered headlessly via
+- `just menu-shot [SECONDS] [RESOLUTION] [CONTROLS] [MANUAL]` — a picture
+  of the PRE-CONNECTION menu (#180), through the docker software-GL image
+  with NO server running. Every other rendered check here is aimed at a
+  connected client, so nothing could look at this screen; its first two
+  runs found two defects nothing else could. **Look at
+  `artifacts/main-menu.png`.** `CONTROLS=1` photographs the controls
+  screen instead (#282); `MANUAL=<page>` photographs one page of the
+  MANUAL (#305) — a page id rather than a flag, because "the manual" is a
+  dozen screens and a shot of the first says nothing about the ones with
+  tables on them. The recipe FAILS unless the client's `MANUAL page=`
+  marker names the page that was asked for.
+- `just test-client [SECONDS] [BOTS] [HOLD]` — the same client, rendered headlessly via
   Mesa's software rasteriser and checked automatically. Writes
   `artifacts/client-frame.png`; **look at it**, that is the point. Docker
   only. See D-014's 2026-07-29 amendment for why this doesn't contradict
@@ -887,6 +1197,14 @@ Dev loop and tests:
 - `just run-bots N [DURATION]` — N virtual load-test bots in one process.
   Requires a server to already be up (`just up`) — it deliberately does
   not start one, because a `run --rm` dependency leaks a container.
+- `just profile [ONLY]` — the scale sweep, and since #304 a **steady-state
+  per-phase tick ladder at 120 squads** (`ONLY=ladder`) with a knob per
+  suspect and a `control` row that states the instrument's own noise
+  floor. **Read the control row before believing any small difference**:
+  this host drifts up to 2x between runs minutes apart. It is what
+  attributed M6's long-standing 40.8 -> ~77 debt
+  (`D-20260828-the-m6-rise-has-a-name`) — to combat and separation, and
+  NOT to civs, teams or the economy, none of which is measurable at all.
 - `just test-unit [FILTER] [TEST]` — GUT unit tests, headless *(green:
   781 tests across 51 scripts, measured 2026-08-17)*. FILTER selects
   files by substring, TEST selects one test by name (D-098).
@@ -896,6 +1214,16 @@ Dev loop and tests:
   ~150 s). Fails unless the server's log confirms it actually played the
   scenario.
 - `just scenarios` — the shipped mid-game scenarios and what each is for
+- `just test-host [N] [DURATION] [AI]` — in-process hosting proved
+  against REAL remote clients (#182): a hosting client, headless, with N
+  bots joining it over a socket, and the state-hash machinery read on
+  BOTH sides. Native only (the host is a client, D-014); binds this
+  instance's port, never the shared default.
+- `just test-handshake` — presents a deliberately wrong protocol version
+  to a real server over a real socket and fails unless it is REFUSED with
+  an actionable message, and unless a matched build is admitted in the
+  same run (#179). The refusal path nothing else in the estate can reach,
+  because every binary here is built from one `net_protocol.gd`.
 - `just test-load N DURATION` — full load test: server + N bots for
   DURATION seconds. Checks the bots' exit status, an explicit VERDICT
   line, AND a log scan for engine diagnostics. Tears down via trap on

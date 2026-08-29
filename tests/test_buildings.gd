@@ -437,31 +437,27 @@ func test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one() -> vo
 		% [dealt[1], dealt[0]])
 
 
-## Every LINE troop of the six fantasy civs (#191). Gatherers and the
-## generals are deliberately absent from the PAIR rule below and present
-## in the SOLO one — see each test. SIEGE units (breaker, engine, ram,
-## bombard) are absent from BOTH: cracking a defended building alone is
-## their design brief, not a rush exploit — the Ember Bombard's whole
-## identity is outranging the tower — so D-067's "no single squad" rule
-## is scoped to troops, exactly as its own text says ("any STARTING
-## troop"), and the siege train pays for the licence in speed, fragility
-## and gold.
-## Light troops two squads of which cannot take a TOWER — the D-067
-## carve-out, re-measured against the fantasy roster. Populated by
-## running `_rush_cost` per troop, not by judgement: an entry here is a
-## unit the tower demonstrably stops in pairs, and the companion test
-## below keeps every one of them honest about still hurting it.
-const TOWER_EXCEPTIONS: Array[StringName] = [
-	&"windmarch_skirmishers",
-]
-
-
+## Every troop of the six fantasy civs a player can field early (#191) —
+## the population the SOLO rule is asked of, because any of them could be
+## thrown at a base in the first three minutes.
+##
+## Generals and gatherers are handled separately: both are in the SOLO
+## rule (added at its call site) and neither is in the PAIR rule, because
+## a player may only ever have one general alive
+## (D-20260819-a-general-holds-the-line) and gatherers are workers.
+##
+## SIEGE units (breaker, engine, ram, bombard) are absent from BOTH:
+## cracking a defended building alone is their design brief, not a rush
+## exploit — the Ember Bombard's whole identity is outranging the tower —
+## so D-067's "no single squad" rule is scoped to troops, exactly as its
+## own text says ("any STARTING troop"), and the siege train pays for the
+## licence in speed, fragility and gold.
 const STARTING_TROOPS := [
 	&"stoneblood_levy", &"stoneblood_heavy", &"stoneblood_skirmishers",
 	&"gravesworn_levy", &"gravesworn_spearmen", &"gravesworn_shades",
 	&"thornwood_levy", &"thornwood_archers", &"thornwood_cavalry",
 	&"thornwood_greatbow",
-	&"windmarch_levy", &"windmarch_skirmishers", &"windmarch_cavalry",
+	&"windmarch_levy", &"windmarch_harriers", &"windmarch_cavalry",
 	&"windmarch_bowriders",
 	&"gildedreach_levy", &"gildedreach_spearmen", &"gildedreach_archers",
 	&"gildedreach_cavalry", &"gildedreach_sellswords",
@@ -469,15 +465,59 @@ const STARTING_TROOPS := [
 ]
 
 
+## The LINE troops — the population the PAIR rule is asked of.
+##
+## This list is the correction #152 turned out to need, and it is a
+## CATEGORY fix rather than a relaxed assertion
+## (D-20260827-a-buildings-hp-is-one-knob-and-the-rule-needs-two). D-067
+## states its two halves in different words on purpose: "one squad of any
+## starting TROOP must fail" against "two squads of any LINE troop must
+## succeed". Under the old eight-unit legion/northmen roster the
+## difference barely bit — six of the eight were line infantry — so one
+## list served both, and when #191 replaced the roster with 22 troops the
+## list was carried across whole. Ten of the new 22 are cavalry, missile
+## or light infiltrators, and the pair rule was asking them to do a line
+## troop's job.
+##
+## Membership is by ROLE, and every entry is MEASURED: at the shipped
+## building numbers each of these clears the solo ceiling by at least
+## 13%, and each excluded troop is checked below to be doing real damage
+## rather than none.
+const LINE_TROOPS: Array[StringName] = [
+	&"stoneblood_levy", &"stoneblood_heavy",
+	&"gravesworn_levy", &"gravesworn_spearmen",
+	&"thornwood_levy",
+	&"windmarch_levy",
+	&"gildedreach_levy", &"gildedreach_spearmen", &"gildedreach_sellswords",
+	&"emberdeep_levy", &"emberdeep_heavy",
+]
+
+
+## The troops the pair rule is NOT asked of — cavalry, missile troops and
+## light infiltrators. Derived, so the two lists cannot fall out of step
+## and a new `.tres` cannot go unexamined by both.
+static func _light_troops() -> Array:
+	var out := []
+	for unit_id in STARTING_TROOPS:
+		if not LINE_TROOPS.has(unit_id):
+			out.append(unit_id)
+	return out
+
+
 func test_no_single_starting_squad_can_raze_a_defended_building() -> void:
 	# The anti-rush rule (D-067), stated as the owner asked for it: ONE
 	# squad of anything available at the start must fail against either
 	# defended building. This is the half that prevents a two-minute win.
 	#
-	# Every troop type is checked rather than a representative one: the
-	# roster spans 1260 to 3360 effective squad HP and 24 to 51 damage per
-	# second against buildings, so "the strongest solo attacker" is not
-	# obvious by inspection and changes whenever a `.tres` does.
+	# Every troop type is checked rather than a representative one, and
+	# with the fantasy roster (#191) that matters more than it used to:
+	# effective squad HP spans 760 (gravesworn_shades, 20 x 38) to 3,040
+	# (stoneblood_heavy, 8 x 380) and damage per second against buildings
+	# spans 15.0 to 34.6, so "the strongest solo attacker" is not obvious
+	# by inspection and changes whenever a `.tres` does. It is
+	# stoneblood_heavy, by a wide margin, and it is what bounds the pair
+	# rule below — see
+	# D-20260827-a-buildings-hp-is-one-knob-and-the-rule-needs-two.
 	for building in [&"town_centre", &"tower"]:
 		for unit_id in STARTING_TROOPS + [&"emberdeep_gatherers",
 				&"windmarch_gatherers", &"stoneblood_general",
@@ -490,13 +530,16 @@ func test_no_single_starting_squad_can_raze_a_defended_building() -> void:
 
 func test_two_squads_of_any_line_troop_can_take_a_town_centre() -> void:
 	# The other half: the rule must not make bases untakeable, which is how
-	# D-055's every-match-a-draw happened. Two squads of any line troop
+	# D-055's every-match-a-draw happened. Two squads of any LINE troop
 	# must finish a town centre.
 	#
 	# Gatherers are workers, and the general is excluded because a player
 	# may only ever have one alive (D-20260819-a-general-holds-the-line), so
-	# "two generals" is not a situation the game can produce.
-	for unit_id in STARTING_TROOPS:
+	# "two generals" is not a situation the game can produce. Cavalry,
+	# missile troops and light infiltrators are excluded because they are
+	# not line troops — see LINE_TROOPS, and the companion test below that
+	# stops that exclusion becoming "they do nothing".
+	for unit_id in LINE_TROOPS:
 		var result := _rush_cost(&"town_centre", unit_id, 2)
 		assert_true(bool(result["razed"]),
 			"two squads of %s could not take a town centre (%.0f HP left) — defence has passed decidable"
@@ -504,36 +547,77 @@ func test_two_squads_of_any_line_troop_can_take_a_town_centre() -> void:
 
 
 func test_two_squads_of_any_line_troop_but_light_skirmishers_can_take_a_tower() -> void:
-	# Same rule against the purpose-built defence, with ONE measured
-	# exception that is a design statement rather than an oversight:
-	# TOWER_EXCEPTIONS below are the fantasy roster's light troops: cheap,
-	# flimsy screens and harassers the tower outranges, shells and breaks
-	# on the approach. Light raiders do not crack a fortification; their
-	# own side's line and heavy troops all do. Each entry is measured, not
-	# assumed — see the constant.
+	# Same rule against the purpose-built defence. Light raiders do not
+	# crack a fortification; their own side's line and heavy troops all do.
 	#
-	# No tower HP/damage pair was found that stops a lone militia squad and
-	# still loses to two skirmisher squads — the sweep is in D-067. If one
-	# is ever wanted, it needs a mechanic (siege equipment, a damage type),
-	# not another number.
-	for unit_id in STARTING_TROOPS:
-		if TOWER_EXCEPTIONS.has(unit_id):
-			continue
+	# The exception is a CLASS now rather than a list of ids
+	# (D-20260827-a-buildings-hp-is-one-knob-and-the-rule-needs-two).
+	# D-067 carved out one unit by name and predicted this in its revisit
+	# trigger: with the fantasy roster's 22 troops, no tower HP separates
+	# the strongest solo attacker from the weakest pair, because
+	# `max_health` and `damage` are ONE knob — scaling the tower's damage
+	# rescales solo and pair delivery together, and coverage was measured
+	# INVARIANT at 15 of 22 across a 2.4x sweep of tower damage. What
+	# separates them is the ROLE of the troop, which is why the rule is
+	# asked of LINE_TROOPS.
+	for unit_id in LINE_TROOPS:
 		var result := _rush_cost(&"tower", unit_id, 2)
 		assert_true(bool(result["razed"]),
 			"two squads of %s could not take a tower (%.0f HP left)"
 				% [unit_id, result["health"]])
 
 
-func test_light_skirmishers_still_hurt_a_tower_even_though_two_cannot_take_it() -> void:
-	# Guards the exception above from becoming an excuse: skirmishers must
-	# still be doing real damage, so a future change that makes them
-	# harmless to buildings fails here rather than hiding behind the
-	# documented carve-out.
-	var result := _rush_cost(&"tower", &"windmarch_skirmishers", 2)
-	assert_lt(float(result["health"]), 1700.0 * 0.75,
-		"two skirmisher squads left the tower on %.0f HP — they are not fighting it at all"
-			% result["health"])
+func test_every_light_troop_still_hurts_a_tower_even_though_two_cannot_take_it() -> void:
+	# Guards the exclusion above from becoming an excuse: a troop the pair
+	# rule does not cover must still be doing real damage to a tower, so a
+	# future change that makes cavalry or archers harmless to buildings
+	# fails here rather than hiding behind the documented carve-out.
+	#
+	# This used to check the ONE carved-out unit. It checks the whole
+	# excluded class now, because that class went from one member to ten
+	# and "the carve-out is honest" is a claim about all of them — the
+	# same "a caller-exists test only covers the caller it names" lesson
+	# D-106's amendment paid for, applied to a data rule.
+	#
+	# The bar is a QUARTER of the tower, derived from the def rather than
+	# written down: a literal here would go stale the next time the
+	# tower's HP moves, which is exactly what happened to the
+	# `1700.0 * 0.75` this replaces. The quarter keeps the predecessor's
+	# spirit and its margin — the weakest excluded pair, windmarch_
+	# bowriders, takes 479 of 1250 (38%) off the tower, so it clears a
+	# 25% bar by 13 points. A third was tried first and cleared by 5,
+	# which is a guard that would go red on ordinary tuning drift while
+	# still calling it "not fighting it at all".
+	var tower: BuildingDef = BuildingSim.def_by_id(&"tower")
+	assert_not_null(tower, "buildings/tower.tres is missing, so nothing was tested")
+	var light := _light_troops()
+	assert_gt(light.size(), 0, "setup: no troop is excluded, so this test proves nothing")
+	for unit_id in light:
+		var result := _rush_cost(&"tower", unit_id, 2)
+		assert_lt(float(result["health"]), tower.max_health * 0.75,
+			"two squads of %s left the tower on %.0f of %.0f HP — they are not fighting it at all"
+				% [unit_id, result["health"], tower.max_health])
+
+
+func test_the_pair_rule_covers_every_line_troop_the_roster_ships() -> void:
+	# LINE_TROOPS is hand-written, and the defect it exists to correct was
+	# itself a hand-written list carried across a roster change (#152). So
+	# this asserts the list against the ROSTER: every shipped unit whose
+	# archetype is a line archetype must be in it, and nothing else may be.
+	#
+	# Without this, adding `windmarch_spearmen` tomorrow would silently go
+	# unasserted by the pair rule — which is precisely how the old list
+	# came to be asking cavalry to crack fortifications.
+	const LINE_ARCHETYPES := [&"levy", &"spearmen", &"heavy", &"sellswords"]
+	var expected := []
+	for def in UnitRoster.load_all():
+		if LINE_ARCHETYPES.has(def.archetype):
+			expected.append(def.id)
+	expected.sort()
+	var listed := LINE_TROOPS.duplicate()
+	listed.sort()
+	assert_eq(listed, expected,
+		"LINE_TROOPS has drifted from the roster's line archetypes %s" % [LINE_ARCHETYPES])
 
 
 func test_a_building_site_does_not_shoot() -> void:
@@ -829,20 +913,37 @@ func test_the_opening_general_outfights_basic_infantry() -> void:
 	# and an escort that lost to the cheapest melee unit would make settling
 	# a formality rather than a choice — a rush would simply walk in while
 	# the crew was mid-build.
+	# The cheapest melee unit is the `levy` archetype. It was `militia`
+	# until #191 renamed it, and this fixture kept asking for the old word
+	# — so `assert_not_null` failed first and all four claims below went
+	# unasserted for every civ. A fixture pinned to an archetype NAME is
+	# pinned to a vocabulary, and the vocabulary moved
+	# (docs/status/the-opening.md records the ORDERING variant of this).
 	for civ in CivRoster.ids():
 		var general: UnitDef = UnitRoster.for_civ_archetype(civ, &"general")
-		var militia: UnitDef = UnitRoster.for_civ_archetype(civ, &"militia")
+		var levy: UnitDef = UnitRoster.for_civ_archetype(civ, &"levy")
 		assert_not_null(general, "civ %s fields no general to open with" % civ)
-		assert_not_null(militia, "civ %s fields no militia to compare against" % civ)
-		if general == null or militia == null:
+		assert_not_null(levy, "civ %s fields no levy to compare against" % civ)
+		if general == null or levy == null:
 			continue
 
-		assert_gt(general.damage, militia.damage, "A general hits harder, man for man")
-		assert_gt(general.health, militia.health, "And is harder to kill")
-		assert_lt(general.rout_threshold, militia.rout_threshold,
-			"And holds his nerve longer — that is what the aura is about")
-		assert_lt(general.squad_size, militia.squad_size,
+		assert_gt(general.damage, levy.damage, "A general hits harder, man for man")
+		assert_gt(general.health, levy.health, "And is harder to kill")
+		assert_lt(general.squad_size, levy.squad_size,
 			"But there are few of them: this is a command party, not an army")
+
+		# Nerve, in the only form that is true of the whole roster. A
+		# FEARLESS civ (gravesworn: rout_threshold 0 everywhere, pinned by
+		# test_fearless.gd) has a general and a levy who both never rout,
+		# so "longer" is not a thing that can be said about them — and
+		# asserting `<` there would force one of the two to become
+		# routable, breaking a shipped civ identity to satisfy a fixture.
+		# So: never worse, and strictly better wherever nerve exists.
+		assert_lte(general.rout_threshold, levy.rout_threshold,
+			"A general never holds his nerve for LESS time than his levy")
+		if levy.rout_threshold > 0.0:
+			assert_lt(general.rout_threshold, levy.rout_threshold,
+				"And holds it longer — that is what the aura is about")
 
 
 # --- the shipped roster (D-010) ---------------------------------------

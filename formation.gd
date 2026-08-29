@@ -121,8 +121,23 @@ static func slot_offset(shape: String, slot: int, alive: int, spacing: float,
 ## a line and merely look wrong.
 static func _offset_for(def: FormationDef, index: int, alive: int,
 		spacing: float, files: int = 0) -> Vector2:
-	var scaled := spacing * maxf(def.spacing_scale, 0.01)
-	var chosen := clampi(files, 1, alive) if files > 0 else _grid_files(def, alive)
+	return _offset_in(def, index, alive,
+		spacing * maxf(def.spacing_scale, 0.01),
+		clampi(files, 1, alive) if files > 0 else _grid_files(def, alive))
+
+
+## The geometry itself, with the two SQUAD-invariant values already
+## worked out: the scaled spacing and the file count.
+##
+## Split from `_offset_for` because both were recomputed for every man —
+## a `maxf` and a `clampi`, or a `sqrt` and a `ceili` through
+## `_grid_files` — inside a loop whose own header explains that
+## everything squad-invariant is hoisted out of it. Same family as the
+## FormationDef lookup hoisted before it, and the same guarantee: bit
+## identical, because `_offset_for` computes exactly what it always did
+## and hands it here.
+static func _offset_in(def: FormationDef, index: int, alive: int,
+		scaled: float, chosen: int) -> Vector2:
 	match def.kind:
 		"grid":
 			return _grid_offset(index, alive, chosen, scaled)
@@ -478,6 +493,21 @@ static func grounded_offset(centre: Vector3, offset: Vector3, space: TorusSpace,
 		passable: PackedByteArray) -> Vector3:
 	if passable.is_empty() or _stands_on_passable(centre + offset, space, passable):
 		return offset
+	return pulled_onto_passable(centre, offset, space, passable)
+
+
+## The pull, for a caller that has ALREADY established this man is over
+## ground his squad could not walk on
+## (D-20260828-the-clamp-stays-per-man).
+##
+## Split from the test above rather than given a flag, because the bulk
+## derivation path derives the man's cell for his HEIGHT and therefore
+## knows the answer before it asks: re-testing it was one whole
+## `world_to_axial` + `round_axial` + `index` per clamped man, which on
+## the shipped map is one man in eleven. Every other caller still goes
+## through `grounded_offset` and gets exactly what it always got.
+static func pulled_onto_passable(centre: Vector3, offset: Vector3,
+		space: TorusSpace, passable: PackedByteArray) -> Vector3:
 	for step in range(PASSABLE_PULL_STEPS - 1, 0, -1):
 		var pulled := offset * (float(step) / float(PASSABLE_PULL_STEPS))
 		if _stands_on_passable(centre + pulled, space, passable):
@@ -492,7 +522,11 @@ static func grounded_offset(centre: Vector3, offset: Vector3, space: TorusSpace,
 ## keeps the two sides deriving the same answer.
 static func _stands_on_passable(at: Vector3, space: TorusSpace,
 		passable: PackedByteArray) -> bool:
-	var index := space.index(space.world_to_cell(at))
+	# `world_to_cell` normalises and `index` normalises again — four
+	# `posmod`s where two do, once per drawn man per frame (#229). Same
+	# answer: `index` wraps whatever it is given, which is what its own
+	# docstring promises.
+	var index := space.index(space.round_axial(space.world_to_axial(at)))
 	return index >= 0 and index < passable.size() and passable[index] != 0
 
 
@@ -659,7 +693,9 @@ static func soldier_transforms_sampled(
 	max_count: int = -1,
 	passable: PackedByteArray = PackedByteArray(),
 	files: int = 0,
-	ordered_facing: float = NAN
+	ordered_facing: float = NAN,
+	surface: PackedFloat32Array = PackedFloat32Array(),
+	height_bump: float = 0.0
 ) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	if curve == null or alive <= 0:
@@ -683,6 +719,34 @@ static func soldier_transforms_sampled(
 	var angle := facing_angle(curve, time, space, ordered_facing)
 	var basis := Basis(Vector3.UP, angle)
 	var sample_terrain := terrain_sampler.is_valid()
+	# When the caller hands over the SURFACE FIELD itself, both halves of
+	# the terrain sample come from ONE cell derivation per man instead of
+	# two: the height sampler and the passability test were converting the
+	# same world position to the same hex, one line apart, for every drawn
+	# man every frame (#245). The Callable path is kept for callers that
+	# have only a sampler — the previews, the tests, anything with a
+	# synthetic ground — so nothing has to change to keep working.
+	var one_sample := not surface.is_empty()
+	# The formation DEF is a property of the squad, like the curve sample
+	# and the basis above — but `slot_offset` resolved it from the roster
+	# once per soldier, converting `shape` to a StringName and hashing it
+	# every time (#229). Hoisted here the answer is identical and the
+	# lookup happens once per squad. The single-soldier path still goes
+	# through `slot_offset`, and
+	# `test_bulk_derivation_matches_the_single_soldier_path` is what keeps
+	# the two spellings honest.
+	var def := FormationRoster.by_id(StringName(shape))
+	if def == null:
+		push_error("Unknown formation '%s' — falling back to line" % shape)
+		def = FormationRoster.by_id(&"line")
+	# The scaled spacing and the file count are properties of the SQUAD
+	# too — a `maxf` and a `clampi`, or a `sqrt` and a `ceili`, per man
+	# until now. Resolved here, beside the def they come from.
+	var scaled := 0.0
+	var chosen := 1
+	if def != null:
+		scaled = spacing * maxf(def.spacing_scale, 0.01)
+		chosen = clampi(files, 1, alive) if files > 0 else _grid_files(def, alive)
 	# Hoisted for the same reason everything else here is: without terrain
 	# there is nothing to clamp against, and this path derives every
 	# soldier on screen every frame.
@@ -694,11 +758,46 @@ static func soldier_transforms_sampled(
 		# division), so the full-detail path is unchanged and stays
 		# bit-identical to soldier_transform().
 		var slot := i * alive / count
-		var local := slot_offset(shape, slot, alive, spacing, files)
-		var offset := Vector3(local.x, 0.0, local.y).rotated(Vector3.UP, angle)
+		var local := _offset_in(def, clampi(slot, 0, alive - 1), alive, scaled, chosen) \
+			if def != null \
+			else _grid_offset(clampi(slot, 0, alive - 1), alive,
+				_files_for_ranks(alive, LINE_RANKS), spacing)
+		# Through the basis this function already built, rather than
+		# `Vector3.rotated`, which constructs `Basis(UP, angle)` again for
+		# every man — the same matrix, so the answer is bit identical and
+		# the construction is not repeated once per drawn man per frame
+		# (#229).
+		var offset := basis * Vector3(local.x, 0.0, local.y)
 		# Clamped BEFORE the height is sampled, so a man pulled back off the
 		# rock takes the height of the ground he ends up on rather than of
 		# the cliff top he was briefly aimed at.
+		if one_sample:
+			# ONE cell derivation for both halves of the terrain sample
+			# (#245): a man's footing and his height are answers about the
+			# same hex, and `world_to_axial` + `round_axial` is the
+			# expensive part of each. On open ground — which is where
+			# almost every man is almost always — this is now the only
+			# conversion he costs.
+			var origin_one := centre + offset
+			var fractional := space.world_to_axial(origin_one)
+			var cell := space.round_axial(fractional)
+			var index := space.index(cell)
+			if clamp_to_ground and (index < 0 or index >= passable.size()
+					or passable[index] == 0):
+				# He is over water or rock. Pulling him back costs its own
+				# probes — the rare path, and the one the loop is allowed
+				# to be slow in. Clamped BEFORE the height is read, so he
+				# takes the height of the ground he ends up on rather than
+				# of the cliff he was briefly aimed at.
+				offset = pulled_onto_passable(centre, offset, space, passable)
+				origin_one = centre + offset
+				fractional = space.world_to_axial(origin_one)
+				cell = space.round_axial(fractional)
+				index = space.index(cell)
+			origin_one.y = TerrainChunk.height_in_cell(
+				space, surface, fractional, cell, index) + height_bump
+			out[i] = Transform3D(basis, origin_one)
+			continue
 		if clamp_to_ground:
 			offset = grounded_offset(centre, offset, space, passable)
 		var origin := centre + offset

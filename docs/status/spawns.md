@@ -113,6 +113,32 @@ Three things worth carrying:
 - **`validate()` is no longer free** (~4 ms). It runs on slider ticks and
   seat changes; nothing calls it inside a match tick, and nothing should.
 
+**And `islands` was retired from the lobby
+(`D-20260828-a-map-a-player-can-pick-is-a-map-an-army-can-cross`, #280,
+2026-08-28).** The preset generates good terrain and cannot host a match:
+over 48 worlds it is **29-35% walkable across 12-268 disconnected
+components**, and there is no naval movement, no transport and no bridge
+anywhere in the game, so most of what it draws is scenery.
+
+**It fails at TWO seats** — across twelve Standard worlds, a 1v1's two
+starts landed on the same landmass in **three**. That is the number that
+made this a retirement rather than a seat cap: the failure is not
+crowding, it is water, so there is no seat count to cap at.
+
+`TerrainPreset.playable` is the mechanism and it hides the preset from
+`TerrainPresetRoster.ids()` — the one list both the lobby picker and the
+server's option channel cycle — and from nothing else. `--preset=islands`
+still generates one, every tuned number survives, and `all_ids()` is what
+tooling means by "every preset". The day armies can cross water it is one
+bool.
+
+**Read that beside the landmass rule below**: `islands` is hidden from
+the lobby because armies cannot cross water, and the largest-component
+rule is what stops a start being marooned on any preset. They answer
+different halves — one removes a map nobody can play, the other makes
+the maps people do play seat honestly — and neither makes the other
+redundant.
+
 **And a start had to be somewhere the OTHERS can walk to
 (`D-20260827-every-start-shares-one-landmass`, #128, 2026-08-27).** From
 the same 2026-08-18 lobby playtest as #125: *"spawn location for me was in

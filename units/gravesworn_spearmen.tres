@@ -8,6 +8,7 @@ id = &"gravesworn_spearmen"
 display_name = "Bone Pikes"
 civ = &"gravesworn"
 archetype = &"spearmen"
+requires_tech = &"mustering"
 squad_size = 40
 health = 45.0
 damage = 5.2

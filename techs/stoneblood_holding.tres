@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"levy"
+field = &"morale"
+mode = "add"
+value = 8.0
+
+[resource]
+script = ExtResource("1")
+id = &"stoneblood_holding"
+display_name = "Giants Walk to War"
+description = "The Old Blood's children come down off the crags. There are eight of them and it is enough."
+line = &"holding"
+civ = &"stoneblood"
+epoch = 3
+defining = true
+research_at = &"barracks"
+requires = Array[StringName]([&"drill"])
+cost_food = 800
+cost_wood = 500
+cost_gold = 350
+cost_stone = 0
+research_time = 100.0
+unit_effects = Array[Resource]([SubResource("e0")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])
