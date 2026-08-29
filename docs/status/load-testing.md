@@ -111,9 +111,20 @@ three of the five defects behind #69/#84 turned out to be. One run of
   used to set a "done" flag the instant the packet left, so a REFUSED
   opening — a forest on the start, which D-087's 1,920 nodes make likely —
   left that bot with no hall, no crews and no scouts for the whole run
-  while its own flag said the opening was handled. It retries against a
-  different site now, until a building it owns actually appears. Two of
-  four bots were failing to found before this was noticed.
+  while its own flag said the opening was handled. **`bot_client.gd`'s
+  `_found_town_hall` retries against a different site now**
+  (`offsets[_build_attempts % offsets.size()]`), until a building it owns
+  actually appears. Two of four bots were failing to found before this
+  was noticed.
+
+  **Read that as a fact about the BOT and not about the AI**, because the
+  unattributed version of this sentence cost two people a wrong
+  conclusion (#291). #217 quoted it as evidence that `ai_player.gd`
+  retried at a different site and did not — and the gap assessment
+  repeated the error. The sentence was true the whole time; it named
+  neither the file nor which of the two actors it described, and both
+  readers supplied the wrong one. `ai_player.gd` gained the same
+  behaviour separately, in #217.
 
 What the bots do now: a share of each one's army (at most one squad in
 two, at most two) is held out of the economy and walks in on a neighbour
@@ -226,3 +237,46 @@ run to find, because resolving production per civ matched `gatherers`
 (`civ = &"neutral"`, so it matches anybody) and nothing else, leaving
 barracks standing and `military_peak=0`. The wire carries an ARCHETYPE and
 the server resolves it per civ (D-047), so a bot does not need to know.
+
+**A scenario's gates are scoped to what that scenario CONTAINS, since
+2026-08-28** (`D-20260828-a-scenarios-gates-are-what-it-contains`, #230).
+`just test-scenario clash` could not pass at all, and the bot's own line
+said why in one breath: **`military=5` and `military_peak=0`**. The whole
+reporting spine — `military_peak`, `first_soldier_at`, `raid_orders`,
+`scouts_peak`, `patrol_legs` — was gated on having identified a FOUNDING
+CREW, and `clash` ships none.
+
+Three things worth carrying, and the third is the one that is not about
+scenarios at all:
+
+- **A vacuous FAILURE is as bad as a vacuous pass.** `clash` places no
+  buildings, so the verdict's `buildings_known > 0` clause could not be
+  satisfied there however healthy the run was. It failed identically
+  every time, which is precisely how the next person learns to ignore the
+  result. The gates are asked of the `ScenarioDef` now — and a scenario
+  with no buildings gates on the ARMY it was given instead, because
+  dropping a check and adding nothing is a relaxation.
+- **`clash` cannot prove PEAK fog gating, and now says so.**
+  `gate-check.sh fog-squads` asks that even the most-informed client knows
+  fewer squads than the server simulates *at every moment*; `clash`'s
+  armies converge, so somebody ends up having seen everything —
+  **measured 10 of 10 at two bots and 20 of 20 at four**.
+  `ScenarioDef.proves_fog_gating` is `false` there, it rides the server's
+  `SCENARIO` marker, and `test-scenario` prints the skip WITH ITS REASON
+  rather than taking it quietly. `fog-nodes` still runs unconditionally
+  and the verdict still gates on conceal/reveal, so fog is asserted
+  either way. **`test-load`'s own gate block is unchanged.**
+- **That gate used to PASS on `clash`, and only because the bots were
+  broken.** They never marched, so two armies 8 cells apart against a
+  12-unit vision range never saw each other. *A check can be green
+  because the thing it checks never happened* — the same shape as every
+  vacuous pass in D-022's audit block, found here by fixing the harness
+  and watching a green gate turn red.
+
+Measured 2026-08-28 (docker): `test-scenario clash 2 60` **clean** where
+it could not pass before — `casualties_applied=294 conceal_events=21
+reveal_events=13 raid_orders=37 military_peak=10`, 0 desyncs over 115
+checks. `test-load 4 120` unaffected and clean: all three gate checks
+green, `fog-squads` gating 18 of 32 squads, 0 desyncs over 472 checks,
+**154.07 µs/squad at 32 squads** (quote it with the count — and with the
+host, which OOM-kills docker on this machine).

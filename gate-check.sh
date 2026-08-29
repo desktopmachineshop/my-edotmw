@@ -32,13 +32,14 @@
 #   bash gate-check.sh fog-squads BOTS_LOG SERVER_LOG
 #   bash gate-check.sh fog-nodes  BOTS_LOG SERVER_LOG
 #   bash gate-check.sh civs       SERVER_LOG
+#   bash gate-check.sh handshake  BOTS_LOG SERVER_LOG
 #
 # Exit 0 and print what it proved; exit 1 naming what it could not; exit
 # 2 on a misuse of this script itself.
 set -euo pipefail
 
 usage() {
-    echo "usage: gate-check.sh fog-squads|fog-nodes BOTS_LOG SERVER_LOG" >&2
+    echo "usage: gate-check.sh fog-squads|fog-nodes|handshake BOTS_LOG SERVER_LOG" >&2
     echo "       gate-check.sh civs SERVER_LOG" >&2
     exit 2
 }
@@ -131,6 +132,35 @@ case "$check" in
             exit 1
         fi
         echo "gate-check(civs): $fielded of $total civilisations fielded squads"
+        ;;
+
+    # Every client that joined did so through the protocol version
+    # handshake, and none was refused (#179, D-094 criterion 3).
+    #
+    # It reads ACCEPTED rather than "refused=0", because zero refusals is
+    # what a working run, a run where nobody connected, and a handshake
+    # that is not wired up at all ALL report — the vacuous-pass shape
+    # this whole file exists to refuse. The accepted count can only be
+    # raised by a real socket client completing a real exchange.
+    #
+    # It is also compared against the bots' OWN count of who connected,
+    # rather than merely being positive: a server that admitted three of
+    # four bots and silently dropped the fourth would otherwise pass.
+    handshake)
+        [ "$#" -eq 2 ] || usage
+        connected="$(grep -oE '[0-9]+/[0-9]+ bots connected' "$1" 2>/dev/null | tail -1 | cut -d/ -f1 || true)"
+        accepted="$(marker 'HANDSHAKE accepted' "$2")"
+        require_both "$accepted" "$connected" "HANDSHAKE accepted= (server log)" "'N/M bots connected' (bots log)"
+        refused="$(marker refused "$1")"
+        if [ "$accepted" -lt "$connected" ]; then
+            echo "gate-check(handshake): the server accepted $accepted handshakes but $connected clients connected — somebody joined without one" >&2
+            exit 1
+        fi
+        if [ -n "$refused" ] && [ "$refused" -gt 0 ]; then
+            echo "gate-check(handshake): $refused client(s) were REFUSED — this run was played by mixed builds" >&2
+            exit 1
+        fi
+        echo "gate-check(handshake): all $accepted client(s) joined through the protocol handshake, none refused"
         ;;
 
     *)

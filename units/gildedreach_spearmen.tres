@@ -15,6 +15,7 @@ move_speed = 3.2
 attack_range = 1.9
 attack_interval = 1.1
 armour_class = "infantry"
+formations = Array[StringName]([&"shield_wall"])
 bonus_vs = {
 "cavalry": 1.5
 }

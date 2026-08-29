@@ -379,6 +379,11 @@ func _process(delta: float) -> void:
 
 	await RenderingServer.frame_post_draw
 	var image := get_viewport().get_texture().get_image()
+	# `res://` cannot be written in an exported build (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write); the
+	# identity in a checkout, so the recipe's own --out= still lands
+	# exactly where the justfile looks for it.
+	out_path = ArtifactPath.resolve(out_path)
 	var absolute := ProjectSettings.globalize_path(out_path)
 	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
 	var err := image.save_png(absolute)
@@ -421,7 +426,7 @@ func _process(delta: float) -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var close := get_viewport().get_texture().get_image()
-	var close_path := out_path.get_basename() + "-squad.png"
+	var close_path := ArtifactPath.resolve(out_path.get_basename() + "-squad.png")
 	var close_err := close.save_png(ProjectSettings.globalize_path(close_path))
 	if close_err == OK:
 		print("forest_preview: wrote %s (%dx%d)"
