@@ -39,6 +39,19 @@ charge is refused, and a charge already running ends at
 {SquadSim.CHARGE_EXHAUST_FLOOR}. Sprinting, running and fighting drain
 stamina; standing still restores it. Charge, rest, charge has a price.
 
+## Across a shoreline
+
+Melee does not cross a shoreline, in EITHER direction. Your soldiers
+cannot reach a ship, and a ship cannot reach the shore. Missiles cross
+it freely.
+
+That is what makes a beach dangerous: an army caught on one by a warship
+is shot at and cannot answer, unless it brought archers.
+
+The rule is deliberately not the same as a wall's, which stops melee only
+ONE way — you cannot strike a man on a wall from the ground, and he can
+strike you.
+
 ## Ground
 
 Attacking downhill multiplies your damage by {Combat.DOWNHILL_MULT}, uphill
