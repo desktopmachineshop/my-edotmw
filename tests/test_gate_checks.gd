@@ -268,8 +268,7 @@ func test_the_naval_gate_still_names_the_first_missing_leg() -> void:
 	# it: a run that wanted a navy and built no dock must still say so,
 	# rather than being swallowed by the new branch.
 	var server := _log("naval-no-dock",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
 		+ "AI_STATS wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
 	assert_ne(got["code"], 0, "a wanted navy with no dock is still a failure")
@@ -278,8 +277,7 @@ func test_the_naval_gate_still_names_the_first_missing_leg() -> void:
 
 func test_the_naval_gate_passes_on_a_landing() -> void:
 	var server := _log("naval-landing",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
 		+ "AI_STATS wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n")
 	var got := _check(["naval", server])
 	assert_eq(got["code"], 0, "a landing on an archipelago is the pass")
@@ -295,8 +293,7 @@ func test_the_naval_gate_reads_the_best_seat_not_the_last_one() -> void:
 	# #351 report that was not true, which is a gate lying in the
 	# direction of the defect it exists to find.
 	var server := _log("naval-two-seats",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
 		+ "AI_STATS player=1000 wants_navy=1 docks=1 ships_peak=1 embarks=1 landings=1\n"
 		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
@@ -310,8 +307,7 @@ func test_a_seat_that_wanted_a_navy_is_not_erased_by_a_seat_that_did_not() -> vo
 	# skip: the gate must name the leg the keenest seat stopped at, not
 	# the one the last-printed seat never started.
 	var server := _log("naval-wanted-no-dock",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
 		+ "AI_STATS player=1000 wants_navy=1 docks=0 ships_peak=0 embarks=0 landings=0\n"
 		+ "AI_STATS player=1001 wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
@@ -366,8 +362,7 @@ func test_a_log_with_a_stray_byte_is_still_read_and_never_falsely_passes() -> vo
 
 func test_the_naval_gate_skips_when_the_starts_share_one_landmass() -> void:
 	var server := _log("naval-one-island",
-		"SEAT_LANDMASSES seats=8 landmasses=1 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=1 sea_components=1\n"
 		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
 	assert_eq(got["code"], 0,
@@ -378,8 +373,7 @@ func test_the_naval_gate_skips_when_the_starts_share_one_landmass() -> void:
 func test_the_naval_gate_fails_when_a_crossing_was_available_and_declined() -> void:
 	# The #351 run. Byte-identical to the skip above except the topology.
 	var server := _log("naval-archipelago",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
+		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1\n"
 		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
 	assert_ne(got["code"], 0,
@@ -392,9 +386,7 @@ func test_the_naval_gate_refuses_to_skip_without_the_topology() -> void:
 	# pass. A skip nobody can justify is the vacuous skip this exists to
 	# prevent — so absence fails rather than defaulting to "land map".
 	var server := _log("naval-no-marker",
-		"SEAT_LANDMASSES seats=8 landmasses=3 sea_components=1
-"
-		+ "AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
+		"AI_STATS wants_navy=0 docks=0 ships_peak=0 embarks=0 landings=0\n")
 	var got := _check(["naval", server])
 	assert_ne(got["code"], 0, "no topology means no earned skip")
 	assert_string_contains(got["out"], "SEAT_LANDMASSES")
