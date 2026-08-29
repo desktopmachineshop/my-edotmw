@@ -58,10 +58,55 @@ var _frame_usec: Array = []
 var _draw_calls: Array = []
 var _process_usec: Array = []
 
+## Per-frame phase breakdown of `_refresh_squads`, with a computed
+## residual (#229). The same discipline
+## D-20260818-every-microsecond-of-a-tick-has-a-phase imposed on the
+## server's tick, for the same reason: this frame reported ONE number, so
+## a cost that moved into it could not be attributed to anything and "the
+## client got slower" stayed a sentence rather than a finding.
+var _cull_usec: Array = []
+var _derive_usec: Array = []
+var _upload_usec: Array = []
+var _soldiers_drawn: Array = []
+var _frame_cull := 0
+var _frame_derive := 0
+var _frame_upload := 0
+var _frame_soldiers := 0
+
+## How long the curves being sampled are.
+##
+## Every per-frame sample of a squad's position, heading and facing walks
+## its keyframes, so this is the LENGTH of that loop — and the loop looks
+## exactly like this project's most-repeated defect, which is why it is
+## printed rather than argued about. The answer it gave: **1.3 keyframes
+## mean, 16 worst** per drawn squad at 1,000 squads on the shipped map,
+## because D-003 clips a client's copy to a horizon. A bisection over 1.3
+## elements is not an optimisation, and this number is what said so
+## (D-20260828-every-microsecond-of-a-frame-has-a-phase).
+var _keys_total := 0
+var _keys_worst := 0
+
+## The phases of the WORST frame, kept beside the means. A mean of 110 ms
+## with a 600 ms worst is two different questions, and the second one is
+## the visible freeze.
+var _worst_cpu := 0
+var _worst_split := [0, 0, 0]
+
+## Attribution knobs — see `_ready`. Shipping defaults.
+var _clamp_to_ground := true
+var _sample_terrain := true
+var _draw_every_copy := true
+var _width_override := 0
+var _height_override := 0
+
 var _camera: Camera3D
 var _terrain_root: Node3D
 var _squad_root: Node3D
 var _squad_nodes := {}
+## The one-int-per-squad LOD memory the client keeps (#155). Cleared with
+## the squads in `_setup_count`, because a rung of the sweep re-uses squad
+## ids for a different number of squads at a different spread.
+var _lod_tier := {}
 var _visible_squads := 0
 var _camera_target := Vector3.ZERO
 
@@ -89,6 +134,19 @@ func _ready() -> void:
 	_warmup_frames = int(args.get("warmup", DEFAULT_WARMUP))
 	_with_terrain = int(args.get("terrain", 1)) != 0
 	_camera_height = float(args.get("height", 40.0))
+	# Attribution knobs (#229). Every one defaults to what the client
+	# ships, so an invocation naming none measures exactly what it
+	# measured yesterday — the rule `--ai-profiles` already follows. They
+	# exist because "the frame tripled and four things changed" is not an
+	# attribution: the only honest way to separate four candidates is to
+	# turn each off in an interleaved A/B, which is the shape
+	# D-20260818-every-microsecond-of-a-tick-has-a-phase used on the
+	# server's own unexplained per-squad rise.
+	_clamp_to_ground = int(args.get("clamp", 1)) != 0
+	_sample_terrain = int(args.get("sampler", 1)) != 0
+	_draw_every_copy = int(args.get("copies", 1)) != 0
+	_width_override = int(args.get("cells_wide", 0))
+	_height_override = int(args.get("cells_high", 0))
 
 	# Vsync would cap every measurement at the refresh rate and report a
 	# uniform 16.7 ms whether the frame cost 2 ms or 16 — which reads as
@@ -101,6 +159,15 @@ func _ready() -> void:
 		push_error("bench: could not load maps/default.tres")
 		get_tree().quit(1)
 		return
+	if _width_override > 0 or _height_override > 0:
+		# Duplicated, never mutated in place: the shipped .tres is what
+		# every other recipe loads, and a benchmark that edited it would
+		# be `just profile`'s own blind spot with a new door.
+		_config = _config.duplicate() as MapConfig
+		if _width_override > 0:
+			_config.width = _width_override
+		if _height_override > 0:
+			_config.height = _height_override
 	_space = _config.to_space()
 
 	print("bench: GPU — %s | %s | Godot %s" % [
@@ -204,12 +271,15 @@ func _setup_count(count: int) -> void:
 	for node in _squad_nodes.values():
 		node.queue_free()
 	_squad_nodes.clear()
+	_lod_tier.clear()
 
 	_sim = SquadSim.new(_space, CurveReplicator.new())
 	_sim.set_passable(TerrainGen.new().passability(_space))
 	_state = ClientState.new()
-	_state.terrain_sampler = _terrain_sampler
-	_state.terrain_passable = _terrain_passable
+	if _sample_terrain:
+		_state.terrain_sampler = _terrain_sampler
+	if _clamp_to_ground:
+		_state.terrain_passable = _terrain_passable
 	_now = 0.0
 
 	if count <= 0:
@@ -249,13 +319,29 @@ func _setup_count(count: int) -> void:
 const SQUAD_CULL_RADIUS := 4.0
 
 
-## Exactly what client.gd's _refresh_squads does, minus the ghost pass
-## (this harness never conceals anything).
+## What client.gd's _refresh_squads does — cull, derive, upload — minus
+## the ghost pass (this harness never conceals anything) and minus every
+## RENDER PASS the RTW battle programme added.
+##
+## That second omission is a defect in this file and is filed as #240: the
+## client also runs the cosmetic duels, the corpse layer, the survivor
+## easing in `soldier_motion.gd`, the neighbour jostle and the
+## building/tree push-outs, all per drawn man, and none of them are here.
+## (Named by FILE rather than by class on purpose: `test_tier_three.gd`
+## scans every script for the class's identifier and this one is not on
+## its list, which is the guard working.) So every
+## number this benchmark prints is a FLOOR for the shipped client, and
+## this comment says so rather than claiming the equality it used to
+## claim. Fixing it changes what every previously recorded number means,
+## which is why it is an issue and not a patch.
 func _refresh_squads() -> void:
 	_visible_squads = 0
+	_frame_cull = 0
+	_frame_derive = 0
+	_frame_upload = 0
+	_frame_soldiers = 0
 	var offsets := _space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
-	var target := _camera_target
 
 	for squad_id in _state.live_squad_ids():
 		var entry: Dictionary = _state.composition.get(squad_id, {})
@@ -273,6 +359,7 @@ func _refresh_squads() -> void:
 		# Same cull-before-derive the client does (D-045), so this measures
 		# the client's real cost rather than a version of it without the
 		# one optimisation that matters.
+		var cull_at := Time.get_ticks_usec()
 		var centre := _state.squad_world_position(squad_id, _now)
 		# Every visible lattice copy, exactly as the client draws it
 		# (D-20260818-entities-are-drawn-at-every-visible-copy). The whole
@@ -281,26 +368,57 @@ func _refresh_squads() -> void:
 		# be measuring the version of the client that does not ship.
 		var drawn := RenderCull.visible_offsets_of_extent(
 			_camera, offsets, centre, SQUAD_CULL_RADIUS, 192.0, viewport_size)
+		if not _draw_every_copy and drawn.size() > 1:
+			# The pre-D-20260818 client, for the A/B only: ONE copy drawn,
+			# whichever the old rule picked. Never a default — that client
+			# had armies vanishing at the seam, and the point here is to
+			# price the copies, not to bring the bug back.
+			var one: Array[Vector3] = [RenderCull.nearest_offset(drawn, centre, _camera_target)]
+			drawn = one
+		_frame_cull += Time.get_ticks_usec() - cull_at
+
+		var upload_at := Time.get_ticks_usec()
 		unit.set_lattice_offsets(drawn)
+		_frame_upload += Time.get_ticks_usec() - upload_at
 		if drawn.is_empty():
 			continue
 		_visible_squads += 1
-		var offset := RenderCull.nearest_offset(drawn, centre, target)
-		unit.set_slot_transforms(_state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset)))
+		var curve: StateCurve = _state.curves.get(squad_id, null)
+		if curve != null:
+			_keys_total += curve.key_count()
+			_keys_worst = maxi(_keys_worst, curve.key_count())
+
+		# DERIVE and UPLOAD are timed apart, which is the whole of #229:
+		# the frame was one number before this, so a tripling had nowhere
+		# to be attributed. `_detail_for` carries the squad id and the
+		# drawn offsets because the LOD ladder is hysteretic now (#155,
+		# #221) — it keeps one int per squad, so a benchmark that asked
+		# for a tier by world position alone would re-derive on flips the
+		# shipping client no longer has.
+		var derive_at := Time.get_ticks_usec()
+		var transforms := _state.soldier_transforms_lod(
+			squad_id, _now, _detail_for(squad_id, drawn, centre))
+		_frame_derive += Time.get_ticks_usec() - derive_at
+		_frame_soldiers += transforms.size()
+
+		upload_at = Time.get_ticks_usec()
+		unit.set_slot_transforms(transforms)
+		_frame_upload += Time.get_ticks_usec() - upload_at
 
 
-## Mirrors client.gd's `_detail_for` and its LOD_TIERS. Duplicated
-## knowingly and narrowly: the benchmark exists to measure the client, and
-## a benchmark that skipped the client's LOD would report a cost the
-## client does not pay. If the tiers are retuned, both move.
-func _detail_for(world: Vector3) -> int:
-	var distance := _camera.global_position.distance_to(world)
-	if distance < 55.0:
-		return 1 << 30
-	if distance < 110.0:
-		return 12
-	return 5
+## The client's own LOD, through the client's own arithmetic. This used to
+## be a hand-copy of the three tier numbers under a comment reading "if the
+## tiers are retuned, both move"; they live in `RenderCull` now, so it
+## cannot fail to. What is still duplicated is the one-int-per-squad memory
+## the hysteresis band needs (#155) — the benchmark exists to measure the
+## client, and a benchmark that ran a MEMORYLESS ladder would re-derive on
+## tier flips the shipping client no longer has.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 func _process(delta: float) -> void:
@@ -313,6 +431,14 @@ func _process(delta: float) -> void:
 		_frame_usec.clear()
 		_draw_calls.clear()
 		_process_usec.clear()
+		_cull_usec.clear()
+		_derive_usec.clear()
+		_upload_usec.clear()
+		_soldiers_drawn.clear()
+		_keys_total = 0
+		_keys_worst = 0
+		_worst_cpu = 0
+		_worst_split = [0, 0, 0]
 		_phase = Phase.WARMUP
 		return
 
@@ -335,6 +461,13 @@ func _process(delta: float) -> void:
 	# is derivation or the GPU.
 	_frame_usec.append(int(delta * 1_000_000.0))
 	_process_usec.append(cpu)
+	_cull_usec.append(_frame_cull)
+	_derive_usec.append(_frame_derive)
+	_upload_usec.append(_frame_upload)
+	_soldiers_drawn.append(_frame_soldiers)
+	if cpu > _worst_cpu:
+		_worst_cpu = cpu
+		_worst_split = [_frame_cull, _frame_derive, _frame_upload]
 	_draw_calls.append(int(RenderingServer.get_rendering_info(
 		RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)))
 
@@ -369,6 +502,34 @@ func _report(count: int) -> void:
 	for squad_id in _state.live_squad_ids():
 		soldiers += _state.alive_of(squad_id)
 
+	# The breakdown, on its own line so the CSV keeps the shape every
+	# previous run was quoted in. `other` is the RESIDUAL — the part of
+	# our own per-frame work none of the three phases claimed — printed
+	# rather than left implicit, because a breakdown whose parts do not
+	# add up to the whole is a breakdown that can hide the thing being
+	# looked for.
+	var cull := _mean(_cull_usec)
+	var derive := _mean(_derive_usec)
+	var upload := _mean(_upload_usec)
+	var cpu_mean := float(cpu_total) / float(maxi(_process_usec.size(), 1))
+	var derived := _mean(_soldiers_drawn)
+	print("bench: phases squads=%d cpu=%.2f cull=%.2f derive=%.2f upload=%.2f other=%.2f ms/frame; drawn=%.0f soldiers/frame at %.2f us each; clamp=%d sampler=%d copies=%d" % [
+		count, cpu_mean / 1000.0, cull / 1000.0, derive / 1000.0,
+		upload / 1000.0, (cpu_mean - cull - derive - upload) / 1000.0,
+		derived, derive / maxf(derived, 1.0),
+		1 if _clamp_to_ground else 0,
+		1 if _sample_terrain else 0,
+		1 if _draw_every_copy else 0])
+	var frames := float(maxi(_cull_usec.size(), 1))
+	var keys_per_squad := float(_keys_total) / frames 		/ maxf(float(_visible_squads), 1.0)
+	print("bench: curves squads=%d keys_mean=%.1f keys_worst=%d per drawn squad" % [
+		count, keys_per_squad, _keys_worst])
+	print("bench: worst-frame squads=%d cpu=%.2f cull=%.2f derive=%.2f upload=%.2f other=%.2f ms" % [
+		count, float(_worst_cpu) / 1000.0,
+		float(_worst_split[0]) / 1000.0, float(_worst_split[1]) / 1000.0,
+		float(_worst_split[2]) / 1000.0,
+		float(_worst_cpu - _worst_split[0] - _worst_split[1] - _worst_split[2]) / 1000.0])
+
 	print("bench: %d,%d,%.2f,%.2f,%.1f,%d,%.2f,%d" % [
 		count, soldiers,
 		mean / 1000.0,
@@ -378,6 +539,15 @@ func _report(count: int) -> void:
 		float(cpu_total) / float(maxi(_process_usec.size(), 1)) / 1000.0,
 		_visible_squads,
 	])
+
+
+static func _mean(values: Array) -> float:
+	if values.is_empty():
+		return 0.0
+	var total := 0.0
+	for value in values:
+		total += float(value)
+	return total / float(values.size())
 
 
 func _parse_args(raw_args: PackedStringArray) -> Dictionary:

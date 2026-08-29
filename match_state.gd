@@ -689,8 +689,47 @@ const MAX_PLAYER_SLOTS := 24
 ## same tolerance the server already has for a short-seated map (it warns
 ## and plays on, sharing starts). Refusing to seat a player because the
 ## map is small would be a worse answer than a warning.
+## The LOBBY's rule: the map holds exactly the people who are in it.
+##
+## D-20260817-starting-positions-follow-the-seats — "a map is generated
+## for the players who are actually in the lobby, not for a number
+## somebody set". Exact, so a leaving seat gives its start back.
 func _seats_changed() -> void:
-	var wanted := clampi(seats.size(), MIN_PLAYER_SLOTS, MAX_PLAYER_SLOTS)
+	_apply_player_slots(seats.size())
+
+
+## The WORLD-BUILDING rule: the map must hold everyone who is coming
+## (#276). Raises only.
+##
+## A separate contract from `_seats_changed()` above, and the pair is the
+## point. `--lobby=0` builds the world BEFORE the `--ai=N` loop seats
+## anybody, so at that moment `seats` is empty and the only thing that
+## knows how many players there will be is `players_expected`. The map was
+## therefore sampled from the map file's AUTHORED count, and any seat past
+## it landed on another seat's start through `spawn_index_in`'s modulo —
+## six AI on a map authored for four logged "4 spawn points" with no
+## warning at all.
+##
+## RAISE-ONLY, deliberately. Lowering here would make every `--lobby=0`
+## run regenerate the shipped map to the number of players that happened
+## to launch — a one-player dev run would get a two-start world — which is
+## a much larger change than the defect asks for. The authored count stays
+## a FLOOR; this only stops it being a ceiling.
+##
+## `maxi(count, seats.size())` so it can never undercut people already
+## seated, whichever order the two callers run in.
+func ensure_seats_fit(count: int) -> void:
+	var wanted := maxi(count, seats.size())
+	if wanted <= map_settings.player_slots:
+		return
+	_apply_player_slots(wanted)
+
+
+## The mechanics both rules share: bound it, and revert if the result is
+## a map the generator would refuse. One definition — a second copy of
+## the clamp is exactly what D-20260817 was written against.
+func _apply_player_slots(count: int) -> void:
+	var wanted := clampi(count, MIN_PLAYER_SLOTS, MAX_PLAYER_SLOTS)
 	if map_settings.player_slots == wanted:
 		return
 	var before := map_settings.player_slots
