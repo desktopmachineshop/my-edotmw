@@ -1010,7 +1010,7 @@ class VirtualClient:
 	##
 	## That is the SAME root cause as the AI half, and it reuses the same
 	## shared function rather than a second copy of the rule
-	## (`StaticDefence.scarcest_shortfall`, which naval stage 7 also
+	## (`AiInvestment.scarcest_shortfall`, which naval stage 7 also
 	## reads).
 	##
 	## ONE crew, and only while the purchase is unaffordable, because
@@ -1030,8 +1030,8 @@ class VirtualClient:
 			next = BotBuildPlan.wanted_gate(owned, &"gatherers")
 		if next == null or BotBuildPlan.can_afford(state.wallet, next):
 			return Economy.ResourceKind.WOOD
-		var short := StaticDefence.scarcest_shortfall(
-			state.wallet, StaticDefence.cost_of(next))
+		var short := AiInvestment.scarcest_shortfall(
+			state.wallet, AiInvestment.cost_of(next))
 		return Economy.ResourceKind.WOOD if short < 0 else short
 
 

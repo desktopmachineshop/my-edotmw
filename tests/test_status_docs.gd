@@ -46,6 +46,10 @@ const ABSENT_ON_PURPOSE := {
 	"units/founders.tres":
 		"deleted by D-20260823; the-opening.md records it as the roster "
 		+ "change that broke four test fixtures",
+	"static_defence.gd":
+		"folded into ai_investment.gd by #365's reconciliation; "
+		+ "ai-fortification.md names it in the sentence that says it is "
+		+ "GONE, which is precisely what a history entry is for",
 }
 
 ## Directories a source scan must not walk: the engine's cache, the

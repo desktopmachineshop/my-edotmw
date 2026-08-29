@@ -196,3 +196,29 @@ Naval stage 7 needing a key `pressure` cannot express, or a second reader
 of `defence_appetite` that wants it to mean something different. Also: an
 AI that should man its own wall-top tier. Nothing here climbs one, and
 D-076's tier-1 combat is still exercised by tests alone.
+
+---
+
+**Amendment, 2026-08-28 — the mechanism is shared, and this file's half of
+it moved** (`D-20260828-one-ai-investment.md`, #365).
+
+`static_defence.gd` is **gone**; every function it defined lives in
+`ai_investment.gd`, which naval stage 7 also calls. Nothing in this
+entry's reasoning changed — the pressure terms, the precondition, the
+reserve, the shortfall and the cap are the same numbers with the same
+arguments — and two names moved:
+
+- `StaticDefence.pressure` is `AiInvestment.threat_pressure`;
+- `StaticDefence.wants_to_invest(threat, economy, appetite, standing, cap)`
+  is `AiInvestment.wants_to_invest(case, appetite, standing, cap)`, with
+  the CASE handed in rather than computed inside.
+
+That second one is the whole reconciliation: this entry's version
+computed the case itself from a threat report, so the only investment it
+could ever gate was a defensive one — and naval's reason ("there is a
+known enemy I cannot walk to") is not a threat. Splitting the case from
+the threshold is what lets one function serve both, and this design did
+not have it.
+
+The geometry (`wall_plan.gd`), the gate-sealing rule, the cap and every
+measurement in this entry are untouched.
