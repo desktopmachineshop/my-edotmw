@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"gather_speed"
+mode = "multiply"
+value = 1.1
+
+[resource]
+script = ExtResource("1")
+id = &"deep_stores"
+display_name = "Deep Stores"
+description = "Cellars, sacks and an inventory. A siege is won in the year before it starts."
+line = &"deep_stores"
+civ = &"neutral"
+epoch = 3
+defining = false
+research_at = &"storehouse"
+requires = Array[StringName]([&"holding"])
+cost_food = 350
+cost_wood = 200
+cost_gold = 150
+cost_stone = 0
+research_time = 45.0
+unit_effects = Array[Resource]([])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([SubResource("e0")])

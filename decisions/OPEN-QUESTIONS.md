@@ -242,14 +242,34 @@ questions in this block were closed by the M8 planning session,
   | Is an army a ratchet or a running cost? | **D-068** — a running cost. Per-soldier food upkeep; unpaid upkeep decays morale via D-019 rather than killing soldiers |
   | Interaction with D-018's scale and D-020's tick budget | **D-074 criterion 9**, plus a prerequisite: M6's unattributed 40.8 → ~77 µs/squad rise must be explained before M9 adds load on top of it |
 
-  **One correction to the brief below, and one thing left genuinely
-  open.** The economy figures quoted are stale: it says `NODE_STOCK` is
-  900 with a node every 11 cells; `economy.gd:41` and `:50` now read
-  `NODE_EVERY := 60` and `NODE_STOCK := 2400`. **The question the bullet
-  was really asking — whether an hour-long match exhausts the map — was
-  not answered and needs recomputing against the real constants once
-  D-068's phase table has a consumption rate attached to it.** It is the
-  one part of this brief that D-068–D-074 did not close.
+  **DISCHARGED 2026-08-28 by `D-20260828-the-phase-table-has-numbers`
+  (#281).** D-068's phase table has a measured rate under it at last —
+  **90 units/min per shipped crew** at a five-cell haul, through the real
+  `Economy.tick` loop rather than a closed form — and
+  `tests/test_pacing.gd` re-takes it on every run.
+
+  **The question this bullet was really asking is answered, and the
+  answer is yes.** The shipped map holds 5,559 nodes (1,939 food, 3,435
+  wood, 48 gold, 137 stone); at 20 starts that is 10,180 food and 5,760
+  gold each, while one civ's whole tech tree costs 10,200 food and 5,060
+  gold. **At D-018's 20 players a long match exhausts the map, food
+  first, before a single soldier is paid for.** At four players nothing
+  binds, which is why no load test ever noticed. The three things that
+  follow — gold is scarce and nothing treats it as one, food has to stop
+  being a fixed stock (#159), and this is a fact about the player COUNT
+  rather than about the tree — are in the decision entry.
+
+  It also found what the bullet was not asking: **every rung of the
+  ladder costs under two minutes of the income of the phase that pays for
+  it**, against phases D-068 makes 8 to 20 minutes long. The ladder as
+  costed cannot pace a 90-minute match. Re-pricing is deliberately NOT
+  done there — it is a balance call with a playtest attached — and the
+  entry records the ×3 it implies as its revisit trigger.
+
+  *One correction to the brief below, kept because it is still true:* the
+  economy figures it quotes are stale. It says `NODE_STOCK` is 900 with a
+  node every 11 cells; the shipped constants are `TREE_STOCK := 105` for
+  food and wood and `RICH_STOCK := 2400` for gold and stone.
 
   *Original brief, 2026-08-02:*
 

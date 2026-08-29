@@ -8,6 +8,7 @@ id = &"windmarch_bowriders"
 display_name = "Bowriders"
 civ = &"windmarch"
 archetype = &"bowriders"
+requires_tech = &"reckoning"
 squad_size = 16
 health = 58.0
 damage = 7.5
