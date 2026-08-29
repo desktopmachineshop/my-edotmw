@@ -86,6 +86,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/steam-boundary.md
 
+@docs/status/host-in-process.md
+
 @docs/status/civ-knobs.md
 
 @docs/status/renewable-economy.md
@@ -401,6 +403,15 @@ net_protocol.gd          The one definition of the wire protocol, shared
                         The version is its OWN number, never the build
                         string — two builds can differ and speak the
                         same wire.
+host_link.gd             The CLIENT end of an in-process connection
+                        (D-20260828, #182) — `loopback_peer.gd`'s mirror
+                        image. That one carries packets to a client inside
+                        the process; this one carries its ORDERS back, so
+                        the ~30 ordering sites in client.gd are the same
+                        code whether the player is hosting or joined over
+                        a socket. A host cannot be handed a rule a guest
+                        does not have, because there is no branch in which
+                        to give it one.
 client_state.gd          Everything a client knows, with no rendering
                         attached. The GUI client and the load-test bots
                         both run THIS — so test-load exercises the real
@@ -961,6 +972,11 @@ Dev loop and tests:
   ~150 s). Fails unless the server's log confirms it actually played the
   scenario.
 - `just scenarios` — the shipped mid-game scenarios and what each is for
+- `just test-host [N] [DURATION] [AI]` — in-process hosting proved
+  against REAL remote clients (#182): a hosting client, headless, with N
+  bots joining it over a socket, and the state-hash machinery read on
+  BOTH sides. Native only (the host is a client, D-014); binds this
+  instance's port, never the shared default.
 - `just test-handshake` — presents a deliberately wrong protocol version
   to a real server over a real socket and fails unless it is REFUSED with
   an actionable message, and unless a matched build is admitted in the

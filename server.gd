@@ -71,6 +71,40 @@ var _civs := {}
 ## lobby broadcast), and a duck-typed impostor there would be a null cast
 ## waiting to happen.
 var _ai_clients := {}
+
+## The HOST's own client, when this server is running inside it (D-088,
+## #182): the loopback peer -> the same record shape as `_clients`.
+##
+## A THIRD dictionary rather than an entry in either of the others, and
+## the reason is the same one `loopback_peer.gd`'s header gives for
+## keeping AI seats out of `_clients`: several places legitimately treat
+## that dictionary's keys as real sockets — ENet statistics, the
+## disconnect path, `(peer as ENetPacketPeer).send` — and a duck-typed
+## impostor among them is a null cast waiting to happen. It is not
+## `_ai_clients` either, because the host is a HUMAN: it holds a human
+## seat, it can be admin, and calling it an AI would be a lie the next
+## reader has to un-learn.
+##
+## At most one entry. A process hosts one match.
+var _local_clients := {}
+
+## Whether this server is running INSIDE a client's process (D-088).
+##
+## It changes exactly two things and neither is about the simulation:
+## where the configuration comes from (`boot` rather than the command
+## line — the client's own arguments are not this server's), and whether
+## running out of remote clients may end the PROCESS. D-075's
+## no-humans-no-server rule would otherwise fire the moment the last
+## remote player left and take the host's own game down with it, which
+## is the opposite of what a host asked for.
+var _embedded := false
+
+## The configuration an embedded server starts with, in the shape
+## `CmdArgs.parse` produces — so everything downstream of `_ready`'s
+## first few lines is untouched and there is no second start-up path.
+## Empty means "read the command line", which is every other way this
+## file runs.
+var boot := {}
 var _ai_players: Array = []
 
 ## player -> the AiProfileDef that seat was dealt
@@ -241,7 +275,13 @@ func _ready() -> void:
 	# Both binaries print it and the handshake carries it, so a bug
 	# report that quotes one line of a log says what it was taken from.
 	print(BuildVersion.banner("server"))
-	var args := CmdArgs.parse(OS.get_cmdline_user_args())
+	# An embedded server is configured by the client that owns it, not by
+	# the command line: those arguments belong to the CLIENT (`--address`,
+	# `--run-seconds`, `--menu`) and one of them, `--port`, would even be
+	# read as a plausible instruction to bind the port the player wanted
+	# to CONNECT to. Same shape, so nothing below this line knows which
+	# it got.
+	var args := boot if _embedded else CmdArgs.parse(OS.get_cmdline_user_args())
 	# Refuse an argument that is not the number it will be read as, before
 	# any of it chooses a world (D-20260817-recipe-args-are-positional).
 	# `int()` strips non-digits rather than failing, so `--seed=SANDBOX=1`
@@ -472,6 +512,11 @@ func _ready() -> void:
 		" (lobby)" if _match.require_admin_start else ""])
 	if _run_seconds > 0.0:
 		print("server: will stop after %.1f simulated seconds" % _run_seconds)
+
+	# LAST, and only now: the host's own seat needs a `MatchState` to sit
+	# in, and one did not exist until the configuration above built it
+	# (#182). It is a no-op for every other way this file runs.
+	_seat_pending_local_player()
 
 
 ## Generate the world the settings describe. Called at startup when there
@@ -1443,6 +1488,18 @@ func _on_disconnect(peer) -> void:
 	# Reached only from a disconnect, so it cannot fire on a server that
 	# nobody has connected to yet: `just lobby` waits as long as you like.
 	if _clients.is_empty():
+		# ... unless the host IS one of the humans. An embedded server
+		# lives in a client's process (D-088, #182), and that client is
+		# in `_local_clients` rather than `_clients` — so the rule above
+		# would read "everybody left" the moment the last REMOTE player
+		# disconnected and quit the host's own game underneath them.
+		#
+		# Ending an embedded match is the HOST's decision, taken in
+		# client.gd, and D-088 accepts its consequence with eyes open:
+		# host-quit kills the match for everyone.
+		if _embedded:
+			print("server: last remote client left — the host is still playing")
+			return
 		print("server: last human client left — shutting down")
 		_shutdown()
 		get_tree().quit(0)
@@ -3298,6 +3355,18 @@ func _return_to_lobby() -> void:
 	# (D-20260827-a-client-record-forgets-the-match-it-left).
 	for peer in _clients:
 		_clients[peer] = _fresh_record(int(_clients[peer]["player"]))
+	# And the HOST's own record, which is not in `_clients` (#182). Each
+	# side of this merge had half of it: the landed side scrubs back to
+	# the birth shape rather than key by key, which is right and is
+	# D-20260827's whole point; this branch was the only one scrubbing
+	# `_local_clients` at all. Losing that half is the D-030 desync
+	# `docs/status/sandbox.md` measured at 106 building desyncs in 55,239
+	# checks — a record that keeps `known_buildings` believes it has
+	# already been told about a building the next match mints from zero.
+	for peer in _local_clients:
+		_local_clients[peer] = _fresh_record(int(_local_clients[peer]["player"]))
+	for peer in _clients:
+		_clients[peer] = _fresh_record(int(_clients[peer]["player"]))
 
 	# `return_to_lobby` rolls the next match's map unless the seed is
 	# pinned (D-100), so the seed is worth naming here: it is the one
@@ -3347,7 +3416,7 @@ func _on_match_started() -> void:
 		if String(seat["kind"]) == "ai":
 			_seat_ai(player, StringName(seat["civ"]))
 			continue
-		var peer := _peer_of(player)
+		var peer: Variant = _peer_of(player)
 		if peer == null:
 			continue
 		# Register humans HERE, not only at connect. Registration is
@@ -3357,6 +3426,70 @@ func _on_match_started() -> void:
 		# `add_player` is idempotent, so the first match is unaffected.
 		_match.add_player(player)
 		_admit_player(peer, player)
+
+
+## Seat the client this server is running inside (D-088, #182).
+##
+## The host's own client, connected through the loopback peer D-051's AI
+## seats already use — which is the whole reason hosting cost so little:
+## `LoopbackPeer` exists because a peer is duck-typed to
+## `ENetPacketPeer.send`'s shape, and the replication loop has never
+## needed to know which it is talking to.
+##
+## Returns the object the CLIENT sends its orders through. Orders take
+## the identical path a remote player's do — `_dispatch`, ownership read
+## from the sim, the cap, affordability, the match actually running —
+## because a host who could do things no guest could is a host nobody
+## should play against, and the difference would be invisible.
+##
+## **No version handshake**, and that is not an omission (#179): an
+## in-process client is the same build by construction, so there is no
+## version for it to disagree about. The handshake exists for a SOCKET,
+## and this is not one.
+##
+## Called before `add_child`, so the seat exists by the time `_ready`
+## runs and the ordinary lobby path finds a human waiting in it.
+func seat_local_client(state: ClientState) -> HostLink:
+	var player := _next_player
+	_next_player += 1
+	var peer := LoopbackPeer.new(state)
+	_local_clients[peer] = {"player": player, "visible": {}}
+	_pending_local_seat = player
+	return HostLink.new(func(packet: PackedByteArray) -> void:
+		_dispatch(peer, packet))
+
+
+## The player id `seat_local_client` minted, waiting for `_ready` to have
+## built a `MatchState` to seat it in. -1 once seated, or when there is
+## no local client — which is every other way this file runs.
+var _pending_local_seat := -1
+
+
+## Put the host in the lobby, once there is one.
+##
+## Separate from `seat_local_client` because the two happen either side
+## of `_ready()`: the client mints its seat before the server node enters
+## the tree (it needs the peer back to send through), and `_match` does
+## not exist until `_ready` has read the configuration. Seating into a
+## null lobby is how the host would end up watching a match it is not in.
+func _seat_pending_local_player() -> void:
+	if _pending_local_seat < 0:
+		return
+	var player := _pending_local_seat
+	_pending_local_seat = -1
+	var started := _match.add_player(player)
+	var peer: Variant = _peer_of(player)
+	if _match.phase == MatchState.Phase.LOBBY:
+		_broadcast_lobby()
+		peer.send(0, NetProtocol.encode_welcome(player, _settings.width, _settings.height,
+			PackedInt32Array(), _spawn_cell_indices(), _match.squad_cap, 0),
+			ENetPacketPeer.FLAG_RELIABLE)
+		print("server: host seated as player %d, waiting in the lobby" % player)
+		return
+	if started:
+		_note_match_started()
+	_admit_player(peer, player)
+	print("server: host seated as player %d" % player)
 
 
 ## Bring an AI seat to life (D-051).
@@ -3486,6 +3619,9 @@ func _hand_civs_to_sim() -> void:
 	for peer in _clients:
 		var player := int(_clients[peer]["player"])
 		_sim.civs[player] = CivRoster.effects_of(_civ_of(player))
+	for peer in _local_clients:
+		var local_player := int(_local_clients[peer]["player"])
+		_sim.civs[local_player] = CivRoster.effects_of(_civ_of(local_player))
 	var parts := []
 	for who in _sim.civs:
 		parts.append("%d=%s" % [int(who), String((_sim.civs[who] as CivDef).id)])
@@ -3513,6 +3649,7 @@ func _hand_civs_to_sim() -> void:
 func _recipients() -> Dictionary:
 	var out := _clients.duplicate()
 	out.merge(_ai_clients)
+	out.merge(_local_clients)
 	return out
 
 
@@ -3544,12 +3681,25 @@ func _fresh_record(player: int) -> Dictionary:
 func _record_for(peer):
 	if _clients.has(peer):
 		return _clients[peer]
-	return _ai_clients.get(peer, null)
+	if _ai_clients.has(peer):
+		return _ai_clients[peer]
+	return _local_clients.get(peer, null)
 
 
-func _peer_of(player: int) -> ENetPacketPeer:
+## The peer belonging to a player, socket or in-process.
+##
+## Untyped return since #182: the host's own client is reached through a
+## LoopbackPeer, and everything this is used for wants `send()` rather
+## than an ENet socket. A declared `ENetPacketPeer` here would have made
+## the host the one player `_on_match_started` could not admit — and it
+## would have done it by returning null, so the symptom would have been a
+## host who starts a match and is not in it.
+func _peer_of(player: int):
 	for peer in _clients:
 		if int(_clients[peer]["player"]) == player:
+			return peer
+	for peer in _local_clients:
+		if int(_local_clients[peer]["player"]) == player:
 			return peer
 	return null
 
