@@ -30,8 +30,14 @@ const BUILDING_SPACING := 4.2
 @export var out_path: String = "res://artifacts/models-godot.png"
 
 var _units: Array[PrimitiveUnit] = []
-## Framed once the grid exists — see `_frame_grid`.
+## Framed once everything is placed — see `_frame_content`.
 var _camera: Camera3D = null
+## World-space union of everything this scene draws, accumulated as it is
+## placed. The camera is derived from THIS rather than from any one grid's
+## dimensions, which is the whole of #228: a camera told about the squads
+## can only ever hold the squads.
+var _content := AABB()
+var _has_content := false
 var _space: TorusSpace
 var _terrain_sampler: Callable
 var _elapsed := 0.0
@@ -54,6 +60,7 @@ func _ready() -> void:
 func _build_buildings() -> void:
 	var defs := BuildingSim.all_defs()
 	var colours := [PlayerColours.of_index(0), PlayerColours.of_index(1)]
+	var placed := 0
 
 	for i in range(defs.size()):
 		var def: BuildingDef = defs[i]
@@ -71,7 +78,13 @@ func _build_buildings() -> void:
 			at.y = _terrain_sampler.call(at.x, at.z)
 		instance.position = at
 		add_child(instance)
-	print("model_preview: %d buildings" % defs.size())
+		# The mesh's OWN box, not a nominal one: the largest building is
+		# both the widest thing in the picture and the one #47's winding
+		# criterion most needs whole.
+		var box := mesh.get_aabb()
+		_note(AABB(at + box.position, box.size))
+		placed += 1
+	print("model_preview: %d buildings (%d drawn)" % [defs.size(), placed])
 
 
 ## Real terrain under the models (D-066), so one picture answers whether the
@@ -133,22 +146,36 @@ func _parse_arguments() -> void:
 			out_path = text.trim_prefix("--out=")
 
 
-## How far back the camera stands is DERIVED from the grid, not tuned.
+## How far back the camera stands is DERIVED from what was DRAWN.
 ##
-## The constant it replaces was tuned for four clip columns and silently
-## clipped anything wider — which is the second time this file has had that
-## exact failure (see BUILDING_SPACING's note, where the roster grew from
-## four buildings to nine), and the first time was already written down as a
-## warning here. Adding the gatherer's three work clips made it three times.
+## Four times this file has framed one dimension of its scene and clipped
+## another: a constant tuned for four clip columns; the building roster
+## growing from four to nine; the gatherer's three work clips widening the
+## sheet to seven; and #228, where the squad grid was measured and the
+## building row standing in front of it was not, so the largest building —
+## the one playtest #47's winding criterion most needs whole — was cut by
+## the edge of the frame.
 ##
-## So the framing now follows whatever the grid actually is. A row or a
-## column added later reframes the shot instead of falling off the edge of
-## it, and this file stops being able to make the mistake its own docstring
-## is about.
+## The previous version of this note claimed the third fix left this file
+## "unable to make the mistake its own docstring is about". It did not: it
+## generalised over the squad grid and left every other dimension of the
+## scene as hardcoded as the constant it replaced. **A docstring asserting
+## that a class of mistake is now impossible is not evidence that it is**
+## (the D-058/D-065 family, pointed at a comment about a fix).
+##
+## So the claim is not made again. What is true instead is structural, and
+## checkable: `_note` accumulates every item as it is PLACED, `_frame_content`
+## frames that union, and `PreviewFraming.position_for` verifies its own
+## answer against the box it was given before returning it. Anything drawn
+## without being noted is still invisible to the camera — that is the
+## remaining hole, and it is one line at each placement site rather than a
+## dimension of arithmetic nobody wrote.
 const CAMERA_PITCH := 27.0
 const CAMERA_FOV := 62.0
-## Slack around the grid, as a share of the spacing it is measured against.
-const CAMERA_MARGIN := 0.75
+## Slack around the content, as a share of its own half-extent
+## (`PreviewFraming.grown`). Taste, not safety: the framing verifies its
+## own result at zero margin too.
+const CAMERA_MARGIN := 0.18
 
 
 func _build_environment() -> void:
@@ -200,6 +227,7 @@ func _build_squads() -> void:
 			unit.position = origin
 
 			var transforms: Array[Transform3D] = []
+			var soldier := _soldier_extent(def)
 			for i in range(SOLDIERS_PER_SQUAD):
 				var col := i % 4
 				var rank := i / 4
@@ -212,11 +240,12 @@ func _build_squads() -> void:
 					local.y = _terrain_sampler.call(
 						origin.x + local.x, origin.z + local.z) - origin.y
 				transforms.append(Transform3D(Basis(), local))
+				_note(AABB(origin + local - soldier, soldier * 2.0))
 			unit.set_slot_transforms(transforms)
 			unit.set_clip_data(row * 10 + clip, clip, 3.2)
 			_units.append(unit)
 
-	_frame_grid(archetypes.size(), AnimationState.CLIP_NAMES.size())
+	_frame_content()
 
 	print("model_preview: %d archetypes x %d clips = %d squads, %d soldiers each"
 		% [archetypes.size(), AnimationState.CLIP_NAMES.size(), _units.size(),
@@ -229,36 +258,68 @@ func _build_squads() -> void:
 			RenderingServer.get_video_adapter_name()])
 
 
-## Stand far enough back to hold `rows` x `columns` of squads, and aim at the
-## middle of them.
+## Everything drawn, in one world-space box.
 ##
-## Both extents are checked because either can be the binding one: seven
-## clips make the sheet wide, and a roster that grows makes it deep. The
-## horizontal field is derived from the vertical one and the viewport's
-## aspect, since `Camera3D.fov` is the vertical angle.
-func _frame_grid(rows: int, columns: int) -> void:
+## Called at every placement, so "what is drawn" and "what is framed" are
+## the same list by construction. That equality is the fix for #228 — the
+## four previous framings each measured a list somebody maintained by
+## hand, and each was correct for the roster it was written against.
+func _note(box: AABB) -> void:
+	if _has_content:
+		_content = _content.merge(box)
+	else:
+		_content = box
+		_has_content = true
+
+
+## How much room one soldier takes around his slot origin.
+##
+## From the model where there is one, so a big archetype is framed as the
+## big thing it is; a nominal man where the roster falls back to the
+## primitive tier and there is no mesh to ask.
+func _soldier_extent(def: UnitDef) -> Vector3:
+	if def.model_id != &"":
+		var mesh := UnitMesh.mesh_for(def.model_id)
+		if mesh != null:
+			var box := mesh.get_aabb()
+			return Vector3(
+				maxf(absf(box.position.x), absf(box.end.x)),
+				maxf(absf(box.position.y), absf(box.end.y)),
+				maxf(absf(box.position.z), absf(box.end.z)))
+	return Vector3(0.5, 2.0, 0.5)
+
+
+## Stand far enough back to hold everything `_note` was told about, and
+## aim at the middle of it.
+##
+## The arithmetic is `PreviewFraming`'s, which is all-static and tested
+## headless, and which finishes by CHECKING that the position it returns
+## contains its input. This function therefore cannot clip the scene
+## whatever the scene turns out to be — a tenth building, a seventh clip,
+## and a kind of content nobody has thought of yet all reach it the same
+## way. The three previous fixes here were each verified by looking at one
+## roster, which is exactly why the fourth was needed.
+func _frame_content() -> void:
 	if _camera == null:
 		return
-	var half_width := (float(maxi(columns, 1) - 1) * 0.5 + CAMERA_MARGIN) \
-		* COLUMN_SPACING
-	var half_depth := (float(maxi(rows, 1) - 1) * 0.5 + CAMERA_MARGIN) \
-		* ROW_SPACING
-	var centre := Vector3(0.0, 0.0, -float(maxi(rows, 1) - 1) * ROW_SPACING * 0.5)
+	if not _has_content:
+		push_warning("model_preview: nothing was placed — framing the origin")
+		_content = AABB(Vector3(-1.0, 0.0, -1.0), Vector3(2.0, 2.0, 2.0))
 
 	var aspect := float(get_viewport().get_visible_rect().size.aspect())
-	var half_v := deg_to_rad(CAMERA_FOV) * 0.5
-	var half_h := atan(tan(half_v) * maxf(aspect, 0.1))
-	# The depth extent is foreshortened by the pitch; the width is not.
-	var for_width := half_width / maxf(tan(half_h), 0.01)
-	var for_depth := half_depth * sin(deg_to_rad(CAMERA_PITCH)) \
-		/ maxf(tan(half_v), 0.01) + half_depth
-	var distance := maxf(for_width, for_depth)
+	_camera.position = PreviewFraming.position_for(
+		_content, aspect, CAMERA_FOV, CAMERA_PITCH, CAMERA_MARGIN)
 
-	var pitch := deg_to_rad(CAMERA_PITCH)
-	_camera.position = centre + Vector3(
-		0.0, distance * sin(pitch), distance * cos(pitch))
-	print("model_preview: framed %dx%d grid from %.1f units back"
-		% [rows, columns, distance])
+	var held := PreviewFraming.covers(
+		PreviewFraming.grown(_content, CAMERA_MARGIN), _camera.position, aspect,
+		CAMERA_FOV, CAMERA_PITCH)
+	print("model_preview: framed %.1f x %.1f x %.1f of content from %.1f units back (covered=%s)"
+		% [_content.size.x, _content.size.y, _content.size.z,
+			_camera.position.distance_to(_content.get_center()), str(held)])
+	if not held:
+		# Loud, because the picture is the point and a clipped picture has
+		# historically looked fine to everything that counts things.
+		push_error("model_preview: the camera does not hold the whole scene")
 
 
 func _process(delta: float) -> void:
@@ -272,6 +333,11 @@ func _process(delta: float) -> void:
 
 	await RenderingServer.frame_post_draw
 	var image := get_viewport().get_texture().get_image()
+	# `res://` cannot be written in an exported build (#201,
+	# D-20260828-artifacts-are-written-where-the-build-can-write); the
+	# identity in a checkout, so the recipe's own --out= still lands
+	# exactly where the justfile looks for it.
+	out_path = ArtifactPath.resolve(out_path)
 	var absolute := ProjectSettings.globalize_path(out_path)
 	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
 	var err := image.save_png(absolute)

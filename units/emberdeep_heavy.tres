@@ -16,6 +16,7 @@ attack_range = 1.9
 attack_interval = 1.15
 formation_shape = "tight"
 armour_class = "infantry"
+formations = Array[StringName]([&"testudo"])
 mesh_primitive = "capsule"
 mesh_color = Color(0.6, 0.32, 0.16, 1)
 model_id = &"spearmen"

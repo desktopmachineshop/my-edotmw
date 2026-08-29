@@ -53,6 +53,20 @@ var wallet_updates: int = 0
 var last_notice := ""
 var notices_received: int = 0
 
+## The server's refusal of this connection, or empty (#179, D-094
+## criterion 3). A Dictionary of `reason` / `protocol` / `build` as
+## decoded, plus `text` — the one wording, composed by
+## `NetProtocol.refusal_text` from the SERVER's numbers and THIS build's,
+## so the sentence a player reads is assembled where both halves are
+## known.
+##
+## Held here rather than in client.gd because the bots share this file
+## and a refusal is the one server message a load-test bot must be able
+## to report: a bot that quietly failed to connect and a bot that was
+## refused for being the wrong build look identical from outside, and one
+## of them is a broken test estate.
+var refusal := {}
+
 ## Resource nodes: cell index -> ResourceKind. Fog-gated by the server as
 ## vision reaches them; the client draws where resources are, never how
 ## much is left.
@@ -116,6 +130,43 @@ func take_casualty_sites() -> Array:
 	var out := _casualty_sites
 	_casualty_sites = []
 	return out
+
+
+## World events worth HEARING, not yet sounded (#344).
+##
+## The exact shape and contract of `_casualty_sites` above, and for the
+## same reason: this class is run by the load-test bots and the AI seats
+## as well as the GUI client, and an unread queue would grow for the
+## length of a run. Only something that DRAINS it sets `record_audio`,
+## which is the GUI client and nothing else — bots and AI leave it off
+## and the list stays empty.
+##
+## Entries are {"event": StringName, "cell": int, "magnitude": float}.
+## A CELL, never a world position: the fog query this is gated through is
+## per cell (`TerrainFog.level_at`), and handing audio a position would
+## be inventing a second notion of where something happened.
+##
+## Nothing here crosses the wire, and nothing reads it back — audio is a
+## one-way client cosmetic (D-006 clause 2) and the simulation has no
+## concept of it.
+var record_audio := false
+var _audio_events := []
+
+
+func take_audio_events() -> Array:
+	var out := _audio_events
+	_audio_events = []
+	return out
+
+
+## Note something worth hearing. Squad-level by construction: the caller
+## passes a cell and a weight, and there is nowhere in the entry for a
+## per-soldier anything to live — a volley is one event, not thirty-six
+## (D-024).
+func note_audio(event: StringName, cell: int, magnitude: float = 1.0) -> void:
+	if not record_audio:
+		return
+	_audio_events.append({"event": event, "cell": cell, "magnitude": magnitude})
 
 var buildings := {}
 var buildings_revealed: int = 0
@@ -310,6 +361,8 @@ func handle_packet(data: PackedByteArray) -> void:
 		NetProtocol.S2C_NOTICE:
 			last_notice = NetProtocol.decode_notice(data)
 			notices_received += 1
+		NetProtocol.S2C_REFUSED:
+			_handle_refused(data)
 		NetProtocol.S2C_WALLET:
 			wallet = NetProtocol.decode_wallet(data)
 			wallet_updates += 1
@@ -319,6 +372,15 @@ func handle_packet(data: PackedByteArray) -> void:
 			_handle_building_state_hash(data)
 		_:
 			unknown_packets += 1
+
+
+## The server will not have us. Decoded here, worded here, and left for
+## whoever owns a screen — this file has none.
+func _handle_refused(data: PackedByteArray) -> void:
+	refusal = NetProtocol.decode_refused(data)
+	refusal["text"] = NetProtocol.refusal_text(
+		int(refusal["reason"]), int(refusal["protocol"]), str(refusal["build"]),
+		BuildVersion.string(), NetProtocol.PROTOCOL_VERSION)
 
 
 func _handle_welcome(data: PackedByteArray) -> void:
@@ -562,6 +624,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"facing": int(entry.get("facing", -1)),
 			"files": int(entry.get("files", 0)),
 			"stance": int(entry.get("stance", 0)),
+			"exploring": bool(entry.get("exploring", false)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -608,6 +671,16 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 				_casualty_sites.append({
 					"id": id, "before": previous_alive, "after": new_alive,
 				})
+			# The volley (#344). ONE event for the whole exchange, not one
+			# per man: D-024 resolves combat as aggregate arithmetic over
+			# a squad, and `fell` here is already a COUNT. Gated on the
+			# same `fell` byte the corpses are, so men spent founding a
+			# town or wiped by a disconnect make no battle noise.
+			if record_audio and bool(event.get("fell", false)):
+				var lost := previous_alive - new_alive
+				var size := int(composition.get(id, {}).get("size", previous_alive))
+				note_audio(&"combat_volley", space.index(squad_cell(id, 0.0)) if space != null else -1,
+					AudioCue.volley_magnitude(lost, maxi(size, 1)))
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
@@ -736,6 +809,26 @@ func _handle_building_info(data: PackedByteArray) -> void:
 		var id := int(entry["id"])
 		if not buildings.has(id):
 			buildings_revealed += 1
+		# Worth HEARING (#344), decided from what changed rather than
+		# from a new message: the wire already says everything audio
+		# needs, and inventing a packet for it would be the second
+		# channel #344 forbids and D-004 forbids generally.
+		#
+		# Fog is not consulted HERE — `AudioCue` does that, from the one
+		# vision query, and doing it in two places is how the two come to
+		# disagree. This only records that something happened.
+		if record_audio:
+			var was: Dictionary = buildings.get(id, {})
+			var had := not was.is_empty()
+			var was_done := float(was.get("progress", 0.0)) >= 1.0
+			var now_done := float(entry["progress"]) >= 1.0
+			var cell := int(entry["cell"])
+			if bool(entry["destroyed"]) and not bool(was.get("destroyed", false)):
+				note_audio(&"building_destroyed", cell)
+			elif had and now_done and not was_done:
+				note_audio(&"building_complete", cell)
+			elif not had and not now_done:
+				note_audio(&"building_placed", cell)
 		buildings[id] = {
 			"def_id": String(entry["def_id"]),
 			"owner": int(entry["owner"]),
@@ -775,6 +868,59 @@ func _handle_building_info(data: PackedByteArray) -> void:
 			"gate_open": bool(entry.get("gate_open", false)),
 			"gate_mode": int(entry.get("gate_mode", 0)),
 		}
+
+
+## The cells this client knows are FIELDS, and what each grows: cell index
+## -> `Economy.ResourceKind` (D-20260828-food-is-grown-not-only-found).
+##
+## DERIVED from `buildings` — which is already replicated and already
+## fog-gated knowledge (D-030) — and so costs nothing on the wire. That is
+## the same shape as D-052's colour and D-20260825's tool choice: the fact
+## is already here, and a second message carrying it would be a second
+## source of truth free to drift.
+##
+## Rebuilt on demand rather than cached, because the caller (`client.gd`)
+## asks once a frame for a set that changes when a building is raised or
+## razed. `buildings` holds tens of entries, not thousands.
+##
+## `workable_only` narrows it to the fields THIS player's crews may
+## actually be sent to — its own and its allies' (D-050), mirroring
+## `Economy.may_work`. The unfiltered set is what the drawing side wants,
+## because an ally's crew working an ally's field must still be animated
+## working it.
+func farm_cells(workable_only: bool = false) -> Dictionary:
+	var out := {}
+	for id in buildings:
+		var info: Dictionary = buildings[id]
+		if bool(info.get("destroyed", false)):
+			continue
+		if float(info.get("progress", 0.0)) < 1.0:
+			continue
+		var owner := int(info.get("owner", -1))
+		if workable_only and owner != player and not are_allied(owner, player):
+			continue
+		var def := BuildingSim.def_by_id(StringName(String(info.get("def_id", ""))))
+		var kind := Economy.grows_kind(def)
+		if kind < 0 or def.grow_per_second <= 0.0:
+			continue
+		out[int(info["cell"])] = kind
+	return out
+
+
+## What working this cell yields, or -1: a node's kind, or a field's.
+##
+## THE client-side sibling of `Economy.work_kind_at`, and the reason it
+## exists at all is that `_state.nodes.has(cell)` was the client's only
+## notion of "there is work here" — so a crew standing in a field would
+## have read as idle and a right-click on one would have ordered a march.
+## Convenience for callers asking about ONE cell; anything asking per
+## squad per frame takes `farm_cells()` once and reads it directly, which
+## is what `client.gd` does.
+func work_kind_at(cell_index: int) -> int:
+	if nodes.has(cell_index):
+		return int(nodes[cell_index])
+	var known := farm_cells()
+	return int(known[cell_index]) if known.has(cell_index) else -1
 
 
 ## Its own hash, checked against its own message (D-030).
@@ -912,6 +1058,14 @@ func spacing_of(squad: int) -> float:
 ## with the server on strength.
 func stance_of(squad: int) -> int:
 	return int(composition[squad].get("stance", 0)) if composition.has(squad) else 0
+
+
+## Whether this squad is hunting fog (#120). Read off the wire rather than
+## remembered when the order was sent: the server owns the mode, and a
+## button lit from a local guess would keep claiming the squad was
+## exploring after a rout cancelled it.
+func is_exploring(squad: int) -> bool:
+	return bool(composition[squad].get("exploring", false)) if composition.has(squad) else false
 
 
 func facing_of(squad: int) -> int:
@@ -1127,6 +1281,18 @@ func encode_stop(squad: int) -> PackedByteArray:
 	return NetProtocol.encode_order_stop(squad)
 
 
+## Hunt fog until told to stop (#120). Carries no destination for the same
+## reason `encode_stop` does not: the destination is the server's to pick,
+## over and over, and picking it is the whole of what is being asked for.
+##
+## Ownership is checked HERE like every other order, so the GUI client and
+## the load-test bots get the same refusal from one place.
+func encode_explore(squad: int) -> PackedByteArray:
+	if not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_explore(squad)
+
+
 # --- lobby (D-048) ----------------------------------------------------
 
 ## The lobby as the server last described it: {admin: int, seats: Array}.
@@ -1169,6 +1335,38 @@ func in_lobby() -> bool:
 ## `terrain_passable` goes with it: it describes the map just left, and the
 ## next match's may be a different size, so keeping it would clamp soldiers
 ## against another world's coastline.
+## Everything a CONNECTION told this client, gone (#180).
+##
+## `leave_match` is the smaller sibling: it drops a MATCH, and everything
+## it leaves standing — the seat list, this client's player number, the
+## chat, the buildings it has ever been shown — is still true of the
+## server it is still connected to. None of that survives a disconnect,
+## because the next server is a different server and its ids start again.
+##
+## `buildings` is the one to be careful about. It is D-030's EVER-REVEALED
+## set, which the server hashes, and `docs/status/sandbox.md` records
+## exactly what carrying it across a teardown costs: 106 building desyncs
+## in 55,239 checks, present since leave-to-lobby existed and reproducible
+## in one click once a button made it easy. `leave_match` already clears
+## it; this exists so the wider reset cannot be written as "leave_match
+## plus a few fields" by somebody who does not know that.
+##
+## The session COUNTERS deliberately survive — desyncs, hash checks,
+## packets. `desync_summary()` is printed once when the process ends
+## (client.gd's `_exit_tree`), and a session that played two matches on
+## two servers should report what the session did, not what its last
+## connection did.
+func disconnected() -> void:
+	leave_match()
+	player = -1
+	squad_cap = 0
+	lobby = {}
+	chat_log = []
+	last_notice = ""
+	refusal = {}
+	_casualty_sites = []
+
+
 func leave_match() -> void:
 	welcomed = false
 	space = null

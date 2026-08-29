@@ -6,7 +6,8 @@
 script = ExtResource("1_civ")
 id = &"gildedreach"
 display_name = "Gildedreach"
-summary = "Economy and flexibility. The broadest roster in the game and the best gatherers — an army bought rather than bred, excellent at nothing until the gold flows."
+summary = "Economy and flexibility. The broadest roster in the game and the best gatherers â€” an army bought rather than bred, excellent at nothing until the gold flows."
+signature_unit = &"sellswords"
 colour = Color(0.78, 0.62, 0.2, 1)
 starting_food = 250
 starting_wood = 200

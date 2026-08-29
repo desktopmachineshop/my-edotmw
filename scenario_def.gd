@@ -56,6 +56,34 @@ extends Resource
 ## "near each other" is not a property any real map has.
 @export var separation: int = 0
 
+## Whether a run of this scenario can prove FOG GATING in the sense
+## `gate-check.sh fog-squads` means it: even the single most-informed
+## client knows FEWER squads than the server simulates, at every moment of
+## the run.
+##
+## True for anything resembling a real match, and FALSE for a scenario
+## whose armies all converge on one another — because that comparison is
+## about the PEAK, and the moment every army meets, the best-informed
+## client has seen everything there is. `clash` is exactly that scenario
+## by construction: "two armies already within reach" is a description of
+## armies that will shortly all be in one place.
+##
+## This does NOT mean such a scenario proves nothing about fog. `clash`
+## reports `conceal_events=137 reveal_events=86` over a 4-bot run — squads
+## leaving and re-entering vision constantly — and the bots' own verdict
+## gates on both. What it cannot support is the stronger peak-knowledge
+## comparison, and `test-scenario` says which one it skipped rather than
+## skipping it quietly (gate-check.sh's own header: "a comparison that
+## silently skips is the vacuous pass D-022's audit was written against").
+##
+## Worth knowing before changing it: this became FALSE for `clash` only
+## once the load-test bots started actually fighting there (#230). While
+## they sat still, `clash`'s armies were 8 cells apart against a 12-unit
+## vision range and never saw each other, so the peak comparison passed on
+## a run in which nothing happened — a gate satisfied by the bots being
+## broken.
+@export var proves_fog_gating: bool = true
+
 ## How far from an intended cell the applier may look for a free passable
 ## one. Offsets are authored against no particular terrain, so some will
 ## land in water; this bounds the search rather than letting a scenario
