@@ -230,7 +230,7 @@ Four things worth carrying, and only the first is about boats:
   one reports 1 landmass**, because `MapConfig.spawn_points` forces every
   start onto the mainland (D-20260827). So the gate correctly skips
   everywhere, and #351's placement half is still open — the predicate was
-  only ever one of its two causes. `tests/test_spawn_landmasses.gd`
+  only ever one of its two causes. `tests/test_gate_checks.gd`
   prints that table rather than pinning a number, since generated terrain
   moves when the generator does.
 
@@ -368,7 +368,10 @@ So an AI could be given the whole behaviour and no landing would result,
 however committed the profile. **Shipping AI naval behaviour that cannot
 be run would BE the D-076 mistake rather than the fix for it** — which is
 the argument §6 opens with — so the behaviour, the `AI_STATS` keys, the
-bot's crossing and `beachhead.tres` land WITH stage 2.
+bot's crossing land WITH stage 2. (A `beachhead` scenario was
+named here as landing with them and does not exist: stage 2 landed
+without one, and the crossing is exercised by `tests/test_naval_landing.gd`
+instead. Corrected rather than left as a file nobody wrote.)
 
 Four things worth carrying:
 

@@ -113,6 +113,6 @@ stage 7 needs a wire change either.
 ## Revisit trigger
 
 Stage 2 landing. At that point the behaviour, the `AI_STATS` keys, the
-bot's crossing and `beachhead.tres` are writable and runnable, and this
+bot's crossing and the crossing fixture are writable and runnable, and this
 entry gains an amendment recording the first match in which a landing
 actually happened — which is the criterion, and is not met yet.

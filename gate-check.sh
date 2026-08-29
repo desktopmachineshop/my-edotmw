@@ -148,7 +148,7 @@ case "$check" in
         # AI's own answer lets the thing under test excuse itself, and a
         # gate that cannot fail is not a gate.
         #
-        # So the map decides. SPAWN_LANDMASSES is topology: one means no
+        # So the map decides. SEAT_LANDMASSES is topology: one means no
         # crossing was ever available and a skip is honest; more than one
         # means the crossing was there and declining it is a finding.
         # NECESSARY AND SUFFICIENT ARE TWO QUESTIONS, and the map answers
