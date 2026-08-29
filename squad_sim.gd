@@ -357,16 +357,6 @@ var top_field_cells_per_tick: int = 1024
 
 # --- the water domain (naval stage 2, #301, docs/plans/naval.md 2.2/2.3)
 
-## `_tier`'s three values. A DOMAIN rather than a tier, and the field
-## keeps its name only so D-076's call sites do not churn.
-##
-## Three values in one field is right because they are MUTUALLY EXCLUSIVE
-## BY CONSTRUCTION: a ship is never on a wall, and a land squad is never
-## on open water except as cargo, which is not in the world at all
-## (naval 3.1, and `_cargo` is where that is enforced).
-const DOMAIN_GROUND := 0
-const DOMAIN_WALL_TOP := 1
-const DOMAIN_WATER := 2
 
 ## THE map from `UnitDef.movement_domain`'s string to the constant above,
 ## and the reason it is a function rather than an inline comparison.
@@ -875,6 +865,11 @@ func is_passable_top(cell: Vector2i) -> bool:
 ## naval stage 2. It is declared NOW because stage 5 (combat across the
 ## shoreline) needs to name the domain it refuses melee across, and a
 ## bare `2` in `combat.gd` would be a second definition of the same fact.
+## Three values in one field is right because they are MUTUALLY
+## EXCLUSIVE BY CONSTRUCTION: a ship is never on a wall, and a land
+## squad is never on open water except as cargo, which is not in the
+## world at all (naval 3.1, and `_cargo` is where that is enforced).
+##
 const DOMAIN_GROUND := 0
 const DOMAIN_WALL_TOP := 1
 const DOMAIN_WATER := 2
