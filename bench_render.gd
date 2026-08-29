@@ -137,6 +137,10 @@ var _camera: Camera3D
 var _terrain_root: Node3D
 var _squad_root: Node3D
 var _squad_nodes := {}
+## The one-int-per-squad LOD memory the client keeps (#155). Cleared with
+## the squads in `_setup_count`, because a rung of the sweep re-uses squad
+## ids for a different number of squads at a different spread.
+var _lod_tier := {}
 var _visible_squads := 0
 var _camera_target := Vector3.ZERO
 
@@ -315,6 +319,7 @@ func _setup_count(count: int) -> void:
 	for node in _squad_nodes.values():
 		node.queue_free()
 	_squad_nodes.clear()
+	_lod_tier.clear()
 
 	_sim = SquadSim.new(_space, CurveReplicator.new())
 	_sim.set_passable(TerrainGen.new().passability(_space))
@@ -526,7 +531,6 @@ func _refresh_squads() -> void:
 	_frame_soldiers = 0
 	var offsets := _space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
-	var target := _camera_target
 
 	for squad_id in _state.live_squad_ids():
 		var entry: Dictionary = _state.composition.get(squad_id, {})
@@ -574,9 +578,19 @@ func _refresh_squads() -> void:
 			_keys_total += curve.key_count()
 			_keys_worst = maxi(_keys_worst, curve.key_count())
 
+		# DERIVE and UPLOAD are timed apart, which is the whole of #229:
+		# the frame was one number before this, so a tripling had nowhere
+		# to be attributed. `_detail_for` carries the squad id and the
+		# drawn offsets because the LOD ladder is hysteretic now (#155,
+		# #221) — it keeps one int per squad, so a benchmark that asked
+		# for a tier by world position alone would re-derive on flips the
+		# shipping client no longer has. #263 kept THIS call and not its
+		# own older one: a benchmark that runs the client's pipeline and
+		# then prices a ladder the client retired is the drift this whole
+		# PR exists to close.
 		var derive_at := Time.get_ticks_usec()
 		var transforms := _state.soldier_transforms_lod(
-			squad_id, _now, _detail_for(centre + offset))
+			squad_id, _now, _detail_for(squad_id, drawn, centre))
 		_frame_derive += Time.get_ticks_usec() - derive_at
 		_frame_soldiers += transforms.size()
 
@@ -599,7 +613,8 @@ func _refresh_squads() -> void:
 			var enemy: Array[Transform3D] = []
 			if int(doing.get("enemy_squad", -1)) >= 0:
 				enemy = _state.soldier_transforms_lod(
-					int(doing["enemy_squad"]), _now, _detail_for(centre + offset))
+					int(doing["enemy_squad"]), _now,
+					_detail_for(int(doing["enemy_squad"]), drawn, centre))
 			var speed := _state.squad_speed(squad_id, _now)
 			var neighbours := PackedVector3Array()
 			# The cross-squad JOSTLE gather, timed on its own because it is
@@ -661,17 +676,19 @@ func _refresh_squads() -> void:
 		_frame_upload += Time.get_ticks_usec() - upload_at
 
 
-## Mirrors client.gd's `_detail_for` and its LOD_TIERS. Duplicated
-## knowingly and narrowly: the benchmark exists to measure the client, and
-## a benchmark that skipped the client's LOD would report a cost the
-## client does not pay. If the tiers are retuned, both move.
-func _detail_for(world: Vector3) -> int:
-	var distance := _camera.global_position.distance_to(world)
-	if distance < 55.0:
-		return 1 << 30
-	if distance < 110.0:
-		return 12
-	return 5
+## The client's own LOD, through the client's own arithmetic. This used to
+## be a hand-copy of the three tier numbers under a comment reading "if the
+## tiers are retuned, both move"; they live in `RenderCull` now, so it
+## cannot fail to. What is still duplicated is the one-int-per-squad memory
+## the hysteresis band needs (#155) — the benchmark exists to measure the
+## client, and a benchmark that ran a MEMORYLESS ladder would re-derive on
+## tier flips the shipping client no longer has.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 func _process(delta: float) -> void:

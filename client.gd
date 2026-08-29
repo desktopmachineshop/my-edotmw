@@ -106,10 +106,92 @@ const RE_RALLY_AT_SECONDS := 40.0
 ## enough that an empty scene cannot pass.
 const MIN_DISTINCT_COLOURS := 24
 
-var _host: ENetConnection
-var _peer: ENetPacketPeer
+## How this client reaches a server (#184). ENet today; D-088's Steam
+## relay is the second implementation. Null when there is no connection
+## at all — which is a real state since #180 — and also null when this
+## player is HOSTING, because then the server it owns holds the socket
+## and this client reaches it through the loopback (#182).
+var _transport: NetTransport = null
+## The other end of this client's connection. UNTYPED since #182,
+## because there are now two kinds: an `ENetPacketPeer` when joined over
+## a socket, and a `HostLink` when this player is hosting the match in
+## their own process (D-088).
+##
+## Everything this client asks of it is `send()` and `peer_disconnect*()`
+## — the shape `loopback_peer.gd` was built around — so the ~30 sites
+## that order a squad, produce a unit or set a formation are the same
+## code either way. That is the point: a host cannot be given a rule a
+## guest does not have, because there is no branch in which to give it
+## one.
+var _peer
 var _state := ClientState.new()
 var _connected := false
+
+## The pre-connection screen (#180). Everything below exists because this
+## client had no state in which it was NOT connected: `_ready()` opened a
+## socket from a CLI flag, and the lobby — the first thing a player ever
+## saw — was reachable only because that socket already existed. A tester
+## who installs a build has no command line to type into.
+var _menu_layer: CanvasLayer = null
+## The controls screen (#282). One panel, reachable from BOTH menus —
+## the main menu for a player who has not connected yet, and the in-game
+## menu for one mid-match who will not go back to the main menu to read
+## them. Built once and shown/hidden, so the two entry points cannot
+## drift into two screens.
+var _controls_layer: CanvasLayer = null
+## The manual (#305). `_manual_page` survives a close, so a player who
+## opens Help twice lands where they left off rather than back at page one.
+var _manual_layer: CanvasLayer = null
+var _manual_contents: VBoxContainer = null
+var _manual_scroll: ScrollContainer = null
+var _manual_body: VBoxContainer = null
+var _manual_page: StringName = &""
+var _menu_address: LineEdit = null
+var _menu_status: Label = null
+## Where this client last pointed itself, remembered across launches, so
+## the second session with a friend's server is one click. Always
+## `host:port`: an address without one reconnects somewhere else the day
+## the port changes, and D-095 gives every worktree its own.
+var _menu_last_endpoint := ""
+## Wall-clock at which the current connection attempt began, or -1 when
+## there is none. ENet never reports "the host is not there" — it simply
+## stays silent — so without a deadline a wrong address is a client that
+## sits forever showing nothing, which is the reported shape of #162.
+var _connect_started_at := -1.0
+## The authoritative server running INSIDE this process, when this
+## player is hosting (D-088, #182), or null. Its lifetime is the match's:
+## created by Host, freed by `_return_to_menu`, which is D-088's accepted
+## consequence — host-quit kills the match for everyone in it.
+var _hosted_server: Node = null
+## AI seats a `--host=1` launch asks its own server for, before anybody
+## presses start. Zero — every interactive host — leaves the lobby exactly
+## as the Host button leaves it; `just test-host` uses it so a headless
+## host has opponents without a human to add them.
+## The port an in-process host binds. `DEFAULT_SERVER_PORT` for a player
+## hosting from the menu — one number to tell a friend — and overridden
+## by `--host-port` for the recipes, which are per-instance (D-095).
+var _host_port := DEFAULT_SERVER_PORT
+
+## Capture-only: do not found the opening town centre, so a frame can
+## show the state before a player has acted (#284). Never set by
+## `run-client`; `just test-client HOLD=1` is the one caller.
+var _hold_opening := false
+
+var _host_ai_wanted := 0
+## Whether `_drive_host_lobby` has already run. It is a ONE-SHOT: the
+## lobby it acts on stops existing the moment it presses start, and a
+## second pass would seat another N AI into the next lobby a return would
+## produce.
+var _host_lobby_driven := false
+## Which dev instance launched this client (D-095), for the title bar.
+## Read once in `_ready()` because the title is rewritten on every
+## connection now, not just at startup.
+var _instance := ""
+
+## How long to wait for ENet to report a connection before giving up and
+## saying so. Generous: a first connection also pays for the server
+## generating a 32,592-cell world if it was only just started.
+const CONNECT_TIMEOUT_SECONDS := 12.0
 
 var _unit_def: UnitDef
 var _squad_nodes := {}  # squad id -> PrimitiveUnit
@@ -162,6 +244,12 @@ var _world_environment: WorldEnvironment = null
 ## issue #58.
 var _fog: TerrainFog = null
 
+## Audio (#344). Client-only and one-way: nothing the simulation, the
+## wire or the composition hash reads depends on a sound having played
+## (D-006 clause 2). The DECISIONS live in `audio_cue.gd`, which is pure
+## and tested headless; this reference is only the device half.
+var _audio: AudioDirector = null
+
 ## The one terrain material (`TerrainChunk.make_material`), kept so the
 ## fog field above can be pushed into it, and the texture it is pushed
 ## through — updated in place four times a second rather than rebuilt, so
@@ -184,18 +272,6 @@ var _fog_updated_at := -1.0
 ## exactly the maps with the most ground to cross.
 const FOG_INTERVAL := 0.25
 
-## Render LOD tiers (D-045): distance from the camera in world units, and
-## the most soldiers a squad past that distance is drawn with.
-##
-## Tuned against `just bench-render` rather than chosen: at D-018's full
-## scale the client was at 17.8 fps with every visible soldier derived,
-## and per-soldier derivation was ~96% of the frame.
-##
-## Nothing here touches `alive`. A thinned squad keeps its true frontage
-## because `slot_offset` is still asked for the real size, so this reads
-## as a distant formation being sparse rather than as a smaller unit —
-## which matters, because unit size is tactical information a player is
-## entitled to read off the screen correctly.
 ## Below this ground speed a squad is standing still as far as animation is
 ## concerned. Not zero: a curve sampled either side of a keyframe produces a
 ## little numerical drift, and a squad that flickered between idle and walk on
@@ -205,22 +281,36 @@ const FOG_INTERVAL := 0.25
 ## (#240).
 const MOVING_SPEED_EPSILON := SquadRender.MOVING_SPEED_EPSILON
 
-const LOD_TIERS := [
-	{"distance": 55.0, "soldiers": 1 << 30},
-	{"distance": 110.0, "soldiers": 12},
-	{"distance": INF, "soldiers": 5},
-]
+## Which LOD tier each squad was drawn at last frame — the MEMORY
+## `RenderCull.detail_tier`'s hysteresis band needs, and the client's only
+## part in the ladder. The tiers, the band and the arithmetic all live in
+## `render_cull.gd`, where they can be tested without a GPU (D-014); this
+## is a dictionary of one int per squad, cleared with the match exactly as
+## `_drawn_cache` is.
+##
+## Legal under D-006 for the same reason that cache is: it decides nothing
+## about where a soldier stands — the same slots come back — and nothing
+## in it reaches the simulation, the wire or the composition hash.
+var _lod_tier := {}
 
 
-## How many soldiers to draw for a squad at `world` (D-045).
-func _detail_for(world: Vector3) -> int:
+## How many soldiers to draw for the squad drawn at `offsets` (D-045).
+##
+## Hysteretic, and it is asked about the NEAREST visible copy rather than
+## about the one `nearest_offset` picked for placement. Both halves are
+## #155: a squad hovering near 55 flipped between forty men and twelve on
+## the smallest movement, and since every copy is drawn
+## (D-20260818-entities-are-drawn-at-every-visible-copy) an argmin between
+## two near-equidistant copies could move the distance a whole map period
+## with the camera perfectly still.
+func _detail_for(squad_id, offsets: Array[Vector3], centre: Vector3) -> int:
 	if _camera == null:
-		return 1 << 30
-	var distance := _camera.global_position.distance_to(world)
-	for tier in LOD_TIERS:
-		if distance < float(tier["distance"]):
-			return int(tier["soldiers"])
-	return int(LOD_TIERS[LOD_TIERS.size() - 1]["soldiers"])
+		return RenderCull.lod_soldiers(0)
+	var tier := RenderCull.detail_tier(
+		RenderCull.lod_distance(offsets, centre, _camera.global_position),
+		int(_lod_tier.get(squad_id, -1)))
+	_lod_tier[squad_id] = tier
+	return RenderCull.lod_soldiers(tier)
 
 
 ## Squads derived and drawn this frame, against the number known. Shown in
@@ -287,38 +377,40 @@ var _trained_at := 0.0
 
 
 func _ready() -> void:
+	# Which build this is, first line (#178) — see server.gd's copy.
+	print(BuildVersion.banner("client"))
 	var args := CmdArgs.parse(OS.get_cmdline_user_args())
 	# Same refusal the server makes (D-20260817-recipe-args-are-positional):
 	# `int()` strips non-digits, so a mistyped --port or --lobby-ai reads
 	# as a plausible number and the capture recipes photograph the wrong
 	# thing (#89, #98).
 	var bad_args := CmdArgs.invalid_integers(args,
-		["port", "lobby-ai", "lobby-preset-steps"])
+		["port", "lobby-ai", "lobby-preset-steps", "menu", "host", "host-ai",
+		"host-port", "hold-opening", "controls"])
 	bad_args.append_array(CmdArgs.invalid_numbers(args, ["run-seconds"]))
 	if not bad_args.is_empty():
 		push_error(CmdArgs.complaint("client", bad_args))
 		get_tree().quit(1)
 		return
-	# Inside the compose network the server is a hostname, not localhost,
-	# so the address is overridable by env as well as by flag — same
-	# convention as bot_client.gd.
-	var default_address := OS.get_environment("EDOTMW_SERVER_ADDRESS")
-	if default_address == "":
-		default_address = DEFAULT_SERVER_ADDRESS
-	var address := String(args.get("address", default_address))
-	var port := int(args.get("port", DEFAULT_SERVER_PORT))
+	# Where this launch is pointed, and whether it was pointed anywhere at
+	# all (#180). The rule is "was a connection ASKED for on the command
+	# line" — `--address` has defaulted to 127.0.0.1 since this file
+	# existed, so a rule reading the resolved value would autoconnect
+	# every launch and the menu would be unreachable. See
+	# `MainMenu.autoconnect` for the whole argument, including why
+	# capture mode and EDOTMW_SERVER_ADDRESS count.
+	var target := MainMenu.autoconnect(args,
+		OS.get_environment("EDOTMW_SERVER_ADDRESS"),
+		DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	# Which dev instance (agent worktree / branch) launched this client
 	# (D-095). Several agents run servers and clients on one desktop in
 	# parallel, so the title bar names the instance and the endpoint —
 	# otherwise two identical windows are only tellable apart by clicking
 	# around in them, and the human tests the wrong agent's build.
-	var instance := String(args.get("instance", ""))
-	var window_title := "eDotMW"
-	if instance != "":
-		window_title += " — %s" % instance
-	window_title += "  [%s:%d]" % [address, port]
-	get_window().title = window_title
+	_instance = String(args.get("instance", ""))
 	_run_seconds = float(args.get("run-seconds", -1.0))
+	# Capture-only, and only for photographing the opening hint (#284).
+	_hold_opening = int(args.get("hold-opening", 0)) == 1
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
 	# lobby with something in it rather than one empty seat.
@@ -358,25 +450,71 @@ func _ready() -> void:
 	_build_debug_panel()
 	_build_defeat_screen()
 	_build_loading_screen()
+	_build_connection_lost_screen()
 
-	_host = ENetConnection.new()
-	var err := _host.create_host(1, CHANNELS)
-	if err != OK:
-		push_error("client: could not create ENet host (error %d)" % err)
-		return
-	_peer = _host.connect_to_host(address, port, CHANNELS)
-	if _peer == null:
-		push_error("client: could not reach %s:%d" % [address, port])
-		return
-	print("client: connecting to %s:%d" % [address, port])
+	_build_controls_screen()
+	_build_manual_screen()
+	_build_main_menu()
+	# `--controls=1` opens the controls screen at startup, for the one
+	# caller that has to photograph it (`just menu-shot CONTROLS=1`).
+	# Same reasoning as `--menu=1`: every screen somebody looks at gets an
+	# instrument aimed at it deliberately, because this project has now
+	# been unable to photograph something four times over.
+	if int(args.get("controls", 0)) == 1:
+		_toggle_controls()
+	# `--manual=<page>` opens the manual at a named page, for the
+	# instrument that has to photograph it. A PAGE rather than a flag,
+	# because "the manual" is twelve different screens and a shot of the
+	# first one says nothing about the eleven with tables on them.
+	var manual_page := String(args.get("manual", ""))
+	if manual_page != "":
+		var known := false
+		for entry in Manual.pages():
+			if String(entry["id"]) == manual_page:
+				known = true
+		if known:
+			_manual_page = StringName(manual_page)
+			_toggle_manual()
+			# A marker the recipe reads, rather than a screenshot it
+			# trusts. `just menu-shot` fails without it.
+			print("client: MANUAL page=%s" % manual_page)
+		else:
+			# Loudly, because the alternative is a screenshot of a blank
+			# page that every automated check calls a success — the
+			# `--menu` bare-flag defect (#180) with a different argument.
+			push_error("--manual=%s is not a page; known pages: %s"
+				% [manual_page, ", ".join(Manual.page_ids())])
+	# `--host=1` starts the in-process server and joins it, exactly as the
+	# menu's Host button does (#182). It exists so hosting can be driven
+	# headlessly — by `just test-host`, which points real bots at a real
+	# hosting client over a real socket, and by the alpha loop, where a
+	# tester's shortcut should not require them to click anything.
+	#
+	# Checked before autoconnect because the two are mutually exclusive
+	# and hosting is the more specific request: a launch that says both
+	# `--host=1` and `--address` is asking to host, and connecting
+	# somewhere else instead would be a plausible, entirely wrong answer.
+	if int(args.get("host", 0)) == 1:
+		_host_ai_wanted = int(args.get("host-ai", 0))
+		# Which port this host BINDS. A player never passes it — the menu
+		# hosts on the default so a friend can be told one number — but
+		# `just test-host` must, because D-095 gives every agent worktree
+		# its own port and a recipe that bound the shared 4433 could
+		# collide with another agent's server on the same laptop.
+		_host_port = int(args.get("host-port", DEFAULT_SERVER_PORT))
+		_host_match()
+	elif bool(target["connect"]):
+		_connect_to(String(target["address"]), int(target["port"]))
+	else:
+		_show_main_menu("")
 
 
 func _exit_tree() -> void:
 	if _peer != null and _connected:
 		_peer.peer_disconnect_now(0)
-	if _host != null:
-		_host.destroy()
-		_host = null
+	if _transport != null:
+		_transport.close()
+		_transport = null
 	# The one line every interactive session ends with, whatever else
 	# happened. A playtest asked to judge "zero desyncs across the session"
 	# was previously judging it by console SILENCE, and silence is what a
@@ -421,6 +559,28 @@ func _process(delta: float) -> void:
 		_now += delta
 	_frame_delta = delta
 	_service_network()
+	# Before anything reads the connection: ENet never reports "there is
+	# nothing at that address", so this is the only thing that can end a
+	# doomed attempt (#180).
+	_check_connect_timeout()
+	# Nothing below can run without a CONNECTION. Returning here rather
+	# than guarding each caller is what makes the menu a real state rather
+	# than an overlay drawn on top of a client still pretending.
+	#
+	# A hosting client has no ENet host of its own — the server it owns
+	# has one, and this client reaches it through the loopback (#182) — so
+	# the test is "is there a connection", not "is there a socket". Read
+	# as the latter, a host would tick its server and render nothing.
+	if _transport == null and _hosted_server == null:
+		# A capture run must still END. `_finish_capture` is the only
+		# thing that quits, and a headless run whose server refused it or
+		# never answered would otherwise hang its recipe forever — a
+		# worse failure than the one it was testing, and exactly the
+		# "a recipe must never wait on something that will not happen"
+		# rule this project already applies to the host gate.
+		if _run_seconds > 0.0 and _wall_now >= _run_seconds:
+			_finish_capture()
+		return
 	# Immediately after the packets that could have produced one, so a
 	# desync is reported on the frame it is detected.
 	_report_desyncs()
@@ -453,6 +613,13 @@ func _process(delta: float) -> void:
 	_update_loading_screen()
 
 	_home_camera_once()
+	# Which cells are FIELDS, once per frame rather than once per squad
+	# (D-20260828-food-is-grown-not-only-found). Derived from buildings
+	# this client already knows about, so it costs no wire and no state —
+	# but `_activity_for` asks per squad and `_resource_cell_at` asks per
+	# click, and rebuilding it in either would be the M4 `by_id` defect
+	# with a smaller constant.
+	_farm_cells = _state.farm_cells()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -474,6 +641,7 @@ func _process(delta: float) -> void:
 	# on its own (one shader uniform, no image work), so it does not need
 	# the throttle the expensive per-pixel redraw exists for.
 	_centre_minimap_crop_on_camera()
+	_drive_host_lobby()
 	_seat_capture_ai()
 	_refresh_chat()
 	_refresh_lobby()
@@ -532,9 +700,14 @@ func _finish_capture() -> void:
 		# otherwise the capture races rendering and yields an empty image.
 		await RenderingServer.frame_post_draw
 		image = get_viewport().get_texture().get_image()
-		var directory := _screenshot_path.get_base_dir()
-		if directory != "" and not DirAccess.dir_exists_absolute(directory):
-			DirAccess.make_dir_recursive_absolute(directory)
+		# `res://` is read-only in an exported build (#201); the identity
+		# in a checkout, so `--screenshot=res://artifacts/client-frame.png`
+		# still lands where `just test-client` looks for it.
+		_screenshot_path = ArtifactPath.resolve(_screenshot_path)
+		var dir_error := ArtifactPath.ensure_dir_for(_screenshot_path)
+		if dir_error != OK:
+			push_error("client: could not create %s (error %d)"
+				% [_screenshot_path.get_base_dir(), dir_error])
 		if image.save_png(_screenshot_path) == OK:
 			print("client: wrote %s (%dx%d)" % [
 				_screenshot_path, image.get_width(), image.get_height()])
@@ -639,24 +812,54 @@ func _distinct_colours(image: Image) -> int:
 
 
 func _service_network() -> void:
-	if _host == null:
+	if _transport == null:
 		return
 	while true:
-		var event := _host.service(0)
+		var event := _transport.poll()
 		var type: int = event[0]
-		if type == ENetConnection.EVENT_NONE:
+		if type == NetTransport.EVENT_NONE:
 			return
 		match type:
-			ENetConnection.EVENT_CONNECT:
+			NetTransport.EVENT_CONNECT:
 				_connected = true
+				_ever_connected = true
 				print("client: connected")
-			ENetConnection.EVENT_DISCONNECT:
+				# The version handshake, first thing and before any order
+				# (#179, D-094 criterion 3). The server admits nobody
+				# until it arrives, so this is not optional politeness —
+				# a client that never sends it is refused after
+				# NetProtocol.HELLO_TIMEOUT_SECONDS.
+				_send_hello()
+			NetTransport.EVENT_DISCONNECT:
 				_connected = false
 				print("client: disconnected")
-			ENetConnection.EVENT_RECEIVE:
-				var from_peer: ENetPacketPeer = event[1]
+				# #162: `print` goes to stdout and nowhere a player can
+				# see. Until this, a client whose server had shut down
+				# kept its window, kept burning a core and kept drawing a
+				# world that could no longer change — which from the
+				# chair is indistinguishable from a hang, and is how it
+				# was reported.
+				_on_connection_lost()
+			NetTransport.EVENT_RECEIVE:
+				# UNTYPED, and read through `NetTransport` rather than
+				# through the concrete library — both are #264's seam, not
+				# a slip. A peer is duck-typed to `send`'s shape so that
+				# LoopbackPeer (D-051) and HostLink (#182) can stand in
+				# it, and a test fails if this file names the ENet class
+				# at all. (Which is why this comment does not: the guard
+				# reads the file, and a comment is text like any other —
+				# #184 records the same trap in the Steam boundary.)
+				var from_peer = event[1]
 				while from_peer.get_available_packet_count() > 0:
 					_state.handle_packet(from_peer.get_packet())
+				# Checked after the packets are drained rather than
+				# inside the loop: the refusal is the last thing this
+				# connection will ever carry, and reacting mid-drain
+				# would leave the rest of it unread.
+				if not _state.refusal.is_empty() and not _refusal_shown:
+					_show_refusal()
+			NetTransport.EVENT_ERROR:
+				push_error("client: %s reported a host error" % _transport.describe())
 
 
 ## The chunk size the ground is meshed at (D-017).
@@ -786,6 +989,13 @@ func _begin_terrain() -> void:
 	# every lattice copy — and the drain that feeds it only records while
 	# this flag says a renderer is reading (D-20260819).
 	_state.record_corpses = true
+	# Only something that DRAINS the queue may set this — bots and AI
+	# seats run this same ClientState and leave it off, so their list
+	# stays empty for the length of a run.
+	_state.record_audio = true
+	_audio = AudioDirector.new()
+	_audio.name = "AudioDirector"
+	add_child(_audio)
 	_corpse_layer = CorpseLayer.new()
 	add_child(_corpse_layer)
 	_corpse_layer.set_offsets(space.lattice_offsets())
@@ -1104,6 +1314,7 @@ func _refresh_squads() -> void:
 	# (D-20260819-a-casualty-is-visible), and the falls still playing get
 	# their one phase write.
 	_drain_casualty_sites()
+	_drain_audio_events()
 	if _corpse_layer != null:
 		_corpse_layer.update(_now)
 
@@ -1194,7 +1405,7 @@ func _refresh_squads() -> void:
 		# derivation is ~96% of this client's frame at scale, so this is
 		# the only lever that moves the number once culling has taken the
 		# off-screen squads out.
-		var detail := _detail_for(centre + offset)
+		var detail := _detail_for(squad_id, drawn, centre)
 		var transforms := _state.soldier_transforms_lod(squad_id, _now, detail)
 		# Cosmetic decoration is applied on the render path only and is
 		# never fed back into anything (D-006 clause 2).
@@ -1553,6 +1764,20 @@ func _neighbor_player_candidates() -> Array:
 ## rather than the middle of the map, which is where a player actually
 ## starts looking.
 func _found_home_town() -> void:
+	# `--hold-opening=1` makes the capture deliberately NOT act, so a
+	# frame can show the state a player is in BEFORE they have founded
+	# anything (#284). Without it this instrument structurally cannot
+	# photograph the opening objective: the capture founds within a
+	# second or two of being welcomed, and the hint's whole job is to
+	# disappear once a town centre exists.
+	#
+	# That is the fourth time `test-client`'s framing has been unable to
+	# show something — after cliffs (a spawn is walkable by
+	# construction), forest interiors (a spawn is open ground) and the
+	# fog edge. The lesson each time was the same: when a rendered check
+	# has to see something specific, frame it on purpose.
+	if _hold_opening:
+		return
 	if _founded or not _state.welcomed or _state.squads.is_empty():
 		return
 	_founded = true
@@ -1811,12 +2036,21 @@ var _menu_button: Button = null
 ## The in-game menu, and the settings pane inside it. Its own CanvasLayer
 ## above the HUD — and it never pauses anything, see `_toggle_game_menu`.
 var _game_menu_layer: CanvasLayer = null
+## The two-press surrender guard (D-20260828-a-player-may-concede): the
+## first press swaps one button for the other, the second sends.
+var _surrender_button: Button = null
+var _surrender_confirm: Button = null
 var _settings_panel: Control = null
 ## The player scoreboard (D-102), a sibling of the settings pane inside
 ## the same menu. `_scoreboard_rows` is the box its rows are rebuilt into.
 var _scoreboard_panel: Control = null
 var _scoreboard_rows: VBoxContainer = null
 ## The defeat screen (see `_build_defeat_screen`/`_refresh_defeat`).
+## Whether the refusal screen has already been built (#179). A refusal
+## arrives once, but `_service_network` runs every frame and the socket
+## stays readable until ENet finishes the disconnect.
+var _refusal_shown := false
+
 var _defeat_layer: CanvasLayer = null
 var _defeat_time_label: Label = null
 ## Whether this player has ever had a living squad or building since the
@@ -2767,11 +3001,72 @@ func _to_hud(at: Vector2) -> Vector2:
 ## HUD, so the keys a player is told about are by construction the keys
 ## that work. They were previously a `match` statement and a hand-written
 ## hint string listing the same letters twice.
+## Letters claimed by the hand-written `event.keycode == KEY_x` branches
+## in `_handle_key`, declared so something can NOTICE a table taking one
+## (#302).
+##
+## They were only ever written as branches, which is how `G` came to be in
+## BUILD_KEYS *and* handled below it: the build table is consulted first,
+## so pressing G armed a garrison wall and `_gather_selected()` could
+## never be reached from the keyboard at all. The file predicted it twice
+## in prose — "a letter added to BUILD_KEYS or TRAIN_KEYS silently steals
+## it from here", and "L/K/G/F/U avoid ... every existing
+## BUILD_KEYS/TRAIN_KEYS letter" — and the second comment checked the new
+## letters against the two TABLES rather than against these branches, so
+## `G` cleared the check it was measured against.
+##
+## The value is a human-readable name, not a callable: this table exists
+## to be COMPARED against the other two, and `tests/test_hotkeys.gd`
+## fails both if a letter is claimed twice and if a branch here is not
+## declared. A third comment would have been the third prose guard for a
+## thing prose has now got wrong twice.
+##
+## Not exhaustive of every key `_handle_key` reads — ESC and the digits
+## are not LETTERS and cannot collide with a table keyed by
+## `OS.get_keycode_string`.
+const RESERVED_KEYS := {
+	"X": "stop the selection",
+	"V": "rotate the placement ghost (D-076)",
+	"G": "gather at the cursor's node",
+}
+
+# `RESERVED_FOR_IN_FLIGHT` stood here and is deliberately NOT carried
+# forward: #246 bound O to `farm` on `main` and retired the table in the
+# same commit, which is exactly the rule the table stated for itself — an
+# entry leaves when its real binding lands. Its two guards on `main`
+# already tolerate the absence; resurrecting it here would hold O against
+# the branch that has already taken it.
+
+## The manual's key (#305). ONE definition: `_handle_key` resolves it back
+## to a keycode, `controls_reference.gd` prints it, and the opening
+## objective points at it — so the three cannot disagree.
+##
+## A FUNCTION key rather than a letter, deliberately. Every letter this
+## game could plausibly want is in BUILD_KEYS or TRAIN_KEYS or one commit
+## away from being taken by one, and #302 is what that looks like when it
+## happens: H, the obvious key for Help, has built a storehouse since M3.
+const MANUAL_KEY := "F1"
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
-	# D-076. L/K/G/F/U avoid WASD (camera pan), Q/E (camera yaw) and every
-	# existing BUILD_KEYS/TRAIN_KEYS letter.
-	"L": &"wall", "K": &"gate", "G": &"garrison_wall", "F": &"garrison_gate",
+	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
+	# took J (#302) because G is the letter a player reaches for to
+	# GATHER, and both branches picked their letter against the tables as
+	# they stood on main, neither able to see the other. O is the letter
+	# `RESERVED_FOR_IN_FLIGHT` was holding O for this PR; binding it here
+	# is what retired that reservation, and the table went with its last
+	# entry rather than being left empty — which is what its own test
+	# required.
+	"O": &"farm",
+	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
+	# together deliberately; F and U continue it.
+	#
+	# `garrison_wall` was on G and has moved to J (#302): G is what a
+	# player reaches for to GATHER, that is the verb they use from the
+	# first minute of a match, and a niche wall piece has the weaker claim
+	# on the letter. Every letter here is checked against RESERVED_KEYS
+	# and TRAIN_KEYS by a test now, rather than by a comment.
+	"L": &"wall", "K": &"gate", "J": &"garrison_wall", "F": &"garrison_gate",
 	"U": &"wall_tower",
 }
 const TRAIN_KEYS := {
@@ -2893,6 +3188,13 @@ var _tree_chunks := {}
 ## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
 
+## cell -> `Economy.ResourceKind` for every FIELD this client knows about
+## (D-20260828-food-is-grown-not-only-found), refreshed once a frame from
+## `ClientState.farm_cells()`. A field is a BUILDING, so it is drawn by the
+## building pass and grows no props — this is only what tells the click
+## test and the working-crew animation that the cell is worked ground.
+var _farm_cells := {}
+
 ## Cells the server has revealed and this client has not grown yet, and the
 ## per-frame budget that drains them (`node_placement.gd`). Growing a cell
 ## costs ~87 us — a terrain sample, a biome classification, its six
@@ -2943,6 +3245,51 @@ var _frame_delta := 0.0
 ## (D-024), and their transforms are derived here exactly as the living
 ## are drawn — same curve, same formation function, same sampler — so a
 ## body lies where the man was standing.
+## Turn what happened into what is heard (#344).
+##
+## The resolution is `AudioCue`'s, not this function's: fog, distance,
+## rate and voice caps are all decided there, purely, and this only
+## supplies the three things that need a live client — the fog LEVEL for
+## the cell, where the camera is looking, and the clock.
+##
+## Fog is read through `TerrainFog.level_at`, which is the ONE vision
+## query this client already has (D-106) and the one the ground shader
+## and the minimap read. #344 is explicit that ears must not invent a
+## second: a sound whose cause a player cannot SEE must not play.
+func _drain_audio_events() -> void:
+	if _audio == null or _state.space == null:
+		return
+	_audio.reap()
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var listener := _state.space.index(_state.space.world_to_cell(_camera_target))
+	for event in _state.take_audio_events():
+		var def := SoundRoster.by_event(StringName(event["event"]))
+		if def == null:
+			continue
+		var cell := int(event["cell"])
+		var level := _fog.level_at(cell) if _fog != null and cell >= 0 else TerrainFog.VISIBLE
+		var cue := AudioCue.resolve(def, cell, listener, _state.space, level, now,
+			_audio.ledger(), float(event.get("magnitude", 1.0)))
+		_audio.play(cue, now)
+
+
+## Play an interface cue — a click, an order acknowledgement, a stinger.
+##
+## Never fog gated (the DATA says so, `SoundDef.fog_gated`), because a UI
+## sound has no cause on the map: gating it on sight would silence the
+## one category that is unambiguously the player's own.
+func _play_ui(event: StringName) -> void:
+	if _audio == null:
+		return
+	var def := SoundRoster.by_event(event)
+	if def == null:
+		return
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	var cue := AudioCue.resolve(def, -1, -1, _state.space, TerrainFog.VISIBLE,
+		now, _audio.ledger())
+	_audio.play(cue, now, true)
+
+
 func _drain_casualty_sites() -> void:
 	if _corpse_layer == null:
 		return
@@ -3049,7 +3396,14 @@ func _activity_for(squad_id) -> Dictionary:
 	if def.carry_capacity > 0:
 		var crew_at := _state.squad_world_position(squad_id, _now)
 		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
-		if _state.nodes.has(crew_cell):
+		# A FIELD is worked ground too (D-20260828-food-is-grown-not-only-
+		# found), and it is the same question with a second source: the
+		# crew is standing somewhere this client knows yields something.
+		# Without this a crew in a farm reads as idle and stands about in
+		# its crop with its tools on its back.
+		var working_kind := int(_state.nodes[crew_cell]) if _state.nodes.has(crew_cell) \
+			else int(_farm_cells.get(crew_cell, -1))
+		if working_kind >= 0:
 			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
 			return {
 				"activity": CosmeticOffset.Activity.WORKING,
@@ -3059,7 +3413,7 @@ func _activity_for(squad_id) -> Dictionary:
 				# hand — so the axe/pickaxe/bare-hands choice costs one
 				# dictionary read and nothing on the wire
 				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
-				"working": int(_state.nodes[crew_cell]),
+				"working": working_kind,
 				"swing": CosmeticOffset.SWING_AMPLITUDE,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
@@ -4995,9 +5349,79 @@ func _update_hud() -> void:
 	if _state.notices_received != _notice_seen:
 		_notice_seen = _state.notices_received
 		_notice_until = _now + 5.0
-	_hud_notice.text = _state.last_notice if _now < _notice_until else ""
+	if _now < _notice_until:
+		_hud_notice.text = _state.last_notice
+		_hud_notice.modulate = HudTheme.WARNING
+	else:
+		# The same slot carries the OPENING OBJECTIVE when the server has
+		# nothing to say (#284). One banner rather than two: this is
+		# already where a player looks for "the game is telling me
+		# something", a refusal must win while it is up, and a second
+		# permanent strip would cost the battlefield height for a line
+		# that is empty for all but the first minute of a match.
+		#
+		# Dimmer than a refusal on purpose: a standing instruction at full
+		# warning strength reads as an error the player cannot clear.
+		# `modulate` MULTIPLIES the label's own colour rather than
+		# replacing it, so this is a muted version of the same hue rather
+		# than a different one — checked in the rendered frame, not
+		# assumed.
+		_hud_notice.text = _opening_objective()
+		_hud_notice.modulate = HudTheme.TEXT_DIM
 
 	_update_selection_panel()
+
+
+## What this player should do first, or "" once they have done it (#284).
+##
+## Derived from what they OWN rather than from a match clock, which is
+## what makes it survive the three cases a timed tutorial gets wrong: a
+## player who founded late, one who lost their crew, and one who was
+## razed and is resettling (which
+## `D-20260823-the-opening-is-a-crew-and-a-general` made possible).
+##
+## The rule itself is `opening_brief.gd`'s — asked of the same
+## `BuildingDef.built_by` the server's order gate reads, so the banner
+## cannot tell a player to do something that will be refused.
+func _opening_objective() -> String:
+	if not _state.welcomed or _state.in_lobby():
+		return ""
+	var owned: Array = []
+	for squad in _state.squads:
+		if _state.alive_of(squad) <= 0:
+			continue
+		var def := UnitRoster.by_id(StringName(String(
+			_state.composition.get(squad, {}).get("def_id", ""))))
+		if def != null and not owned.has(def):
+			owned.append(def)
+	var objective := OpeningBrief.first_objective(owned, _owns_a_founding_building())
+	if objective == "":
+		return ""
+	# The pointer that closes the onboarding loop (#305): the one moment
+	# this project KNOWS a player is new is while they still have no town,
+	# and it is already saying something to them. Appended here rather
+	# than inside `OpeningBrief`, which is about the opening and has no
+	# business naming a keybind — that is the #302 family, and this file
+	# owns the key.
+	return "%s  (%s: manual)" % [objective, MANUAL_KEY]
+
+
+## Whether this player owns a LIVING building of the kind that founding
+## spends a crew on. Asked by def rather than by id for the same reason
+## `opening_brief.gd` never names one.
+func _owns_a_founding_building() -> bool:
+	var town := OpeningBrief.founding_building()
+	if town == null:
+		return false
+	for wire_id in _state.buildings:
+		var info: Dictionary = _state.buildings[wire_id]
+		if int(info.get("owner", -1)) != _state.player:
+			continue
+		if bool(info.get("destroyed", false)):
+			continue
+		if StringName(String(info.get("def_id", ""))) == town.id:
+			return true
+	return false
 
 
 ## Fill the context panel from whatever is selected.
@@ -5089,6 +5513,24 @@ func _update_selection_panel() -> void:
 
 	_selection_title.text = "%d squad%s" % [_selected.size(), "" if _selected.size() == 1 else "s"]
 	_selection_detail.text = "%d soldiers" % strength
+
+	# What this squad is FOR, when it is one of the two openers (#284).
+	#
+	# The opening is a gatherer crew and a general, only the crew can
+	# found, and ordering the general to build fails SILENTLY — the
+	# server refuses it because `built_by` lists the general nowhere, so
+	# a new player clicks, nothing happens, and their economy has not
+	# started. `OpeningBrief` asks the same rule the order gate asks, so
+	# this line cannot promise something that will be refused.
+	#
+	# Only shown for a SINGLE selection: a mixed one is counted rather
+	# than described (see the comment above), and a role line about
+	# "3 squads" would be about whichever def happened to sort first.
+	if _selected.size() == 1 and counts.size() == 1:
+		var only := UnitRoster.by_id(StringName(counts.keys()[0]))
+		var role := OpeningBrief.role_line(only)
+		if not role.is_empty():
+			_selection_detail.text = "%d soldiers — %s" % [strength, role]
 
 	# The build menu's category drill-down (playtest fix, see
 	# _build_menu_category's doc) is client state that outlives one panel
@@ -5570,6 +6012,15 @@ func _squad_control_actions(def_id: StringName) -> Array:
 		})
 
 	out.append({"label": "Stop", "kind": "stop", "id": &""})
+	# Explore (#120): a standing order, so the button shows whether it is
+	# ON — and the pressed state comes off the WIRE (`ClientState`), not
+	# from remembering that we sent it, because a rout cancels the mode
+	# server-side and a locally-guessed light would go on claiming the
+	# squad was scouting. Same discipline as the stance buttons below.
+	out.append({"label": "Explore",
+		"hint": "Explore: go and uncover the map, until given another order",
+		"current": _state.is_exploring(int(_selected[0])),
+		"kind": "explore", "id": &""})
 	if def != null and def.damage > 0.0 and def.carry_capacity == 0:
 		out.append({"label": "Charge", "hint": "Charge: sprint in and hit hard on arrival — right-click the target",
 			"kind": "charge_arm", "id": &""})
@@ -5813,6 +6264,7 @@ func _can_afford(food: int, wood: int, gold: int, stone: int) -> bool:
 func _on_action_pressed(index: int) -> void:
 	if index < 0 or index >= _actions.size():
 		return
+	_play_ui(&"ui_click")
 	var action: Dictionary = _actions[index]
 	match String(action["kind"]):
 		"train":
@@ -5826,6 +6278,8 @@ func _on_action_pressed(index: int) -> void:
 			_gather_selected()
 		"stop":
 			_stop_selected()
+		"explore":
+			_explore_selected()
 		"formation":
 			_set_formation(StringName(action["id"]))
 		"width":
@@ -6944,6 +7398,19 @@ func _recall_control_group(group: int) -> void:
 
 
 func _handle_key(event: InputEventKey) -> void:
+	# F1 opens the manual, and closes it (#305). A function key rather
+	# than a letter deliberately: every letter this game could want is
+	# either in BUILD_KEYS, in TRAIN_KEYS, or one keystroke away from
+	# being stolen by one — which is exactly how #302 happened to G. H,
+	# the obvious choice for Help, already builds a storehouse.
+	#
+	# It is here rather than only on a menu button because the moment a
+	# player wants the counter table is mid-fight, and making them stop
+	# to open a menu first is making them not read it.
+	if event.keycode == OS.find_keycode_from_string(MANUAL_KEY):
+		_toggle_manual()
+		return
+
 	if event.keycode == KEY_X:
 		_stop_selected()
 		return
@@ -6999,6 +7466,8 @@ func _handle_key(event: InputEventKey) -> void:
 	if TRAIN_KEYS.has(key):
 		_train_selected(TRAIN_KEYS[key])
 		return
+	# Reached only because no table above claims G — see RESERVED_KEYS,
+	# which is what makes that a checked fact rather than a hope (#302).
 	if event.keycode == KEY_G:
 		_gather_selected()                   # workers, at the cursor's node
 		return
@@ -8013,8 +8482,18 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
 	var offsets := _state.space.lattice_offsets()
-	for cell in _node_placed:
-		var world: Vector3 = _node_placed[cell]["world"]
+	# Fields rank beside forests (D-20260828-food-is-grown-not-only-found).
+	# A farm grows no props, so it is in no chunk and `_node_placed` cannot
+	# know about it — and a work site nothing here returns is a work site
+	# right-click marches your crews onto and leaves standing.
+	# Own and allied fields only: an enemy's is refused server-side
+	# (`Economy.may_work`), and offering it here would swallow the ordinary
+	# move order a player meant by clicking there.
+	var candidates := _node_placed.keys()
+	candidates.append_array(_state.farm_cells(true).keys())
+	for cell in candidates:
+		var world: Vector3 = _node_placed[cell]["world"] if _node_placed.has(cell) \
+			else _ground_world_of(int(cell))
 		for offset in offsets:
 			var drawn := world + offset
 			if _camera.is_position_behind(drawn):
@@ -8024,6 +8503,16 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 				best_distance = distance
 				best = _state.space.from_index(int(cell))
 	return best
+
+
+## A cell's centre in world space, on the ground. `_node_placed` caches
+## this for a grown node; a field has no entry there, and sampling is
+## cheap because this runs on a click.
+func _ground_world_of(cell_index: int) -> Vector3:
+	var world := _state.space.to_world(_state.space.from_index(cell_index))
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	return world
 
 
 ## Whether anything selected can actually gather. Right-clicking a forest
@@ -8051,6 +8540,7 @@ func _train_selected(archetype: StringName) -> void:
 
 
 func _stop_selected() -> void:
+	_play_ui(&"order_move")
 	var sent := 0
 	for squad in _selected:
 		var order := _state.encode_stop(squad)
@@ -8059,6 +8549,24 @@ func _stop_selected() -> void:
 			sent += 1
 	if sent > 0:
 		print("client: stopped %d squad(s)" % sent)
+
+
+## Send every selected squad off to hunt fog (#120).
+##
+## Modelled on `_stop_selected` exactly — one order per squad through
+## `ClientState`, reliable, with a count printed. Several squads ordered
+## at once deliberately do NOT coordinate here: the server spreads them,
+## because it is the side that knows what has been explored and what the
+## other scouts are already walking towards.
+func _explore_selected() -> void:
+	var sent := 0
+	for squad in _selected:
+		var order := _state.encode_explore(squad)
+		if not order.is_empty():
+			_peer.send(0, order, ENetPacketPeer.FLAG_RELIABLE)
+			sent += 1
+	if sent > 0:
+		print("client: exploring with %d squad(s)" % sent)
 
 
 ## WASD pans relative to WHERE THE CAMERA IS LOOKING, not to world axes.
@@ -8241,6 +8749,10 @@ var _lobby_seat_scroll: ScrollContainer
 var _lobby_seat_list: VBoxContainer
 var _lobby_title: Label
 var _lobby_help: Label
+## What the civ this player picked actually is (#283) — its own one-line
+## pitch and the unit it is known for. Empty on Random, which is a real
+## choice and has nothing true to say about itself yet.
+var _lobby_civ_identity: Label
 var _map_rows: VBoxContainer
 var _map_preview: TextureRect
 var _map_blurb: Label
@@ -8417,6 +8929,11 @@ const SETTINGS_PATH := "user://settings.cfg"
 ## to see it (#91). `SEAT_ROW_HEIGHT` moved with them.
 
 
+## Where `_on_report_a_problem_pressed` reports back when the in-match
+## menu is the screen on show (#288).
+var _report_status: Label = null
+
+
 func _build_game_menu() -> void:
 	_game_menu_layer = CanvasLayer.new()
 	# Above the HUD (0) but BELOW the lobby (10): the lobby is a screen
@@ -8470,6 +8987,22 @@ func _build_game_menu() -> void:
 	players.pressed.connect(_toggle_scoreboard)
 	column.add_child(players)
 
+	# Mid-match, because a player who has forgotten which key builds a
+	# barracks will not go back to the main menu to look (#282). Same
+	# screen, same list.
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.tooltip_text = "Camera, selection, orders, and every build and train key."
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
+
+	# Beside Controls, same family, same reason (#305). Mid-match is when
+	# a player wants the counter table, not before they have met anything
+	# to counter.
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -8484,6 +9017,46 @@ func _build_game_menu() -> void:
 	save.disabled = true
 	save.tooltip_text = "Not yet implemented — saves need server-side state serialisation"
 	column.add_child(save)
+
+	# Conceding is NOT leaving, and the two sit next to each other so the
+	# difference is visible (D-20260828-a-player-may-concede). Surrender
+	# ends YOUR match and leaves you watching; Leave match ends the match
+	# for everyone and returns to the lobby.
+	#
+	# It asks first. A concession is irreversible and one misclick from
+	# the Resume button, and the server deliberately does not arbitrate
+	# whether a player meant it — that would be a second round trip for a
+	# decision already made, so the confirmation belongs here.
+	_surrender_button = _styled_button("Surrender", HudTheme.DANGER)
+	_surrender_button.tooltip_text = "Concede the match. Your army and buildings are lost."
+	_surrender_button.pressed.connect(_on_surrender_pressed)
+	column.add_child(_surrender_button)
+
+	_surrender_confirm = _styled_button("Surrender — are you sure?", HudTheme.DANGER)
+	_surrender_confirm.tooltip_text = "This cannot be undone."
+	_surrender_confirm.visible = false
+	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
+	column.add_child(_surrender_confirm)
+
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding this session's logs, replays and "
+		+ "your system details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
+	# Where the answer lands when the button is pressed from IN a match.
+	# Beside the button rather than in the HUD's notice line: that line is
+	# the SERVER's channel, overwritten every frame from
+	# `_state.last_notice`, and it is one centred row — a file path would
+	# be clobbered and would not fit.
+	_report_status = Label.new()
+	_report_status.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	_report_status.modulate = HudTheme.TEXT_DIM
+	_report_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_report_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_report_status.custom_minimum_size = Vector2(320.0, 0.0)
+	_report_status.visible = false
+	column.add_child(_report_status)
 
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
@@ -8729,6 +9302,7 @@ func _toggle_game_menu() -> void:
 		return
 	_game_menu_layer.visible = not _game_menu_layer.visible
 	if not _game_menu_layer.visible:
+		_disarm_surrender()
 		if _settings_panel != null:
 			_settings_panel.visible = false
 		if _scoreboard_panel != null:
@@ -8786,6 +9360,39 @@ func _on_hud_auto_toggled(automatic: bool) -> void:
 ## reappears because `_state.in_lobby()` is true again. Nothing here has
 ## to draw a lobby, and nothing here decides a match is over — a client
 ## that could would be a client that decides for everyone (D-002).
+## First press ARMS the concession; the second sends it.
+##
+## Two buttons rather than a modal, because the game menu is already a
+## column of buttons and a modal would be a second dialogue system for one
+## question. The armed button says what it is: a player who came here for
+## Resume and misclicked sees a question, not a lost match.
+func _on_surrender_pressed() -> void:
+	if _surrender_confirm == null:
+		return
+	_surrender_confirm.visible = true
+	if _surrender_button != null:
+		_surrender_button.visible = false
+
+
+func _on_surrender_confirmed() -> void:
+	_disarm_surrender()
+	_toggle_game_menu()
+	print("client: surrendering")
+	if _peer != null and _connected:
+		_peer.send(0, NetProtocol.encode_surrender(), ENetPacketPeer.FLAG_RELIABLE)
+
+
+## Put the confirmation away again. Called when the menu closes, so a
+## player who armed it, changed their mind and pressed ESC does not find
+## it still armed the next time they open the menu — which would turn a
+## deliberate two-press guard into a single press at the worst moment.
+func _disarm_surrender() -> void:
+	if _surrender_confirm != null:
+		_surrender_confirm.visible = false
+	if _surrender_button != null:
+		_surrender_button.visible = true
+
+
 func _on_leave_match_pressed() -> void:
 	_toggle_game_menu()
 	print("client: leaving match")
@@ -8878,6 +9485,7 @@ func _teardown_match() -> void:
 	_order_press = Vector2.INF
 	_static_deal.clear()
 	_drawn_cache.clear()
+	_lod_tier.clear()
 	_terrain_built = false
 	# The tiles went with the root above; the builder goes because the next
 	# match may be a different map entirely (D-049), and a half-finished build
@@ -8954,6 +9562,7 @@ func _save_settings() -> void:
 	var config := ConfigFile.new()
 	config.set_value("client", "pan_speed", _pan_speed)
 	config.set_value("client", "hud_scale_override", _hud_scale_override)
+	config.set_value("client", "last_endpoint", _menu_last_endpoint)
 	config.set_value("client", "fullscreen",
 		DisplayServer.window_get_mode() in [
 			DisplayServer.WINDOW_MODE_FULLSCREEN,
@@ -8962,11 +9571,23 @@ func _save_settings() -> void:
 
 
 func _load_settings() -> void:
+	# The address box starts with something Join can act on, even on a
+	# launch with no settings file at all — which is every first launch,
+	# and therefore every tester's. `just menu-shot`'s picture is what
+	# showed this: the box LOOKED filled because a LineEdit draws its
+	# placeholder, and pressing Join on it would have answered "enter an
+	# address" at a player looking straight at one.
+	_menu_last_endpoint = MainMenu.format_endpoint(
+		DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	var config := ConfigFile.new()
 	if config.load(SETTINGS_PATH) != OK:
 		return
 	_pan_speed = clampf(float(config.get_value("client", "pan_speed", CAMERA_PAN_SPEED)),
 		6.0, 48.0)
+	_menu_last_endpoint = String(config.get_value("client", "last_endpoint", ""))
+	if _menu_last_endpoint.is_empty():
+		_menu_last_endpoint = MainMenu.format_endpoint(
+			DEFAULT_SERVER_ADDRESS, DEFAULT_SERVER_PORT)
 	_hud_scale_override = float(config.get_value("client", "hud_scale_override", 0.0))
 	if _hud_scale_override > 0.0:
 		_hud_scale_override = clampf(_hud_scale_override,
@@ -8976,6 +9597,764 @@ func _load_settings() -> void:
 	# fighting that would make screenshots depend on whoever ran last.
 	if _run_seconds <= 0.0 and bool(config.get_value("client", "fullscreen", false)):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+# --- the controls screen (#282) -----------------------------------------
+#
+# `decisions/D-20260828-the-controls-are-written-down-once.md`. A stranger
+# who installed the alpha met a lobby, then a map, with nothing anywhere
+# telling them that WASD pans or that right-click orders. D-094 criterion
+# 10 — a human playing end to end through an installed build — cannot be
+# discharged honestly against a game whose controls are undocumented.
+#
+# The LIST is `controls_reference.gd`, all-static and pure, and its build
+# and train rows are derived from this file's own `BUILD_KEYS` and
+# `TRAIN_KEYS`, so a letter that moves cannot leave the screen behind.
+
+
+func _build_controls_screen() -> void:
+	_controls_layer = CanvasLayer.new()
+	# Above the in-game menu (5) and the main menu (20) alike, because it
+	# is opened FROM both and must sit on top of whichever asked.
+	_controls_layer.layer = 24
+	_controls_layer.visible = false
+	add_child(_controls_layer)
+
+	# OPAQUE. At 0.94 the main menu behind it bled through hard enough to
+	# read — "eDotMW", "Join", "Host a match" all legible under the key
+	# list — which the rendered picture showed and no number could. A
+	# reference screen a player is reading is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_controls_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_controls_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	centre.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Controls"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	# Two columns of groups, because the four groups stacked are taller
+	# than a 720-high window — the same fit question `lobby_layout.gd`
+	# exists for, answered here by splitting rather than by scaling, since
+	# this screen has no other content to trade against.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 40)
+	column.add_child(columns)
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 10)
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 10)
+	columns.add_child(left)
+	columns.add_child(right)
+
+	# Split at the point that leaves the TALLER column shortest, keeping
+	# the groups in reading order.
+	#
+	# Two groups each was the obvious split and it put "Building and
+	# training" — sixteen rows, nine buildings and five units — in a
+	# column that had already spent five on Orders, so the last rows and
+	# the Close button ran off the bottom of a 720-high window. A greedy
+	# "fill the left until it has half" was the next attempt and was
+	# worse: it put ALL of them left, because fourteen of thirty is still
+	# under half until the sixteen-row group has been added.
+	#
+	# Both were caught by looking, and the fit test in
+	# `tests/test_controls_reference.gd` is what makes looking optional
+	# next time.
+	#
+	# It fired on the very next change (#305 added a Reference group for
+	# the manual's key) at 731 px against 720, and the split was rebuilt
+	# to put the screen at 705.
+	#
+	# An earlier version of this comment then predicted that the NEXT row
+	# added would red it again, reasoning that 705 of 720 was the OPTIMUM:
+	# two contiguous columns over 31 rows cannot balance better than
+	# 15/16, and the tall column is one group dealt whole.
+	#
+	# That prediction is measured FALSE. #363 put `farm` on O and freed
+	# the gather key, adding two rows, and the screen went 705 -> 684.
+	# Adding a row can MOVE the split point, and the better balance on the
+	# far side of it more than pays for the row. The 15/16 bound was true
+	# of 31 rows and said nothing about 33.
+	#
+	# So the honest statement is narrower: it fits today with room, the
+	# TEST measures that rather than anyone predicting it, and the fix if
+	# it ever does red is to let a GROUP break across columns, repeating
+	# its title — how a printed reference does it. Roughly ten lines here;
+	# still not written, because nothing needs it.
+	var groups := ControlsReference.groups()
+	var total_rows := 0
+	for group in groups:
+		total_rows += (group["rows"] as Array).size()
+	var split := groups.size()
+	var best := total_rows
+	var running := 0
+	for i in range(groups.size()):
+		running += (groups[i]["rows"] as Array).size()
+		var taller: int = maxi(running, total_rows - running)
+		if taller < best:
+			best = taller
+			split = i + 1
+	for i in range(groups.size()):
+		var group: Dictionary = groups[i]
+		var into: VBoxContainer = left if i < split else right
+
+		var title := Label.new()
+		title.text = String(group["title"]).to_upper()
+		title.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		title.modulate = HudTheme.ACCENT
+		into.add_child(title)
+
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 18)
+		grid.add_theme_constant_override("v_separation", 4)
+		into.add_child(grid)
+
+		for row in group["rows"]:
+			var keys := Label.new()
+			keys.text = String(row[0])
+			keys.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			keys.modulate = HudTheme.TEXT_BRIGHT
+			keys.custom_minimum_size = Vector2(130.0, 0.0)
+			grid.add_child(keys)
+
+			var what := Label.new()
+			what.text = String(row[1])
+			what.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			what.modulate = HudTheme.TEXT_DIM
+			what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			what.custom_minimum_size = Vector2(330.0, 0.0)
+			grid.add_child(what)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_controls)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+
+func _toggle_controls() -> void:
+	if _controls_layer == null:
+		return
+	_controls_layer.visible = not _controls_layer.visible
+
+
+# --- the manual (#305) ---------------------------------------------------
+#
+# `decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md`. The
+# CONTENT lives in `manual.gd` and `/manual/*.tres`, all-static and pure
+# for the D-061 reason; what is here is the drawing.
+#
+# The screen is a contents list on the left and one page on the right,
+# because a manual that is one long scroll is a manual nobody navigates.
+# Both halves scroll: the contents list because pages are added by
+# dropping a `.tres` in a folder and it must not be the thing that stops
+# working, and the page because a roster table is taller than any window
+# and there is no fitting it.
+#
+# The page body is drawn from `Manual.page()`'s sections and nothing else.
+# Two kinds — "text" and "table" — and no parser, which is what makes the
+# fit a property of the DATA rather than of this code, so
+# `tests/test_manual.gd` can measure it without a picture.
+
+
+func _build_manual_screen() -> void:
+	_manual_layer = CanvasLayer.new()
+	# Above the in-game menu (5), the main menu (20) and the controls
+	# screen (24) alike: it is opened FROM the first two and sits beside
+	# the third, so whichever asked, this is on top.
+	_manual_layer.layer = 25
+	_manual_layer.visible = false
+	add_child(_manual_layer)
+
+	# OPAQUE, for the reason the controls screen is (#282): at 0.94 the
+	# menu behind bled through hard enough to read under the text, which
+	# the rendered picture showed and no number could. A reference screen
+	# somebody is READING is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_manual_layer.add_child(backdrop)
+
+	var frame := MarginContainer.new()
+	frame.anchor_right = 1.0
+	frame.anchor_bottom = 1.0
+	frame.add_theme_constant_override("margin_left", 28)
+	frame.add_theme_constant_override("margin_right", 28)
+	frame.add_theme_constant_override("margin_top", 18)
+	frame.add_theme_constant_override("margin_bottom", 18)
+	_manual_layer.add_child(frame)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	frame.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Manual"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	var split := HBoxContainer.new()
+	split.add_theme_constant_override("separation", 24)
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(split)
+
+	# Contents. Scrolls, because pages arrive by dropping a file in a
+	# folder and the list is the thing that must keep working when the
+	# thirteenth one does.
+	var contents_scroll := ScrollContainer.new()
+	contents_scroll.custom_minimum_size = Vector2(230.0, 0.0)
+	contents_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	split.add_child(contents_scroll)
+	_manual_contents = VBoxContainer.new()
+	_manual_contents.add_theme_constant_override("separation", 2)
+	_manual_contents.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	contents_scroll.add_child(_manual_contents)
+
+	var rule := ColorRect.new()
+	rule.color = HudTheme.ACCENT_DIM
+	rule.custom_minimum_size = Vector2(1.0, 0.0)
+	split.add_child(rule)
+
+	_manual_scroll = ScrollContainer.new()
+	_manual_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(_manual_scroll)
+	_manual_body = VBoxContainer.new()
+	_manual_body.add_theme_constant_override("separation", 8)
+	_manual_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.add_child(_manual_body)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_manual)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+	_fill_manual_contents()
+
+
+## The contents list, rebuilt from the registry.
+##
+## Built once here rather than on every open: `Manual.pages()` reads the
+## `/manual` directory, and a player opening Help is not a reason to walk
+## a filesystem. The pages themselves ARE rebuilt on every open, which is
+## the point — a page is derived from the shipped data at the moment it is
+## read.
+func _fill_manual_contents() -> void:
+	for child in _manual_contents.get_children():
+		child.queue_free()
+	var first := true
+	for entry in Manual.pages():
+		var id: StringName = entry["id"]
+		var button := Button.new()
+		button.text = String(entry["title"])
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.tooltip_text = String(entry["summary"])
+		button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		button.flat = true
+		button.pressed.connect(func(): _show_manual_page(id))
+		_manual_contents.add_child(button)
+		if first:
+			_manual_page = id
+			first = false
+
+
+func _show_manual_page(id: StringName) -> void:
+	_manual_page = id
+	for child in _manual_body.get_children():
+		child.queue_free()
+
+	var built := Manual.page(id)
+	var title := Label.new()
+	title.text = String(built["title"])
+	title.add_theme_font_size_override("font_size", HudTheme.TITLE_SIZE)
+	title.modulate = HudTheme.TEXT_BRIGHT
+	_manual_body.add_child(title)
+
+	if String(built["summary"]) != "":
+		var summary := Label.new()
+		summary.text = String(built["summary"])
+		summary.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		summary.modulate = HudTheme.ACCENT
+		summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_manual_body.add_child(summary)
+
+	for section in built["sections"]:
+		if String(section["heading"]) != "":
+			var heading := Label.new()
+			heading.text = String(section["heading"]).to_upper()
+			heading.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+			heading.modulate = HudTheme.ACCENT
+			_manual_body.add_child(heading)
+		if section["kind"] == "table":
+			_manual_body.add_child(_manual_table(section))
+			continue
+		var paragraph := Label.new()
+		paragraph.text = "\n".join(section["lines"])
+		paragraph.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		paragraph.modulate = HudTheme.TEXT_DIM
+		paragraph.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		paragraph.custom_minimum_size = Vector2(520.0, 0.0)
+		_manual_body.add_child(paragraph)
+
+	_manual_scroll.scroll_vertical = 0
+
+
+func _manual_table(section: Dictionary) -> Control:
+	var columns: Array = section["columns"]
+	var grid := GridContainer.new()
+	grid.columns = columns.size()
+	grid.add_theme_constant_override("h_separation", 16)
+	grid.add_theme_constant_override("v_separation", 3)
+	for name in columns:
+		var head := Label.new()
+		head.text = String(name)
+		head.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		head.modulate = HudTheme.TEXT_BRIGHT
+		grid.add_child(head)
+	for row in section["rows"]:
+		for i in range((row as Array).size()):
+			var cell := Label.new()
+			cell.text = String(row[i])
+			cell.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			cell.modulate = HudTheme.TEXT_BRIGHT if i == 0 else HudTheme.TEXT_DIM
+			# The last column of the buildings and formations tables is a
+			# sentence, not a number, so it wraps and everything else does
+			# not. Deciding that per COLUMN INDEX rather than per page
+			# keeps the renderer's two cases at two.
+			if i == columns.size() - 1 and columns.size() > 2:
+				cell.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				# 400 rather than 240: at the narrower width the barracks
+				# row wrapped to six lines with ~380 px of the window
+				# unused beside it. The rendered frame is what showed
+				# that; no assertion here could have.
+				cell.custom_minimum_size = Vector2(400.0, 0.0)
+			grid.add_child(cell)
+	return grid
+
+
+func _toggle_manual() -> void:
+	if _manual_layer == null:
+		return
+	_manual_layer.visible = not _manual_layer.visible
+	if _manual_layer.visible:
+		_show_manual_page(_manual_page)
+
+
+# --- the pre-connection menu (#180) --------------------------------------
+#
+# `decisions/D-20260827-a-client-starts-before-it-connects.md`. Until this
+# existed the client had no state in which it was NOT connected: `_ready()`
+# opened a socket from a CLI flag and the lobby was the first thing anybody
+# ever saw, reachable only because that socket already existed. Every human
+# match so far was launched by `just run-client` with arguments; a tester
+# who installs a build had no way in at all.
+#
+# The arithmetic — which endpoint a launch means, and how a typed address
+# parses — lives in `main_menu.gd`, all-static and pure, for the D-061
+# reason. What is here is the drawing and the LIFETIME, and the lifetime
+# is the half that has broken silently before (D-075's amendment: a second
+# match came up with no terrain for a whole milestone because `_ready()`
+# built a node that `_teardown_match()` freed).
+
+
+func _build_main_menu() -> void:
+	_menu_layer = CanvasLayer.new()
+	# Above everything, the lobby included: while this is up there is no
+	# connection, so nothing behind it can be acted on.
+	_menu_layer.layer = 20
+	_menu_layer.visible = false
+	add_child(_menu_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_menu_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_menu_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 12)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = BuildVersion.string().to_upper()
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.TEXT_GHOST
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	var headline := Label.new()
+	headline.text = "eDotMW"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE + 24)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	# The status line doubles as the reason a player is looking at this
+	# screen rather than a world - a refused join, a server that never
+	# answered, a match they left. It is the whole reason the menu is the
+	# right destination for those: a message needs somewhere to be read.
+	_menu_status = Label.new()
+	_menu_status.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_menu_status.modulate = HudTheme.ACCENT
+	_menu_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_menu_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_menu_status.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_menu_status)
+
+	var address_caption := Label.new()
+	address_caption.text = "SERVER ADDRESS"
+	address_caption.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	address_caption.modulate = HudTheme.TEXT_GHOST
+	column.add_child(address_caption)
+
+	_menu_address = LineEdit.new()
+	_menu_address.placeholder_text = "127.0.0.1:%d" % DEFAULT_SERVER_PORT
+	_menu_address.text = _menu_last_endpoint
+	# Enter joins, because typing an address and then reaching for the
+	# mouse is the one interaction on this screen anybody repeats.
+	_menu_address.text_submitted.connect(func(_t: String) -> void: _on_menu_join_pressed())
+	column.add_child(_menu_address)
+
+	var join := _styled_button("Join", HudTheme.ACCENT)
+	join.pressed.connect(_on_menu_join_pressed)
+	column.add_child(join)
+
+	# HOST runs the authoritative server in THIS process (D-088, #182).
+	# It was disabled when #180 drew this screen, pointing at the ticket
+	# that would make it real; this is that ticket.
+	var host := _styled_button("Host a match", HudTheme.NEUTRAL)
+	host.pressed.connect(_on_menu_host_pressed)
+	column.add_child(host)
+
+	var host_note := Label.new()
+	host_note.text = ("Hosting runs the match on this machine. Others join at your address on port %d."
+		% DEFAULT_SERVER_PORT)
+	host_note.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	host_note.modulate = HudTheme.TEXT_GHOST
+	host_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	host_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	host_note.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(host_note)
+
+	# Before Quit, because a player who does not know how to play is more
+	# likely to leave than to ask (#282).
+	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
+	controls.pressed.connect(_toggle_controls)
+	column.add_child(controls)
+
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
+
+	# Here as well as in the in-match menu, and that is the placement that
+	# matters: the reports hardest to act on are the ones from somebody
+	# who never got INTO a match, and they have no other screen to reach.
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding your logs, replays and system "
+		+ "details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
+	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
+	quit.pressed.connect(_on_quit_pressed)
+	column.add_child(quit)
+
+
+## Write a problem report bundle, and say where it went (#288).
+##
+## The whole action, because there is nothing else it should do: the
+## bundle is CREATED and never sent (`report_bundle.gd`'s header has the
+## reasoning — `testers.md` promises no telemetry, and that promise is
+## worth more at this stage than the reports would be).
+##
+## Reached from BOTH menus through one handler, so the two cannot drift
+## into writing different bundles — the same rule as every other pair of
+## call sites in this project that share a definition.
+func _on_report_a_problem_pressed() -> void:
+	var path := ArtifactPath.of(ReportBundle.bundle_name(
+		BuildVersion.string(), ReportBundle.stamp_now()))
+	var result := ReportBundle.write(path)
+	if not bool(result["ok"]):
+		var why := String(result.get("error", "could not write the report"))
+		push_error("client: %s" % why)
+		_show_report_result(why)
+		return
+	# The PATH is the message, and deliberately the OS path rather than
+	# the `user://` one: a player cannot paste `user://` into a file
+	# manager, so telling them where a file is in a vocabulary only the
+	# engine speaks is the same as not telling them.
+	var real := ProjectSettings.globalize_path(String(result["path"]))
+	print("client: wrote a problem report to %s" % real)
+	_show_report_result("Report written to %s — attach it to your report. Nothing was sent."
+		% real)
+
+
+## Put the outcome where the player is actually looking.
+##
+## Two screens can hold the button — the pre-connect menu and the in-match
+## menu — and each already has somewhere to say things. One function
+## chooses, so the two cannot come to say different things.
+func _show_report_result(text: String) -> void:
+	if _menu_layer != null and _menu_layer.visible and _menu_status != null:
+		_menu_status.text = text
+		return
+	if _report_status != null:
+		_report_status.text = text
+		_report_status.visible = true
+
+
+## Show the menu, with `message` explaining why if there is one.
+func _show_main_menu(message: String) -> void:
+	if _menu_layer == null:
+		return
+	if _menu_status != null:
+		_menu_status.text = message
+	if _menu_address != null:
+		_menu_address.text = _menu_last_endpoint
+	_menu_layer.visible = true
+	_set_title("")
+
+
+func _hide_main_menu() -> void:
+	if _menu_layer != null:
+		_menu_layer.visible = false
+
+
+func _on_menu_join_pressed() -> void:
+	var typed := _menu_address.text if _menu_address != null else ""
+	var parsed := MainMenu.parse_endpoint(typed, DEFAULT_SERVER_PORT)
+	if not bool(parsed["ok"]):
+		if _menu_status != null:
+			_menu_status.text = String(parsed["error"])
+		return
+	_connect_to(String(parsed["address"]), int(parsed["port"]))
+
+
+## Start the authoritative server in THIS process and join it (D-088,
+## #182).
+##
+## Not a second simulation. It is the same `server.gd` the dedicated
+## build runs, reached through composition: the node is configured, added
+## to the tree, and ticks itself on its own D-023 accumulator beside this
+## client's. A faster host-only variant would be `just profile`'s
+## blind spot with a new name — a workload with its own bugs, green while
+## the shipped one is broken.
+##
+## The host lands in the ORDINARY LOBBY as admin, because that is what a
+## host wants: pick the map, add AI, wait for a friend, press start. It
+## also means a remote player can join before the match begins, which is
+## the whole point of hosting rather than of a hotseat.
+func _host_match() -> void:
+	_close_connection()
+	_state.refusal = {}
+
+	var server: Node = load("res://server.gd").new()
+	# Its OWN configuration, in `CmdArgs.parse`'s shape. Not this
+	# process's command line: those arguments belong to the client, and
+	# `--port` among them would be read as "bind the port I wanted to
+	# connect to".
+	server.boot = {
+		"port": str(_host_port),
+		"lobby": "1",
+	}
+	server.set("_embedded", true)
+	# Before `add_child`, because `_ready()` runs on entering the tree and
+	# the seat has to exist by then — and because this is what hands back
+	# the object orders travel through.
+	_peer = server.seat_local_client(_state)
+	_hosted_server = server
+	add_child(server)
+
+	_connected = true
+	_connect_started_at = -1.0
+	_hide_main_menu()
+	_set_title("hosting :%d" % _host_port)
+	print("client: hosting on port %d — the server is in this process (D-088)" % _host_port)
+
+
+func _on_menu_host_pressed() -> void:
+	_host_match()
+
+
+## Open a socket and start talking. Reached from `_ready()` when the
+## command line named a server, and from the menu otherwise - one
+## function, because "how this client connects" is exactly the kind of
+## thing that drifts when written twice.
+func _connect_to(address: String, port: int) -> void:
+	_close_connection()
+	# A fresh attempt is not carrying the last one's refusal.
+	_state.refusal = {}
+	_menu_last_endpoint = MainMenu.format_endpoint(address, port)
+	# What the connection-lost screen names when it cannot reach the
+	# server (#162). It used to be set inline in `_ready`, which is the
+	# block #180 replaced with the menu flow — so taking the menu side of
+	# that merge whole would have left this empty and the screen saying
+	# "could not reach " with nothing after it. Connecting is centralised
+	# here now, so the endpoint belongs here too.
+	_server_endpoint = MainMenu.format_endpoint(address, port)
+	_save_settings()
+	_set_title(MainMenu.format_endpoint(address, port))
+
+	var dialled := EnetTransport.connect_to(address, port, CHANNELS)
+	_transport = dialled["transport"]
+	_peer = dialled["peer"]
+	if _peer == null or not _transport.is_open():
+		push_error("client: %s" % _transport.describe())
+		_transport = null
+		_peer = null
+		_return_to_menu("Could not reach %s. Check the address, and that the server is running."
+			% _menu_last_endpoint)
+		return
+	_connect_started_at = _wall_now
+	_hide_main_menu()
+	print("client: connecting to %s:%d [%s]" % [address, port, _transport.describe()])
+
+
+## Drop the socket, leaving the scene alone. Split out from
+## `_return_to_menu` because `_connect_to` needs exactly this and nothing
+## else: joining a second server must not tear down a world that a failed
+## attempt never built.
+func _close_connection() -> void:
+	if _peer != null and _connected:
+		_peer.peer_disconnect_now(0)
+	if _transport != null:
+		_transport.close()
+	_transport = null
+	_peer = null
+	_connected = false
+	_connect_started_at = -1.0
+	# The match this player was HOSTING ends with their connection to it
+	# (D-088, accepted with eyes open: host-quit kills the match for
+	# everyone). `free()` rather than `queue_free()`, because the next
+	# line of a Host-then-Host sequence binds the same UDP port and a
+	# server still holding it would refuse — a deferred free is a race
+	# with the thing that replaces it.
+	if _hosted_server != null:
+		remove_child(_hosted_server)
+		_hosted_server.free()
+		_hosted_server = null
+
+
+## Back to the menu, with a reason a player can read.
+##
+## THE destination for every way a session can end short of quitting, and
+## the reason #180 is a prerequisite for the rest: before it there was
+## nowhere for such a message to go, so the client kept its window and
+## said nothing (#162).
+##
+## Deliberately full: a new connection is a NEW SERVER, so everything the
+## last one told this client has to go, `ClientState`'s ever-revealed
+## building set included. That set is exactly what
+## `docs/status/sandbox.md` records leaking across a return to the lobby
+## and desyncing 106 buildings in 55,239 checks - the same trap, one door
+## further out.
+func _return_to_menu(reason: String) -> void:
+	_close_connection()
+	if _in_match:
+		_teardown_match()
+	_in_match = false
+	if _lobby_layer != null:
+		_lobby_layer.visible = false
+	_state.disconnected()
+	_clock_synced = false
+	_now = 0.0
+	if not reason.is_empty():
+		print("client: back to the menu — %s" % reason.replace("\n", " "))
+	_show_main_menu(reason)
+
+
+## Name what this client is looking at, in the one place that decides it.
+##
+## `get_window()` is null on a Node that is not in a tree, which is how
+## `tests/test_main_menu.gd` drives this file at all (the same technique
+## D-075's amendment established for the lifecycle half of client.gd).
+## Guarding here rather than at each caller is what keeps that possible
+## without a second code path.
+func _set_title(endpoint: String) -> void:
+	var window := get_window()
+	if window != null:
+		window.title = MainMenu.window_title(_instance, endpoint)
+
+
+## Give up on a connection ENet has not reported.
+##
+## ENet never says "there is nothing at that address" - it stays silent -
+## so without a deadline a typo is a client that sits forever showing an
+## empty world, which is precisely the shape #162 was reported as.
+func _check_connect_timeout() -> void:
+	if _connect_started_at < 0.0 or _connected:
+		return
+	if _wall_now - _connect_started_at < CONNECT_TIMEOUT_SECONDS:
+		return
+	_return_to_menu("No answer from %s after %d seconds. Check the address, and that the server is running."
+		% [_menu_last_endpoint, int(CONNECT_TIMEOUT_SECONDS)])
+
+
+# --- the join handshake, and being refused ------------------------------
+#
+# #179 / D-094 criterion 3. Before this the protocol carried no version
+# at all, so a stale build meeting a new server produced a scatter of
+# confusing desyncs instead of one sentence — a symptom that costs a
+# debugging session and ends in "you were on last week's build".
+#
+# The refusal SCREEN is deliberately small here and deliberately its own
+# layer: #180 gives this client a pre-connection main menu, and a refusal
+# belongs on THAT, with the address still in the field and a "join again"
+# button. Until it exists there is nowhere else for the message to go,
+# and a client that vanished or hung would be exactly the reported
+# defect in #162.
+
+
+func _send_hello() -> void:
+	_peer.send(0, NetProtocol.encode_hello(
+		NetProtocol.PROTOCOL_VERSION, BuildVersion.string()),
+		ENetPacketPeer.FLAG_RELIABLE)
+
+
+func _show_refusal() -> void:
+	_refusal_shown = true
+	var text := str(_state.refusal.get("text", ""))
+	# Loudly, in both places: the log for a bug report to quote, and the
+	# screen for the player who has to act on it. push_error rather than
+	# print because this ends the connection.
+	push_error("client: REFUSED by the server\n" + text)
+	print("client: REFUSED by the server — " + text.replace("\n", " "))
+	# The MENU is where a refusal belongs (#180), which #179 said in its
+	# own decision entry and could not do: the address is still in the
+	# field, so acting on "update and join again" is one click rather
+	# than a relaunch. `_return_to_menu` clears `refusal`, so the flag is
+	# reset here for the next attempt.
+	_return_to_menu(text)
+	_refusal_shown = false
 
 
 # --- defeat screen ------------------------------------------------------
@@ -9006,6 +10385,134 @@ func _load_settings() -> void:
 # opening squads have arrived over the wire — a real race, since
 # RUNNING begins the instant the lobby starts, not once the first curve
 # lands.
+## The connection-lost screen (#162). Built once at start-up like every
+## other overlay, because the moment it is needed there is no server to
+## ask for anything.
+var _connection_lost_layer: CanvasLayer = null
+var _connection_lost_headline: Label = null
+var _connection_lost_detail: Label = null
+## Latched: ENet can report a disconnect more than once, and this must
+## not rebuild or re-log on every service() call.
+var _connection_lost := false
+## Whether a connection was ever ESTABLISHED. A never-answered connect
+## attempt also arrives as EVENT_DISCONNECT, and "the server went away"
+## and "there was never a server there" are different things to tell a
+## player.
+var _ever_connected := false
+## "host:port", as `_ready` resolved it.
+var _server_endpoint := ""
+
+
+## The client has no server any more, and the player is told (#162).
+##
+## Deliberately the SMALL version. The right home for this is the
+## pre-lobby main menu (#180) — that ticket names this issue as its
+## sibling and says the disconnect should land on the menu — so this
+## does the part that cannot wait, in a way that ticket can absorb: one
+## overlay, one message, one way out.
+##
+## What it deliberately does NOT do is tear the match down.
+## `_teardown_match()` frees the terrain, the squads and the buildings,
+## and a player who has just lost the server would be shown a black
+## screen instead of the last thing that happened. The world underneath
+## is frozen and stale, and the banner says exactly that.
+##
+## The backdrop DOES take mouse input, though, and that is load-bearing
+## rather than cosmetic: it is what stops a click reaching the world and
+## issuing an order down a dead socket. Guarding each of the twenty-odd
+## `_peer.send` sites individually would be the same rule written twenty
+## times, which is how it comes to be written wrongly once.
+func _on_connection_lost() -> void:
+	if _connection_lost:
+		return
+	_connection_lost = true
+
+	# A capture run's screenshot is an INSTRUMENT (`just test-client`),
+	# and every check it makes is over the pixels. Covering the frame
+	# with a banner would change what those measure, so an unattended
+	# render says it on the console — where its verdict already reads —
+	# and keeps drawing what it was asked to draw.
+	if _run_seconds > 0.0:
+		push_warning("client: lost the server mid-capture")
+		return
+
+	if _connection_lost_layer == null:
+		return
+	if _connection_lost_headline != null:
+		_connection_lost_headline.text = "Connection lost" if _ever_connected \
+			else "Could not reach the server"
+	if _connection_lost_detail != null:
+		_connection_lost_detail.text = ("The server is no longer there. "
+			+ "Nothing on screen can change, and no order will reach anyone.") \
+			if _ever_connected else \
+			("Nothing answered at %s. The server may not be running yet."
+				% _server_endpoint)
+	_connection_lost_layer.visible = true
+
+
+func _build_connection_lost_screen() -> void:
+	_connection_lost_layer = CanvasLayer.new()
+	# Above the lobby (10), which is the only overlay that outranks the
+	# defeat screen. With no server there is no lobby to go back to, so
+	# nothing this client can draw may sit on top of this.
+	_connection_lost_layer.layer = 12
+	_connection_lost_layer.visible = false
+	add_child(_connection_lost_layer)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.color.a = 0.82
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	# STOP, unlike the defeat screen's IGNORE, and see `_on_connection_lost`
+	# for why: this is what keeps a click from ordering a squad that
+	# nothing is listening for.
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_connection_lost_layer.add_child(backdrop)
+
+	var centre := CenterContainer.new()
+	centre.anchor_right = 1.0
+	centre.anchor_bottom = 1.0
+	_connection_lost_layer.add_child(centre)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	column.custom_minimum_size = Vector2(420.0, 0.0)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.add_child(column)
+
+	var eyebrow := Label.new()
+	eyebrow.text = "DISCONNECTED"
+	eyebrow.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+	eyebrow.modulate = HudTheme.ACCENT
+	eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(eyebrow)
+
+	_connection_lost_headline = Label.new()
+	_connection_lost_headline.text = "Connection lost"
+	_connection_lost_headline.add_theme_font_size_override("font_size",
+		HudTheme.DISPLAY_SIZE + 16)
+	_connection_lost_headline.modulate = HudTheme.TEXT_BRIGHT
+	_connection_lost_headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_connection_lost_headline)
+
+	_connection_lost_detail = Label.new()
+	_connection_lost_detail.text = "The server is no longer there."
+	_connection_lost_detail.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_connection_lost_detail.modulate = HudTheme.TEXT_DIM
+	_connection_lost_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connection_lost_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_connection_lost_detail.custom_minimum_size = Vector2(420.0, 0.0)
+	column.add_child(_connection_lost_detail)
+
+	var button_row := CenterContainer.new()
+	button_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	var quit := _styled_button("Quit to desktop", HudTheme.DANGER)
+	quit.pressed.connect(_on_quit_pressed)
+	button_row.add_child(quit)
+	column.add_child(button_row)
+
+
 func _build_defeat_screen() -> void:
 	_defeat_layer = CanvasLayer.new()
 	# Above the HUD and the in-game menu, below the lobby (which replaces
@@ -9240,6 +10747,22 @@ func _build_lobby_ui() -> void:
 	_start_button.pressed.connect(_on_start_pressed)
 	actions.add_child(_start_button)
 
+	# What the civ THIS player has chosen actually is (#283). Six civs
+	# sit on six distinct mechanical axes and the lobby showed names
+	# only — `CivDef.summary` has promised "a one-line pitch for the
+	# lobby" since the field existed and nothing read it, which is how it
+	# sat cp1252-corrupted for six milestones (#214).
+	#
+	# The player's OWN seat, not every seat: this is the choice they are
+	# making, and a line under all twenty-four would cost the seat list
+	# the height LobbyLayout gives it. Every other seat's civ is on its
+	# picker as a tooltip.
+	_lobby_civ_identity = Label.new()
+	_lobby_civ_identity.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+	_lobby_civ_identity.modulate = HudTheme.TEXT_DIM
+	_lobby_civ_identity.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_lobby_civ_identity)
+
 	_lobby_help = Label.new()
 	_lobby_help.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE + 1)
 	_lobby_help.modulate = HudTheme.TEXT_GHOST
@@ -9323,11 +10846,92 @@ func _civ_colour(civ: String) -> Color:
 	return def.colour if def != null else HudTheme.TEXT_DIM
 
 
+## Say what the civ in THIS player's seat is, under the seat list.
+##
+## Everything here is derived from the `.tres` through `CivIdentity`, so
+## a seventh civ is a file and this function never learns a name (D-046
+## criterion 3).
+func _refresh_civ_identity(seats: Array) -> void:
+	if _lobby_civ_identity == null:
+		return
+	var mine := _state.my_seat()
+	if mine < 0 or mine >= seats.size():
+		_lobby_civ_identity.text = ""
+		return
+	var chosen := StringName(seats[mine].get("civ", ""))
+	if chosen == CivRoster.RANDOM or chosen == &"":
+		# Random is a real choice (D-048) and resolves to nothing until
+		# the match starts. Saying so beats saying nothing, because the
+		# blank would read as a missing feature.
+		_lobby_civ_identity.text = "Random — your civilisation is drawn when the match starts."
+		return
+	var shown := CivIdentity.describe(CivRoster.by_id(chosen))
+	var summary := String(shown["summary"])
+	var signature := String(shown["signature"])
+	if summary.is_empty() and signature.is_empty():
+		_lobby_civ_identity.text = ""
+		return
+	if signature.is_empty():
+		_lobby_civ_identity.text = summary
+		return
+	_lobby_civ_identity.text = "%s\nSignature unit: %s" % [summary, signature]
+
+
+## The one-line form for a seat's civ picker, shown on hover. Every OTHER
+## seat's civ is readable this way without giving twenty-four rows a
+## second line each.
+func _civ_tooltip(civ: String) -> String:
+	var id := StringName(civ)
+	if id == CivRoster.RANDOM:
+		return "Drawn when the match starts."
+	var def := CivRoster.by_id(id)
+	if def == null:
+		return ""
+	var shown := CivIdentity.describe(def)
+	var signature := String(shown["signature"])
+	var headline := CivIdentity.headline(String(shown["summary"]))
+	if signature.is_empty():
+		return headline
+	return "%s\nSignature unit: %s" % [headline, signature]
+
+
 func _civ_label(civ: String) -> String:
 	if StringName(civ) == CivRoster.RANDOM:
 		return "Random"
 	var def := CivRoster.by_id(StringName(civ))
 	return def.display_name if def != null else civ
+
+
+## The civ's own pitch, for the control a player CHOOSES a civ with
+## (D-20260828-a-summary-is-shown-or-it-is-deleted, #214).
+##
+## `CivDef.summary` shipped saying, in its own doc comment, that it was
+## "shown in the lobby so a player choosing a civ knows what they are
+## picking", and the lobby had never shown it — the sixth instance of this
+## project's declared-and-unread defect class, and the reason the cp1252
+## corruption in all six of those strings (#231) went a milestone
+## unnoticed.
+##
+## A tooltip rather than a blurb label, deliberately: a label in the
+## lobby's preview column would move `LobbyLayout.DESIGN_HEIGHT`, which
+## D-20260817-lobby-fits-the-window pins with a test that builds the lobby
+## and measures it — that page has run off the bottom of a window once
+## already, and flavour text is the wrong thing to spend the budget on.
+##
+## There are TWO of these and that is deliberate, because they answer at
+## different moments. This one is the LIST ITEM, shown per row while the
+## picker is open — a player scanning six civs wants six comparable
+## pitches. `_civ_tooltip` is the CLOSED CONTROL, and adds the signature
+## unit (#283), which is the thing you want confirmed after choosing
+## rather than while comparing. Collapsing them would cost one of the two
+## readings; both have a caller-exists test, which is what would fail.
+func _civ_summary(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "A civ is drawn for you when the match starts."
+	var def := CivRoster.by_id(StringName(civ))
+	if def == null or def.summary.strip_edges() == "":
+		return _civ_label(civ)
+	return "%s — %s" % [def.display_name, def.summary]
 
 
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
@@ -9368,6 +10972,8 @@ func _refresh_lobby() -> void:
 	_add_ai_button.disabled = not admin
 	_start_button.disabled = not admin or seats.size() < 2
 	_start_button.text = "Start match" if admin else "Waiting for host"
+
+	_refresh_civ_identity(seats)
 
 	if admin:
 		_lobby_help.text = "Click a civilisation to change it. Only you can seat AI players and start the match."
@@ -9803,8 +11409,16 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	picker.disabled = not editable
 	var choices := _civ_choices()
 	for c in choices:
+		var at := picker.item_count
 		picker.add_item(_civ_label(String(c)))
+		# Per ITEM as well as on the control, so the pitch is readable
+		# while the list is open — which is the moment a player is
+		# actually choosing (#214).
+		picker.set_item_tooltip(at, _civ_summary(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	# What THIS seat picked, on hover — so every seat's civ is readable
+	# without giving each row a second line (#283).
+	picker.tooltip_text = _civ_tooltip(String(civ))
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)
@@ -10113,6 +11727,37 @@ var _lobby_preset_steps := 0
 var _lobby_ai_asked := false
 
 
+## Fill a headless host's lobby and start the match (#182).
+##
+## `--host-ai=N` only. An interactive host uses the lobby UI like anybody
+## else — this exists so `just test-host` can put a real hosting client
+## in front of real bots without a human to click Start, and so the alpha
+## loop can ship a shortcut that lands a tester in a match.
+##
+## Modelled on `_seat_capture_ai` below, including the gating, and the
+## gating is the part that matters: it waits until this client is
+## actually IN the lobby and actually the admin, rather than firing the
+## instant the server node is added. Loopback delivery is synchronous, so
+## acting immediately would work today and break the first time hosting
+## goes through anything that is not a function call — which is #184.
+##
+## Everything goes through the ordinary admin-gated lobby commands rather
+## than a private door. A host who could seat AI by a route a guest could
+## not is exactly the asymmetry D-051 refuses, and it would be invisible.
+func _drive_host_lobby() -> void:
+	if _host_lobby_driven or _host_ai_wanted <= 0 or _hosted_server == null:
+		return
+	if not (_state.in_lobby() and _state.is_admin()):
+		return
+	_host_lobby_driven = true
+	var civs := CivRoster.ids()
+	for i in range(_host_ai_wanted):
+		var civ: String = String(civs[i % civs.size()]) if not civs.is_empty() else String(CivRoster.RANDOM)
+		_send_lobby(NetProtocol.LOBBY_ADD_AI, 0, civ)
+	_send_lobby(NetProtocol.LOBBY_START, 0, "")
+	print("client: hosting — seated %d AI and started the match" % _host_ai_wanted)
+
+
 func _seat_capture_ai() -> void:
 	if _lobby_ai_asked or _lobby_ai_wanted <= 0:
 		return
@@ -10120,6 +11765,14 @@ func _seat_capture_ai() -> void:
 		return
 	_lobby_ai_asked = true
 	var civs := CivRoster.ids()
+	# The capture's OWN seat takes a real civ rather than staying on
+	# Random (#283). Random is the one state in which the identity line
+	# has nothing to say about a civilisation, so a lobby screenshot left
+	# on it photographs the least informative version of the screen —
+	# the same "aim the instrument at the thing" rule `gen-terrain-shot`
+	# and `gen-forest-preview` exist under.
+	if not civs.is_empty():
+		_send_lobby(NetProtocol.LOBBY_SET_CIV, _state.my_seat(), String(civs[0]))
 	for i in range(_lobby_ai_wanted):
 		# Spread the AI across civs rather than leaving them all Random,
 		# so the capture shows what a mixed lobby looks like.

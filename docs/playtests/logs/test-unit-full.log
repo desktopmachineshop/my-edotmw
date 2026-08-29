@@ -1,0 +1,2629 @@
+host-gate: admitted medium (_import) after 1s
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+[   0% ] [90m[1mfirst_scan_filesystem[22m | Started Project initialization (5 steps)[39m[0m
+[   0% ] [90m[1mfirst_scan_filesystem[22m | Scanning file structure...[39m[0m
+[  16% ] [90m[1mfirst_scan_filesystem[22m | Loading global class names...[39m[0m
+[  33% ] [90m[1mfirst_scan_filesystem[22m | Verifying GDExtensions...[39m[0m
+[  50% ] [90m[1mfirst_scan_filesystem[22m | Creating autoload scripts...[39m[0m
+[  66% ] [90m[1mfirst_scan_filesystem[22m | Initializing plugins...[39m[0m
+[  83% ] [90m[1mfirst_scan_filesystem[22m | Starting file scan...[39m[0m
+[92m[ DONE ][39m [1mfirst_scan_filesystem[22m
+[0m
+[   0% ] [90m[1mupdate_scripts_classes[22m | Started Registering global classes... (2 steps)[39m[0m
+[   0% ] [90m[1mupdate_scripts_classes[22m | [39m[0m
+[  33% ] [90m[1mupdate_scripts_classes[22m | [39m[0m
+[92m[ DONE ][39m [1mupdate_scripts_classes[22m
+[0m
+[   0% ] [90m[1mloading_editor_layout[22m | Started Loading editor (5 steps)[39m[0m
+[   0% ] [90m[1mloading_editor_layout[22m | Loading editor layout...[39m[0m
+[  16% ] [90m[1mloading_editor_layout[22m | Loading docks...[39m[0m
+[92m[ DONE ][39m [1mloading_editor_layout[22m
+[0m
+host-gate: admitted medium (test-unit) after 1s
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+---  GUT  ---
+[1m[INFO]:  [0musing [C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw] for temporary output.
+Godot version:  4.7.1
+GUT version:  9.6.1
+[4m
+
+res://tests/test_ai_player.gd
+[0m* test_an_ai_knows_nothing_the_server_did_not_send_it
+* test_everything_an_ai_knows_is_something_it_can_see
+* test_an_ai_can_see_a_neighbour_and_still_not_the_far_side
+* test_an_ai_issues_real_protocol_packets
+* test_an_ai_does_nothing_before_the_match_is_running
+* test_an_ai_founds_its_town_once_the_match_is_running
+* test_an_ai_told_the_match_started_stops_waiting
+* test_an_ai_whose_founding_order_was_dropped_tries_again
+* test_an_ai_stops_asking_once_its_town_centre_exists
+* test_an_ai_holding_no_settler_never_asks_for_a_town_centre
+* test_an_ai_asks_for_its_own_spawn_and_not_a_rivals
+* test_a_loopback_peer_delivers_bytes_to_its_client_state
+* test_an_ai_does_not_march_on_its_teammates_town
+* test_an_ai_that_can_see_only_allies_has_nothing_to_attack
+* test_an_ai_does_not_march_on_a_teammates_army
+* test_the_enemy_buildings_seen_metric_does_not_count_allies
+* test_an_ai_does_not_go_looking_at_a_teammates_home
+[1m17/17 passed.
+[0m[4m
+
+res://tests/test_ai_profiles.gd
+[0m* test_the_shipped_profiles_load_and_validate
+* test_exactly_one_profile_is_the_default
+* test_no_script_mentions_a_profile_id
+* test_the_default_profile_is_the_ai_that_already_shipped
+* test_every_profile_carries_the_same_resource_floors
+* test_the_levels_ramp_harder_the_further_down_the_list
+* test_nothing_chosen_deals_the_default_to_every_seat
+* test_a_list_is_dealt_round_robin_across_the_seats
+* test_an_unknown_profile_is_refused_rather_than_defaulted
+* test_an_ai_seated_with_no_profile_still_has_one
+* test_a_profile_governs_how_often_the_ai_reconsiders
+* test_a_profile_governs_how_much_army_it_commits_with
+* test_a_profile_governs_how_long_an_attack_is_left_to_run
+* test_the_stats_line_says_which_profile_played_and_how_big_the_first_attack_was
+[1m14/14 passed.
+[0m[4m
+
+res://tests/test_allied_ai_is_exercised.gd
+[0m* test_an_ai_seat_can_be_dealt_a_side_without_a_lobby
+* test_the_side_is_on_the_seat_before_the_match_starts
+* test_a_teamless_seat_is_unchanged
+* test_a_seat_cannot_be_dealt_a_side_that_does_not_exist
+* test_a_team_of_survivors_ends_the_match
+* test_both_ways_a_match_starts_hand_the_teams_over
+* test_the_handover_actually_assigns_the_simulations_teams
+* test_the_harness_that_plays_a_teamed_match_is_wired_up
+* test_a_teammates_town_is_a_friendly_place
+* test_its_own_town_is_a_friendly_place_too
+* test_an_enemy_town_is_not_a_friendly_place
+* test_empty_ground_is_not_a_friendly_place
+* test_an_ally_standing_on_an_enemy_town_is_not_an_offence
+* test_the_ally_count_is_the_vacuity_guard_it_claims_to_be
+* test_the_stats_line_carries_what_the_harness_reads
+[1m15/15 passed.
+[0m[4m
+
+res://tests/test_animation_state.gd
+[0m* test_phase_offset_is_a_pure_function_of_squad_and_slot
+* test_phase_offsets_are_in_range_and_spread_across_a_squad
+* test_neighbouring_slots_do_not_share_a_phase
+* test_rate_is_a_pure_function_of_clip_and_speed
+* test_walking_faster_plays_the_walk_cycle_faster
+* test_a_stationary_squad_still_animates_rather_than_freezing
+* test_routing_outranks_everything_else
+* test_fighting_outranks_moving
+* test_a_still_squad_that_is_doing_nothing_idles
+* test_custom_data_packs_clip_phase_and_rate_in_that_order
+* test_animation_state_has_nowhere_to_put_per_soldier_state
+* test_no_animation_input_can_reach_the_composition_hash
+[1m12/12 passed.
+[0m[4m
+
+res://tests/test_art_assets.gd
+[0m* test_generated_assets_match_the_generators_that_produced_them
+* test_every_model_id_resolves_to_a_built_model
+[33m    12 Orphans[0m
+[33m        * [gatherers2:<Node3D#304087044725>] + 1
+        * [militia2:<Node3D#304389034633>] + 1
+        * [archers2:<Node3D#303785054859>] + 1
+        * [spearmen2:<Node3D#304691024561>] + 1
+        * [cavalry2:<Node3D#304993014454>] + 1
+        * [heavy_infantry2:<Node3D#305295004347>] + 1[0m
+* test_models_stay_inside_the_triangle_budget
+* test_vat_dimensions_match_the_mesh_and_the_declared_layout
+[33m    8 Orphans[0m
+[33m        * [cannon2:<Node3D#306653958856>] + 1
+        * [founders2:<Node3D#307593482962>] + 1
+        * [general2:<Node3D#308533007067>] + 1
+        * [skirmishers2:<Node3D#309791298276>] + 1[0m
+* test_every_vertex_carries_its_own_vat_column
+* test_clip_order_matches_the_python_that_baked_it
+[1m6/6 passed.
+[0m[4m
+
+res://tests/test_authored_assets.gd
+[0m* test_authored_sources_are_in_the_staleness_hash
+* test_the_source_of_truth_is_protected_from_the_line_ending_machinery
+* test_the_build_prefers_an_authored_source
+* test_every_authored_source_is_recorded_as_authored_in_the_manifest
+* test_the_roster_is_actually_migrated
+* test_the_authored_files_are_blender_native_z_up
+* test_the_pose_basis_matches_the_vertex_conversion
+* test_seeding_refuses_to_overwrite_an_authored_source
+* test_blender_is_a_local_install_the_repo_does_not_manage
+* test_the_gui_recipe_opens_the_file_itself
+[1m10/10 passed.
+[0m[4m
+
+res://tests/test_battle_line.gd
+[0m* test_squads_keep_their_order_along_the_stroke
+* test_the_line_faces_away_from_the_troops
+* test_width_is_what_fits_shoulder_to_shoulder
+* test_degenerate_strokes_plan_nothing
+* test_the_quantisation_is_the_facing_orders_own
+* test_battle_line_is_all_static
+* test_the_preview_is_the_order_it_previews
+* test_a_long_stroke_is_thin_and_a_short_one_is_deep
+* test_tightness_packs_more_men_into_the_same_stroke
+* test_a_dragged_width_outranks_a_formations_own_ranks
+[1m10/10 passed.
+[0m[4m
+
+res://tests/test_bot_build_plan.gd
+[0m* test_a_bot_only_ever_wants_a_building_that_trains
+* test_nothing_here_names_a_building
+* test_a_building_is_only_asked_for_what_it_makes
+* test_every_civ_can_field_a_soldier_from_what_it_can_build
+* test_a_bot_stops_asking_for_crews_once_it_has_enough
+* test_a_bot_does_not_order_what_it_cannot_pay_for
+* test_a_site_clears_every_claim_the_bot_already_has
+* test_successive_attempts_ask_for_different_ground
+* test_a_bot_that_does_not_know_its_civ_still_asks_for_soldiers
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_bot_patrol.gd
+[0m* test_a_bot_whose_whole_army_hauls_still_fields_scouts
+* test_the_economy_keeps_the_majority
+* test_the_founding_party_is_never_sent_anywhere
+* test_a_scout_stands_inside_the_defenders_sight_and_outside_its_guns
+* test_the_leg_ends_on_arrival_rather_than_on_the_clock
+* test_a_detachment_split_across_the_map_does_not_thrash
+* test_the_patrol_alternates_out_and_back
+* test_the_standoff_is_a_destination_not_a_distance_to_notice
+* test_a_base_too_close_to_watch_from_is_withdrawn_past
+* test_a_run_of_the_documented_length_produces_a_reveal
+    bot 1: start (45, 102) watching (120, 148) (93 cells apart) — legs=32 reveals=15
+    bot 2: start (120, 148) watching (29, 78) (77 cells apart) — legs=33 reveals=16
+    bot 3: start (29, 78) watching (28, 108) (30 cells apart) — legs=37 reveals=18
+    bot 4: start (28, 108) watching (45, 102) (17 cells apart) — legs=38 reveals=18
+* test_a_full_cycle_fits_in_the_run_for_every_pair
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_buildings.gd
+[0m* test_a_squad_and_a_building_at_the_same_index_do_not_collide
+* test_one_dictionary_can_hold_both_without_either_overwriting_the_other
+* test_the_offset_clears_full_scale_squad_counts
+* test_construction_progresses_and_completes
+* test_a_building_can_be_placed_already_finished
+* test_damage_destroys_a_building_once_and_only_once
+* test_surviving_damage_replicates_and_not_only_fatal_damage
+* test_scratches_too_small_to_see_do_not_resend_the_building
+* test_a_whole_siege_costs_a_bounded_number_of_health_messages
+* test_an_unfinished_building_can_still_be_destroyed
+* test_living_counts_are_per_player_and_exclude_rubble
+* test_the_hash_ignores_health_and_progress_but_notices_destruction
+* test_buildings_of_different_owners_hash_differently
+* test_a_building_grants_its_owner_vision
+* test_rubble_sees_nothing
+* test_an_armed_building_damages_an_enemy_squad_in_range
+* test_two_melee_squads_besiege_a_building_about_twice_as_fast_as_one
+* test_no_single_starting_squad_can_raze_a_defended_building
+* test_two_squads_of_any_line_troop_can_take_a_town_centre
+[31m    [Failed]:  [0mtwo squads of stoneblood_skirmishers could not take a town centre (213 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of gravesworn_shades could not take a town centre (1920 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_levy could not take a town centre (36 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_archers could not take a town centre (986 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_cavalry could not take a town centre (1904 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_greatbow could not take a town centre (1972 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_skirmishers could not take a town centre (1419 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_cavalry could not take a town centre (833 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_bowriders could not take a town centre (2066 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of gildedreach_archers could not take a town centre (1252 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of gildedreach_cavalry could not take a town centre (1696 HP left) — defence has passed decidable
+      at line 501
+[31m    [Failed]:  [0mtwo squads of emberdeep_archers could not take a town centre (1443 HP left) — defence has passed decidable
+      at line 501
+* test_two_squads_of_any_line_troop_but_light_skirmishers_can_take_a_tower
+[31m    [Failed]:  [0mtwo squads of stoneblood_skirmishers could not take a tower (291 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of gravesworn_spearmen could not take a tower (149 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of gravesworn_shades could not take a tower (1170 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_levy could not take a tower (230 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_archers could not take a tower (686 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_cavalry could not take a tower (1138 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_greatbow could not take a tower (1165 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_levy could not take a tower (147 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_cavalry could not take a tower (606 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_bowriders could not take a tower (1221 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_spearmen could not take a tower (17 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_archers could not take a tower (826 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_cavalry could not take a tower (1030 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of emberdeep_levy could not take a tower (46 HP left)
+      at line 523
+[31m    [Failed]:  [0mtwo squads of emberdeep_archers could not take a tower (885 HP left)
+      at line 523
+* test_light_skirmishers_still_hurt_a_tower_even_though_two_cannot_take_it
+* test_a_building_site_does_not_shoot
+* test_an_unarmed_building_does_not_shoot
+* test_a_building_does_not_shoot_its_own_side
+* test_a_building_out_of_range_does_not_reach
+* test_building_fire_reports_casualty_events
+* test_a_building_once_seen_stays_known_and_the_hash_keeps_agreeing
+* test_hashing_the_visible_set_instead_of_the_known_set_would_desync
+* test_a_client_is_told_about_a_building_only_once
+* test_destruction_reaches_a_client_that_has_walked_away
+* test_build_orders_round_trip
+* test_a_client_will_not_send_a_build_order_for_a_squad_it_does_not_own
+* test_building_info_round_trips_every_field
+* test_only_gatherers_can_build_a_town_hall
+* test_the_general_can_build_nothing_at_all
+* test_no_founders_unit_remains_in_the_roster
+* test_an_unrestricted_building_accepts_any_builder
+* test_the_opening_general_outfights_basic_infantry
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ emberdeep fields no militia to compare against
+      at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ gildedreach fields no militia to compare against
+      at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ gravesworn fields no militia to compare against
+      at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ stoneblood fields no militia to compare against
+      at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ thornwood fields no militia to compare against
+      at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ windmarch fields no militia to compare against
+      at line 836
+* test_the_shipped_buildings_load_and_make_sense
+* test_a_produced_squad_does_not_appear_inside_the_building
+* test_a_squad_cannot_stand_where_a_building_stands
+* test_a_rally_point_defaults_in_front_and_can_be_moved
+* test_a_building_denies_ground_to_other_players_but_not_to_you
+* test_the_claim_is_data_not_a_constant
+* test_the_shipped_wall_and_gate_defs_load_and_block_for_free
+* test_a_wall_blocks_ground_movement_for_free
+* test_a_wall_under_construction_does_not_block
+* test_a_compatible_upgrade_replaces_the_old_building_in_place
+* test_a_resource_node_is_ground_you_cannot_build_on
+* test_a_refused_build_names_which_of_the_four_reasons_it_was
+* test_an_open_gate_stops_blocking_but_a_closed_one_still_does
+* test_a_flow_field_routes_around_a_closed_wall
+* test_gate_defaults_to_auto_mode_and_closed
+* test_setting_gate_state_and_mode_marks_the_building_dirty_and_a_no_op_does_not
+* test_only_the_tower_piece_stores_a_door_direction
+* test_every_building_carries_a_facing_not_just_the_tower
+* test_a_freestanding_buildings_facing_is_a_continuous_byte_not_a_hex_direction
+* test_building_info_entries_carry_facing
+* test_walkable_top_cells_only_include_complete_living_walkway_buildings
+* test_a_wall_can_be_destroyed_with_shipped_data
+* test_build_orders_round_trip_a_facing
+* test_build_queue_orders_round_trip_and_use_their_own_opcode
+* test_gate_state_and_mode_orders_round_trip
+* test_building_info_round_trips_gate_state
+* test_building_info_round_trips_facing
+* test_building_info_defaults_facing_to_east_when_unspecified
+* test_building_info_defaults_gate_fields_for_a_non_gate_entry
+* test_a_recruit_appears_on_the_rally_side_of_its_building
+[1m65/68 passed.
+[0m[4m
+
+res://tests/test_charge.gd
+[0m* test_a_charging_squad_closes_faster
+* test_the_impact_lands_once_and_hits_harder
+* test_a_point_blank_charge_is_an_attack_move
+* test_a_charge_ends_when_the_legs_give_out
+* test_an_exhausted_squad_cannot_charge_at_all
+* test_a_plain_move_or_a_rout_cancels_a_charge
+* test_the_wire_carries_a_charge
+[1m7/7 passed.
+[0m[4m
+
+res://tests/test_civ_knobs.gd
+[0m* test_the_knobs_are_applied_by_the_schema_and_not_by_each_caller
+* test_a_civ_that_turns_nothing_changes_nothing
+* test_an_unknown_civ_resolves_to_the_schema_defaults_rather_than_null
+* test_a_shipped_civ_resolves_to_itself
+* test_the_shipped_data_actually_turns_at_least_one_knob
+* test_a_civ_bonus_raises_that_players_squad_cap
+* test_the_bonus_is_what_the_refusal_actually_counts
+* test_a_faster_civ_finishes_a_unit_sooner
+* test_production_time_is_stored_as_seconds_the_client_can_count_down
+* test_omitting_the_time_still_means_the_defs_own_build_time
+* test_a_civ_with_a_gathering_bonus_takes_more_from_the_same_node
+* test_a_civ_at_the_default_gathers_exactly_what_no_civ_does
+* test_every_mechanical_knob_is_read_by_something_that_ships
+* test_the_simulation_is_told_who_plays_what
+* test_the_server_trains_a_fast_civs_unit_in_that_civs_time
+server: SIM_CIVS 1=gravesworn
+* test_the_server_lets_a_numerous_civ_past_the_maps_own_cap
+server: SIM_CIVS 1=gravesworn
+* test_the_server_still_refuses_a_plain_civ_at_the_cap
+server: SIM_CIVS 1=windmarch
+* test_the_cap_bonus_worst_case_is_the_one_the_decision_records
+[1m18/18 passed.
+[0m[4m
+
+res://tests/test_civs.gd
+[0m* test_no_script_mentions_a_civ_id
+[31m    [Failed]:  [0mARRAY(["res://playtest_obs/obs_combat.gd names civ \'emberdeep\'", "res://playtest_obs/obs...blood\'"]) != ARRAY([]).
+    ["res://playtest_obs/obs_combat.gd names...eblood\'"] != []  21 of 21 indexes do not match.  Scripts must not know which civs exist — adding a civ would stop being a data change
+      at line 79
+* test_the_shipped_civs_load_and_validate
+* test_each_civ_fields_a_different_subset_of_archetypes
+* test_a_shared_archetype_is_tuned_differently_per_civ
+* test_a_civ_only_fields_its_own_units_and_the_neutral_pool
+* test_asking_for_an_archetype_a_civ_lacks_returns_nothing
+* test_every_unit_declares_an_archetype
+* test_random_resolves_to_a_real_civ
+* test_random_is_unbiased_across_civs
+* test_the_same_seed_draws_the_same_civ
+* test_an_explicit_choice_is_honoured_rather_than_rerolled
+* test_an_unknown_choice_falls_back_rather_than_failing
+* test_a_replay_records_seats_with_civ_and_team
+* test_an_old_replay_without_seats_is_still_readable
+[1m13/14 passed.
+[0m[4m
+
+res://tests/test_client_state.gd
+[0m* test_welcome_roundtrips
+* test_order_move_roundtrips
+* test_unknown_opcode_is_counted_not_crashed_on
+* test_empty_packet_is_survivable
+* test_welcome_establishes_the_clients_view_of_the_map
+* test_welcome_carries_the_squad_cap_and_the_match_clock
+* test_a_welcome_carrying_everything_still_reads_the_spawn_table
+* test_a_client_and_the_server_agree_where_an_ai_player_starts
+* test_a_client_with_no_seat_list_still_answers_from_the_spawn_table
+* test_a_welcome_without_the_new_fields_still_reads
+* test_the_match_clock_reanchors_on_later_server_ticks
+* test_the_match_clock_never_runs_backwards
+* test_living_squad_count_matches_what_the_cap_actually_limits
+* test_a_squad_wiped_out_stops_being_one_this_client_owns
+* test_a_squad_merely_bloodied_is_still_ours
+* test_orders_are_refused_for_squads_the_client_does_not_own
+* test_client_reconstructs_squad_state_from_server_packets
+* test_client_derives_the_same_soldiers_the_server_would
+* test_client_learns_composition_rather_than_assuming_it
+* test_a_formation_change_reaches_the_client
+* test_a_formation_change_does_not_desync_a_client_that_was_told
+* test_squad_with_no_composition_derives_nothing_rather_than_guessing
+* test_client_never_receives_soldier_positions
+    12624 bytes replicated for 220 client-side soldiers over 20 ticks (per-soldier equivalent: ~52800)
+* test_world_to_cell_inverts_to_world_for_every_cell
+* test_world_to_cell_wraps_out_of_bounds_clicks
+* test_world_to_cell_picks_the_nearest_cell_near_boundaries
+* test_squad_info_roundtrips
+* test_state_hash_roundtrips
+* test_composition_hash_ignores_entry_order
+* test_composition_hash_changes_with_every_field
+* test_matching_client_reports_no_desync
+* test_desync_check_catches_a_client_that_assumed_the_wrong_squad_size
+* test_desync_check_catches_a_wrong_formation_shape
+* test_a_desync_queues_a_report_for_a_client_to_print
+* test_a_building_desync_queues_a_report_too
+* test_a_healthy_client_queues_nothing_to_report
+* test_desync_reports_are_capped_but_the_counter_is_not
+* test_desync_summary_says_what_was_checked_not_merely_that_nobody_complained
+* test_the_client_reads_the_desync_counters_outside_the_capture_path
+* test_sim_and_client_agree_on_the_hash_for_the_same_state
+* test_curve_application_is_last_write_wins_so_order_is_load_bearing
+[1m41/41 passed.
+[0m[4m
+
+res://tests/test_combat.gd
+[0m* test_mirror_matchup_is_symmetric_not_won_by_the_lower_squad_id
+* test_simultaneity_does_not_depend_on_which_side_has_the_lower_id
+* test_every_armed_unit_can_reach_an_adjacent_cell
+[31m    [Failed]:  [0memberdeep_ram has attack_range 1.50, under one hex width (1.73) — it could only ever attack its own cell
+      at line 179
+* test_counter_multiplier_changes_the_outcome
+* test_a_bonus_against_a_different_class_does_nothing
+* test_shipped_roster_has_a_real_counter_triangle
+[31m    [Failed]:  [0mSome civ should field the 'militia' archetype
+      at line 241
+* test_engagement_in_range_produces_casualties
+* test_engagement_out_of_range_produces_no_casualties
+* test_determinism_same_seed_produces_identical_strength_sequence
+* test_different_seed_can_produce_a_different_sequence
+* test_zero_bandwidth_when_nothing_died
+* test_morale_falls_with_casualties
+* test_squad_routs_below_threshold
+* test_routed_squad_ignores_player_orders
+* test_routed_squad_rallies_when_morale_recovers
+* test_casualty_event_round_trips_and_hashes_agree
+* test_replay_reconstructs_post_combat_strengths
+* test_allies_do_not_shoot_each_other
+* test_enemies_on_no_team_still_fight
+* test_a_squad_destroys_an_enemy_building
+* test_a_squad_leaves_its_own_buildings_alone
+* test_a_squad_out_of_range_cannot_reach_a_building
+* test_a_squad_fighting_a_squad_does_not_also_hit_a_building
+* test_soldiers_are_not_siege_engines
+[1m22/24 passed.
+[0m[4m
+
+res://tests/test_commands.gd
+[0m* test_stop_halts_a_moving_squad_where_it_stands
+* test_stop_uses_the_authoritative_position_not_a_supplied_one
+* test_a_routed_squad_ignores_stop
+* test_attack_move_halts_on_contact
+* test_a_plain_move_walks_on_through
+* test_the_attack_move_stance_is_spent_once_it_halts
+* test_ordering_a_plain_move_clears_an_attack_move_stance
+* test_orders_round_trip_through_the_protocol
+* test_every_order_opcode_is_distinct
+* test_a_client_will_not_send_an_order_for_a_squad_it_does_not_own
+[1m10/10 passed.
+[0m[4m
+
+res://tests/test_corpses.gd
+[0m* test_the_wire_carries_fell_and_defaults_it_false
+* test_combat_marks_its_casualties_fell
+* test_a_consumed_squad_does_not_fall
+* test_the_drain_records_only_when_a_renderer_is_reading
+* test_men_who_did_not_fall_leave_no_site
+* test_the_ledger_appends_densely_per_bucket
+* test_the_cap_evicts_the_oldest_across_buckets
+* test_evicting_a_buckets_last_entry_emits_no_move
+* test_the_fall_phase_is_derived_and_clamped
+* test_a_settled_corpse_leaves_the_falling_set
+* test_simulation_never_reads_the_dead_and_the_client_buries_them
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_cosmetic_duel.gd
+[0m* test_pairing_picks_the_nearest_opponent
+* test_pairing_is_deterministic
+* test_engage_faces_the_opponent
+* test_engage_steps_into_contact_and_no_further
+* test_a_crowded_pair_steps_back_to_the_gap
+* test_engage_never_mutates_the_authoritative_input
+* test_strike_decorate_leans_each_man_at_his_own_opponent
+* test_the_duel_is_all_static
+* test_the_simulation_never_reads_a_duel_and_the_client_draws_one
+[31m    [Failed]:  [0monly the render path and its preview may read CosmeticDuel — res://playtest_obs/obs_formations.gd reading it means a cosmetic value is one call from an outcome, which is D-006's revisit trigger firing
+      at line 182
+[1m8/9 passed.
+[0m[4m
+
+res://tests/test_curve_sync.gd
+[0m* test_sampling_holds_before_and_after_the_curve
+* test_curve_interpolates_across_the_seam_the_short_way
+* test_idle_detection
+* test_serialization_roundtrips
+* test_byte_size_matches_actual_encoding
+* test_idle_object_costs_zero_bytes_after_first_delivery
+* test_many_idle_objects_cost_zero_bytes
+* test_changing_a_curve_makes_it_send_again
+* test_clipping_drops_keyframes_beyond_the_horizon
+* test_client_cannot_read_future_intent_from_the_wire
+* test_horizon_window_advances_as_time_passes
+* test_invisible_objects_are_not_replicated_at_all
+* test_object_leaving_and_re_entering_vision_resends
+* test_invalidation_storm_respects_the_byte_budget
+* test_storm_drains_over_successive_ticks_without_starvation
+* test_oversized_single_curve_is_not_starved_forever
+* test_scheduling_is_deterministic_for_replay
+* test_an_overlapping_curve_update_keeps_the_past
+* test_a_gapped_curve_update_replaces_outright
+* test_a_join_that_would_teleport_replaces_instead
+[1m20/20 passed.
+[0m[4m
+
+res://tests/test_economy.gd
+[0m* test_nodes_are_derived_from_biome_and_are_deterministic
+* test_nodes_never_sit_on_water
+* test_every_start_is_guaranteed_a_minimum_of_each_resource
+economy: 9 of 17 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+* test_an_unbalanced_map_can_genuinely_be_short
+* test_a_gatherer_squad_fills_up_hauls_and_delivers
+* test_gathering_depletes_the_node
+* test_income_scales_with_the_surviving_crew
+* test_a_worked_out_node_releases_the_squad
+* test_a_finished_tree_sends_the_crew_to_the_next_one
+* test_retargeting_never_switches_resource_kind
+* test_depletion_is_reported_once_for_the_wire
+* test_a_fighting_unit_cannot_be_told_to_gather
+* test_gathering_an_empty_cell_is_refused
+* test_wallets_start_empty_and_are_per_player
+* test_spending_is_all_or_nothing
+* test_a_building_produces_only_what_its_def_lists
+* test_a_building_site_cannot_produce
+* test_production_finishes_and_puts_a_squad_on_the_map
+* test_wallets_round_trip_and_carry_no_player_id
+* test_produce_orders_round_trip
+* test_the_starting_stockpile_covers_a_town_hall_plus_a_few_workers
+* test_every_building_costs_something
+* test_every_producible_unit_costs_something
+* test_every_civ_ships_a_gatherer_that_can_actually_gather
+* test_trees_are_abundant_and_ore_stays_scarce
+economy: 19 of 33 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+economy: 11 of 23 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+economy: 26 of 35 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+economy: 19 of 32 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+* test_forests_are_dense_and_open_ground_is_not
+* test_open_ground_is_most_of_the_walkable_map
+economy: 11 of 23 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+    open ground: 20020 of 25077 walkable cells (79.8%), 5582 nodes
+* test_natural_stone_sits_on_walkable_ground
+* test_walkable_high_ground_grows_stone
+* test_a_tree_lasts_about_a_minute_under_one_crew
+* test_small_maps_are_not_far_denser_than_large_ones
+economy: 19 of 33 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+economy: 19 of 32 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+* test_thinning_the_nodes_did_not_starve_the_map
+economy: 19 of 33 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+* test_a_depletion_event_round_trips_and_fells_the_client_tree
+* test_a_depletion_event_for_an_unknown_node_is_ignored
+* test_a_crew_rings_the_node_it_works_and_spreads_out_to_walk
+* test_a_player_ordered_formation_is_not_overwritten_by_the_economy
+* test_an_untouched_crew_keeps_its_own_formation_too
+* test_a_shape_change_is_offered_to_the_server_exactly_once
+* test_separating_squads_does_not_evict_crews_from_the_node_they_work
+* test_node_entries_can_be_restricted_to_what_a_player_has_seen
+* test_asking_for_a_node_that_does_not_exist_yields_nothing
+* test_a_guaranteed_resource_is_one_the_spawn_can_walk_to
+* test_a_stone_top_up_goes_to_the_mountain_foot_when_there_is_one
+* test_no_top_up_lands_on_a_beach_while_better_ground_is_free
+economy: 29 of 38 fairness top-ups placed on ground that does not grow them — the starts needing them have no better cell in reach
+[1m44/44 passed.
+[0m[4m
+
+res://tests/test_engagement.gd
+[0m* test_contact_counts_only_men_in_reach
+* test_a_line_against_a_columns_flank_lands_more_men
+* test_the_reach_slack_keeps_engaged_front_ranks_in_contact
+* test_the_torus_tax_is_paid
+* test_engagement_is_all_static
+* test_a_wide_line_beats_a_deep_column_of_the_same_troops
+* test_an_engagement_across_the_seam_still_kills
+[1m7/7 passed.
+[0m[4m
+
+res://tests/test_facing_width.gd
+[0m* test_the_orders_round_trip
+* test_squad_info_carries_facing_and_files
+* test_the_hash_reads_both_and_the_two_machines_agree
+* test_a_standing_squad_faces_its_order_and_a_marching_one_its_path
+* test_width_changes_the_formation_and_the_footprint
+* test_width_buys_contact
+* test_orders_are_clamped_and_zero_restores_the_default
+[1m7/7 passed.
+[0m[4m
+
+res://tests/test_fatigue_height.gd
+[0m* test_sprinting_spends_and_resting_recovers
+* test_tired_men_hit_softer
+* test_run_is_faster_while_fresh_and_costs
+* test_the_slope_has_a_say
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_fearless.gd
+[0m* test_the_control_with_a_normal_threshold_breaks_under_this_beating
+* test_a_threshold_zero_squad_is_beaten_to_death_without_ever_routing
+* test_chain_shock_from_a_breaking_ally_cannot_rout_the_fearless
+* test_the_shipped_gravesworn_defs_are_fearless_in_data
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_fighting_styles.gd
+[0m* test_the_knobs_default_to_a_no_op
+* test_a_shield_wall_blunts_a_frontal_assault
+* test_a_testudo_shrugs_arrows
+* test_protection_costs_pace
+* test_granted_formations_exist_and_are_not_globally_offered
+[31m    [Failed]:  [0m[0] expected to be > than [0]:  somebody's spearmen must actually know the shield wall, or the special is declared-and-unread (the D-055 family)
+      at line 127
+[1m4/5 passed.
+[0m[4m
+
+res://tests/test_flow_field.gd
+[0m* test_destination_has_zero_distance_and_no_direction
+* test_every_cell_is_reachable_on_an_open_map
+* test_field_distance_matches_torus_distance_everywhere
+* test_following_the_field_strictly_decreases_distance
+* test_path_terminates_at_the_destination_from_every_cell
+* test_path_across_the_horizontal_seam_takes_the_short_way
+* test_path_across_the_vertical_seam_takes_the_short_way
+* test_longest_path_respects_the_wrapped_bound
+* test_impassable_cells_are_unreachable_and_routed_around
+* test_fully_enclosed_destination_yields_no_reachable_cells
+* test_impassable_destination_produces_an_empty_field_not_a_crash
+* test_unreachable_cell_stalls_in_place_rather_than_walking_off
+* test_one_field_serves_many_squads
+* test_a_partial_field_is_correct_wherever_it_is_defined
+* test_expanding_to_completion_matches_a_one_shot_build
+* test_an_unfinished_field_does_not_claim_a_cell_is_unreachable
+* test_a_blocked_destination_is_complete_immediately
+* test_the_table_backed_expansion_matches_a_neighbor_index_bfs
+* test_a_cross_map_order_paths_within_two_ticks_on_the_shipped_map
+[1m19/19 passed.
+[0m[4m
+
+res://tests/test_fog.gd
+[0m* test_fog_hides_out_of_vision_enemy_squad_measured_in_bytes
+* test_reveal_leaks_neither_past_nor_future
+* test_ghost_freezes_on_conceal_and_is_replaced_wholesale_on_reveal
+* test_hash_agreement_survives_conceal_casualties_and_reveal
+* test_vision_is_wrap_aware_across_the_seam
+* test_vision_field_agrees_with_a_brute_force_reference_over_every_cell
+* test_allies_see_through_each_others_eyes
+* test_vision_is_not_shared_with_enemies
+* test_players_with_no_team_do_not_share
+* test_allies_see_each_others_squads_wherever_they_are
+[1m10/10 passed.
+[0m[4m
+
+res://tests/test_fog_pathing.gd
+[0m* test_an_order_into_an_unexplored_pocket_is_attempted_not_refused
+* test_the_march_ends_in_a_refusal_once_the_wall_is_discovered
+* test_a_squad_marches_toward_an_unseen_wall_instead_of_around_it
+* test_the_route_bends_once_the_wall_has_been_seen
+* test_a_blind_squad_still_never_stands_in_a_wall
+* test_allies_share_one_field_and_strangers_do_not
+[1m6/6 passed.
+[0m[4m
+
+res://tests/test_formation.gd
+[0m* test_same_inputs_always_give_the_same_output
+* test_evaluation_order_does_not_affect_results
+* test_revisiting_an_earlier_time_reproduces_the_earlier_result
+* test_two_independent_evaluators_agree
+* test_loose_scatter_is_hashed_not_random
+* test_facing_is_derived_from_the_curve_not_stored
+* test_stationary_squad_has_a_deterministic_default_facing
+* test_terrain_sampler_is_the_only_source_of_height
+* test_formation_restamps_when_a_soldier_dies
+* test_casualty_restamp_is_deterministic
+* test_slot_count_always_matches_alive_count
+* test_zero_or_negative_alive_produces_no_soldiers
+* test_soldiers_do_not_share_a_position
+* test_line_is_wider_and_shallower_than_column
+* test_crossing_a_seam_is_one_hex_of_travel_not_a_lap
+* test_world_positions_wrap_into_the_map_rectangle_at_the_seam
+* test_formation_geometry_does_not_undo_seam_handling
+* test_cosmetic_offsets_do_not_change_authoritative_transforms
+* test_cosmetic_decoration_actually_moves_the_render_transform
+* test_authoritative_positions_are_independent_of_cosmetic_time
+* test_stationary_squads_do_not_bob
+* test_bulk_derivation_matches_the_single_soldier_path
+* test_bulk_derivation_applies_the_terrain_sampler_per_soldier
+* test_a_squads_footprint_covers_every_soldier_in_it
+* test_the_footprint_is_centred_on_the_body_not_the_curve_point
+* test_the_footprint_grows_with_the_squad
+* test_a_ring_crew_stands_around_its_centre_not_on_it
+* test_a_ring_crew_is_actually_round
+* test_every_shape_the_schema_offers_is_implemented
+* test_no_soldier_stands_on_ground_his_squad_could_not_walk_on
+* test_a_slot_over_the_line_is_pulled_back_not_reset
+* test_a_slot_never_climbs_the_drawn_cliff
+* test_open_ground_derives_exactly_as_it_always_did
+* test_the_clamp_carries_nothing_between_calls
+* test_bulk_and_single_derivation_agree_about_the_clamp
+* test_the_client_clamps_against_the_ground_the_server_derives
+client: built 1 terrain chunks in 0.0 s — 2 slices, worst 20 ms, fields 0.0 s, 0.0 s of work — textured=true fogged=true props_fogged=true
+* test_client_state_hands_the_passability_to_formation
+[1m37/37 passed.
+[0m[4m
+
+res://tests/test_formation_icons.gd
+[0m* test_every_shape_a_player_is_offered_draws_an_icon
+* test_an_unknown_shape_draws_nothing_rather_than_the_wrong_shape
+* test_every_dot_stays_inside_its_button
+* test_line_and_column_are_visibly_different_icons
+* test_tight_and_sparse_are_told_apart_by_regularity_not_size
+* test_the_front_rank_is_at_the_top_of_the_icon
+* test_every_offered_formation_fits_the_strip_it_is_drawn_in
+* test_icons_do_not_overlap_each_other
+* test_the_remaining_actions_start_below_the_strip
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_formations_are_data.gd
+[0m* test_the_roster_is_not_empty_and_offers_a_choice
+* test_every_formation_names_an_implemented_kind
+* test_no_script_hardcodes_the_offered_formation_list
+[1m3/3 passed.
+[0m[4m
+
+res://tests/test_gate_checks.gd
+[0mERROR: Could not create child process: \bin\bash -c "echo alive"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] before_all (res://tests/test_gate_checks.gd:68)
+       [2] _call_before_all (res://addons/gut/gut.gd:684)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:813)
+* before_all
+[31m    [Failed]:  [0m[1] expected to equal [0]:  this file needs a POSIX shell — run the suite through `just test-unit` (docker)
+      at line 69
+* test_a_gated_run_passes_and_says_what_it_proved
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-squads' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-ok-bots.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-ok-server.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_gated_run_passes_and_says_what_it_proved (res://tests/test_gate_checks.gd:81)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  a gated run must pass: <3>WSL (235795 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 82
+[31m    [Failed]:  [0mthe pass must quote what it compared, not merely say ok: <3>WSL (235795 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 83
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-nodes' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-ok-bots.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-ok-server.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_gated_run_passes_and_says_what_it_proved (res://tests/test_gate_checks.gd:86)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  resource gating must pass
+      at line 86
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'civs' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-ok-server.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_gated_run_passes_and_says_what_it_proved (res://tests/test_gate_checks.gd:87)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  two civs fielded must pass
+      at line 87
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_an_ungated_run_fails
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-squads' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-open-bots.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-open-server.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_an_ungated_run_fails (res://tests/test_gate_checks.gd:96)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-nodes' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-open-bots.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-open-server.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_an_ungated_run_fails (res://tests/test_gate_checks.gd:98)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_one_civ_fails
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'civs' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-one-civ.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_one_civ_fails (res://tests/test_gate_checks.gd:104)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_a_missing_marker_is_a_failure_not_a_skip
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-squads' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-quiet.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-totals.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_missing_marker_is_a_failure_not_a_skip (res://tests/test_gate_checks.gd:116)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-squads' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-totals.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-quiet.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_missing_marker_is_a_failure_not_a_skip (res://tests/test_gate_checks.gd:118)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-nodes' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-quiet.log' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-totals.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_missing_marker_is_a_failure_not_a_skip (res://tests/test_gate_checks.gd:120)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'civs' 'C:/Users/dmaso/AppData/Roaming/Godot/app_userdata/my-edotmw/gate-check-quiet.log'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_a_missing_marker_is_a_failure_not_a_skip (res://tests/test_gate_checks.gd:122)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_misusing_the_checker_is_its_own_exit_code
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'fog-squads'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_misusing_the_checker_is_its_own_exit_code (res://tests/test_gate_checks.gd:130)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [2]:  too few arguments is a misuse
+      at line 130
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/gate-check.sh' 'what' 'a' 'b'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_gate_checks.gd:29)
+       [1] _check (res://tests/test_gate_checks.gd:60)
+       [2] test_misusing_the_checker_is_its_own_exit_code (res://tests/test_gate_checks.gd:131)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [2]:  an unknown check is a misuse
+      at line 131
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_the_fast_loop_makes_every_check_the_gate_makes
+* test_neither_recipe_reimplements_a_shared_comparison
+[1m2/7 passed.
+[0m[4m
+
+res://tests/test_gather_round.gd
+[0m* test_ring_points_are_even_exact_and_deterministic
+* test_a_line_of_men_wraps_the_whole_ring
+* test_the_dealt_ring_runs_the_ordinary_duel_bounds
+* test_only_men_at_their_mark_swing
+* test_rect_points_line_the_faces_of_the_box
+* test_no_drawn_man_stands_inside_a_box
+* test_the_surround_budget_reaches_where_melee_may_not
+[1m7/7 passed.
+[0m[4m
+
+res://tests/test_gatherer_tools.gd
+[0m* test_each_resource_calls_for_its_own_tool
+* test_every_resource_kind_the_economy_has_maps_to_a_work_clip
+* test_not_working_is_not_a_resource
+* test_a_settled_crew_plays_its_work_clip
+* test_a_crew_on_the_move_walks_rather_than_works
+* test_violence_outranks_work
+* test_the_default_leaves_every_other_squad_where_it_was
+* test_the_work_clips_have_cadences_of_their_own
+* test_each_man_works_at_his_own_cadence
+* test_that_cadence_stays_near_the_crews
+* test_only_the_work_clips_vary
+* test_cadence_and_phase_are_independent
+* test_a_crew_settles_over_a_spread_of_time_not_all_at_once
+    crew settled over 0.304s (first 0.816, last 1.120)
+* test_a_man_who_has_started_is_not_re_anchored
+* test_no_model_is_ever_asked_for_a_row_it_did_not_bake
+* test_a_model_that_baked_the_clip_gets_that_clip
+* test_a_model_without_the_work_clips_falls_back_to_something_it_has
+* test_a_self_animating_model_takes_no_cosmetic_lunge
+* test_the_rig_still_grows_finger_joints
+* test_the_grip_is_asserted_at_build_time
+* test_the_shipped_gatherer_bakes_the_work_clips
+* test_every_civs_gatherer_uses_the_tooled_model
+* test_the_baked_rows_and_the_clip_list_agree
+* test_no_models_vat_is_wider_than_a_texture_can_be
+[1m24/24 passed.
+[0m[4m
+
+res://tests/test_generals.gd
+[0m* test_presence_doubles_recovery
+* test_presence_halves_the_chain_shock
+* test_a_generals_death_shocks_twice_as_hard_and_cascades
+* test_one_living_general_per_player
+* test_the_roster_fields_a_general_per_civ
+[1m5/5 passed.
+[0m[4m
+
+res://tests/test_ghost_squads_are_not_drawn.gd
+[0m* test_no_script_carries_the_squad_ghost_render_path
+* test_the_three_d_pass_hides_a_concealed_squad
+* test_the_minimap_skips_a_concealed_squad
+* test_a_concealed_squad_has_no_minimap_mark
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_ground_cover.gd
+[0m* test_water_grows_nothing
+* test_props_come_from_their_own_biome_palette
+* test_a_region_never_grows_another_region_s_flora
+* test_a_region_is_not_one_prop_repeated
+* test_boundary_cells_fray_into_the_neighbouring_region
+* test_a_water_neighbour_is_never_borrowed
+* test_borrowing_species_does_not_borrow_density
+* test_an_occupied_cell_gets_no_cover
+* test_no_prop_can_hide_a_soldier
+[33m    36 Orphans[0m
+[33m        * [prop_boulder2:<Node3D#825539696210>] + 1
+        * [prop_bush2:<Node3D#825858463337>] + 1
+        * [prop_cactus2:<Node3D#826160453237>] + 1
+        * [prop_cracked_slab2:<Node3D#826479220346>] + 1
+        * [prop_driftwood2:<Node3D#826797987456>] + 1
+        * [prop_dry_tussock2:<Node3D#827116754566>] + 1
+        * [prop_dune_grass2:<Node3D#827418744460>] + 1
+        * [prop_fern2:<Node3D#827737511569>] + 1
+        * [prop_grass_tuft2:<Node3D#828039501463>] + 1
+        * [prop_log2:<Node3D#828375045788>] + 1
+        * [prop_moss_rock2:<Node3D#828693812899>] + 1
+        * [prop_mushrooms2:<Node3D#829012580008>] + 1
+        * [prop_reeds2:<Node3D#829314569902>] + 1
+        * [prop_rock_spike2:<Node3D#829633337011>] + 1
+        * [prop_scree2:<Node3D#829952104121>] + 1
+        * [prop_shell2:<Node3D#830270871231>] + 1
+        * [prop_snow_boulder2:<Node3D#830589638341>] + 1
+        * [prop_wildflowers2:<Node3D#830925182667>] + 1[0m
+* test_a_prop_renders_the_colour_it_was_painted
+* test_shipped_props_stay_inside_the_prop_triangle_budget
+* test_every_model_a_palette_names_was_actually_built
+* test_every_built_prop_is_actually_used_by_a_palette
+* test_placement_stays_inside_its_own_cell
+* test_props_in_a_cell_do_not_stack
+* test_the_dressing_is_deterministic
+* test_density_follows_moisture_and_exposure
+* test_the_density_knob_is_wired_to_something
+* test_a_cell_never_exceeds_the_hard_cap
+* test_the_shipped_map_is_actually_dressed
+    ground cover on the shipped Standard map: 89457 props over 32592 cells (27369 vegetated)
+      biome 4: 14828 cells, 51318 props
+      biome 3: 3074 cells, 5299 props
+      biome 2: 4511 cells, 11902 props
+      biome 1: 5103 cells, 0 props
+      biome 5: 4311 cells, 19477 props
+      biome 6: 645 cells, 1461 props
+      biome 0: 120 cells, 0 props
+[1m20/20 passed.
+[0m[4m
+
+res://tests/test_host_budget.gd
+[0m* test_the_budget_has_exactly_one_definition
+* test_the_gate_charges_live_holders_rather_than_counting_jobs
+* test_a_dead_holder_cannot_wedge_the_machine
+* test_the_gate_does_not_touch_another_instances_containers
+* test_every_recipe_that_runs_real_work_declares_a_class
+[31m    [Failed]:  [0m[1] expected to equal [0]:  these recipes run docker or Godot without declaring a host class: ["gen-formation-icons"]
+      at line 132
+* test_import_is_gated_only_when_it_actually_imports
+* test_a_gated_recipe_releases_on_every_exit_path
+[1m6/7 passed.
+[0m[4m
+
+res://tests/test_hud_layout.gd
+[0m* test_the_resource_bar_spans_the_whole_window
+* test_the_panel_sits_at_the_bottom_left_of_any_window
+* test_nothing_lands_outside_the_window
+* test_a_16_9_window_at_or_under_the_reference_reproduces_the_hand_tuned_layout
+* test_the_panel_keeps_its_hand_tuned_position_at_the_reference_size
+* test_scale_grows_with_the_window_but_is_bounded
+* test_min_window_size_is_the_reference_at_the_scale_floor
+* test_scale_follows_the_smaller_dimension
+* test_a_bigger_window_gives_more_battlefield_not_a_bigger_hud
+* test_the_hud_s_share_of_the_window_never_grows_with_the_window
+* test_the_hud_is_never_magnified_more_than_it_used_to_be
+* test_an_ultrawide_still_reaches_both_edges
+* test_the_minimap_sits_inside_the_ring
+* test_the_ring_clears_the_resource_bar
+* test_the_ring_crop_radius_stays_inside_the_border
+* test_the_ring_follows_the_minimap_s_shorter_dimension
+* test_the_ring_diameter_tracks_the_minimap_s_shorter_side_directly
+* test_a_very_short_window_keeps_the_panel_clear_of_the_bar
+* test_the_status_readout_stays_clear_of_the_resource_counts
+* test_the_notice_is_centred_on_the_window
+* test_the_minimap_keeps_the_shape_it_is_given
+* test_the_menu_button_sits_at_the_right_end_of_the_bar
+* test_the_status_readout_never_runs_under_the_menu_button
+* test_the_ring_stays_on_screen_on_a_narrow_window
+* test_north_is_up_when_the_view_is_not_turned
+* test_east_is_to_the_right_of_north_on_the_dial
+* test_turning_the_view_turns_the_dial_the_other_way
+* test_the_cardinals_stay_square_at_any_angle
+* test_a_full_turn_comes_back_to_where_it_started
+* test_the_clock_reads_as_minutes_until_an_hour_then_hours
+* test_the_clock_never_shows_a_negative_time
+* test_the_squad_count_shows_the_cap_when_there_is_one
+* test_the_squad_count_omits_an_unknown_cap_rather_than_printing_zero
+* test_action_buttons_fill_rows_of_three_inside_their_own_column
+* test_the_button_grid_grows_with_the_panel_between_two_bounds
+* test_the_panel_is_three_columns_left_to_right
+* test_the_panel_is_only_as_tall_as_its_tallest_column
+* test_the_bar_is_half_the_height_the_three_column_rework_started_at
+* test_a_column_rule_separates_the_columns_without_leaving_the_panel
+* test_the_chip_strip_fills_the_gap_between_the_title_and_the_orders
+* test_the_strip_is_wider_when_the_build_column_is_free
+* test_the_client_re_measures_the_strip_whenever_it_fills_it
+* test_a_per_squad_chip_list_collapses_before_it_stops_fitting
+* test_a_price_leaves_room_for_the_thing_it_is_the_price_of
+* test_no_shipped_price_names_more_resources_than_a_button_can_draw
+* test_no_chip_is_ever_drawn_outside_the_panel
+* test_every_building_s_train_list_fits_at_the_smallest_window
+[31m    [Failed]:  [0ma 14-unit train list fits at (1600.0, 900.0) without paging (capacity 6)
+      at line 750
+[31m    [Failed]:  [0ma 14-unit train list fits at (1920.0, 1080.0) without paging (capacity 8)
+      at line 750
+* test_chip_columns_is_never_zero
+* test_chips_fill_rows_left_to_right
+[1m48/49 passed.
+[0m[4m
+
+res://tests/test_lattice_copies.gd
+[0m* test_a_view_holding_two_copies_of_the_same_ground_is_told_about_both
+* test_a_thing_with_no_copy_on_screen_reports_nowhere
+* test_a_squad_is_drawn_at_every_copy_it_is_given
+* test_the_extra_copies_share_the_one_derived_multimesh
+* test_a_squad_with_no_visible_copy_is_drawn_nowhere
+* test_a_squad_that_shrinks_its_copies_hides_the_spare_views
+* test_a_copy_carries_the_sources_rotation_and_scale
+* test_a_composite_copies_its_children
+* test_a_wrapped_forest_reads_the_same_fog_as_its_canonical_copy
+* test_the_fog_coordinate_comes_from_the_cell_not_the_world
+* test_the_client_draws_entities_at_every_copy_rather_than_choosing_one
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_line_endings.gd
+[0m* test_every_file_in_the_repo_has_an_explicit_line_ending_rule
+* test_the_catch_all_never_wins_over_a_rule_that_was_bought_with_an_incident
+* test_every_pattern_written_is_one_this_scan_can_read
+[1m3/3 passed.
+[0m[4m
+
+res://tests/test_lobby.gd
+[0m* test_the_first_human_to_join_is_admin
+* test_joining_seats_a_player_once
+* test_admin_passes_deterministically_when_it_leaves
+* test_the_last_human_leaving_leaves_nobody_in_charge
+* test_only_the_admin_may_seat_ai
+* test_only_the_admin_may_remove_ai
+* test_the_admin_cannot_evict_a_human
+* test_a_player_may_choose_only_their_own_civ
+* test_the_admin_may_set_an_ai_civ_but_not_another_humans
+* test_an_unknown_civ_choice_is_refused
+* test_only_the_admin_can_start
+* test_only_the_admin_may_toggle_a_sandbox_flag
+* test_each_sandbox_flag_is_independent
+* test_an_unknown_sandbox_key_is_refused
+* test_sandbox_can_be_toggled_after_the_match_has_started
+* test_a_lobby_of_one_is_not_a_match
+* test_an_ai_seat_counts_toward_starting
+* test_seating_ai_before_players_expected_accounts_for_them_leaves_later_seats_unresolved
+* test_players_expected_counting_every_seat_resolves_them_all
+* test_random_is_still_random_when_the_match_starts
+* test_an_explicit_choice_survives_the_start
+* test_nothing_can_be_changed_once_the_match_is_running
+* test_a_command_line_ai_is_seated_as_an_ai
+* test_an_ai_never_takes_the_lobby_admin
+* test_the_first_human_repairs_a_lobby_already_held_by_an_ai
+* test_a_command_line_ai_seat_carries_the_civ_its_brain_was_built_with
+* test_an_ai_cannot_acquire_a_second_seat_beside_itself
+* test_the_server_seats_command_line_ai_through_the_ai_door
+* test_a_player_may_choose_only_their_own_team
+* test_the_host_allocates_ai_teams
+* test_an_out_of_range_team_is_refused
+* test_no_team_means_free_for_all_not_one_big_alliance
+* test_players_on_the_same_team_are_allied
+* test_a_team_can_win_rather_than_only_a_lone_player
+* test_the_team_map_describes_every_seat
+* test_chat_strips_newlines_so_a_message_cannot_forge_extra_lines
+* test_chat_is_length_capped
+* test_an_empty_message_stays_empty
+* test_chat_roundtrips_with_its_speaker
+* test_a_human_and_an_ai_never_share_a_spawn_point
+* test_spawn_points_are_shared_only_when_there_are_too_few
+[1m41/41 passed.
+[0m[4m
+
+res://tests/test_lobby_layout.gd
+[0m* test_a_bigger_window_gives_the_lobby_more_room
+* test_a_window_too_short_for_the_lobby_is_not_scaled_into_fitting
+* test_nothing_moves_on_the_window_the_lobby_was_drawn_against
+* test_a_short_window_gives_every_panel_a_smaller_share
+* test_the_columns_divide_the_window_rather_than_demanding_pixels
+* test_a_players_hud_scale_cannot_push_the_lobby_off_its_own_screen
+* test_the_lobby_fits_the_window_it_was_reported_against
+    1920x1000: wants 776, has 936
+* test_the_lobby_fits_every_window_it_is_meant_to
+* test_content_a_short_window_cannot_fit_is_still_reachable
+* test_the_lobby_is_still_the_size_of_the_window_it_is_drawn_on
+* test_the_lobbys_own_content_still_fits_the_height_it_claims
+    lobby content: 784 + 64 margin against DESIGN_HEIGHT 1000
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_map_seed.gd
+[0m* test_rolling_actually_changes_the_map
+* test_a_rolled_seed_is_one_the_lobby_can_show
+* test_rolling_leaves_the_seed_unpinned
+* test_typing_a_seed_pins_it
+* test_a_seed_the_lobby_could_not_show_is_wrapped_rather_than_taken
+* test_the_reroll_button_asks_for_a_new_map_without_pinning_it
+* test_only_the_admin_may_reroll
+* test_the_next_match_is_a_different_map
+* test_a_pinned_seed_is_played_again
+* test_the_civ_draw_follows_the_map_seed
+* test_the_same_seed_draws_the_same_civs
+* test_two_maps_of_the_same_seed_still_draw_differently
+* test_a_rolled_lobby_redraws_its_civs
+* test_a_headless_default_is_still_reproducible
+[1m14/14 passed.
+[0m[4m
+
+res://tests/test_map_slider_ranges.gd
+[0m* test_a_shipped_preset_keeps_its_beach_exactly_where_it_put_it
+* test_the_beach_follows_the_water
+* test_no_point_of_any_slider_breaks_the_ordering
+* test_the_handles_stop_where_each_other_is
+* test_the_lobby_draws_no_range_of_its_own
+* test_the_server_clamps_through_the_same_definition
+* test_every_slider_the_lobby_draws_is_one_the_server_accepts
+* test_the_sea_level_slider_works_past_the_presets_own_beach
+* test_validate_refuses_a_world_with_no_ground_on_it
+* test_an_unplayable_slider_move_is_refused_and_rolled_back
+* test_every_shipped_preset_generates_a_map_at_every_size
+* test_the_sampled_ground_estimate_matches_the_real_generation
+[1m12/12 passed.
+[0m[4m
+
+res://tests/test_map_symmetry.gd
+[0m* test_quadrants_are_identical_at_every_cell
+* test_moisture_is_symmetric_too_not_just_elevation
+* test_biome_is_symmetric_so_resources_will_be
+* test_asymmetric_generation_is_not_symmetric
+* test_symmetry_does_not_flatten_the_map
+* test_the_map_seats_every_slot_it_claims
+* test_no_two_spawns_are_closer_than_the_minimum_spacing
+* test_spawn_points_are_distinct
+* test_spawn_layout_is_deterministic_for_a_given_seed
+* test_a_different_seed_gives_a_different_layout
+* test_spawns_never_land_on_impassable_ground
+* test_spawns_never_land_on_an_islet_in_open_water
+* test_a_landmass_minimum_of_zero_accepts_what_it_used_to
+* test_the_shipped_islands_preset_seats_nobody_on_a_rock
+* test_short_seating_is_reported_rather_than_silently_shared
+* test_symmetry_order_must_divide_the_map
+* test_quadrant_height_must_stay_even_for_row_parity
+* test_squad_cap_cannot_be_below_the_starting_allotment
+* test_spacing_that_cannot_possibly_fit_is_refused_up_front
+* test_the_shipped_default_map_is_valid
+[1m20/20 passed.
+[0m[4m
+
+res://tests/test_match.gd
+[0m* test_match_waits_in_lobby_until_enough_players_join
+* test_lobby_does_not_eliminate_players_who_have_not_spawned
+* test_a_player_with_no_living_squads_is_eliminated
+* test_elimination_is_reported_once_not_every_tick
+* test_eliminate_player_wipes_squads_and_describes_it_as_casualties
+* test_a_match_played_to_completion_produces_exactly_one_winner
+* test_founding_consumes_the_whole_crew_immediately
+* test_a_player_with_a_building_but_no_squads_is_not_defeated
+* test_one_cap_covers_military_and_gatherer_squads_alike
+* test_the_cap_is_per_player
+* test_losing_squads_frees_capacity
+* test_last_player_standing_wins
+* test_a_solo_session_never_declares_a_winner
+* test_disconnect_leads_to_elimination_through_the_normal_rule
+* test_a_finished_match_stops_evaluating
+[1m15/15 passed.
+[0m[4m
+
+res://tests/test_minimap_paint.gd
+[0m* test_a_known_building_is_painted
+* test_a_building_out_of_current_vision_is_still_painted
+* test_a_destroyed_building_is_not_painted
+* test_marks_come_out_in_a_stable_order
+* test_a_settlement_reads_bigger_than_a_wall
+* test_an_unknown_def_still_paints
+* test_a_two_cell_mark_starts_at_its_own_cell
+* test_an_odd_mark_centres_on_its_cell
+* test_a_mark_at_the_seam_wraps
+* test_the_client_paints_buildings_on_the_minimap
+* test_a_squad_is_painted_in_its_owners_colour
+* test_three_owners_produce_three_distinct_marks
+* test_squad_marks_come_out_in_a_stable_order
+* test_a_ghost_is_not_painted
+* test_the_client_paints_squads_in_their_owners_colour
+* test_no_view_invents_a_colour_beside_the_per_player_one
+* test_the_three_fog_levels_are_three_distinct_tones
+* test_the_three_tones_are_separated_enough_to_read
+* test_remembered_ground_sits_between_the_other_two
+* test_live_vision_is_the_biome_colour_untouched
+* test_unexplored_ignores_the_terrain_under_it
+* test_the_minimap_and_the_ground_read_one_fog_field
+* test_buildings_are_painted_unfogged
+[1m23/23 passed.
+[0m[4m
+
+res://tests/test_morale_terms.gd
+[0m* test_aspect_classifies_front_flank_rear
+* test_a_rear_attack_breaks_a_squad_sooner_than_a_frontal_one
+* test_a_breaking_squad_shocks_nearby_allies_and_can_tip_them
+* test_a_routed_squad_is_cut_down_faster
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_multi_agent_isolation.gd
+[0m* test_identity_is_derived_from_the_one_script
+* test_every_compose_invocation_is_scoped_to_this_instance
+[31m    [Failed]:  [0mExpected [<RegExMatch#-9223364140272179656>] to be NULL:  a named container is not prefixed with {{compose_project}}: --name "{{TARGET}}"
+      at line 59
+* test_host_port_is_per_instance_not_hardcoded
+* test_client_titles_itself_with_its_instance
+* test_agent_quick_launch_defaults_to_sandbox
+[1m4/5 passed.
+[0m[4m
+
+res://tests/test_node_clearance.gd
+[0m* test_every_drawn_tree_gets_its_own_clearance_disc
+* test_the_old_single_centre_disc_could_not_have_covered_the_stands
+* test_a_skirted_conifer_clears_wider_than_a_held_canopy
+* test_an_ore_seam_keeps_one_wide_centred_disc
+* test_the_discs_are_cached_per_cell
+[1m5/5 passed.
+[0m[4m
+
+res://tests/test_node_placement.gd
+[0m* test_a_burst_is_drawn_a_slice_at_a_time_and_every_cell_once
+* test_the_oldest_reveal_is_grown_first
+* test_a_cell_revealed_twice_waits_once
+* test_a_cell_felled_before_its_turn_is_never_grown
+* test_a_budget_of_nothing_grows_nothing_and_keeps_the_queue
+* test_a_match_ending_empties_the_queue
+* test_the_wire_reports_a_reveal_as_news_and_the_drain_empties_it
+* test_a_new_match_starts_with_no_reveals_outstanding
+* test_the_client_grows_nodes_through_the_budget
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_opening.gd
+[0m* test_a_player_opens_with_a_crew_and_a_general_and_no_base
+* test_every_civ_can_actually_open
+* test_the_civs_gatherers_are_actually_different_troops
+[31m    [Failed]:  [0m[1] expected to equal [6]:  two civs field statistically identical gatherers: { &"emberdeep": [7, 30.0, 45, 0.28, 14], &"gildedreach": [7, 30.0, 45, 0.28, 14], &"gravesworn": [7, 30.0, 45, 0.28, 14], &"stoneblood": [7, 30.0, 45, 0.28, 14], &"thornwood": [7, 30.0, 45, 0.28, 14], &"windmarch": [7, 30.0, 45, 0.28, 14] }
+      at line 131
+* test_founding_a_town_hall_spends_the_crew
+server: player 1 began town_centre at (12, 8)
+* test_a_crew_finishing_anything_else_walks_away_free
+server: player 1 began barracks at (4, 20)
+server: player 1 began garrison_gate at (7, 20)
+server: player 1 began garrison_wall at (10, 20)
+server: player 1 began gate at (13, 20)
+server: player 1 began storehouse at (16, 20)
+server: player 1 began tower at (19, 20)
+server: player 1 began wall at (22, 20)
+server: player 1 began wall_tower at (25, 20)
+* test_exactly_one_shipped_building_costs_its_builder
+* test_a_general_may_build_nothing_and_is_never_spent
+server: player 1 began barracks at (20, 12)
+* test_a_squad_that_may_not_build_it_is_never_spent_by_it
+server: player 1 began town_centre at (14, 16)
+* test_a_dead_general_is_not_a_defeat
+* test_every_civs_crew_gets_a_build_menu
+[1m9/10 passed.
+[0m[4m
+
+res://tests/test_placement_jitter.gd
+[0m* test_position_offset_is_deterministic
+* test_yaw_is_deterministic
+* test_position_offset_stays_within_max_radius
+* test_zero_radius_offset_is_zero
+* test_yaw_stays_in_range
+* test_different_ids_spread_out_rather_than_coincide
+* test_yaw_byte_is_deterministic_and_in_range
+* test_radians_of_byte_covers_a_full_turn
+* test_yaw_byte_and_radians_of_byte_stay_in_step_with_each_other
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_player_colours.gd
+[0m* test_the_palette_covers_the_target_player_count
+* test_every_colour_is_distinct
+* test_colours_are_far_enough_apart_to_tell_apart
+* test_out_of_range_clamps_rather_than_wrapping
+* test_a_client_reads_colour_from_seat_order
+* test_the_lobby_swatch_and_the_battlefield_are_the_same_colour
+* test_the_minimap_invents_no_colour_of_its_own
+* test_ai_ids_do_not_collide_with_human_ids
+[1m8/8 passed.
+[0m[4m
+
+res://tests/test_profile_sweep.gd
+[0m* test_sweep_covers_every_shipped_size
+* test_sweep_spans_the_shipped_cell_range
+* test_every_swept_size_is_a_playable_world
+[1m3/3 passed.
+[0m[4m
+
+res://tests/test_prop_fog.gd
+[0m* test_a_prop_reads_the_fog_at_its_own_cell
+* test_a_placed_prop_declares_that_its_coordinate_is_real
+* test_a_shaded_material_carries_the_authored_numbers
+[33m    2 Orphans[0m
+[33m        * [tree_oak_0:<MeshInstance3D#7913611466166>]
+        * [resource_gold:<MeshInstance3D#7914148341518>][0m
+* test_the_shipped_models_have_more_than_one_colour_to_lose
+* test_shading_leaves_the_authored_mesh_alone
+* test_the_same_mesh_is_shaded_once
+* test_the_prop_shader_declares_and_samples_the_fog
+* test_binding_reaches_materials_built_before_and_after_it
+* test_the_field_can_be_let_go_of
+* test_the_client_draws_resource_nodes_with_a_material_that_reads_the_fog
+* test_the_primitive_stand_in_is_fogged_as_well
+* test_leaving_a_match_releases_the_field
+client: match over — back to the lobby
+* test_something_outside_prop_fog_actually_binds_and_places_the_field
+[1m13/13 passed.
+[0m[4m
+
+res://tests/test_recipe_args.gd
+[0mERROR: Could not create child process: \bin\bash -c "echo alive"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] before_all (res://tests/test_recipe_args.gd:66)
+       [2] _call_before_all (res://addons/gut/gut.gd:684)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:813)
+* before_all
+[31m    [Failed]:  [0m[1] expected to equal [0]:  this file needs a POSIX shell — run the suite through `just test-unit` (docker)
+      at line 67
+* test_a_name_equals_value_argument_is_rejected
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED' 'SANDBOX=1'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_a_name_equals_value_argument_is_rejected (res://tests/test_recipe_args.gd:76)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mthe failure must name the trap, not merely reject the value: <3>WSL (235857 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 78
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'AI' 'AI=3'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_a_name_equals_value_argument_is_rejected (res://tests/test_recipe_args.gd:82)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_usable_values_pass_silently
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED' '1337'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "SEED", "1337"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235863 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235863 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'DURATION' '-1'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "DURATION", "-1"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235866 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235866 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'N' '0'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "N", "0"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235869 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235869 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'num' 'SECONDS' '0.6'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["num", "SECONDS", "0.6"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235872 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235872 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'num' 'HEIGHT' '14'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["num", "HEIGHT", "14"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235875 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235875 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'enum' 'SANDBOX' 'auto' '0' '1' 'auto'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["enum", "SANDBOX", "auto", "0", "1", "auto"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235878 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235878 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'enum' 'LOBBY' '0' '0' '1'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_usable_values_pass_silently (res://tests/test_recipe_args.gd:91)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["enum", "LOBBY", "0", "0", "1"] must be accepted
+      at line 92
+[31m    [Failed]:  [0m["<3>WSL (235881 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235881 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+
+      at line 93
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [5] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [6] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [7] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_unusable_values_fail
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED' ''"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED' '1.5'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED' 'twelve'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'num' 'SECONDS' '1.2.3'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'num' 'SECONDS' '-'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'enum' 'SANDBOX' 'yes' '0' '1' 'auto'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_unusable_values_fail (res://tests/test_recipe_args.gd:101)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [5] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [6] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_misusing_the_checker_is_its_own_exit_code
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'int' 'SEED'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_misusing_the_checker_is_its_own_exit_code (res://tests/test_recipe_args.gd:108)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [2]:  too few arguments is a misuse
+      at line 108
+ERROR: Could not create child process: \bin\bash -c "bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/recipe-arg.sh' 'float' 'SEED' '1'"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] _check (res://tests/test_recipe_args.gd:49)
+       [2] test_misusing_the_checker_is_its_own_exit_code (res://tests/test_recipe_args.gd:109)
+       [3] _run_test (res://addons/gut/gut.gd:622)
+       [4] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [2]:  an unknown kind is a misuse
+      at line 109
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_every_numeric_recipe_argument_is_checked
+    justfile: 46 recipes parsed, 33 numeric arguments checked
+* test_agent_worktrees_resolve_to_the_dev_build
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=ao-my-edotmw-49-root bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_agent_worktrees_resolve_to_the_dev_build (res://tests/test_recipe_args.gd:207)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for ao-my-edotmw-49-root
+      at line 208
+[31m    [Failed]:  [0m["<3>WSL (235927 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance ao-my-edotmw-49-root is not the human's own checkout and must get the dev build
+      at line 209
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=claude-session-abc bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_agent_worktrees_resolve_to_the_dev_build (res://tests/test_recipe_args.gd:207)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for claude-session-abc
+      at line 208
+[31m    [Failed]:  [0m["<3>WSL (235930 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance claude-session-abc is not the human's own checkout and must get the dev build
+      at line 209
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=playtest-branch bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_agent_worktrees_resolve_to_the_dev_build (res://tests/test_recipe_args.gd:207)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for playtest-branch
+      at line 208
+[31m    [Failed]:  [0m["<3>WSL (235933 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance playtest-branch is not the human's own checkout and must get the dev build
+      at line 209
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_the_humans_own_checkout_does_not
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=main bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_the_humans_own_checkout_does_not (res://tests/test_recipe_args.gd:215)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m["<3>WSL (235936 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  the default branch is the human's own checkout and must NOT default into sandbox
+      at line 216
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=master bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_the_humans_own_checkout_does_not (res://tests/test_recipe_args.gd:215)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m["<3>WSL (235939 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  the default branch is the human's own checkout and must NOT default into sandbox
+      at line 216
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_the_dev_build_can_be_overridden_explicitly
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=ao-x EDOTMW_AGENT=0 bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_the_dev_build_can_be_overridden_explicitly (res://tests/test_recipe_args.gd:222)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m["<3>WSL (235942 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  EDOTMW_AGENT=0 must force the plain build
+      at line 223
+ERROR: Could not create child process: \bin\bash -c "EDOTMW_INSTANCE=main EDOTMW_AGENT=1 bash 'C:/Users/dmaso/.ao/data/worktrees/my-edotmw/my-edotmw-84/instance-id.sh' agent"
+   at: execute (platform/windows/os_windows.cpp:1495)
+   GDScript backtrace (most recent call first):
+       [0] _bash (res://tests/test_recipe_args.gd:34)
+       [1] test_the_dev_build_can_be_overridden_explicitly (res://tests/test_recipe_args.gd:224)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[31m    [Failed]:  [0m["<3>WSL (235945 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  EDOTMW_AGENT=1 must force the dev build
+      at line 225
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+      at line -1
+* test_parsing_keeps_the_whole_value_including_its_own_equals
+* test_a_number_that_is_not_a_number_is_named
+* test_a_float_argument_accepts_a_decimal_and_rejects_prose
+* test_every_binary_that_takes_arguments_checks_them
+* test_quick_test_resolves_sandbox_through_the_one_definition
+[1m6/13 passed.
+[0m[4m
+
+res://tests/test_render_cull.gd
+[0m* test_a_squad_across_the_seam_resolves_to_its_near_copy
+* test_a_squad_in_plain_sight_keeps_its_canonical_position
+* test_the_lattice_offsets_are_the_nine_tiling_copies
+* test_the_lattice_steps_match_the_worlds_own_geometry
+* test_lod_draws_fewer_soldiers_without_shrinking_the_formation
+* test_every_lod_soldier_stands_where_a_full_detail_one_would
+* test_full_detail_is_bit_identical_to_the_unsampled_path
+* test_lod_never_changes_what_the_simulation_reads
+* test_the_zoom_cap_does_not_bound_the_z_direction
+* test_visible_offset_still_culls_something_genuinely_off_screen
+* test_the_zoom_cap_keeps_a_second_terrain_copy_off_screen
+* test_the_far_edge_is_wider_than_the_view_is_deep
+* test_a_wider_window_earns_a_lower_cap
+* test_the_zoom_cap_never_shows_the_same_ground_twice
+* test_every_shipped_map_is_roughly_square_in_world_units
+* test_the_shipped_map_files_are_square_too
+* test_a_chunks_radius_accounts_for_the_row_shear
+* test_the_chunk_bound_covers_the_stand_not_just_the_cell_centres
+* test_a_tree_never_leaves_the_cell_the_bound_was_derived_from
+* test_a_block_centre_stays_in_the_same_lattice_copy_as_its_cells
+* test_a_block_centre_is_the_plain_answer_when_the_block_fits
+* test_a_forest_is_culled_by_its_trees_not_by_the_point_at_its_middle
+* test_the_extent_margin_is_a_projected_size
+* test_a_forest_with_no_visible_copy_is_hidden_rather_than_relocated
+[1m24/24 passed.
+[0m[4m
+
+res://tests/test_replay_and_map.gd
+[0m* test_every_map_tres_loads_and_is_valid
+* test_map_config_rejects_an_odd_height
+* test_map_config_delegates_geometry_to_torus_space
+* test_records_are_flushed_without_waiting_for_close
+* test_replay_roundtrips_curves
+* test_replay_uses_the_same_serialization_as_the_wire
+* test_reading_a_non_replay_file_fails_cleanly
+ERROR: ReplayLog.read: user://test-replay.edmw is not a replay (bad magic 'this is ')
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] read (res://replay_log.gd:178)
+       [1] test_reading_a_non_replay_file_fails_cleanly (res://tests/test_replay_and_map.gd:158)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[34m[ExpectedError][0mReading a non-replay should report exactly one error
+* test_truncated_replay_keeps_what_it_can
+* test_reconstruct_at_returns_state_as_of_a_time
+* test_sim_records_a_replayable_log_of_a_march
+* test_idle_squad_adds_no_replay_records
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_resource_visuals.gd
+[0m* test_non_wood_kinds_wear_their_fixed_models
+* test_species_follow_the_ground
+* test_wet_forest_swaps_toward_willow_and_cypress
+* test_a_forest_is_not_a_wall_of_clones
+* test_boundary_trees_borrow_the_neighbouring_species
+* test_water_neighbours_are_never_borrowed
+* test_every_model_the_picker_can_hand_out_exists_on_disk
+* test_the_choice_is_deterministic_per_cell
+* test_standing_pose_stays_in_bounds
+* test_no_tree_stands_on_its_cell_centre
+* test_a_tree_never_leaves_its_own_cell
+* test_a_node_cell_grows_a_stand_not_a_single_tree
+* test_two_trees_in_a_cell_do_not_stack
+* test_a_stand_is_not_one_tree_repeated
+* test_ore_is_one_seam_that_stays_put
+* test_how_many_trees_grow_follows_the_ground
+* test_canopies_actually_interlock_on_the_shipped_map
+    3435 wood nodes grew 10053 trees on the shipped map (2.93 per cell); mean canopy 2.15 world units
+      98% of trees have a neighbour inside a canopy width
+[33m    19 Orphans[0m
+[33m        * [tree_oak_1:<MeshInstance3D#7960369571869>]
+        * [tree_oak_2:<MeshInstance3D#7960654784551>]
+        * [tree_oak_3:<MeshInstance3D#7960939997238>]
+        * [tree_oak_4:<MeshInstance3D#7961225209915>]
+        * [tree_spruce_2:<MeshInstance3D#7963506911312>]
+        * [tree_spruce_3:<MeshInstance3D#7963792123987>]
+        * [tree_spruce_1:<MeshInstance3D#7963221698647>]
+        * [tree_spruce_4:<MeshInstance3D#7964077336664>]
+        * [tree_pine_4:<MeshInstance3D#7962651273310>]
+        * [tree_spruce_0:<MeshInstance3D#7962936485986>]
+        * [tree_pine_1:<MeshInstance3D#7961795635304>]
+        * [tree_pine_0:<MeshInstance3D#7961510422636>]
+        * [tree_pine_3:<MeshInstance3D#7962366060656>]
+        * [tree_pine_2:<MeshInstance3D#7962080847988>]
+        * [tree_birch_0:<MeshInstance3D#7964379326581>]
+        * [tree_birch_3:<MeshInstance3D#7965285296250>]
+        * [tree_birch_4:<MeshInstance3D#7965587286142>]
+        * [tree_birch_2:<MeshInstance3D#7964983306382>]
+        * [tree_birch_1:<MeshInstance3D#7964681316497>][0m
+* test_a_tree_tips_then_sinks_then_finishes
+* test_the_crash_accelerates
+* test_ore_sinks_without_tipping
+[1m20/20 passed.
+[0m[4m
+
+res://tests/test_return_to_lobby.gd
+[0m* test_leaving_a_match_returns_to_the_lobby
+* test_returning_from_a_lobby_is_a_no_op
+* test_the_seats_survive_so_the_next_match_is_one_click_away
+* test_a_second_match_can_be_started
+* test_a_human_can_start_the_second_match_of_an_ai_session
+* test_the_ai_seats_of_that_session_are_still_ai_in_the_second_match
+* test_a_random_seat_draws_again_for_the_second_match
+* test_a_deliberate_civ_choice_is_kept_across_a_match
+* test_the_loser_of_one_match_does_not_start_the_next_eliminated
+* test_a_finished_match_can_also_be_left
+* test_a_client_forgets_the_match_it_left
+* test_leaving_keeps_the_counters_the_test_harness_reads
+* test_a_client_stays_in_its_seat_when_it_leaves_a_match
+* test_building_terrain_does_not_depend_on_having_started_up
+client: built 1 terrain chunks in 0.1 s — 2 slices, worst 53 ms, fields 0.0 s, 0.1 s of work — textured=true fogged=true props_fogged=true
+* test_a_second_match_draws_terrain_again
+client: built 1 terrain chunks in 0.1 s — 2 slices, worst 52 ms, fields 0.0 s, 0.1 s of work — textured=true fogged=true props_fogged=true
+client: match over — back to the lobby
+client: built 1 terrain chunks in 0.1 s — 2 slices, worst 58 ms, fields 0.0 s, 0.1 s of work — textured=true fogged=true props_fogged=true
+* test_a_real_victory_actually_finishes_the_match
+* test_the_lobby_after_a_won_match_names_no_winner
+* test_the_victor_of_one_match_does_not_start_the_next_still_winning
+* test_the_loser_of_a_real_defeat_plays_the_next_match_alive
+* test_a_second_match_does_not_end_the_instant_it_starts
+* test_the_server_drops_its_building_reveal_baseline_with_the_match
+[1m21/21 passed.
+[0m[4m
+
+res://tests/test_sandbox.gd
+[0m* test_lobby_packet_round_trips_the_sandbox_flags
+* test_lobby_packet_defaults_sandbox_flags_to_false
+* test_cheat_add_resources_uses_its_own_opcode_and_carries_no_payload
+* test_cheat_spawn_unit_round_trips
+* test_cheat_spawn_building_round_trips
+* test_enqueue_instant_finishes_on_the_next_advance_not_the_first
+* test_enqueue_without_instant_still_uses_build_time
+* test_an_economy_only_ai_never_sends_an_attack_move
+* test_the_same_scenario_without_economy_only_does_attack
+* test_spawn_cheats_round_trip_the_enemy_flag
+* test_regen_map_has_its_own_opcode_and_no_payload
+* test_lobby_packet_round_trips_the_resources_flag
+* test_resources_is_a_fourth_admin_gated_sandbox_option
+* test_enemy_of_finds_a_hostile_seat_and_only_a_hostile_seat
+* test_ai_frozen_is_an_admin_gated_sandbox_option
+* test_lobby_packet_round_trips_the_ai_frozen_flag
+* test_cheat_spawn_building_round_trips_facing_and_offset
+* test_reveal_all_is_an_admin_gated_sandbox_option
+* test_lobby_packet_round_trips_reveal_all
+* test_a_revealed_player_sees_every_cell_and_nobody_else_does
+* test_reveal_all_lights_the_ground_for_the_client_too
+* test_reveal_all_stamps_the_map_once_not_every_refresh
+[1m22/22 passed.
+[0m[4m
+
+res://tests/test_scenarios.gd
+[0m* test_every_shipped_scenario_validates
+* test_every_scenario_is_reachable_by_its_id
+* test_an_unknown_scenario_id_returns_null_rather_than_erroring
+* test_separation_puts_two_players_within_reach
+* test_squads_do_not_stack_on_one_cell
+* test_a_clean_placement_reports_nothing_skipped
+* test_an_impossible_placement_is_reported_not_swallowed
+* test_the_worlds_vision_is_the_sims_own
+* test_scenario_squads_are_replicated_like_any_other
+* test_the_same_scenario_builds_the_same_world_twice
+* test_a_scenario_fields_troops_for_every_civ
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_scoreboard.gd
+[0m* test_a_player_is_playing_until_something_says_otherwise
+* test_a_player_with_nothing_left_reads_as_eliminated
+* test_both_members_of_a_winning_team_read_as_victors
+* test_the_scoreboard_annotates_seats_without_writing_on_them
+* test_standing_survives_the_wire
+* test_a_seat_with_no_standing_encodes_as_playing
+* test_every_player_is_listed_with_colour_civ_and_team
+* test_rows_are_in_seat_order_because_seat_order_is_colour_order
+* test_an_enemys_army_size_is_withheld_even_when_its_squads_are_visible
+* test_a_withheld_column_reads_as_a_dash_not_a_zero
+* test_a_dead_squad_is_not_counted
+* test_an_eliminated_player_is_still_listed_and_marked
+* test_standing_text_covers_every_standing
+* test_an_elimination_reaches_the_board_through_the_wire
+[1m14/14 passed.
+[0m[4m
+
+res://tests/test_scripts_parse.gd
+[0m* test_every_script_in_the_project_root_compiles
+* test_every_test_script_compiles
+[1m2/2 passed.
+[0m[4m
+
+res://tests/test_selection_pick.gd
+[0m* test_a_building_covered_in_units_is_still_selectable
+* test_the_bigger_the_covering_army_the_less_it_matters
+* test_a_squad_clicked_well_away_from_a_building_still_wins
+* test_a_click_outside_everything_selects_nothing
+* test_a_click_just_outside_a_building_does_not_take_it
+* test_two_overlapping_squads_resolve_to_the_one_clicked_nearer
+* test_the_nearer_of_two_buildings_wins
+* test_a_tiny_building_on_screen_is_still_clickable
+* test_score_is_zero_at_the_centre_and_one_at_the_edge
+* test_a_miss_scores_infinity_rather_than_merely_a_lot
+* test_no_candidates_at_all_selects_nothing
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_selection_roster.gd
+[0m* test_a_wiped_squad_leaves_the_selection
+* test_a_hurt_squad_stays
+* test_order_is_kept
+* test_a_squad_this_client_never_owned_is_not_selectable_either
+* test_pruning_does_not_mutate_what_it_was_given
+* test_a_group_keeps_its_survivors
+* test_a_group_that_is_wiped_out_stops_existing
+* test_a_null_state_selects_nothing
+* test_the_reported_repro_recall_a_group_after_a_squad_is_wiped
+client: control group 1 = 2 squad(s)
+* test_the_frame_pass_prunes_the_live_selection_too
+client: control group 1 = 2 squad(s)
+* test_the_frame_pass_prunes_stored_groups_too
+client: control group 1 = 2 squad(s)
+* test_storing_a_group_stores_only_the_living
+client: control group 1 = 2 squad(s)
+client: control group 2 = 1 squad(s)
+* test_a_surviving_selection_is_left_alone
+client: control group 1 = 2 squad(s)
+* test_something_outside_selection_roster_actually_prunes
+[1m14/14 passed.
+[0m[4m
+
+res://tests/test_server_memory_report.gd
+[0m* test_a_memory_figure_names_its_players_squads_and_cells
+* test_the_marker_is_structured_and_the_peak_is_reported
+* test_the_player_count_is_a_peak_not_whoever_is_still_connected
+* test_an_all_ai_server_reports_its_seats
+* test_the_summary_actually_prints_it
+[1m5/5 passed.
+[0m[4m
+
+res://tests/test_smoke.gd
+[0m* test_gut_runs
+* test_unit_def_defaults
+[1m2/2 passed.
+[0m[4m
+
+res://tests/test_soldier_motion.gd
+[0m* test_soldiers_ease_toward_their_slot_rather_than_snapping
+* test_easing_converges_rather_than_lagging_forever
+* test_a_seam_sized_jump_snaps_instead_of_flying_across_the_map
+* test_easing_never_mutates_the_authoritative_transforms
+* test_forgetting_a_squad_releases_its_state
+* test_an_idle_squad_gets_no_swing
+* test_working_and_fighting_move_soldiers_toward_what_they_are_doing
+[1m7/7 passed.
+[0m[4m
+
+res://tests/test_spawn_derivation.gd
+[0m* test_the_lobby_preview_samples_exactly_the_server_points
+* test_the_wire_carries_the_spawn_seed_rather_than_defaulting_to_it
+* test_the_spawn_rules_survive_the_map_settings_PACKET
+* test_the_spawn_seed_mixes_the_map_base_with_the_match_seed
+* test_the_spawn_config_carries_every_rule_the_sampler_reads
+* test_no_script_seeds_its_own_spawn_sampler
+[1m6/6 passed.
+[0m[4m
+
+res://tests/test_squad_models.gd
+[0m* test_model_for_slot_deals_leaders_then_mix_then_the_base_model
+* test_a_mixed_squad_builds_one_group_per_distinct_model
+* test_the_leader_is_the_last_thing_a_thinned_squad_shows
+* test_each_group_draws_exactly_the_slots_written_this_frame
+* test_a_single_model_squad_is_unchanged_by_the_feature
+* test_the_shipped_thane_and_bombard_defs_are_mixed_squads
+[1m6/6 passed.
+[0m[4m
+
+res://tests/test_squad_sim.gd
+[0m* test_tick_rate_is_ten_hz
+* test_one_tick_advances_time_by_one_hundred_milliseconds
+* test_sim_runs_without_a_scene_tree
+* test_squad_state_is_not_nodes
+* test_new_squad_starts_idle_at_its_spawn_cell
+* test_ordered_squad_reaches_its_destination
+* test_squad_takes_the_short_way_across_the_seam
+* test_squad_speed_is_derived_from_unit_def
+* test_re_ordering_mid_march_redirects_the_squad
+* test_flow_fields_are_shared_per_destination_not_per_squad
+* test_distinct_destinations_build_distinct_fields
+* test_casualties_reduce_derived_soldiers_without_touching_the_curve
+* test_moving_squad_replicates_and_idle_squad_goes_silent
+* test_client_derives_the_same_soldier_positions_the_server_has
+* test_mass_order_is_absorbed_by_the_replication_budget
+* test_per_squad_update_cost_is_measurable
+    mean usec per squad-update: 499.415000 (200 squads, 20 ticks)
+* test_lookahead_must_exceed_the_replication_horizon
+* test_invalid_configuration_is_reported_on_first_tick
+ERROR: SquadSim: curve_lookahead_seconds (3.00) must exceed the replicator's horizon_seconds (99.00), or clients run out of curve between updates
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] tick (res://squad_sim.gd:2299)
+       [1] test_invalid_configuration_is_reported_on_first_tick (res://tests/test_squad_sim.gd:306)
+       [2] _run_test (res://addons/gut/gut.gd:622)
+       [3] _test_the_scripts (res://addons/gut/gut.gd:835)
+[34m[ExpectedError][0mA bad lookahead/horizon pairing should be reported once
+[34m[ExpectedError][0mThe configuration complaint should not repeat every tick
+* test_squad_info_entries_describe_what_the_server_spawned
+* test_composition_hash_tracks_casualties
+* test_an_order_wave_under_a_tight_budget_still_arrives
+* test_a_quiet_tick_builds_its_field_outright
+* test_a_walled_off_destination_is_still_given_up_on
+* test_a_gate_opening_lets_a_given_up_order_resume
+* test_squads_ordered_to_one_point_do_not_end_up_stacked
+* test_a_displaced_squad_steps_aside_rather_than_teleporting
+* test_settled_squads_keep_distinct_centres_and_nothing_more
+* test_a_squad_claims_the_room_its_formation_actually_covers
+* test_an_enemy_is_not_pushed_out_of_its_own_attack_range
+* test_a_working_gatherer_crew_is_not_moved_by_footprint_separation
+* test_separation_does_not_cost_extra_flow_fields
+[1m31/31 passed.
+[0m[4m
+
+res://tests/test_squad_turning.gd
+[0m* test_no_soldier_outruns_his_own_speed_on_a_lattice_march
+    diagonal march: peak soldier speed 3.40 vs move_speed 3.40
+* test_no_soldier_outruns_his_own_speed_rounding_a_real_corner
+    corner: peak soldier speed 3.40 vs move_speed 3.40
+* test_facing_never_steps_as_the_route_changes_direction
+    corner: peak facing step 0.29 degrees per 20 ms
+* test_the_facing_chord_fits_in_what_a_client_holds
+    slowest crawl holds 0.42 cells of curve; the chord asks for 0.40
+* test_smoothing_never_puts_a_squad_on_impassable_ground
+* test_the_line_between_two_keyframes_stays_on_walkable_ground
+* test_a_straight_march_buys_no_extra_keyframes
+    open march: worst 7 keyframes against a ceiling of 7
+* test_a_bend_costs_keyframes_but_a_bounded_number_of_them
+    round an obstacle: worst 25 keyframes against a ceiling of 49
+* test_the_further_a_formation_reaches_the_longer_it_takes_to_turn
+    corner cost: lever 5.27 took 13.6 s, lever 7.33 took 15.0 s
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_stances.gd
+[0m* test_guard_holds_position_while_default_pursues
+* test_hold_fire_holds_until_an_attack_order_releases_it
+* test_a_skirmisher_steps_back_and_a_plain_archer_stands
+* test_the_wire_carries_the_byte_and_the_panel_reads_it
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_starting_positions.gd
+[0m* test_starting_positions_follow_the_seat_count
+* test_a_command_line_ai_seat_asks_for_a_start_too
+* test_a_leaving_seat_gives_its_start_back
+* test_a_lobby_of_one_still_asks_for_two_starts
+* test_the_map_a_lobby_generates_has_a_start_per_seat
+* test_starting_positions_cannot_be_set_by_hand
+* test_the_lobby_offers_neither_a_slots_row_nor_a_seed_row
+* test_the_seed_is_still_pinnable_by_the_server_that_owns_it
+* test_every_seat_mutation_re_derives_the_starting_positions
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_terrain.gd
+[0m* test_elevation_is_continuous_across_the_horizontal_seam
+* test_elevation_is_continuous_across_the_vertical_seam
+* test_sampling_out_of_domain_wraps
+* test_terrain_is_deterministic_for_a_seed
+* test_different_seeds_give_different_terrain
+* test_terrain_has_both_land_and_water
+* test_neighbouring_cells_are_usually_similar
+* test_passability_blocks_water_and_steepness_never_altitude
+* test_max_slope_is_read
+* test_ramps_connect_enclosed_pockets_when_the_dice_say_so
+* test_flow_field_routes_around_terrain
+* test_feature_size_is_constant_in_cells_at_every_map_size
+* test_a_bigger_map_holds_more_features_rather_than_bigger_ones
+* test_the_reference_width_leaves_shipped_presets_meaning_what_they_did
+* test_periodicity_survives_the_size_scaling
+* test_chunk_grid_covers_the_map
+* test_every_cell_is_meshed_exactly_once_regardless_of_chunk_size
+* test_chunking_is_not_one_mesh_per_cell
+* test_chunk_geometry_is_contiguous_not_torn_by_the_wrap
+[1m19/19 passed.
+[0m[4m
+
+res://tests/test_terrain_build.gd
+[0m* test_a_sliced_fields_build_is_byte_identical_to_the_whole_map_one
+* test_the_slice_boundary_does_not_move_with_the_budget
+* test_a_slice_does_no_more_work_than_it_was_given
+* test_the_builder_yields_before_it_is_finished
+* test_the_fields_are_finished_before_a_single_chunk_is_meshed
+* test_every_chunk_is_handed_over_exactly_once
+* test_progress_runs_from_nothing_to_one_and_never_backwards
+* test_a_match_does_not_start_until_the_ground_is_finished
+client: built 6 terrain chunks in 0.5 s — 15 slices, worst 81 ms, fields 0.1 s, 0.5 s of work — textured=true fogged=true props_fogged=true
+* test_the_ground_is_drawn_nine_times_when_the_build_finishes
+client: built 6 terrain chunks in 0.6 s — 15 slices, worst 105 ms, fields 0.1 s, 0.6 s of work — textured=true fogged=true props_fogged=true
+* test_the_loading_bar_is_on_screen_while_the_ground_is_built
+client: built 6 terrain chunks in 0.8 s — 15 slices, worst 106 ms, fields 0.3 s, 0.8 s of work — textured=true fogged=true props_fogged=true
+* test_the_bar_never_leaves_its_own_track
+client: built 6 terrain chunks in 0.7 s — 15 slices, worst 102 ms, fields 0.1 s, 0.7 s of work — textured=true fogged=true props_fogged=true
+* test_the_client_draws_the_bar_from_its_own_frame_loop
+[1m12/12 passed.
+[0m[4m
+
+res://tests/test_terrain_cliffs.gd
+[0m* test_the_class_the_mesher_steps_between_is_passability_itself
+* test_the_class_follows_the_predicate_not_the_biome
+* test_edge_corners_names_corners_that_coincide
+* test_corner_partners_names_corners_that_coincide
+* test_the_shipped_map_draws_a_non_trivial_number_of_cliffs
+    cliff faces on the shipped map: 5483
+* test_every_cliff_stands_on_a_passability_boundary
+* test_every_stepped_edge_gets_exactly_one_rock_face
+* test_the_sampler_stays_on_the_walkable_plateau_beside_a_cliff
+* test_no_walkable_cell_samples_the_top_of_the_cliff_beside_it
+* test_the_cliff_tunables_change_the_surface
+* test_the_simulation_sees_no_change
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_terrain_continuity.gd
+[0m* test_a_shared_corner_gets_the_same_colour_from_every_cell_that_owns_it
+* test_a_cell_surrounded_by_its_own_biome_is_exactly_its_biome_colour
+* test_a_boundary_cell_centre_bleeds_toward_its_neighbours
+* test_a_blended_corner_stays_between_the_biomes_it_blends
+* test_the_shipped_map_really_does_blend
+* test_the_pillow_changes_the_centre_vertex
+* test_the_shipped_pillow_flattens_the_dome
+* test_corner_cells_names_the_three_cells_whose_corners_coincide
+* test_corner_weights_are_a_partition
+* test_no_warp_is_exactly_equal_thirds
+* test_the_warp_actually_moves_the_blend_on_the_shipped_map
+    mean warp skew: 0.1402, strongly skewed corners: 76713 of 195552
+* test_the_warp_is_periodic_over_the_map
+* test_all_three_owners_of_a_corner_compute_the_same_weights
+[1m13/13 passed.
+[0m[4m
+
+res://tests/test_terrain_fog.gd
+[0m* test_a_map_nobody_has_walked_is_entirely_unknown
+* test_a_reveal_lights_its_disk_and_leaves_the_rest_dark
+* test_ground_a_player_has_left_is_remembered_rather_than_lit_or_black
+* test_walking_back_over_remembered_ground_makes_it_live_again
+* test_a_reveal_at_the_seam_lights_both_sides
+* test_the_lit_disk_is_the_size_of_the_vision_disk
+* test_a_range_that_sees_nothing_lights_nothing
+* test_an_allied_building_lights_ground_for_its_ally
+* test_an_enemy_building_lights_nothing
+* test_two_players_on_team_zero_are_not_allies
+* test_a_destroyed_building_stops_seeing
+* test_the_baked_field_is_laid_out_like_the_cell_index
+* test_an_unexplored_map_bakes_to_black
+* test_ground_well_inside_a_scouted_region_is_drawn_fully
+* test_the_edge_of_a_scouted_region_fades_rather_than_stepping
+* test_an_incremental_bake_matches_one_computed_from_scratch
+* test_a_fog_refresh_costs_the_army_not_the_map
+    fog refresh: 977 cells re-shaded, 2.10 ms, on a 32592-cell map (12 seers, radius 7, walking); first bake 34.63 ms
+    fog refresh: 977 cells re-shaded, 2.20 ms, on a 130368-cell map (12 seers, radius 7, walking); first bake 135.99 ms
+* test_the_terrain_mesh_carries_a_fog_coordinate_per_vertex
+* test_cliff_faces_carry_the_fog_coordinate_too
+* test_the_terrain_shader_declares_the_fog_input
+* test_binding_fog_puts_it_on_the_material
+* test_something_outside_terrain_chunk_actually_binds_the_fog
+[1m22/22 passed.
+[0m[4m
+
+res://tests/test_terrain_surface.gd
+[0m* test_the_sampler_returns_the_height_the_mesh_was_built_with
+* test_the_sampler_interpolates_between_vertices_rather_than_stepping
+* test_neighbouring_cells_agree_at_their_shared_corners
+* test_cells_agree_across_the_seam_too
+* test_the_sea_is_flat_however_deep_the_noise_goes
+* test_water_beside_land_lifts_only_slightly
+* test_clamping_water_did_not_flatten_the_land
+* test_slopes_have_real_normals_now
+* test_a_shared_corner_gets_the_same_normal_from_every_cell_that_owns_it
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_terrain_uvs.gd
+[0m* test_two_cells_sharing_a_corner_place_it_at_the_same_uv
+* test_the_texture_no_longer_restarts_inside_every_hex
+* test_a_whole_map_period_is_a_whole_number_of_texture_repeats
+* test_the_texture_repeats_at_roughly_the_intended_size
+* test_every_vertex_asks_for_exactly_one_tile_worth_of_detail
+* test_a_cell_centre_asks_for_its_own_biome_alone
+* test_a_corner_asks_for_the_biomes_that_actually_meet_there
+    corner tile truncation: 195 of 195552 (0.10%)
+* test_the_ground_material_is_the_shader_when_the_atlas_is_built
+* test_atlas_layout_matches_the_generator
+* test_adding_attributes_did_not_change_the_mesh_topology
+[1m10/10 passed.
+[0m[4m
+
+res://tests/test_tick_phases.gd
+[0m* test_every_microsecond_of_the_tick_lands_on_a_phase
+    us/squad=153.99 at 8 squads — fields=6.84 curves=14.40 vision=46.50 combat=68.56 buildings=13.21 production=0.15 economy=0.20 separation=3.37 other=0.93 (residual 0.6%)
+* test_the_field_expansion_phase_is_counted
+[1m2/2 passed.
+[0m[4m
+
+res://tests/test_tier_three.gd
+[0m* test_survivors_walk_to_their_nearest_slots
+* test_no_man_fills_two_slots
+* test_a_restamp_walks_rather_than_teleports
+* test_overlapping_men_push_apart_and_separated_men_stand
+* test_the_amendments_bound_holds_where_the_drift_is_made
+* test_ease_actually_jostles
+* test_the_duel_step_fits_inside_the_bound
+* test_nothing_simulation_side_reads_the_render_state
+* test_no_drawn_man_outruns_the_cap
+* test_a_seam_crossing_shifts_instead_of_walking
+* test_a_tree_pushes_a_drawn_man_to_its_rim
+[1m11/11 passed.
+[0m[4m
+
+res://tests/test_torus_space.gd
+[0m* test_default_space_is_valid
+* test_odd_height_is_rejected_for_row_parity
+* test_degenerate_dimensions_are_rejected
+* test_normalize_wraps_out_of_domain_coordinates
+* test_index_roundtrips_for_every_cell
+* test_index_normalizes_rather_than_going_out_of_bounds
+* test_every_cell_has_six_distinct_neighbours_at_distance_one
+* test_neighbor_index_agrees_with_neighbor
+* test_distance_to_self_is_zero
+* test_distance_is_symmetric_everywhere
+* test_distance_obeys_triangle_inequality_across_the_seam
+* test_opposite_horizontal_edges_are_adjacent
+* test_opposite_vertical_edges_are_adjacent
+* test_delta_takes_the_short_way_around_the_seam
+* test_no_distance_exceeds_the_short_way_bound
+* test_world_delta_is_short_across_the_seam
+* test_world_delta_agrees_with_to_world_when_no_wrap_is_involved
+* test_unnormalized_input_gives_the_same_answer_as_normalized
+* test_disk_offsets_agrees_with_brute_force_distance_at_several_radii
+* test_disk_offsets_agrees_with_brute_force_at_a_radius_large_relative_to_the_map
+* test_disk_offsets_radius_zero_is_just_the_origin
+* test_disk_offsets_negative_radius_is_empty
+* test_disk_offsets_cell_count_matches_the_hex_disk_formula
+* test_hex_length_agrees_with_distance_for_unwrapped_offsets
+* test_neighbor_table_agrees_with_neighbor_index_for_every_cell
+* test_neighbor_table_agrees_on_an_odd_width_space
+* test_neighbor_table_is_cached_and_survives_a_reshape
+[1m27/27 passed.
+[0m[4m
+
+res://tests/test_unit_defs.gd
+[0m* test_units_dir_is_not_empty
+* test_every_unit_def_loads_and_matches_schema
+* test_unit_def_ids_are_unique
+* test_squad_renders_as_one_multimesh_not_one_node_per_soldier
+* test_rebuild_is_idempotent_and_tracks_squad_size
+* test_the_roster_is_cached_rather_than_rescanned_per_lookup
+* test_reloading_the_roster_still_produces_the_same_units
+* test_a_squad_stops_drawing_soldiers_it_has_lost
+* test_a_gatherer_costs_about_the_same_per_head_as_a_soldier_does
+[1m9/9 passed.
+[0m[4m
+
+res://tests/test_unit_mesh_cache.gd
+[0m* test_a_model_is_pulled_off_disk_once_however_many_squads_want_it
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11301770242063>] + 1[0m
+* test_repeated_lookups_return_the_very_same_resource
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11302239998669>] + 1[0m
+* test_a_missing_model_is_not_retried_forever
+* test_a_missing_model_degrades_to_the_primitive_rather_than_failing
+* test_an_authored_squad_carries_per_soldier_animation_data
+client: CLIP squad=3 walk rate=1.54 speed=4.00 rows=[1]
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11303280186088>] + 1[0m
+* test_a_squad_at_a_steady_pace_rewrites_nothing
+client: CLIP squad=1 walk rate=1.54 speed=4.00 rows=[1]
+client: CLIP squad=1 rout rate=2.46 speed=4.00 rows=[3]
+client: CLIP squad=1 rout rate=7.38 speed=12.00 rows=[3]
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11304957907514>] + 1[0m
+* test_an_authored_squad_is_still_one_multimesh
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11306602078933>] + 1[0m
+* test_an_authored_squad_gets_one_opaque_material
+[33m    2 Orphans[0m
+[33m        * [archers2:<Node3D#11308212687544>] + 1[0m
+[33m2 orphans[0m
+[1m8/8 passed.
+[0m[4m
+
+res://tests/test_wall_run.gd
+[0m* test_a_click_rather_than_a_drag_places_one_segment_where_it_was_put
+* test_a_dragged_run_lays_segments_along_the_whole_line
+* test_consecutive_segments_are_exactly_one_segment_apart
+* test_a_run_always_covers_the_line_that_was_drawn
+* test_every_segment_of_a_run_shares_the_runs_angle
+* test_the_angle_is_not_snapped_to_one_of_six_directions
+* test_a_run_at_an_arbitrary_angle_leaves_no_gap
+* test_a_completed_run_blocks_more_cells_than_it_has_segments
+* test_a_second_wall_clicked_beyond_the_first_continues_it_exactly
+* test_clicking_along_a_diagonal_builds_a_straight_wall_not_a_staircase
+* test_a_wall_snapped_to_a_run_never_lies_back_on_top_of_it
+* test_every_facing_byte_survives_a_build_order_round_trip
+* test_the_queue_variant_encodes_facing_the_same_way
+* test_the_sub_cell_offset_survives_the_wire
+* test_a_walls_pose_survives_all_the_way_into_client_state
+* test_a_run_across_the_seam_does_not_span_the_whole_map
+* test_offsets_stay_sub_cell_even_across_the_seam
+[1m17/17 passed.
+[0m[4m
+
+res://tests/test_wall_top.gd
+[0m* test_a_squad_at_the_door_climbs_onto_the_tower
+* test_a_squad_on_the_wrong_side_cannot_climb_directly
+* test_a_squad_on_the_wrong_side_walks_around_to_the_door_and_climbs
+* test_no_tower_anywhere_means_no_climb_at_all
+* test_climbing_is_not_ownership_gated
+* test_a_squad_can_descend_back_through_the_same_door
+* test_tier_1_movement_walks_a_connected_run_and_stays_at_tier_1
+* test_destroying_a_tower_drops_its_occupant_to_the_ground
+* test_a_melee_squad_cannot_hit_a_tier_1_defender_even_when_adjacent
+* test_a_ranged_squad_can_hit_a_tier_1_defender
+* test_the_height_bonus_extends_a_defenders_effective_range
+* test_the_same_archer_at_ground_level_cannot_reach_that_far
+[1m12/12 passed.
+[0m[4m
+
+res://tests/test_world_look_fog.gd
+[0m* test_the_default_height_reproduces_the_original_tuned_density
+* test_a_taller_camera_ceiling_gets_a_thinner_fog
+* test_fog_opacity_at_the_horizon_stays_calibrated_across_map_sizes
+* test_make_environment_actually_uses_the_passed_height
+[1m4/4 passed.
+[0m[4m
+
+res://tests/test_world_look_is_the_only_light.gd
+[0m* test_no_script_outside_world_look_builds_the_lighting_rig
+[1m1/1 passed.
+[0m
+
+
+
+[33m==============================================
+[0m[33m= Run Summary
+[0m[33m==============================================
+[0m[4m
+res://tests/test_buildings.gd
+[0m- test_two_squads_of_any_line_troop_can_take_a_town_centre
+[31m    [Failed]:  [0mtwo squads of stoneblood_skirmishers could not take a town centre (213 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of gravesworn_shades could not take a town centre (1920 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_levy could not take a town centre (36 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_archers could not take a town centre (986 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_cavalry could not take a town centre (1904 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of thornwood_greatbow could not take a town centre (1972 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_skirmishers could not take a town centre (1419 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_cavalry could not take a town centre (833 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of windmarch_bowriders could not take a town centre (2066 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of gildedreach_archers could not take a town centre (1252 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of gildedreach_cavalry could not take a town centre (1696 HP left) — defence has passed decidable
+          at line 501
+[31m    [Failed]:  [0mtwo squads of emberdeep_archers could not take a town centre (1443 HP left) — defence has passed decidable
+          at line 501
+- test_two_squads_of_any_line_troop_but_light_skirmishers_can_take_a_tower
+[31m    [Failed]:  [0mtwo squads of stoneblood_skirmishers could not take a tower (291 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of gravesworn_spearmen could not take a tower (149 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of gravesworn_shades could not take a tower (1170 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_levy could not take a tower (230 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_archers could not take a tower (686 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_cavalry could not take a tower (1138 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of thornwood_greatbow could not take a tower (1165 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_levy could not take a tower (147 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_cavalry could not take a tower (606 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of windmarch_bowriders could not take a tower (1221 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_spearmen could not take a tower (17 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_archers could not take a tower (826 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of gildedreach_cavalry could not take a tower (1030 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of emberdeep_levy could not take a tower (46 HP left)
+          at line 523
+[31m    [Failed]:  [0mtwo squads of emberdeep_archers could not take a tower (885 HP left)
+          at line 523
+- test_the_opening_general_outfights_basic_infantry
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ emberdeep fields no militia to compare against
+          at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ gildedreach fields no militia to compare against
+          at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ gravesworn fields no militia to compare against
+          at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ stoneblood fields no militia to compare against
+          at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ thornwood fields no militia to compare against
+          at line 836
+[31m    [Failed]:  [0mExpected [<null>] to be anything but NULL:  civ windmarch fields no militia to compare against
+          at line 836
+[4m
+res://tests/test_civs.gd
+[0m- test_no_script_mentions_a_civ_id
+[31m    [Failed]:  [0mARRAY(["res://playtest_obs/obs_combat.gd names civ \'emberdeep\'", "res://playtest_obs/obs...blood\'"]) != ARRAY([]).
+    ["res://playtest_obs/obs_combat.gd names...eblood\'"] != []  21 of 21 indexes do not match.  Scripts must not know which civs exist — adding a civ would stop being a data change
+          at line 79
+[4m
+res://tests/test_combat.gd
+[0m- test_every_armed_unit_can_reach_an_adjacent_cell
+[31m    [Failed]:  [0memberdeep_ram has attack_range 1.50, under one hex width (1.73) — it could only ever attack its own cell
+          at line 179
+- test_shipped_roster_has_a_real_counter_triangle
+[31m    [Failed]:  [0mSome civ should field the 'militia' archetype
+          at line 241
+[4m
+res://tests/test_cosmetic_duel.gd
+[0m- test_the_simulation_never_reads_a_duel_and_the_client_draws_one
+[31m    [Failed]:  [0monly the render path and its preview may read CosmeticDuel — res://playtest_obs/obs_formations.gd reading it means a cosmetic value is one call from an outcome, which is D-006's revisit trigger firing
+          at line 182
+[4m
+res://tests/test_fighting_styles.gd
+[0m- test_granted_formations_exist_and_are_not_globally_offered
+[31m    [Failed]:  [0m[0] expected to be > than [0]:  somebody's spearmen must actually know the shield wall, or the special is declared-and-unread (the D-055 family)
+          at line 127
+[4m
+res://tests/test_gate_checks.gd
+[0m- test_a_gated_run_passes_and_says_what_it_proved
+[31m    [Failed]:  [0m[1] expected to equal [0]:  a gated run must pass: <3>WSL (235795 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 82
+[31m    [Failed]:  [0mthe pass must quote what it compared, not merely say ok: <3>WSL (235795 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 83
+[31m    [Failed]:  [0m[1] expected to equal [0]:  resource gating must pass
+          at line 86
+[31m    [Failed]:  [0m[1] expected to equal [0]:  two civs fielded must pass
+          at line 87
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_an_ungated_run_fails
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_one_civ_fails
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_a_missing_marker_is_a_failure_not_a_skip
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_misusing_the_checker_is_its_own_exit_code
+[31m    [Failed]:  [0m[1] expected to equal [2]:  too few arguments is a misuse
+          at line 130
+[31m    [Failed]:  [0m[1] expected to equal [2]:  an unknown check is a misuse
+          at line 131
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+[31m[Failed]:  [0mbefore_all/after_all assert failed
+[4m
+res://tests/test_host_budget.gd
+[0m- test_every_recipe_that_runs_real_work_declares_a_class
+[31m    [Failed]:  [0m[1] expected to equal [0]:  these recipes run docker or Godot without declaring a host class: ["gen-formation-icons"]
+          at line 132
+[4m
+res://tests/test_hud_layout.gd
+[0m- test_every_building_s_train_list_fits_at_the_smallest_window
+[31m    [Failed]:  [0ma 14-unit train list fits at (1600.0, 900.0) without paging (capacity 6)
+          at line 750
+[31m    [Failed]:  [0ma 14-unit train list fits at (1920.0, 1080.0) without paging (capacity 8)
+          at line 750
+[4m
+res://tests/test_multi_agent_isolation.gd
+[0m- test_every_compose_invocation_is_scoped_to_this_instance
+[31m    [Failed]:  [0mExpected [<RegExMatch#-9223364140272179656>] to be NULL:  a named container is not prefixed with {{compose_project}}: --name "{{TARGET}}"
+          at line 59
+[4m
+res://tests/test_opening.gd
+[0m- test_the_civs_gatherers_are_actually_different_troops
+[31m    [Failed]:  [0m[1] expected to equal [6]:  two civs field statistically identical gatherers: { &"emberdeep": [7, 30.0, 45, 0.28, 14], &"gildedreach": [7, 30.0, 45, 0.28, 14], &"gravesworn": [7, 30.0, 45, 0.28, 14], &"stoneblood": [7, 30.0, 45, 0.28, 14], &"thornwood": [7, 30.0, 45, 0.28, 14], &"windmarch": [7, 30.0, 45, 0.28, 14] }
+          at line 131
+[4m
+res://tests/test_recipe_args.gd
+[0m- test_a_name_equals_value_argument_is_rejected
+[31m    [Failed]:  [0mthe failure must name the trap, not merely reject the value: <3>WSL (235857 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 78
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_usable_values_pass_silently
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "SEED", "1337"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235863 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235863 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "DURATION", "-1"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235866 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235866 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["int", "N", "0"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235869 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235869 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["num", "SECONDS", "0.6"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235872 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235872 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["num", "HEIGHT", "14"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235875 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235875 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["enum", "SANDBOX", "auto", "0", "1", "auto"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235878 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235878 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0m[1] expected to equal [0]:  ["enum", "LOBBY", "0", "0", "1"] must be accepted
+          at line 92
+[31m    [Failed]:  [0m["<3>WSL (235881 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal [""]:  an accepted value must print nothing: <3>WSL (235881 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+    
+          at line 93
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [5] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [6] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [7] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_unusable_values_fail
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [4] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [5] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [6] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_misusing_the_checker_is_its_own_exit_code
+[31m    [Failed]:  [0m[1] expected to equal [2]:  too few arguments is a misuse
+          at line 108
+[31m    [Failed]:  [0m[1] expected to equal [2]:  an unknown kind is a misuse
+          at line 109
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_agent_worktrees_resolve_to_the_dev_build
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for ao-my-edotmw-49-root
+          at line 208
+[31m    [Failed]:  [0m["<3>WSL (235927 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance ao-my-edotmw-49-root is not the human's own checkout and must get the dev build
+          at line 209
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for claude-session-abc
+          at line 208
+[31m    [Failed]:  [0m["<3>WSL (235930 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance claude-session-abc is not the human's own checkout and must get the dev build
+          at line 209
+[31m    [Failed]:  [0m[1] expected to equal [0]:  instance-id.sh agent must succeed for playtest-branch
+          at line 208
+[31m    [Failed]:  [0m["<3>WSL (235933 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  instance playtest-branch is not the human's own checkout and must get the dev build
+          at line 209
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [3] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_the_humans_own_checkout_does_not
+[31m    [Failed]:  [0m["<3>WSL (235936 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  the default branch is the human's own checkout and must NOT default into sandbox
+          at line 216
+[31m    [Failed]:  [0m["<3>WSL (235939 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  the default branch is the human's own checkout and must NOT default into sandbox
+          at line 216
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+- test_the_dev_build_can_be_overridden_explicitly
+[31m    [Failed]:  [0m["<3>WSL (235942 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["0"]:  EDOTMW_AGENT=0 must force the plain build
+          at line 223
+[31m    [Failed]:  [0m["<3>WSL (235945 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory"] expected to equal ["1"]:  EDOTMW_AGENT=1 must force the dev build
+          at line 225
+[31m    [Failed]:  [0mUnexpected Errors:
+    [1] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+    [2] <engine-0>Condition "ret == 0" is true. Returning: ERR_CANT_FORK
+          at line -1
+[31m[Failed]:  [0mbefore_all/after_all assert failed
+
+Totals
+------
+Scripts              93
+Tests              1249
+Passing Tests      1225
+Failing Tests        24
+Asserts           902092/902182
+Time              210.862s
+
+
+[31m---- 24 failing tests ----
+[0mGUT 9.7.1:  https://github.com/bitwes/Gut/releases/tag/v9.7.1 is now available!
+
+error: recipe `test-unit` failed with exit code 1
