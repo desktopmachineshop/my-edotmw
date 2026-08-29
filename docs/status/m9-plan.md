@@ -45,6 +45,15 @@ six fantasy civs ship as data and Legion/Northmen are deleted — see
 `docs/status/fantasy-civs.md`, including the OPEN naming tension with the
 entry below. The epoch ladder remains design-only.
 
+**The ladder is decided in ONE place as of 2026-08-28**
+(`decisions/D-20260828-the-epoch-ladder.md`, issue #278): **five rungs**,
+D-069's verbs, and completing a rung's marked defining line IS the
+age-up — there is no button. It supersedes D-069 entirely and the LADDER
+half of the entry below, whose four rungs were designed for a civ set
+that does not ship. The rung count stays an open owner call and is a data
+edit to reverse. The entry below keeps its CIV half, which is contested
+elsewhere and not by that entry.
+
 **The setting is FANTASY and the ladder is FOUR rungs as of 2026-08-23**
 (`decisions/D-20260823-fantasy-civs-on-a-four-epoch-ladder.md`, owner's
 call) — medieval → imperial → modern → futuristic, superseding D-069's
