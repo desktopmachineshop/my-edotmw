@@ -41,5 +41,8 @@ BOTH the mesher and the client's ground sampler
 sampler that matched the mesh only by being written correctly twice would
 eventually drift, and the symptom is an army floating with every number
 green. The sampler is also a hot path — once per soldier per frame — and
-is no longer a single array index; its cost on real hardware is
-unmeasured.
+is no longer a single array index. **Its cost on real hardware is
+measured now**: 22-29% of the client's whole derivation phase at 1,000
+squads, ~4.5 us per drawn man on Intel Iris Xe — see
+`docs/status/client-render.md` and
+`D-20260828-every-microsecond-of-a-frame-has-a-phase`.

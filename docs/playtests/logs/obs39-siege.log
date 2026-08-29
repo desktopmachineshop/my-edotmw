@@ -1,0 +1,43 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS39: begin
+
+OBS39 DEFENSIVE FIRE - a squad parked in range, not attacking back.
+  D-066's finding was that a town centre cost a squad 4 men out of
+  36 over a whole engagement. These are the numbers as they now
+  ship: men lost per 30s of standing in reach.
+  town_centre  shooting emberdeep_levy        : 26 men -> 16 at 30s -> 5 at 60s (lost 21/26 = 81%), routed no
+  town_centre  shooting gildedreach_levy      : 30 men -> 17 at 30s -> 4 at 60s (lost 26/30 = 87%), routed no
+  town_centre  shooting stoneblood_heavy      : 8 men -> 6 at 30s -> 4 at 60s (lost 4/8 = 50%), routed no
+  town_centre  shooting windmarch_skirmishers : 24 men -> 5 at 30s -> 0 at 60s (lost 24/24 = 100%), routed no
+  tower        shooting emberdeep_levy        : 26 men -> 6 at 30s -> 0 at 60s (lost 26/26 = 100%), routed no
+  tower        shooting gildedreach_levy      : 30 men -> 5 at 30s -> 0 at 60s (lost 30/30 = 100%), routed no
+  tower        shooting stoneblood_heavy      : 8 men -> 4 at 30s -> 0 at 60s (lost 8/8 = 100%), routed no
+  tower        shooting windmarch_skirmishers : 24 men -> -1 at 30s -> 0 at 60s (lost 24/24 = 100%), routed no
+
+OBS39 HEALTH UI - does a besieged building report falling health?
+  Read through BuildingSim.info_entries() / take_dirty(), which
+  is the path the wire and the HUD panel use - NOT health_of(),
+  which would pass even with the D-061 dirty-flag bug present.
+  town centre health_fraction over the siege (distinct steps): [1.0, 0.99, 0.97, 0.95, 0.94, 0.93, 0.92, 0.91, 0.89, 0.87, 0.85, 0.84, 0.82, 0.81, 0.8, 0.78, 0.77, 0.76, 0.75, 0.73, 0.71, 0.7, 0.69, 0.68, 0.66, 0.64, 0.63, 0.61, 0.59, 0.57, 0.55, 0.53, 0.51, 0.49, 0.48, 0.46, 0.45, 0.44, 0.42, 0.4, 0.38, 0.36, 0.34, 0.33, 0.32, 0.31, 0.29, 0.27, 0.25, 0.24, 0.23, 0.22, 0.2, 0.18, 0.16, 0.14, 0.13, 0.11, 0.09, 0.07, 0.05, 0.04, 0.03, 0.01]
+  ticks on which the building was marked dirty: 33 over 60.4s; destroyed=true
+
+OBS39 SECOND SQUAD - both besiegers must be fighting, not shoved off.
+  The regression (unsorted TorusSpace.disk_offsets) parked the
+  second squad outside its own reach: two squads then dealt barely
+  more damage than one. Measured as damage dealt, 1 squad vs 2.
+  emberdeep_levy         1 squad dealt 852, 2 squads dealt 2140 (x2.51) ok | both engaged: true
+  stoneblood_heavy       1 squad dealt 1308, 2 squads dealt 2955 (x2.26) ok | both engaged: true
+  gildedreach_spearmen   1 squad dealt 847, 2 squads dealt 2310 (x2.73) ok | both engaged: true
+
+OBS39 UPGRADES - what upgrade_from actually ships (#39 step 6).
+  wall_tower       upgrades from [&"wall", &"gate", &"garrison_wall", &"garrison_gate"] | cost f0 w60 g0 s130 | hp 1000 dmg 0.0 range 0.0
+  tower-like buildings in the roster: ["tower(hp 1700 dmg 56.7 rng 15.6 upg_from=[])", "town_centre(hp 3000 dmg 42.0 rng 12.1 upg_from=[])", "wall_tower(hp 1000 dmg 0.0 rng 0.0 upg_from=[&\"wall\", &\"gate\", &\"garrison_wall\", &\"garrison_gate\"])"]
+
+OBS39 ELIMINATION - raze everything a player owns and check the rule.
+  D-033: defeat is no living squads AND no living buildings.
+  victim's last squad died at 6.6s; last building fell never (still standing)
+  living_squad_count(1)=0 living_building_count(1)=1 -> eliminated by D-033 = false
+  (note: the RULE is evaluated by MatchState on the server, not here;
+   this only shows the two counts it reads both reach zero.)
+OBS39: end

@@ -131,6 +131,43 @@ func take_casualty_sites() -> Array:
 	_casualty_sites = []
 	return out
 
+
+## World events worth HEARING, not yet sounded (#344).
+##
+## The exact shape and contract of `_casualty_sites` above, and for the
+## same reason: this class is run by the load-test bots and the AI seats
+## as well as the GUI client, and an unread queue would grow for the
+## length of a run. Only something that DRAINS it sets `record_audio`,
+## which is the GUI client and nothing else — bots and AI leave it off
+## and the list stays empty.
+##
+## Entries are {"event": StringName, "cell": int, "magnitude": float}.
+## A CELL, never a world position: the fog query this is gated through is
+## per cell (`TerrainFog.level_at`), and handing audio a position would
+## be inventing a second notion of where something happened.
+##
+## Nothing here crosses the wire, and nothing reads it back — audio is a
+## one-way client cosmetic (D-006 clause 2) and the simulation has no
+## concept of it.
+var record_audio := false
+var _audio_events := []
+
+
+func take_audio_events() -> Array:
+	var out := _audio_events
+	_audio_events = []
+	return out
+
+
+## Note something worth hearing. Squad-level by construction: the caller
+## passes a cell and a weight, and there is nowhere in the entry for a
+## per-soldier anything to live — a volley is one event, not thirty-six
+## (D-024).
+func note_audio(event: StringName, cell: int, magnitude: float = 1.0) -> void:
+	if not record_audio:
+		return
+	_audio_events.append({"event": event, "cell": cell, "magnitude": magnitude})
+
 var buildings := {}
 var buildings_revealed: int = 0
 var building_state_hash_checks: int = 0
@@ -587,6 +624,7 @@ func _handle_squad_info(data: PackedByteArray) -> void:
 			"facing": int(entry.get("facing", -1)),
 			"files": int(entry.get("files", 0)),
 			"stance": int(entry.get("stance", 0)),
+			"exploring": bool(entry.get("exploring", false)),
 		}
 		# A squad this is describing is live, full stop — whether this is
 		# its first-ever SQUAD_INFO or a reveal after concealment. Reveal
@@ -633,6 +671,16 @@ func _handle_squad_combat(data: PackedByteArray) -> void:
 				_casualty_sites.append({
 					"id": id, "before": previous_alive, "after": new_alive,
 				})
+			# The volley (#344). ONE event for the whole exchange, not one
+			# per man: D-024 resolves combat as aggregate arithmetic over
+			# a squad, and `fell` here is already a COUNT. Gated on the
+			# same `fell` byte the corpses are, so men spent founding a
+			# town or wiped by a disconnect make no battle noise.
+			if record_audio and bool(event.get("fell", false)):
+				var lost := previous_alive - new_alive
+				var size := int(composition.get(id, {}).get("size", previous_alive))
+				note_audio(&"combat_volley", space.index(squad_cell(id, 0.0)) if space != null else -1,
+					AudioCue.volley_magnitude(lost, maxi(size, 1)))
 		composition[id]["alive"] = new_alive
 		composition[id]["routed"] = bool(event["routed"])
 
@@ -761,6 +809,26 @@ func _handle_building_info(data: PackedByteArray) -> void:
 		var id := int(entry["id"])
 		if not buildings.has(id):
 			buildings_revealed += 1
+		# Worth HEARING (#344), decided from what changed rather than
+		# from a new message: the wire already says everything audio
+		# needs, and inventing a packet for it would be the second
+		# channel #344 forbids and D-004 forbids generally.
+		#
+		# Fog is not consulted HERE — `AudioCue` does that, from the one
+		# vision query, and doing it in two places is how the two come to
+		# disagree. This only records that something happened.
+		if record_audio:
+			var was: Dictionary = buildings.get(id, {})
+			var had := not was.is_empty()
+			var was_done := float(was.get("progress", 0.0)) >= 1.0
+			var now_done := float(entry["progress"]) >= 1.0
+			var cell := int(entry["cell"])
+			if bool(entry["destroyed"]) and not bool(was.get("destroyed", false)):
+				note_audio(&"building_destroyed", cell)
+			elif had and now_done and not was_done:
+				note_audio(&"building_complete", cell)
+			elif not had and not now_done:
+				note_audio(&"building_placed", cell)
 		buildings[id] = {
 			"def_id": String(entry["def_id"]),
 			"owner": int(entry["owner"]),
@@ -937,6 +1005,14 @@ func spacing_of(squad: int) -> float:
 ## with the server on strength.
 func stance_of(squad: int) -> int:
 	return int(composition[squad].get("stance", 0)) if composition.has(squad) else 0
+
+
+## Whether this squad is hunting fog (#120). Read off the wire rather than
+## remembered when the order was sent: the server owns the mode, and a
+## button lit from a local guess would keep claiming the squad was
+## exploring after a rout cancelled it.
+func is_exploring(squad: int) -> bool:
+	return bool(composition[squad].get("exploring", false)) if composition.has(squad) else false
 
 
 func facing_of(squad: int) -> int:
@@ -1150,6 +1226,18 @@ func encode_stop(squad: int) -> PackedByteArray:
 	if not owns(squad):
 		return PackedByteArray()
 	return NetProtocol.encode_order_stop(squad)
+
+
+## Hunt fog until told to stop (#120). Carries no destination for the same
+## reason `encode_stop` does not: the destination is the server's to pick,
+## over and over, and picking it is the whole of what is being asked for.
+##
+## Ownership is checked HERE like every other order, so the GUI client and
+## the load-test bots get the same refusal from one place.
+func encode_explore(squad: int) -> PackedByteArray:
+	if not owns(squad):
+		return PackedByteArray()
+	return NetProtocol.encode_order_explore(squad)
 
 
 # --- lobby (D-048) ----------------------------------------------------

@@ -70,7 +70,28 @@ static func by_id(id: StringName) -> TerrainPreset:
 	return _by_id.get(id, null)
 
 
+## The presets a PLAYER may pick, in load order (#280).
+##
+## Filtered by `TerrainPreset.playable`, because a preset can generate
+## good terrain and still not host a match — see that field. This is the
+## list the lobby picker draws and the one the server's `preset` option
+## cycles, so the two cannot offer different sets.
+##
+## `load_all()` and `by_id()` are deliberately NOT filtered: a retired
+## preset is still generatable by name for terrain work and still loads
+## from a `.tres` a saved setting names, which is what keeps retiring one
+## reversible rather than destructive.
 static func ids() -> Array[StringName]:
+	var out: Array[StringName] = []
+	for def in load_all():
+		if def.playable:
+			out.append(def.id)
+	return out
+
+
+## Every preset id, playable or not — for tooling and tests that mean
+## "all the terrain this generator can make".
+static func all_ids() -> Array[StringName]:
 	var out: Array[StringName] = []
 	for def in load_all():
 		out.append(def.id)
