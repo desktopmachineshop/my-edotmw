@@ -37,8 +37,14 @@ func test_the_shipped_profiles_load_and_validate() -> void:
 	for def in profiles:
 		assert_eq(def.validate(), "", "profile %s is invalid" % def.id)
 		assert_ne(def.display_name, "", "profile %s has no display name" % def.id)
-		assert_ne(def.summary, "",
-			"profile %s says nothing about itself, so a lobby cannot describe it" % def.id)
+		# `summary` used to be asserted non-empty here, and that assert is
+		# WHY the field survived unread for a milestone: it proved the
+		# string existed and never looked at what was in it, so it stayed
+		# green over a replacement character describing a lobby control
+		# that did not exist. The field is gone
+		# (D-20260828-a-summary-is-shown-or-it-is-deleted); the three
+		# pitches live in docs/status/ai-opponent.md, and the field comes
+		# back with its READER when per-seat difficulty selection lands.
 
 
 func test_exactly_one_profile_is_the_default() -> void:

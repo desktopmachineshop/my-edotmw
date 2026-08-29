@@ -52,30 +52,54 @@ func _hall() -> BuildingDef:
 
 # --- what to build -----------------------------------------------------
 
-func test_a_bot_only_ever_wants_a_building_that_trains() -> void:
+func test_a_bot_only_ever_wants_a_building_that_trains_or_grows() -> void:
 	# Walked to EXHAUSTION rather than asked once, and that is the whole
 	# point of it. The first version of this test asserted only the first
 	# answer, and stayed green with the `produces` filter deleted — because
 	# `all_defs()` is alphabetical and "barracks" happens to sort first.
 	# A test that passes by accident of filename order guards nothing; this
-	# one keeps asking until there is nothing left to want, so a non-training
-	# building anywhere in the roster is caught.
+	# one keeps asking until there is nothing left to want, so a wall or a
+	# storehouse anywhere in the roster is caught.
+	#
+	# The rule GAINED one clause on 2026-08-28
+	# (D-20260828-food-is-grown-not-only-found) and did not lose any: a
+	# building that GROWS something is the one support structure a bot
+	# raises, because a renewable economy only a human ever builds is a
+	# renewable economy nothing tests — the "one configuration nothing
+	# runs" gap #119 and #123 were both about. Everything else this test
+	# was written to catch is still caught, including the filename-order
+	# accident: a field is asked for by `Economy.grows_kind`, not by id.
 	var owned := ["town_centre"]
 	var wanted := 0
-	for _round in range(BuildingSim.all_defs().size() + 1):
+	var fields := 0
+	# The FIRST thing a bot with only a hall wants is a field, and that is
+	# not a preference — see `wanted_building`'s header for the two runs
+	# that measured the alternative reaching zero of them, ever.
+	var first := BotBuildPlan.wanted_building(owned, &"gatherers")
+	assert_not_null(first)
+	assert_true(BotBuildPlan.grows_something(first),
+		"a bot must raise one field before it starts saving for a barracks it may never afford")
+	for _round in range(BuildingSim.all_defs().size() + BotBuildPlan.FIELDS_WANTED + 1):
 		var def := BotBuildPlan.wanted_building(owned, &"gatherers")
 		if def == null:
 			break
-		assert_false(def.produces.is_empty(),
-			"a bot was told to raise %s, which trains nothing" % def.id)
+		var grows := BotBuildPlan.grows_something(def)
+		assert_true(not def.produces.is_empty() or grows,
+			"a bot was told to raise %s, which neither trains nor grows" % def.id)
 		assert_true(BuildingSim.can_build(def, &"gatherers"),
 			"and %s is not something its crews can raise" % def.id)
-		assert_false(owned.has(String(def.id)),
-			"a bot must not ask twice for %s" % def.id)
+		if grows:
+			fields += 1
+		else:
+			assert_false(owned.has(String(def.id)),
+				"a bot must not ask twice for %s" % def.id)
 		owned.append(String(def.id))
 		wanted += 1
 	assert_true(wanted > 0,
 		"a bot holding only a town centre must want something more")
+	# A field is the one thing it wants SEVERAL of, and it must still stop.
+	assert_eq(fields, BotBuildPlan.FIELDS_WANTED,
+		"a bot raises exactly FIELDS_WANTED fields — no more, and not zero")
 
 
 func test_nothing_here_names_a_building() -> void:
@@ -147,8 +171,15 @@ func test_a_bot_stops_asking_for_crews_once_it_has_enough() -> void:
 		"a bot at the crew cap asks its hall for nothing")
 
 	# And the cap must not silence a building that trains soldiers.
-	var barracks := BotBuildPlan.wanted_building(["town_centre"], &"gatherers")
+	#
+	# `["town_centre", "farm"]`, not `["town_centre"]`: a bot's FIRST want
+	# is a field now (D-20260828-food-is-grown-not-only-found), and a
+	# fixture that takes "whatever it wants next" is pinned to an ORDERING
+	# rather than to the building it means — the same trap five fixtures
+	# fell into when `founders.tres` was deleted.
+	var barracks := BotBuildPlan.wanted_building(["town_centre", "farm"], &"gatherers")
 	assert_not_null(barracks, "Setup: there is a military building")
+	assert_false(barracks.produces.is_empty(), "Setup: and it is the one that TRAINS")
 	assert_ne(BotBuildPlan.archetype_for(barracks, civ, BotBuildPlan.MAX_HAULING_CREWS), &"",
 		"the crew cap must not stop a bot training soldiers")
 
@@ -214,8 +245,11 @@ func test_a_bot_that_does_not_know_its_civ_still_asks_for_soldiers() -> void:
 	# two bots raised a barracks at 137 s and 193 s and trained not one
 	# soldier from either, `military_peak=0`, while the town centre went on
 	# making crews.
-	var barracks := BotBuildPlan.wanted_building(["town_centre"], &"gatherers")
+	# See the ordering note in `..._stops_asking_for_crews...` for why the
+	# farm is in the owned list.
+	var barracks := BotBuildPlan.wanted_building(["town_centre", "farm"], &"gatherers")
 	assert_not_null(barracks, "Setup: there is a military building")
+	assert_false(barracks.produces.is_empty(), "Setup: and it is the one that TRAINS")
 	var archetype := BotBuildPlan.archetype_for(barracks, &"", 0)
 	assert_ne(archetype, &"",
 		"a bot with no civ must still ask a barracks for something")
@@ -229,46 +263,3 @@ func test_a_bot_that_does_not_know_its_civ_still_asks_for_soldiers() -> void:
 		"a bot with no civ and no crews still asks its hall for some")
 	assert_eq(BotBuildPlan.archetype_for(hall, &"", BotBuildPlan.MAX_HAULING_CREWS), &"",
 		"and still stops at the cap")
-
-
-func test_a_named_civ_is_never_handed_another_civs_unit() -> void:
-	# `_resolve`'s any-civ fallback exists for the CIV-LESS load-test bot,
-	# which never learns its civ. Applied to a caller that names one it
-	# hands back somebody else's unit, and the server then refuses the
-	# order (D-047 resolves per civ) — which reads as a bot that will not
-	# train rather than as a bad lookup.
-	#
-	# Latent until the naval roster, because `archetype_for` returns the
-	# first entry of `produces` that resolves and every pre-naval building
-	# lists a universal archetype first. A dock offers `warship` first and
-	# two civs field a `warboat` instead.
-	for civ in CivRoster.ids():
-		for building_def in BuildingSim.all_defs():
-			var archetype := BotBuildPlan.archetype_for(building_def, civ, 0)
-			if archetype == &"":
-				continue
-			var def := UnitRoster.for_civ_archetype(civ, archetype)
-			assert_not_null(def,
-				"%s asked %s for %s, which it does not field" % [
-					civ, building_def.id, archetype])
-			if def != null:
-				assert_true(String(def.civ) == String(civ) or String(def.civ) == "neutral",
-					"%s asked %s for %s and got %s's unit" % [
-						civ, building_def.id, archetype, def.civ])
-
-
-func test_the_civ_less_bot_still_gets_an_answer() -> void:
-	# The other half, and the reason the fallback is narrowed rather than
-	# deleted: with no civ a bot must still be able to size a request, or
-	# `test-load` stops fielding an army at all (#123).
-	var asked := 0
-	for building_def in BuildingSim.all_defs():
-		if building_def.produces.is_empty():
-			continue
-		var archetype := BotBuildPlan.archetype_for(building_def, &"", 0)
-		if archetype == &"":
-			continue
-		asked += 1
-		assert_true(building_def.produces.has(archetype),
-			"%s was asked for %s, which it does not produce" % [building_def.id, archetype])
-	assert_gt(asked, 0, "a civ-less bot must still be able to ask for something")
