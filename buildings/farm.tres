@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"farm"
+display_name = "Farm"
+civ = &"neutral"
+max_health = 400.0
+build_time = 15.0
+vision_range = 4.0
+no_build_radius = 1
+is_drop_off = false
+grows = "food"
+grow_capacity = 180
+grow_per_second = 1.2
+blocks_movement = false
+built_by = Array[StringName]([&"gatherers"])
+cost_food = 0
+cost_wood = 80
+cost_gold = 0
+cost_stone = 0
+mesh_primitive = "box"
+mesh_size = Vector3(2.9, 0.5, 2.9)
+mesh_color = Color(0.74, 0.62, 0.28, 1)
+category = "civic"
+footprint_radius = 1
