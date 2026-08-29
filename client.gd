@@ -554,6 +554,13 @@ func _process(delta: float) -> void:
 	_update_loading_screen()
 
 	_home_camera_once()
+	# Which cells are FIELDS, once per frame rather than once per squad
+	# (D-20260828-food-is-grown-not-only-found). Derived from buildings
+	# this client already knows about, so it costs no wire and no state —
+	# but `_activity_for` asks per squad and `_resource_cell_at` asks per
+	# click, and rebuilding it in either would be the M4 `by_id` defect
+	# with a smaller constant.
+	_farm_cells = _state.farm_cells()
 	_refresh_squads()
 	_refresh_buildings()
 	_update_missiles()
@@ -3021,33 +3028,17 @@ const RESERVED_KEYS := {
 	"G": "gather at the cursor's node",
 }
 
-## Letters claimed by work IN FLIGHT on another branch (#363).
-##
-## The half that PREVENTS a collision rather than detecting one, and the
-## gap #302's guard structurally could not close: that test checks
-## BUILD_KEYS against RESERVED_KEYS and TRAIN_KEYS, and cannot check
-## against a letter that does not exist yet on its own branch.
-##
-## It bit immediately. #302 moved `garrison_wall` G -> J on the reasoning
-## that G is what a player reaches for to GATHER; #246 added `farm` on J
-## with the comment "J is free of WASD, Q/E and every other letter in
-## this table and TRAIN_KEYS", which was true when it was written. Both
-## checked J against the tables AS THEY STOOD ON MAIN, and neither could
-## see the other. Merged, `BUILD_KEYS` has a duplicate key and `client.gd`
-## does not even PARSE — a Dictionary literal cannot hold one letter
-## twice, so the collision is not a subtle wrong binding, it is the
-## client failing to load.
-##
-## A claim here is visible to every branch that rebases. An entry leaves
-## this table in the same commit that adds its real binding.
-const RESERVED_FOR_IN_FLIGHT := {
-	# #246, renewable food. `farm` was on J, which `garrison_wall` had
-	# already taken; O is free and is what the merge rehearsal used.
-	"O": &"farm",
-}
-
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
+	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
+	# took J (#302) because G is the letter a player reaches for to
+	# GATHER, and both branches picked their letter against the tables as
+	# they stood on main, neither able to see the other. O is the letter
+	# `RESERVED_FOR_IN_FLIGHT` was holding O for this PR; binding it here
+	# is what retired that reservation, and the table went with its last
+	# entry rather than being left empty — which is what its own test
+	# required.
+	"O": &"farm",
 	# D-076's wall family. J/K/L are adjacent on the keyboard and sit
 	# together deliberately; F and U continue it.
 	#
@@ -3177,6 +3168,13 @@ var _tree_chunks := {}
 ## means by the node, and trees stand inside their own cell by
 ## construction (ResourceVisuals.MAX_OFFSET).
 var _node_placed := {}
+
+## cell -> `Economy.ResourceKind` for every FIELD this client knows about
+## (D-20260828-food-is-grown-not-only-found), refreshed once a frame from
+## `ClientState.farm_cells()`. A field is a BUILDING, so it is drawn by the
+## building pass and grows no props — this is only what tells the click
+## test and the working-crew animation that the cell is worked ground.
+var _farm_cells := {}
 
 ## Cells the server has revealed and this client has not grown yet, and the
 ## per-frame budget that drains them (`node_placement.gd`). Growing a cell
@@ -3379,7 +3377,14 @@ func _activity_for(squad_id) -> Dictionary:
 	if def.carry_capacity > 0:
 		var crew_at := _state.squad_world_position(squad_id, _now)
 		var crew_cell := _state.space.index(_state.space.world_to_cell(crew_at))
-		if _state.nodes.has(crew_cell):
+		# A FIELD is worked ground too (D-20260828-food-is-grown-not-only-
+		# found), and it is the same question with a second source: the
+		# crew is standing somewhere this client knows yields something.
+		# Without this a crew in a farm reads as idle and stands about in
+		# its crop with its tools on its back.
+		var working_kind := int(_state.nodes[crew_cell]) if _state.nodes.has(crew_cell) \
+			else int(_farm_cells.get(crew_cell, -1))
+		if working_kind >= 0:
 			var node_at := _state.space.to_world(_state.space.from_index(crew_cell))
 			return {
 				"activity": CosmeticOffset.Activity.WORKING,
@@ -3389,7 +3394,7 @@ func _activity_for(squad_id) -> Dictionary:
 				# hand — so the axe/pickaxe/bare-hands choice costs one
 				# dictionary read and nothing on the wire
 				# (D-20260825-a-gatherer-carries-the-tool-for-the-job).
-				"working": int(_state.nodes[crew_cell]),
+				"working": working_kind,
 				"swing": CosmeticOffset.SWING_AMPLITUDE,
 				"is_ranged": false, "interval": 0.0, "enemy_squad": -1,
 				"ring_centre": node_at, "ring_radius": 0.9,
@@ -8357,8 +8362,18 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_distance := SELECT_CLICK_RADIUS_PX
 	var offsets := _state.space.lattice_offsets()
-	for cell in _node_placed:
-		var world: Vector3 = _node_placed[cell]["world"]
+	# Fields rank beside forests (D-20260828-food-is-grown-not-only-found).
+	# A farm grows no props, so it is in no chunk and `_node_placed` cannot
+	# know about it — and a work site nothing here returns is a work site
+	# right-click marches your crews onto and leaves standing.
+	# Own and allied fields only: an enemy's is refused server-side
+	# (`Economy.may_work`), and offering it here would swallow the ordinary
+	# move order a player meant by clicking there.
+	var candidates := _node_placed.keys()
+	candidates.append_array(_state.farm_cells(true).keys())
+	for cell in candidates:
+		var world: Vector3 = _node_placed[cell]["world"] if _node_placed.has(cell) \
+			else _ground_world_of(int(cell))
 		for offset in offsets:
 			var drawn := world + offset
 			if _camera.is_position_behind(drawn):
@@ -8368,6 +8383,16 @@ func _resource_cell_at(screen_position: Vector2) -> Vector2i:
 				best_distance = distance
 				best = _state.space.from_index(int(cell))
 	return best
+
+
+## A cell's centre in world space, on the ground. `_node_placed` caches
+## this for a grown node; a field has no entry there, and sampling is
+## cheap because this runs on a click.
+func _ground_world_of(cell_index: int) -> Vector3:
+	var world := _state.space.to_world(_state.space.from_index(cell_index))
+	if _state.terrain_sampler.is_valid():
+		world.y = _state.terrain_sampler.call(world.x, world.z)
+	return world
 
 
 ## Whether anything selected can actually gather. Right-clicking a forest
@@ -8780,6 +8805,11 @@ const SETTINGS_PATH := "user://settings.cfg"
 ## to see it (#91). `SEAT_ROW_HEIGHT` moved with them.
 
 
+## Where `_on_report_a_problem_pressed` reports back when the in-match
+## menu is the screen on show (#288).
+var _report_status: Label = null
+
+
 func _build_game_menu() -> void:
 	_game_menu_layer = CanvasLayer.new()
 	# Above the HUD (0) but BELOW the lobby (10): the lobby is a screen
@@ -8867,6 +8897,26 @@ func _build_game_menu() -> void:
 	_surrender_confirm.visible = false
 	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
 	column.add_child(_surrender_confirm)
+
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding this session's logs, replays and "
+		+ "your system details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
+	# Where the answer lands when the button is pressed from IN a match.
+	# Beside the button rather than in the HUD's notice line: that line is
+	# the SERVER's channel, overwritten every frame from
+	# `_state.last_notice`, and it is one centred row — a file path would
+	# be clobbered and would not fit.
+	_report_status = Label.new()
+	_report_status.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	_report_status.modulate = HudTheme.TEXT_DIM
+	_report_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_report_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_report_status.custom_minimum_size = Vector2(320.0, 0.0)
+	_report_status.visible = false
+	column.add_child(_report_status)
 
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
@@ -9512,9 +9562,61 @@ func _build_main_menu() -> void:
 	host_note.custom_minimum_size = Vector2(420.0, 0.0)
 	column.add_child(host_note)
 
+	# Here as well as in the in-match menu, and that is the placement that
+	# matters: the reports hardest to act on are the ones from somebody
+	# who never got INTO a match, and they have no other screen to reach.
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding your logs, replays and system "
+		+ "details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
 	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
+
+
+## Write a problem report bundle, and say where it went (#288).
+##
+## The whole action, because there is nothing else it should do: the
+## bundle is CREATED and never sent (`report_bundle.gd`'s header has the
+## reasoning — `testers.md` promises no telemetry, and that promise is
+## worth more at this stage than the reports would be).
+##
+## Reached from BOTH menus through one handler, so the two cannot drift
+## into writing different bundles — the same rule as every other pair of
+## call sites in this project that share a definition.
+func _on_report_a_problem_pressed() -> void:
+	var path := ArtifactPath.of(ReportBundle.bundle_name(
+		BuildVersion.string(), ReportBundle.stamp_now()))
+	var result := ReportBundle.write(path)
+	if not bool(result["ok"]):
+		var why := String(result.get("error", "could not write the report"))
+		push_error("client: %s" % why)
+		_show_report_result(why)
+		return
+	# The PATH is the message, and deliberately the OS path rather than
+	# the `user://` one: a player cannot paste `user://` into a file
+	# manager, so telling them where a file is in a vocabulary only the
+	# engine speaks is the same as not telling them.
+	var real := ProjectSettings.globalize_path(String(result["path"]))
+	print("client: wrote a problem report to %s" % real)
+	_show_report_result("Report written to %s — attach it to your report. Nothing was sent."
+		% real)
+
+
+## Put the outcome where the player is actually looking.
+##
+## Two screens can hold the button — the pre-connect menu and the in-match
+## menu — and each already has somewhere to say things. One function
+## chooses, so the two cannot come to say different things.
+func _show_report_result(text: String) -> void:
+	if _menu_layer != null and _menu_layer.visible and _menu_status != null:
+		_menu_status.text = text
+		return
+	if _report_status != null:
+		_report_status.text = text
+		_report_status.visible = true
 
 
 ## Show the menu, with `message` explaining why if there is one.
@@ -10224,6 +10326,30 @@ func _civ_label(civ: String) -> String:
 	return def.display_name if def != null else civ
 
 
+## The civ's own pitch, for the control a player CHOOSES a civ with
+## (D-20260828-a-summary-is-shown-or-it-is-deleted, #214).
+##
+## `CivDef.summary` shipped saying, in its own doc comment, that it was
+## "shown in the lobby so a player choosing a civ knows what they are
+## picking", and the lobby had never shown it — the sixth instance of this
+## project's declared-and-unread defect class, and the reason the cp1252
+## corruption in all six of those strings (#231) went a milestone
+## unnoticed.
+##
+## A tooltip rather than a blurb label, deliberately: a label in the
+## lobby's preview column would move `LobbyLayout.DESIGN_HEIGHT`, which
+## D-20260817-lobby-fits-the-window pins with a test that builds the lobby
+## and measures it — that page has run off the bottom of a window once
+## already, and flavour text is the wrong thing to spend the budget on.
+func _civ_summary(civ: String) -> String:
+	if StringName(civ) == CivRoster.RANDOM:
+		return "A civ is drawn for you when the match starts."
+	var def := CivRoster.by_id(StringName(civ))
+	if def == null or def.summary.strip_edges() == "":
+		return _civ_label(civ)
+	return "%s — %s" % [def.display_name, def.summary]
+
+
 ## Every civ, plus Random. Read from the roster so a civ added as a .tres
 ## appears here with no code change (D-046 criterion 3).
 func _civ_choices() -> Array:
@@ -10697,8 +10823,14 @@ func _seat_row(seat: Dictionary, index: int) -> Control:
 	picker.disabled = not editable
 	var choices := _civ_choices()
 	for c in choices:
+		var at := picker.item_count
 		picker.add_item(_civ_label(String(c)))
+		# Per ITEM as well as on the control, so the pitch is readable
+		# while the list is open — which is the moment a player is
+		# actually choosing (#214).
+		picker.set_item_tooltip(at, _civ_summary(String(c)))
 	picker.selected = maxi(choices.find(StringName(civ)), 0)
+	picker.tooltip_text = _civ_summary(civ)
 	if editable:
 		picker.item_selected.connect(_on_civ_picked.bind(index))
 	row.add_child(picker)

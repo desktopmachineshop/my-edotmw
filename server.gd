@@ -679,9 +679,9 @@ func _build_world() -> void:
 	# exported build's .pck, and the first ever exported build recorded no
 	# replay at all while playing a complete match (#201,
 	# D-20260828-artifacts-are-written-where-the-build-can-write).
-	var replay_path := ArtifactPath.of("replay-%d.edmw" % _port)
+	var replay_path := ArtifactPath.of("replay-%d%s" % [_port, ReplayLog.SUFFIX])
 	if _matches_played > 0:
-		replay_path = ArtifactPath.of("replay-%d-match%d.edmw" % [_port, _matches_played + 1])
+		replay_path = ArtifactPath.of("replay-%d-match%d%s" % [_port, _matches_played + 1, ReplayLog.SUFFIX])
 	if _replay.open_for_write(replay_path, SquadSim.TICK_HZ, space) == OK:
 		_sim.replay = _replay
 		print("server: recording replay to %s" % ArtifactPath.describe(_replay.path))
@@ -1923,6 +1923,17 @@ func _send_visible_nodes(peer, player: int, record) -> void:
 ## tick, and `SquadSim.set_passable` discards cached flow fields, which is
 ## exactly right: a field solved before a wall existed routes through it.
 func _refresh_passability() -> void:
+	# Everything else derived from the set of living buildings rides here
+	# too, above the `_sim` guard, and the farm registry is the first of
+	# them (D-20260828-food-is-grown-not-only-found). Not tidiness: every
+	# path that raises or loses a building must ALREADY call this or ground
+	# passability would be wrong, so hanging the derivation off the same
+	# call is what makes it impossible to add a building path that
+	# remembers one and forgets the other — #119's finding, that the
+	# handover nothing performs is the dangerous half. The function keeps
+	# its name because comments across this file cite it.
+	if _economy != null:
+		_economy.sync_farms(_buildings)
 	if _sim == null:
 		return
 	var blocked := _passable.duplicate()
@@ -2435,8 +2446,14 @@ func _handle_order_gather(peer, data: PackedByteArray) -> void:
 		return
 
 	var cell_index := int(order["cell"])
-	if not _economy.has_node(cell_index):
+	# A node OR a farm (D-20260828-food-is-grown-not-only-found) — a work
+	# site is a work site, and `has_node` alone would have made every field
+	# unworkable while the client happily offered the order.
+	if not _economy.is_work_site(cell_index):
 		_notify(peer, "Nothing to gather there")
+		return
+	if not _economy.may_work(_sim, squad, cell_index):
+		_notify(peer, "That field is not yours to work")
 		return
 	if not _economy.order_gather(_sim, squad, cell_index):
 		_notify(peer, "%s cannot gather — send workers" % _sim.def_id_of(squad))
@@ -2842,6 +2859,14 @@ func _spawn_squads_for(player: int) -> Array:
 		print("server: scenario '%s' seated player %d — %d squads, %d buildings" % [
 			_scenario.id, player, placement.squads.size(),
 			placement.buildings.size()])
+		# The one building path that does NOT go through
+		# `_refresh_passability()` — a scenario's buildings are added
+		# already complete and never touch ground passability, which is a
+		# pre-existing gap this change does not fix. The farm registry is
+		# synced explicitly rather than left to inherit that gap, so a
+		# scenario that ships a field works like one a player built.
+		if _economy != null:
+			_economy.sync_farms(_buildings)
 		return placement.squads
 
 	# Spawn points come from the map now, not from a formula here (D-036).

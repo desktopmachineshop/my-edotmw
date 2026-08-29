@@ -39,23 +39,87 @@ extends RefCounted
 const MAX_HAULING_CREWS := 8
 
 
-## The building this bot most wants and does not have, or null.
+## How many FIELDS a load-test bot raises
+## (D-20260828-food-is-grown-not-only-found).
+##
+## A constant rather than a knob, unlike `AiProfileDef.farms_wanted`: a
+## load test has no difficulty setting, and the number here answers "is
+## the renewable economy exercised at all" rather than "how well does this
+## opponent play". Three, because one would leave a single crew's whole
+## behaviour resting on one building surviving, and the bots build slowly
+## enough on the shipped map that more would rarely be reached.
+const FIELDS_WANTED := 3
+
+
+## The building this bot most wants and does not have enough of, or null.
 ##
 ## Anything its crews can raise that TRAINS something comes first, because
 ## that is what turns an economy into a player. Support buildings are not
-## considered at all: a load test has no use for a storehouse, and every
-## wall in the roster is `built_by` gatherers too — a bot that started
-## raising walls would spend its wood on scenery.
+## considered — a load test has no use for a storehouse, and every wall in
+## the roster is `built_by` gatherers too, so a bot that started raising
+## walls would spend its wood on scenery — with ONE exception: a building
+## that GROWS something. That is the only support structure whose absence
+## would leave a whole mechanism unexercised by the load test, which is
+## this project's most-repeated defect (D-055 and its four siblings).
+##
+## Named through `Economy.grows_kind` rather than by id, so a civ's own
+## field or a later woodlot is covered without this file learning a name.
+## The ORDER is one field, then the producers, then the rest of the
+## fields, and that first clause was bought by a measurement rather than
+## reasoned to.
+##
+## The obvious order — producers first, fields after — was written first
+## and shipped a rule nothing could ever reach. `_raise_buildings` saves
+## for what it wants rather than falling through to something cheaper
+## (`ai_player.gd` records why), and a barracks is 150 wood against a
+## bot's 140-200 `wood_peak` in a 120 s run and 140-270 mid-game from a
+## scenario. Measured on both: `farms_peak=0 field_orders=0`, every bot
+## reporting `cannot afford barracks`. That is D-061's harder variant —
+## a rule fully written, correctly called, and standing behind a branch
+## nothing reaches — arriving in the change that was written to avoid it.
+##
+## ONE field first, not all of them: at 80 wood it delays the barracks by
+## about half a hauling round trip, where three would delay it past the
+## end of most runs, and the shipped map already leaves two of four bots
+## short of a barracks at 420 s (`docs/status/load-testing.md`).
 static func wanted_building(owned_def_ids: Array, builder_archetype: StringName) -> BuildingDef:
+	var fields: Array = []
+	var producers: Array = []
 	for def in BuildingSim.all_defs():
-		if def.produces.is_empty():
-			continue
 		if not BuildingSim.can_build(def, builder_archetype):
 			continue
-		if owned_def_ids.has(String(def.id)):
-			continue
-		return def
+		if grows_something(def):
+			fields.append(def)
+		elif not def.produces.is_empty():
+			producers.append(def)
+
+	var have_a_field := false
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) > 0:
+			have_a_field = true
+			break
+	if not have_a_field and not fields.is_empty():
+		return fields[0]
+
+	for def in producers:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
+	for def in fields:
+		if owned_def_ids.count(String(def.id)) < wanted_count(def):
+			return def
 	return null
+
+
+## Does this building grow a resource — is it a field?
+static func grows_something(def: BuildingDef) -> bool:
+	return def != null and Economy.grows_kind(def) >= 0 and def.grow_per_second > 0.0
+
+
+## How many of `def` a bot wants standing. One of anything that trains, and
+## `FIELDS_WANTED` fields — a field is the one building whose whole point
+## is that there are several of them, because its output is a rate.
+static func wanted_count(def: BuildingDef) -> int:
+	return FIELDS_WANTED if grows_something(def) else 1
 
 
 ## Whether `wallet` covers `def`, in the order `Economy.ResourceKind`
@@ -175,42 +239,6 @@ static func _resolve(archetype: StringName, civ: StringName) -> UnitDef:
 	var def := UnitRoster.for_civ_archetype(civ, archetype)
 	if def != null:
 		return def
-	# The any-civ fallback is for the CIV-LESS caller and nothing else.
-	#
-	# A load-test bot never learns its civ — `server.gd` broadcasts the
-	# lobby only while there is one and `test-load` starts a match without
-	# one — so it asks with `civ = &""` and needs SOME def to size its
-	# request against. A caller that names a real civ is a different
-	# question, and answering it with another civ's unit produces an order
-	# the server refuses (D-047 resolves per civ), which reads as a bot
-	# that will not train rather than as a bad lookup.
-	#
-	# Latent until the naval roster: this walks `produces` in order and
-	# returns the first archetype that resolves, and every pre-naval
-	# building's list STARTS with one every civ fields (`gatherers`,
-	# `levy`), so the fallback was never reached with a real civ. A dock
-	# offers `warship` first and two civs field a `warboat` instead — so
-	# those two were handed a third civ's hull. (No civ is named here:
-	# `tests/test_civs.gd` scans this file for civ ids, D-046 criterion 3.)
-	# RANDOM is the ABSENCE of a choice, not a civ, so it is CIV-LESS for
-	# this purpose. Missing that cost three of four load-test bots their
-	# entire economy, and it was this narrowing that did it.
-	#
-	# `MatchState` seats a player with `civ = RANDOM`, and only
-	# `_on_match_started` resolves that. On the `--lobby=0` path every
-	# seat added AFTERWARDS still says "random" — which is every bot,
-	# since they connect after the match begins. `for_civ_archetype`
-	# answers null for "random", this returned null, `archetype_for`
-	# returned &"", and those bots never sent a single produce order.
-	#
-	# NOTHING WAS REFUSED, BECAUSE NOTHING WAS ASKED. The server log
-	# showed no production refusals at all, which is exactly what made it
-	# read as an economy fault rather than a lookup one. Measured on the
-	# merged tree with 4 bots: squads flatlined at 14 against `main`'s 42,
-	# and the three affected bots ended with ONE squad each — the general
-	# their opening crew had been spent founding a hall for.
-	if civ != &"" and civ != CivRoster.RANDOM:
-		return null
 	for candidate in UnitRoster.load_all():
 		if candidate.archetype == archetype:
 			return candidate
