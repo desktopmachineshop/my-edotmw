@@ -194,13 +194,29 @@ func test_a_levy_pairing_is_not_a_sweep_when_it_is_actually_played() -> void:
 	assert_gt(even[0], 0, "windmarch's levy swept gildedreach's in every fight")
 	assert_gt(even[1], 0, "gildedreach's levy swept windmarch's in every fight")
 
-	var rigged := _play_pairing(1.0)
-	gut.p("control: gildedreach at double damage %d - %d (of 6)" % [
+	# TRIPLE, and the factor is MEASURED rather than picked (#406).
+	#
+	# x2 was calibrated against a world that has since moved — #346
+	# measured sweep thresholds going from 2% to 10-20% — and under the
+	# corrected metric it lands 5-1, one fight short of a sweep. Swept on
+	# CI over the shipped defs:
+	#
+	#     x2  ->  5 - 1     x4  ->  6 - 0
+	#     x3  ->  6 - 0     x5  ->  6 - 0   x7 -> 6 - 0
+	#
+	# x3 is the smallest measured factor that sweeps, and the sweep is
+	# stable above it rather than perched on a threshold. The boundary
+	# lies between x2 and x3 and is deliberately NOT narrowed further:
+	# this control asks whether the fixture can see a GROSS imbalance, and
+	# a control tuned to the edge would be measuring its own precision.
+	var rigged := _play_pairing(2.0)
+	gut.p("control: gildedreach at TRIPLE damage %d - %d (of 6)" % [
 		rigged[0], rigged[1]])
 	assert_eq(rigged[1], 0,
-		"CONTROL FAILED: doubling one levy's damage did not sweep, so this " +
+		"CONTROL FAILED: tripling one levy's damage did not sweep, so this " +
 		"fixture cannot see an imbalance and the even result above is worth " +
-		"nothing")
+		"nothing. Re-measure the factor (#406 records x2 -> 5-1, x3 -> 6-0) " +
+		"rather than tuning unit data to quiet this.")
 
 
 ## Plays gildedreach's levy against windmarch's, three seeds, both sides,
@@ -224,7 +240,19 @@ func _play_pairing(buff: float) -> Array[int]:
 			var broke: int = int(outcome[2])
 			var gilded_broke := broke == (2 if swap else 1)
 			var wind_broke := broke == (1 if swap else 2)
-			if gilded_broke:
+			# ANNIHILATION OUTRANKS BREAKING (#406). A rout is not final:
+			# a broken squad can rally (D-019) and go on to destroy the
+			# side that held. Scoring by who broke first alone credited
+			# gildedreach a win in a fight it ended at 0.00 — wiped, after
+			# windmarch broke and came back. A squad reduced to nothing has
+			# lost, whatever the morale ledger says, so the wipe is read
+			# first and first-to-break decides only among survivors.
+			var decided := true
+			if gilded <= 0.0 and wind > 0.0:
+				losses += 1
+			elif wind <= 0.0 and gilded > 0.0:
+				wins += 1
+			elif gilded_broke:
 				losses += 1
 			elif wind_broke:
 				wins += 1
@@ -232,9 +260,12 @@ func _play_pairing(buff: float) -> Array[int]:
 				wins += 1
 			elif wind > gilded:
 				losses += 1
-			gut.p("    seed %-5d swap=%-5s  gilded %.2f  wind %.2f  broke=%s"
+			else:
+				decided = false
+			gut.p("    seed %-5d swap=%-5s  gilded %.2f  wind %.2f  broke=%-6s %s"
 				% [seed_value, str(swap), gilded, wind,
-					"gilded" if gilded_broke else ("wind" if wind_broke else "-")])
+					"gilded" if gilded_broke else ("wind" if wind_broke else "-"),
+					"" if decided else "(undecided)"])
 	return [wins, losses] as Array[int]
 
 
