@@ -1,6 +1,136 @@
 extends RefCounted
 class_name NetProtocol
 
+## THE opcode allocation table — one place, and the only place (#362).
+##
+## Every `C2S_*`/`S2C_*` constant below is DERIVED from this dictionary
+## rather than written beside its encoder. That is the difference
+## between a duplicate being detectable and being inexpressible: an
+## opcode now has exactly one home, so two workstreams cannot each
+## write `:= 39` in different regions of the file and have git merge
+## both without a word.
+##
+## It happened. Three open PRs each defined a different message at 39 —
+## surrender (#297), explore (#273) and research (#225) — and the suite
+## could not see it, because it checks encode/decode ROUND TRIPS and a
+## round trip is self-consistent even when two messages share a number.
+## The failure that escapes is silent and total: a client sends "I
+## surrender" and the server reads "start researching".
+##
+## `net_protocol.gd` is "the one definition of the wire protocol, shared
+## by server, client and bots so they can't drift" (CLAUDE.md). This is
+## that sentence made structural, the way D-046 criterion 3 made "no
+## script names a civ" structural.
+##
+## ## RESERVED RANGES — read before allocating
+##
+## Allocating "the next free number on main" is what collided: several
+## workers branch from one commit and every one of them sees the same
+## next free number. So the space is carved up, and a workstream takes
+## the next free number IN ITS OWN RANGE:
+##
+##    1-99    core: movement, combat, lobby, chat, the sandbox cheats
+##  100-119   naval (#301)
+##  120-139   techs and epochs (#206)
+##  140-159   audio, if it ever needs the wire (it does not today)
+##  160-179   Steam / platform and session identity (#181, #186)
+##  180-199   spare — claim a range HERE, in this comment, first
+##
+## A range is claimed by editing this comment, which is a one-line
+## add/add conflict two people can see, rather than by discovering a
+## clash at merge.
+##
+## The values below are FROZEN for anything already on `main`: an opcode
+## is a wire format, and renumbering one silently breaks every client
+## that has not been rebuilt.
+## Ranges, as DATA rather than as prose, so the rule above is checked
+## rather than remembered.
+const OPCODE_RANGES := {
+	"core": [1, 99],
+	"naval": [100, 119],
+	"techs": [120, 139],
+	"audio": [140, 159],
+	"platform": [160, 179],
+	"spare": [180, 199],
+}
+
+## Opcodes claimed by work that is IN FLIGHT on another branch (#362).
+##
+## This is the half that actually prevents the collision, as opposed to
+## detecting it. Three PRs each took 39 because each looked at `main` and
+## saw 39 free — none of them could see the others. A claim recorded HERE
+## is visible to every branch that rebases, and the duplicate test below
+## covers reservations exactly as it covers live opcodes.
+##
+## An entry leaves this table in the same commit that adds its `const`.
+## Removing one without adding the constant frees a number somebody is
+## still using, so treat this as a promise rather than a note.
+const OPCODES_RESERVED := {
+	# #225, the tech tree. Was 39/40; moved into the techs RANGE rather
+	# than merely to the next free pair, so a fourth tech message cannot
+	# collide with a fourth core one.
+	"C2S_ORDER_RESEARCH": 120,
+	"S2C_TECH_STATE": 121,
+}
+
+const OPCODES := {
+	"S2C_WELCOME": 1,
+	"S2C_CURVE": 2,
+	"S2C_SQUAD_INFO": 3,
+	"S2C_STATE_HASH": 4,
+	"S2C_SQUAD_COMBAT": 5,
+	"S2C_SQUAD_CONCEAL": 6,
+	"S2C_BUILDING_INFO": 7,
+	"S2C_BUILDING_STATE_HASH": 8,
+	"C2S_ORDER_MOVE": 10,
+	"C2S_ORDER_STOP": 11,
+	"C2S_ORDER_ATTACK_MOVE": 12,
+	"C2S_ORDER_BUILD": 13,
+	"C2S_ORDER_PRODUCE": 14,
+	"C2S_ORDER_GATHER": 16,
+	"C2S_ORDER_RALLY": 23,
+	"C2S_ORDER_FORMATION": 24,
+	"C2S_ORDER_BUILDING_TARGET": 25,
+	"C2S_ORDER_GATE_STATE": 27,
+	"C2S_ORDER_GATE_MODE": 28,
+	"C2S_ORDER_BUILD_QUEUE": 29,
+	"C2S_ORDER_FACING": 34,
+	"C2S_ORDER_WIDTH": 35,
+	"C2S_ORDER_CHARGE": 36,
+	"C2S_ORDER_STANCE": 37,
+	"C2S_CHEAT_ADD_RESOURCES": 30,
+	"C2S_CHEAT_SPAWN_UNIT": 31,
+	"C2S_CHEAT_SPAWN_BUILDING": 32,
+	"C2S_CHEAT_REGEN_MAP": 38,
+	# 39 and 41 were RESERVATIONS (#362) until #297 and #273 merged. A
+	# reservation graduates to an allocation when its branch lands — that
+	# transition is the whole point of keeping two tables, and this is the
+	# first time it has been performed. 40 is #186's, still in flight on
+	# its own branch, so it is deliberately NOT filled here.
+	"C2S_SURRENDER": 39,
+	"C2S_ORDER_EXPLORE": 41,
+	# The join handshake (#213). Core, not platform: HELLO/REFUSED are the
+	# connection's own lifecycle and predate Steam — 160-179 is for session
+	# IDENTITY. 40 is left alone because the comment above claims it for
+	# #186, in flight on its own branch; honouring a claim recorded in the
+	# registry is the whole point of there being one. Renumbering REFUSED
+	# off 40 costs nothing, because no shipped build has ever spoken either
+	# of these.
+	"C2S_HELLO": 42,
+	"S2C_REFUSED": 43,
+	"S2C_WALLET": 9,
+	"S2C_NOTICE": 15,
+	"S2C_NODES": 17,
+	"S2C_NODES_DEPLETED": 33,
+	"S2C_LOBBY": 18,
+	"C2S_LOBBY": 19,
+	"C2S_LEAVE_MATCH": 26,
+	"S2C_MAP_SETTINGS": 20,
+	"S2C_CHAT": 21,
+	"C2S_CHAT": 22,
+}
+
+
 ## Single definition of the wire protocol, shared by the server, the real
 ## client, and the load-test bots.
 ##
@@ -15,41 +145,41 @@ class_name NetProtocol
 ## (D-016).
 
 # Server -> client
-const S2C_WELCOME := 1
-const S2C_CURVE := 2
-const S2C_SQUAD_INFO := 3
-const S2C_STATE_HASH := 4
-const S2C_SQUAD_COMBAT := 5
-const S2C_SQUAD_CONCEAL := 6
+const S2C_WELCOME := OPCODES["S2C_WELCOME"]
+const S2C_CURVE := OPCODES["S2C_CURVE"]
+const S2C_SQUAD_INFO := OPCODES["S2C_SQUAD_INFO"]
+const S2C_STATE_HASH := OPCODES["S2C_STATE_HASH"]
+const S2C_SQUAD_COMBAT := OPCODES["S2C_SQUAD_COMBAT"]
+const S2C_SQUAD_CONCEAL := OPCODES["S2C_SQUAD_CONCEAL"]
 
 # Client -> server
-const S2C_BUILDING_INFO := 7
-const S2C_BUILDING_STATE_HASH := 8
+const S2C_BUILDING_INFO := OPCODES["S2C_BUILDING_INFO"]
+const S2C_BUILDING_STATE_HASH := OPCODES["S2C_BUILDING_STATE_HASH"]
 
-const C2S_ORDER_MOVE := 10
-const C2S_ORDER_STOP := 11
-const C2S_ORDER_ATTACK_MOVE := 12
-const C2S_ORDER_BUILD := 13
-const C2S_ORDER_PRODUCE := 14
-const C2S_ORDER_GATHER := 16
-const C2S_ORDER_RALLY := 23
-const C2S_ORDER_FORMATION := 24
-const C2S_ORDER_BUILDING_TARGET := 25
+const C2S_ORDER_MOVE := OPCODES["C2S_ORDER_MOVE"]
+const C2S_ORDER_STOP := OPCODES["C2S_ORDER_STOP"]
+const C2S_ORDER_ATTACK_MOVE := OPCODES["C2S_ORDER_ATTACK_MOVE"]
+const C2S_ORDER_BUILD := OPCODES["C2S_ORDER_BUILD"]
+const C2S_ORDER_PRODUCE := OPCODES["C2S_ORDER_PRODUCE"]
+const C2S_ORDER_GATHER := OPCODES["C2S_ORDER_GATHER"]
+const C2S_ORDER_RALLY := OPCODES["C2S_ORDER_RALLY"]
+const C2S_ORDER_FORMATION := OPCODES["C2S_ORDER_FORMATION"]
+const C2S_ORDER_BUILDING_TARGET := OPCODES["C2S_ORDER_BUILDING_TARGET"]
 
 ## Gates (D-076): open/close it directly (only honored server-side in
 ## manual mode), or switch which mode it's in. Two opcodes rather than one
 ## overloaded message, matching how ORDER_RALLY and ORDER_BUILDING_TARGET
 ## are already separate single-purpose building orders rather than one
 ## "building command" envelope.
-const C2S_ORDER_GATE_STATE := 27
-const C2S_ORDER_GATE_MODE := 28
+const C2S_ORDER_GATE_STATE := OPCODES["C2S_ORDER_GATE_STATE"]
+const C2S_ORDER_GATE_MODE := OPCODES["C2S_ORDER_GATE_MODE"]
 
 ## Append one more site to a squad's build queue instead of replacing it
 ## (D-076's drag-to-build-a-line tool) — same payload shape as
 ## C2S_ORDER_BUILD, decoded by the same `decode_order_build`, distinguished
 ## only by opcode so the server knows which of `_handle_order_build` /
 ## `_handle_order_build_queue` to route it to.
-const C2S_ORDER_BUILD_QUEUE := 29
+const C2S_ORDER_BUILD_QUEUE := OPCODES["C2S_ORDER_BUILD_QUEUE"]
 
 ## Dev-testing cheats. Refused server-side unless MatchState.sandbox is on
 ## for this match — see server.gd's handlers, every one of which checks
@@ -61,40 +191,38 @@ const C2S_ORDER_BUILD_QUEUE := 29
 ## Facing and width orders (D-20260819-facing-and-width-are-orders):
 ## which way a standing squad faces (1/4096 of a turn) and how many files
 ## its grid formation forms (0 = the formation's default).
-const C2S_ORDER_FACING := 34
-const C2S_ORDER_WIDTH := 35
+const C2S_ORDER_FACING := OPCODES["C2S_ORDER_FACING"]
+const C2S_ORDER_WIDTH := OPCODES["C2S_ORDER_WIDTH"]
 ## A charge (D-20260819-a-charge-is-spent-on-its-impact): attack-move at
 ## sprint speed with one impact blow waiting at the end.
-const C2S_ORDER_CHARGE := 36
+const C2S_ORDER_CHARGE := OPCODES["C2S_ORDER_CHARGE"]
 ## The stance byte (D-20260819-stances-are-standing-orders).
-const C2S_ORDER_STANCE := 37
+const C2S_ORDER_STANCE := OPCODES["C2S_ORDER_STANCE"]
 
 ## ORDER_EXPLORE (#120): hunt fog until told to stop. Carries a squad and
 ## NOTHING else — the destination is the server's to choose, repeatedly,
 ## which is the whole point of the order. Shaped like ORDER_STOP for that
 ## reason rather than like ORDER_MOVE.
-## 41, not 39. Three PRs each took 39 off `main` — surrender (#297),
-## this, and research (#225) — because each saw 39 free and none could
-## see the others (#362). Surrender keeps it (first in the published
-## merge order); this moved.
 ##
-## When #362's registry lands this becomes `OPCODES["C2S_ORDER_EXPLORE"]`
-## and the literal goes away entirely; the reservation is already
-## recorded there so nothing can take 41 in the meantime.
-const C2S_ORDER_EXPLORE := 41
+## 41, not 39. Three PRs each took 39 off `main` — surrender (#297), this,
+## and research (#225) — because each saw 39 free and none could see the
+## others (#362). Surrender keeps it, being first in the published merge
+## order; this moved. The literal is gone now that the registry is here,
+## which is exactly what the note on it promised would happen.
+const C2S_ORDER_EXPLORE := OPCODES["C2S_ORDER_EXPLORE"]
 
-const C2S_CHEAT_ADD_RESOURCES := 30
-const C2S_CHEAT_SPAWN_UNIT := 31
-const C2S_CHEAT_SPAWN_BUILDING := 32
+const C2S_CHEAT_ADD_RESOURCES := OPCODES["C2S_CHEAT_ADD_RESOURCES"]
+const C2S_CHEAT_SPAWN_UNIT := OPCODES["C2S_CHEAT_SPAWN_UNIT"]
+const C2S_CHEAT_SPAWN_BUILDING := OPCODES["C2S_CHEAT_SPAWN_BUILDING"]
 ## Tear the world down and regenerate it on a fresh seed, seats held —
 ## the D-075 return-to-lobby edge plus an immediate restart, driven from
 ## the sandbox panel (D-20260821-the-sandbox-panel-runs-the-world).
-const C2S_CHEAT_REGEN_MAP := 38
+const C2S_CHEAT_REGEN_MAP := OPCODES["C2S_CHEAT_REGEN_MAP"]
 
-const S2C_WALLET := 9
-const S2C_NOTICE := 15
-const S2C_NODES := 17
-const S2C_NODES_DEPLETED := 33
+const S2C_WALLET := OPCODES["S2C_WALLET"]
+const S2C_NOTICE := OPCODES["S2C_NOTICE"]
+const S2C_NODES := OPCODES["S2C_NODES"]
+const S2C_NODES_DEPLETED := OPCODES["S2C_NODES_DEPLETED"]
 
 # FNV-1a, 32-bit. Chosen because it is trivially reimplementable and has
 # no platform-dependent behaviour — both ends must agree exactly, and a
@@ -1177,8 +1305,8 @@ static func seed_from(text: String, a: int, b: int) -> int:
 ## the entire state is a few hundred bytes. D-003's incremental machinery
 ## exists because squad state changes ten times a second — spending that
 ## complexity here would be paying a cost the problem does not have.
-const S2C_LOBBY := 18
-const C2S_LOBBY := 19
+const S2C_LOBBY := OPCODES["S2C_LOBBY"]
+const C2S_LOBBY := OPCODES["C2S_LOBBY"]
 
 ## What a client can ask the lobby to do. The server checks every one of
 ## them against MatchState's rules; these are requests, not commands.
@@ -1283,7 +1411,7 @@ static func decode_lobby(data: PackedByteArray) -> Dictionary:
 ## No payload. Who is leaving is read from the connection it arrived on,
 ## for the same reason chat attaches its speaker server-side: a client
 ## that named its own player could send another player home.
-const C2S_LEAVE_MATCH := 26
+const C2S_LEAVE_MATCH := OPCODES["C2S_LEAVE_MATCH"]
 
 
 static func encode_leave_match() -> PackedByteArray:
@@ -1304,7 +1432,7 @@ static func encode_leave_match() -> PackedByteArray:
 ## read from the connection it arrived on. A client that named its own
 ## player id could surrender on somebody else's behalf, which is the one
 ## thing a concession must never allow.
-const C2S_SURRENDER := 39
+const C2S_SURRENDER := OPCODES["C2S_SURRENDER"]
 
 
 static func encode_surrender() -> PackedByteArray:
@@ -1353,7 +1481,7 @@ static func _get_string(buf: StreamPeerBuffer) -> String:
 ## the two sides will quietly disagree about which cells a squad may
 ## enter". Sending "islands" would leave two implementations of what that
 ## means, one per side, free to drift apart.
-const S2C_MAP_SETTINGS := 20
+const S2C_MAP_SETTINGS := OPCODES["S2C_MAP_SETTINGS"]
 
 
 static func encode_map_settings(settings: Dictionary) -> PackedByteArray:
@@ -1406,8 +1534,8 @@ static func decode_map_settings(data: PackedByteArray) -> Dictionary:
 ## client name its own speaker would let it put words in someone's mouth,
 ## which is the same "the client is not trusted" rule (D-002) that governs
 ## orders — it is just less obvious when the payload is prose.
-const S2C_CHAT := 21
-const C2S_CHAT := 22
+const S2C_CHAT := OPCODES["S2C_CHAT"]
+const C2S_CHAT := OPCODES["C2S_CHAT"]
 
 ## Longest message accepted. Bounded because it arrives on the same
 ## reliable channel as everything else (D-042), so an unbounded message
@@ -1483,17 +1611,17 @@ const PROTOCOL_VERSION := 1
 ## server would otherwise have to spend a player id, a seat and a lobby
 ## broadcast on a peer it is about to refuse, and D-033's seat lifecycle
 ## is not something to run backwards.
-# 42, not 39. #297's C2S_SURRENDER took 39 on `main` while this PR was
-# open, and both PRs picked "the next free value on main" — the exact
-# collision #363 predicted for the OTHER scarce namespace (keybindings)
-# and named wire opcodes as the first instance of.
-#
-# THIS side moves, not surrender's: #297 has landed, so 39 is the shared
-# truth and anything already built against `main` speaks it. No version
-# bump is needed — no shipped build has ever spoken C2S_HELLO, because
-# the handshake is new in this PR.
-const C2S_HELLO := 42
-const S2C_REFUSED := 40
+# The NUMBERS live in OPCODES above, not here. This pair is the reason
+# #362's registry exists: both this PR and #297 picked "the next free
+# value on `main`" and both got 39, because neither branch could see the
+# other — the exact collision #363 predicted for the other scarce
+# namespace (keybindings) and named wire opcodes as the first instance
+# of. THIS side moved, twice, and neither move cost anything: no shipped
+# build has ever spoken either opcode, so no PROTOCOL_VERSION bump is
+# needed. A third collision is now inexpressible rather than merely
+# unlucky.
+const C2S_HELLO := OPCODES["C2S_HELLO"]
+const S2C_REFUSED := OPCODES["S2C_REFUSED"]
 
 ## Why a join was refused. On the wire as an integer rather than as
 ## prose, so the client composes the message with `refusal_text` from its
