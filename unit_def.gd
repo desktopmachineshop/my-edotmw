@@ -83,6 +83,58 @@ class_name UnitDef
 @export var rout_rally_margin: float = 15.0
 # Morale lost per soldier this squad loses to casualties.
 @export var morale_loss_per_casualty: float = 4.0
+
+## The squad size `morale_loss_per_casualty` is authored against.
+##
+## 36 because that is what the old legion/northmen line squad was when
+## the shipped 4.0 was written, so a 36-man squad behaves exactly as it
+## always has and every other size is normalised to it rather than to a
+## number picked now.
+const MORALE_REFERENCE_SQUAD := 36.0
+
+
+## Morale lost for ONE casualty, scaled to this squad's size (#266).
+##
+## The authored field is a flat per-man number, and this roster runs from
+## 3 men to 48. Flat, the casualties needed to break are a CONSTANT —
+## `(morale - rout_threshold) / morale_loss_per_casualty`, which at the
+## shipped 100/25/4.0 is 18.75 — so **any squad of 18 men or fewer is
+## annihilated before it can be frightened.** Not rarely: never, at any
+## level of beating, from any direction, with recovery disabled entirely.
+## Measured: 12 of 27 combat defs, including EVERY cavalry def in the
+## game and the whole of one civ's non-levy roster.
+##
+## Scaled, the casualties needed become a constant FRACTION of the squad
+## instead: `(morale - rout_threshold) / (loss * REFERENCE)`, about half
+## the squad at the shipped numbers, whatever its size. A six-man breaker
+## and a forty-eight-man levy now break at comparable attrition, which is
+## what "morale" was always supposed to mean.
+##
+## Fearlessness survives untouched and for free: a fearless def ships
+## `morale_loss_per_casualty = 0`, and zero times any scale is zero
+## (#191, `tests/test_fearless.gd`). That matters more than it looks —
+## the defect this fixes was silently sharing the fearless civ's one
+## distinguishing feature with twelve units belonging to the other five.
+##
+## An APPLIED accessor rather than the raw field, per
+## `D-20260823-a-civs-knobs-are-read-by-the-simulation`: both readers are
+## in combat and `x * REFERENCE / squad_size` written out twice is two
+## copies of one rule, free to drift.
+func morale_loss_for(casualties: int) -> float:
+	if squad_size <= 0:
+		return float(casualties) * morale_loss_per_casualty
+	return float(casualties) * morale_loss_per_casualty \
+		* MORALE_REFERENCE_SQUAD / float(squad_size)
+
+
+## Casualties this squad can take before it breaks, or a very large
+## number if it never will. The reachability question #266 is about,
+## answerable without running a fight.
+func casualties_to_rout() -> float:
+	var per := morale_loss_for(1)
+	if per <= 0.0:
+		return INF
+	return (morale - rout_threshold) / per
 # Stochastic spread on this unit's damage roll: output is drawn uniformly
 # from [damage * (1 - variance), damage * (1 + variance)] per D-024's
 # "rolled stochastically". 0 would make combat deterministic attrition,
@@ -165,6 +217,35 @@ class_name UnitDef
 ## the server.
 @export var slot_models: Array[StringName] = []
 @export var model_mix: Array[StringName] = []
+
+# Naval (#301, `docs/plans/naval.md` §2.2 and §5). Schema addition
+# 2026-08-28, against D-010.
+
+## Which movement DOMAIN this unit lives in. Ground is every unit that has
+## ever existed here; water is a ship.
+##
+## A domain rather than a flag because `SquadSim._tier` gains a third
+## value (`DOMAIN_GROUND` / `DOMAIN_WALL_TOP` / `DOMAIN_WATER`) and the
+## three are mutually exclusive by construction — a ship is never on a
+## wall, and a land squad is never on open water except as cargo, which is
+## not in the world at all.
+##
+## The PATHING half of this is naval stage 2 and is not in the tree yet.
+## The field is here because ten ship `.tres` files are, and a `.tres`
+## naming a property its schema lacks is a value that silently becomes a
+## default. Its first reader is `tests/test_naval_roster.gd`, which
+## screens by it and asserts every land unit in the roster is `ground`.
+@export_enum("ground", "water") var movement_domain: String = "ground"
+
+## How many SQUADS this unit can carry as cargo. Zero for everything that
+## is not a transport, which is every unit outside `/units/*_*` naval defs.
+##
+## Squads rather than soldiers, because a carried squad is removed from
+## the world whole (naval design §3.1) — there is no partial load and so
+## nothing to count in men. Read by the roster screen, which prices a
+## transport in capacity per resource point because V cannot price
+## carrying.
+@export var transport_capacity: int = 0
 
 # Economy
 # Gathering (D-028). Schema addition 2026-07-31 (M3, against D-010).

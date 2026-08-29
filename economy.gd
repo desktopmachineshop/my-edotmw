@@ -613,7 +613,10 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 	# when the order was given: a latched multiplier is a cached copy of a
 	# fact the simulation already holds, which is the shape of the D-038
 	# ownership cache that silently refused every produced squad an order.
-	var crew_rate := sim.civ_effects(sim.owner_of(squad)).gather_rate(def.gather_rate)
+	# Per RESOURCE (#270): the caller already knows which kind this node
+	# is, so a civ that is wood-rich and gold-poor can say so.
+	var crew_rate := sim.civ_effects(sim.owner_of(squad)).gather_rate(
+		def.gather_rate, kind_at(cell))
 	var rate := crew_rate * float(sim.alive_of(squad)) * dt
 	haul["fraction"] = float(haul.get("fraction", 0.0)) + rate
 	var whole := int(floor(float(haul["fraction"])))
