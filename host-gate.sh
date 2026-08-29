@@ -18,7 +18,8 @@
 #   host-gate.sh acquire CLASS LABEL   block until admitted; print token
 #   host-gate.sh release TOKEN         give the slot back (idempotent)
 #   host-gate.sh status                who holds what, right now
-#   host-gate.sh reap                  drop holders whose process is gone
+#   host-gate.sh reap                  drop holders whose work is gone
+#   host-gate.sh occupancy             what is RUNNING, and who is charged
 #
 # Environment:
 #   EDOTMW_NO_GATE=1        admit everything immediately (documented off
@@ -26,6 +27,7 @@
 #   EDOTMW_GATE_DIR=<dir>   where the locks live
 #   EDOTMW_GATE_TIMEOUT=<s> how long to wait before failing LOUDLY
 #   EDOTMW_GATE_HELD=<tok>  set automatically; see re-entrancy below
+#   EDOTMW_GATE_DOCKER_TIMEOUT=<s>  how long to wait on `docker ps`
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,26 +63,153 @@ alive() {
     kill -0 "$pid" 2>/dev/null
 }
 
+# --- reconciling the ledger with the machine (#153) -------------------
+#
+# The gate's accounting unit is a PID. The thing that actually occupies
+# this host is a CONTAINER, and the two part company: a launcher exits,
+# the reaper drops its slot, and the container it started carries on.
+# Measured 2026-08-18 — `edotmw-ao-my-edotmw-10-root-quick-test` Up 2
+# hours against `host-gate: 0 holder(s), 0 MB charged` on a machine with
+# 733 MB free and 2.9 GB of swap already in use.
+#
+# That failure INVERTS the feature rather than merely weakening it.
+# Before the gate an overloaded host was obvious; now a stale container
+# makes the ledger read empty, so the machine looks quiet at exactly the
+# moment it is not. It is silent, too — everything then crawls instead of
+# queueing, which reads as "the agents are stalled", and on the day it
+# was found two sessions were misread as dead and one was killed
+# mid-rebase.
+#
+# So: the reaper asks docker before it drops a dead holder's slot, and
+# `occupancy` lists what is running beside what is charged, so a
+# disagreement is LOUD. The invariant is the issue's own words — the
+# gate's accounting and the machine's actual occupancy must be
+# reconcilable.
+#
+# READ-ONLY, ALWAYS, and that is what keeps this inside D-095. `docker
+# ps` is the only docker verb in this file; `test_host_budget.gd` fails
+# if another one appears. Listing is not touching — `just reap-orphans`
+# already reads exactly this list — and reconciling REQUIRES seeing every
+# instance's containers, because the holder whose launcher died may
+# belong to any of them. Nothing here removes, stops or restarts a
+# container, this instance's included: telling a human which worktree to
+# run `just down` in is as far as it goes.
+#
+# And it FAILS OPEN. No docker on PATH, a stopped daemon, a query that
+# hangs: every one answers "nothing is running", so the gate degrades to
+# exactly the behaviour it had before this existed. Wedging the whole
+# machine because `docker ps` was slow would be a worse bug than the one
+# being fixed.
+
+docker_timeout_s="${EDOTMW_GATE_DOCKER_TIMEOUT:-10}"
+
+_containers_cache=""
+_containers_read=0
+
+## Every RUNNING container this repo's recipes create, across all
+## instances. One `docker ps` (~0.4 s measured) per reconciliation rather
+## than per holder, so the cache is dropped at the top of each `reap` and
+## each `occupancy` and never lives longer than one pass.
+containers() {
+    if [ "$_containers_read" -eq 0 ]; then
+        _containers_read=1
+        _containers_cache=""
+        if command -v docker >/dev/null 2>&1; then
+            if command -v timeout >/dev/null 2>&1; then
+                _containers_cache="$(timeout "$docker_timeout_s" docker ps \
+                    --filter 'name=^edotmw-' --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+            else
+                _containers_cache="$(docker ps \
+                    --filter 'name=^edotmw-' --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+            fi
+        fi
+    fi
+    printf '%s' "$_containers_cache"
+}
+
+forget_containers() { _containers_read=0; }
+
+## The running containers belonging to ONE instance.
+##
+## An exact name PREFIX, not the service-suffix regex `just reap-orphans`
+## strips. Container names are `edotmw-<instance>-<whatever>` by
+## construction, so the prefix is exact and cannot drift; the suffix list
+## over there is already incomplete — the container in #153's own
+## evidence ends `-quick-test`, which it does not name — and D-095's line
+## is that a matching rule which can be wrong must not be the one that
+## runs. `edotmw-a-b` does not match instance `a`, because what follows
+## the prefix must be end-of-name or a dash.
+containers_of() {
+    local inst="$1" n
+    for n in $(containers); do
+        case "$n" in
+            "edotmw-$inst"|"edotmw-$inst-"*) printf '%s ' "$n" ;;
+        esac
+    done
+}
+
+## Whether any holder's instance owns this container name.
+held_by_a_holder() {
+    local name="$1" f inst
+    for f in $(holder_files); do
+        inst="$(field "$f" instance)"
+        [ -n "$inst" ] || continue
+        case "$name" in
+            "edotmw-$inst"|"edotmw-$inst-"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # Drop holders whose process is gone. This is the failure mode that would
 # otherwise wedge the whole machine: an agent killed mid-run leaves a
 # lock nobody will ever release. The same shape is already visible on
 # this host in another form — five containers from other instances found
 # sitting Exited for up to 42 hours, despite a teardown-scoped design.
 reap() {
-    local f pid started age reaped=0
+    local f pid inst started age left
+    forget_containers
     for f in $(holder_files); do
         pid="$(field "$f" pid)"
+        inst="$(field "$f" instance)"
         started="$(field "$f" started)"
         age=$(( $(now) - ${started:-0} ))
-        if ! alive "$pid"; then
+
+        # The backstop first, and it still fires unconditionally: a slot
+        # that can be held for ever is a machine nothing else can use.
+        # What changed is that it may no longer go QUIET — a backstop
+        # reap over a live container is the same under-count #153 is
+        # about, arriving two hours later instead of immediately.
+        if [ "${started:-0}" -gt 0 ] && [ "$age" -gt "$max_hold_s" ]; then
+            left="$(containers_of "$inst")"
             rm -f "$f"
-            echo "host-gate: reaped $(basename "$f") — pid $pid is gone" >&2
-            reaped=$((reaped + 1))
-        elif [ "${started:-0}" -gt 0 ] && [ "$age" -gt "$max_hold_s" ]; then
-            rm -f "$f"
-            echo "host-gate: reaped $(basename "$f") — held ${age}s, past the ${max_hold_s}s backstop" >&2
-            reaped=$((reaped + 1))
+            if [ -n "$left" ]; then
+                echo "host-gate: reaped $(basename "$f") — held ${age}s, past the ${max_hold_s}s backstop," >&2
+                echo "host-gate:   AND $inst is still running: $left" >&2
+                echo "host-gate:   the ledger now UNDER-COUNTS this machine. Stop it with 'just down' in THAT worktree (D-095: never from here)." >&2
+            else
+                echo "host-gate: reaped $(basename "$f") — held ${age}s, past the ${max_hold_s}s backstop" >&2
+            fi
+            continue
         fi
+
+        alive "$pid" && continue
+
+        # #153: the launcher is gone and its WORK is not. Keep charging —
+        # the memory is still resident whatever the process table says —
+        # and say so once rather than every poll.
+        left="$(containers_of "$inst")"
+        if [ -n "$left" ]; then
+            if [ "$(field "$f" orphaned)" != "1" ]; then
+                echo "orphaned=1" >> "$f"
+                echo "host-gate: $(basename "$f") — pid $pid is gone but $inst is still running: $left" >&2
+                echo "host-gate:   keeping the slot charged; it is released when the container is." >&2
+            fi
+            continue
+        fi
+
+        rm -f "$f"
+        echo "host-gate: reaped $(basename "$f") — pid $pid is gone, and $inst runs nothing" >&2
     done
     # The admission mutex is a directory, so it can be stranded the same
     # way. It is only ever held for milliseconds; a minute is already
@@ -237,6 +366,56 @@ release() {
         ""|ungated|inherited) return 0 ;;
     esac
     rm -f "$token" 2>/dev/null || true
+
+    # The other half of #153, and the cheap half. A recipe that hands its
+    # slot back while its OWN containers are still up has just made the
+    # ledger disagree with the machine, and the reaper above will never
+    # see it — there is no holder left to reconcile.
+    #
+    # A REPORT, never a refusal: `just up` leaves a server running on
+    # purpose and is paired with `just down`, so this is a true statement
+    # about the host rather than a complaint about the recipe. Silent in
+    # the ordinary case, because a recipe that tore its containers down
+    # has nothing to list.
+    forget_containers
+    local left; left="$(containers_of "$instance")"
+    if [ -n "$left" ]; then
+        echo "host-gate: slot released, but $instance is still running: $left" >&2
+        echo "host-gate:   the gate no longer counts it — 'just down' here when you are finished (#153)." >&2
+    fi
+    return 0
+}
+
+
+## What is RUNNING, and whether the ledger accounts for it (#153).
+##
+## Printed by `status`, and therefore by `just doctor` and
+## `just host-status`, which is where people already look. A container
+## with no holder is not necessarily wrong — `just up` leaves one on
+## purpose — but it IS memory the admission rule cannot see, so it is
+## said out loud instead of being discovered by a machine that crawls.
+occupancy() {
+    forget_containers
+    local names; names="$(containers)"
+    local n loose=0 total=0
+    for n in $names; do
+        total=$((total + 1))
+        if held_by_a_holder "$n"; then
+            echo "host-gate: RUNNING $n — charged to a holder"
+        else
+            echo "host-gate: RUNNING $n — NOT charged to any holder"
+            loose=$((loose + 1))
+        fi
+    done
+    if [ "$total" -eq 0 ]; then
+        echo "host-gate: no edotmw containers running — the ledger and the machine agree"
+        return 0
+    fi
+    if [ "$loose" -gt 0 ]; then
+        echo "host-gate: WARNING $loose of $total running container(s) are charged to nobody — the budget is" >&2
+        echo "host-gate:   reading this machine as emptier than it is (#153). Each belongs to a worktree;" >&2
+        echo "host-gate:   'just down' THERE is what stops it. Never from here (D-095)." >&2
+    fi
     return 0
 }
 
@@ -244,14 +423,17 @@ status() {
     mkdir -p "$gate_dir"
     reap
     bash "$budget" report
-    local f n=0
+    local f n=0 note=
     for f in $(holder_files); do
         n=$((n + 1))
-        printf 'host-gate: HELD %-6s %-32s %-24s pid=%-8s %ss\n' \
+        note=""
+        [ "$(field "$f" orphaned)" = "1" ] && note="  ORPHANED — launcher gone, container still up (#153)"
+        printf 'host-gate: HELD %-6s %-32s %-24s pid=%-8s %ss%s\n' \
             "$(field "$f" class)" "$(field "$f" instance)" "$(field "$f" label)" \
-            "$(field "$f" pid)" "$(( $(now) - $(field "$f" started) ))"
+            "$(field "$f" pid)" "$(( $(now) - $(field "$f" started) ))" "$note"
     done
     echo "host-gate: $n holder(s), $(charged_mb) MB charged, dir $gate_dir"
+    occupancy
     if [ "${EDOTMW_NO_GATE:-0}" = "1" ]; then
         echo "host-gate: WARNING EDOTMW_NO_GATE=1 — nothing is being gated"
     fi
@@ -260,10 +442,11 @@ status() {
 case "${1:-status}" in
     acquire) shift; acquire "$@" ;;
     release) shift; release "$@" ;;
-    reap)    mkdir -p "$gate_dir"; reap ;;
+    reap)      mkdir -p "$gate_dir"; reap ;;
+    occupancy) mkdir -p "$gate_dir"; occupancy ;;
     charged) mkdir -p "$gate_dir"; reap; charged_mb ;;
     status)  status ;;
     *)
-        echo "usage: host-gate.sh {acquire CLASS LABEL|release TOKEN|status|reap|charged}" >&2
+        echo "usage: host-gate.sh {acquire CLASS LABEL|release TOKEN|status|reap|occupancy|charged}" >&2
         exit 2 ;;
 esac

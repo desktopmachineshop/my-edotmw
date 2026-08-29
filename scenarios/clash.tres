@@ -22,7 +22,7 @@ shape = ""
 [resource]
 script = ExtResource("1")
 id = &"clash"
-description = "Two armies already within reach. For combat, morale, routing and fog."
+description = "Two armies already within reach. For combat, morale and routing — and for fog EVENTS, but not for the peak-knowledge gate: these armies meet, so somebody ends up seeing everything (#230)."
 buildings = Array[Resource]([])
 squads = Array[Resource]([SubResource("militia"), SubResource("spearmen")])
 food = 0
@@ -30,4 +30,5 @@ wood = 0
 gold = 0
 stone = 0
 separation = 8
+proves_fog_gating = false
 placement_slack = 6

@@ -63,8 +63,8 @@ func _init() -> void:
 	both.blit_rect(strip, Rect2i(0, 0, w, strip.get_height()),
 		Vector2i(0, sheet.get_height()))
 	sheet = both
-	DirAccess.make_dir_recursive_absolute("res://artifacts")
-	var out := "res://artifacts/formation-icons.png"
+	var out := ArtifactPath.of("formation-icons.png")
+	ArtifactPath.ensure_dir_for(out)
 	var err := sheet.save_png(out)
 	print("wrote %s (%s)" % [out, "ok" if err == OK else str(err)])
 	quit(0 if err == OK else 1)
