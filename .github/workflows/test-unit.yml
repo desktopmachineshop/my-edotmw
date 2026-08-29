@@ -185,12 +185,16 @@ jobs:
           fi
 
           strip() { sed 's/\x1b\[[0-9;]*m//g' /tmp/test-unit.log; }
-          # `grep -m` and NOT `| head`. Under `pipefail`, `head` closing
-          # the pipe early SIGPIPEs grep, the pipeline reports failure,
-          # and `|| fails=""` then throws the matches away — so a run with
-          # five failing tests reported "no failing assertion". Observed
-          # before this line was written the other way round.
-          fails=$(strip | grep -m 20 -F '[Failed]') || fails=""
+          # NOTHING IN THIS PIPELINE MAY CLOSE IT EARLY. Under `pipefail`
+          # an early exit SIGPIPEs whatever feeds it, and the pipeline
+          # then reports failure, and `|| fails=""` throws away every
+          # match — so a run with five failing tests reports "no failing
+          # assertion". Observed twice: first with `| head -20` (grep took
+          # the signal), then with `grep -m 20` (sed took it, and the
+          # runner said so: `sed: couldn't write 63 items to stdout:
+          # Broken pipe`). `awk` reads to EOF and truncates afterwards, so
+          # no stage ever closes the pipe.
+          fails=$(strip | grep -F '[Failed]' | awk 'NR<=20') || fails=""
           totals=$(strip | sed -n '/^Totals/,/^Time/p' | tr '\n' ' ') || totals=""
 
           if [ -n "${totals}" ]; then
