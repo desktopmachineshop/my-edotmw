@@ -263,3 +263,46 @@ func test_a_bot_that_does_not_know_its_civ_still_asks_for_soldiers() -> void:
 		"a bot with no civ and no crews still asks its hall for some")
 	assert_eq(BotBuildPlan.archetype_for(hall, &"", BotBuildPlan.MAX_HAULING_CREWS), &"",
 		"and still stops at the cap")
+
+
+func test_a_named_civ_is_never_handed_another_civs_unit() -> void:
+	# `_resolve`'s any-civ fallback exists for the CIV-LESS load-test bot,
+	# which never learns its civ. Applied to a caller that names one it
+	# hands back somebody else's unit, and the server then refuses the
+	# order (D-047 resolves per civ) — which reads as a bot that will not
+	# train rather than as a bad lookup.
+	#
+	# Latent until the naval roster, because `archetype_for` returns the
+	# first entry of `produces` that resolves and every pre-naval building
+	# lists a universal archetype first. A dock offers `warship` first and
+	# two civs field a `warboat` instead.
+	for civ in CivRoster.ids():
+		for building_def in BuildingSim.all_defs():
+			var archetype := BotBuildPlan.archetype_for(building_def, civ, 0)
+			if archetype == &"":
+				continue
+			var def := UnitRoster.for_civ_archetype(civ, archetype)
+			assert_not_null(def,
+				"%s asked %s for %s, which it does not field" % [
+					civ, building_def.id, archetype])
+			if def != null:
+				assert_true(String(def.civ) == String(civ) or String(def.civ) == "neutral",
+					"%s asked %s for %s and got %s's unit" % [
+						civ, building_def.id, archetype, def.civ])
+
+
+func test_the_civ_less_bot_still_gets_an_answer() -> void:
+	# The other half, and the reason the fallback is narrowed rather than
+	# deleted: with no civ a bot must still be able to size a request, or
+	# `test-load` stops fielding an army at all (#123).
+	var asked := 0
+	for building_def in BuildingSim.all_defs():
+		if building_def.produces.is_empty():
+			continue
+		var archetype := BotBuildPlan.archetype_for(building_def, &"", 0)
+		if archetype == &"":
+			continue
+		asked += 1
+		assert_true(building_def.produces.has(archetype),
+			"%s was asked for %s, which it does not produce" % [building_def.id, archetype])
+	assert_gt(asked, 0, "a civ-less bot must still be able to ask for something")
