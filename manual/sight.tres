@@ -1,0 +1,44 @@
+[gd_resource type="Resource" script_class="ManualPageDef" format=3]
+
+[ext_resource type="Script" path="res://manual_page_def.gd" id="1_page"]
+
+[resource]
+script = ExtResource("1_page")
+id = &"sight"
+title = "What you can see"
+order = 90
+summary = "Three states of ground, and why armies are not remembered."
+body = "Every squad and every building of yours sees a circle around itself. The
+union of those circles is what you know.
+
+The ground has three states, and both the world and the minimap show all
+three:
+
+- BLACK — never seen. You do not know what is there.
+- DIM — seen once, not now. You know the lie of the land, and where the buildings were.
+- LIT — in sight this second. This is the only place you see ARMIES.
+
+## Armies are not remembered; buildings are
+
+When an enemy squad leaves your sight it is gone from your screen — not
+faded, not left where it was. A position you can see but cannot trust is
+worse than none, because you would commit to it.
+
+A building you have seen stays on your map until you watch it come down. The
+difference is on purpose: an army is a thing that moves, and a building is a
+thing you learned.
+
+## Allies share sight
+
+Everything your ally sees, you see. That is most of what an alliance is
+mechanically, and it is a great deal — an ally scouting a flank is your
+scout, at no cost to you.
+
+## Your troops route around ground YOU have found
+
+A squad sent across country you have never scouted takes the shortest line it
+has no reason to doubt, and finds out by walking. It does not steer round the
+lake nobody has seen. That is not the game being unhelpful; your army knows
+exactly what you know, and no more."
+sources = Array[String](["res://decisions/D-025-closes-d-004-s-provisional-semantics.md", "res://decisions/D-106-the-ground-has-fog-of-war.md", "res://decisions/D-20260818-pathing-knows-only-what-the-player-knows.md", "res://vision.gd"])
+stamp = "8ce0676a7ac3152fe323ffa8f35e4a3d1dc7f70410f1274c435d163d603f216d"

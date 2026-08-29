@@ -1,0 +1,48 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+OBS36: begin
+
+OBS36 NODES - what the shipped default map actually grows.
+  food   nodes=1939   total stock=203595
+  wood   nodes=3435   total stock=360675
+  gold   nodes=48     total stock=115200
+  stone  nodes=137    total stock=328800
+  all four kinds present: true
+
+OBS36 HAUL CYCLE - one crew per resource kind, watched through a
+  full round trip. Deposits must be DISCRETE (the stockpile jumps
+  on arrival at the drop-off, not continuously while gathering).
+  food   node (4, 0): phases 0.1s:GATHERING -> 23.1s:TO_DROP_OFF -> 23.2s:TO_NODE -> 23.3s:GATHERING -> 46.3s:TO_DROP_OFF -> 46.4s:TO_NODE
+         deposits 23.2s:+45 46.4s:+45 (discrete=true), wallet now 90
+  wood   node (36, 0): phases 0.1s:GATHERING -> 23.1s:TO_DROP_OFF -> 23.2s:TO_NODE -> 23.3s:GATHERING -> 46.3s:TO_DROP_OFF -> 46.4s:TO_NODE
+         deposits 23.2s:+45 46.4s:+45 (discrete=true), wallet now 90
+  gold   node (89, 15): phases 0.1s:GATHERING -> 23.1s:TO_DROP_OFF -> 23.2s:TO_NODE -> 23.3s:GATHERING -> 46.3s:TO_DROP_OFF -> 46.4s:TO_NODE
+         deposits 23.2s:+45 46.4s:+45 (discrete=true), wallet now 90
+  stone  node (115, 0): phases 0.1s:GATHERING -> 23.1s:TO_DROP_OFF -> 23.2s:TO_NODE -> 23.3s:GATHERING -> 46.3s:TO_DROP_OFF -> 46.4s:TO_NODE
+         deposits 23.2s:+45 46.4s:+45 (discrete=true), wallet now 90
+
+OBS36 TREE - how long one shipped crew takes to work a tree out.
+  D-087 sizes TREE_STOCK (105) so this is about 60s; economy.gd's
+  own header says a change to the gatherer must move it.
+  emberdeep      emberdeep_gatherers      alive=7 rate=0.28/s x civ 1.00 -> tree out in 55.1s
+  gildedreach    gildedreach_gatherers    alive=7 rate=0.28/s x civ 1.15 -> tree out in 48.1s
+  gravesworn     gravesworn_gatherers     alive=7 rate=0.28/s x civ 1.00 -> tree out in 55.1s
+  stoneblood     stoneblood_gatherers     alive=7 rate=0.28/s x civ 1.00 -> tree out in 55.1s
+  thornwood      thornwood_gatherers      alive=7 rate=0.28/s x civ 1.00 -> tree out in 55.1s
+  windmarch      windmarch_gatherers      alive=7 rate=0.28/s x civ 1.00 -> tree out in 55.1s
+
+OBS36 RETARGET - when a tree runs out, the crew must take the
+  nearest surviving node of the SAME KIND within 8 cells, and
+  give up if there is none. Never wood-to-food.
+  Read by watching which node LOSES STOCK after the first is gone,
+  because the crew's current node is private to Economy.
+  same kind 3 cells away                     first node gone at 4.4s | moved to the wood node | still gathering=false
+  same kind 12 cells away (outside radius)   first node gone at 4.4s | gave up | still gathering=false
+  FOOD 3 cells away (wrong kind)             first node gone at 4.4s | gave up | still gathering=false
+  nothing else on the map                    first node gone at 4.4s | gave up | still gathering=false
+
+OBS36 STOREHOUSE - the same grove worked with and without a
+  nearer drop-off. Income over a fixed 180s window.
+  storehouse=false wood banked in 180s: 180
+  storehouse=true  wood banked in 180s: 315
+OBS36: end
