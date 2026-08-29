@@ -8922,6 +8922,11 @@ const SETTINGS_PATH := "user://settings.cfg"
 ## to see it (#91). `SEAT_ROW_HEIGHT` moved with them.
 
 
+## Where `_on_report_a_problem_pressed` reports back when the in-match
+## menu is the screen on show (#288).
+var _report_status: Label = null
+
+
 func _build_game_menu() -> void:
 	_game_menu_layer = CanvasLayer.new()
 	# Above the HUD (0) but BELOW the lobby (10): the lobby is a screen
@@ -9009,6 +9014,26 @@ func _build_game_menu() -> void:
 	_surrender_confirm.visible = false
 	_surrender_confirm.pressed.connect(_on_surrender_confirmed)
 	column.add_child(_surrender_confirm)
+
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding this session's logs, replays and "
+		+ "your system details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
+	# Where the answer lands when the button is pressed from IN a match.
+	# Beside the button rather than in the HUD's notice line: that line is
+	# the SERVER's channel, overwritten every frame from
+	# `_state.last_notice`, and it is one centred row — a file path would
+	# be clobbered and would not fit.
+	_report_status = Label.new()
+	_report_status.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE - 1)
+	_report_status.modulate = HudTheme.TEXT_DIM
+	_report_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_report_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_report_status.custom_minimum_size = Vector2(320.0, 0.0)
+	_report_status.visible = false
+	column.add_child(_report_status)
 
 	var to_lobby := _styled_button("Leave match", HudTheme.NEUTRAL)
 	to_lobby.tooltip_text = "End the match and return everyone to the lobby."
@@ -9654,9 +9679,61 @@ func _build_main_menu() -> void:
 	host_note.custom_minimum_size = Vector2(420.0, 0.0)
 	column.add_child(host_note)
 
+	# Here as well as in the in-match menu, and that is the placement that
+	# matters: the reports hardest to act on are the ones from somebody
+	# who never got INTO a match, and they have no other screen to reach.
+	var report := _styled_button("Report a problem", HudTheme.NEUTRAL)
+	report.tooltip_text = ("Write one file holding your logs, replays and system "
+		+ "details, for you to attach to a report. Nothing is sent.")
+	report.pressed.connect(_on_report_a_problem_pressed)
+	column.add_child(report)
+
 	var quit := _styled_button("Quit", HudTheme.NEUTRAL)
 	quit.pressed.connect(_on_quit_pressed)
 	column.add_child(quit)
+
+
+## Write a problem report bundle, and say where it went (#288).
+##
+## The whole action, because there is nothing else it should do: the
+## bundle is CREATED and never sent (`report_bundle.gd`'s header has the
+## reasoning — `testers.md` promises no telemetry, and that promise is
+## worth more at this stage than the reports would be).
+##
+## Reached from BOTH menus through one handler, so the two cannot drift
+## into writing different bundles — the same rule as every other pair of
+## call sites in this project that share a definition.
+func _on_report_a_problem_pressed() -> void:
+	var path := ArtifactPath.of(ReportBundle.bundle_name(
+		BuildVersion.string(), ReportBundle.stamp_now()))
+	var result := ReportBundle.write(path)
+	if not bool(result["ok"]):
+		var why := String(result.get("error", "could not write the report"))
+		push_error("client: %s" % why)
+		_show_report_result(why)
+		return
+	# The PATH is the message, and deliberately the OS path rather than
+	# the `user://` one: a player cannot paste `user://` into a file
+	# manager, so telling them where a file is in a vocabulary only the
+	# engine speaks is the same as not telling them.
+	var real := ProjectSettings.globalize_path(String(result["path"]))
+	print("client: wrote a problem report to %s" % real)
+	_show_report_result("Report written to %s — attach it to your report. Nothing was sent."
+		% real)
+
+
+## Put the outcome where the player is actually looking.
+##
+## Two screens can hold the button — the pre-connect menu and the in-match
+## menu — and each already has somewhere to say things. One function
+## chooses, so the two cannot come to say different things.
+func _show_report_result(text: String) -> void:
+	if _menu_layer != null and _menu_layer.visible and _menu_status != null:
+		_menu_status.text = text
+		return
+	if _report_status != null:
+		_report_status.text = text
+		_report_status.visible = true
 
 
 ## Show the menu, with `message` explaining why if there is one.
