@@ -111,6 +111,26 @@ static func apply_player(def: ScenarioDef, player: int, civ: StringName,
 	out.home = home
 	var space := sim.space
 
+	# Techs FIRST, before anything is placed
+	# (`D-20260827-the-tree-is-the-ladder`). A scenario skips the opening,
+	# and once the tree exists it has to be able to skip the tree too —
+	# otherwise every scenario is permanently epoch 1 and the siege loop
+	# cannot reach a siege engine.
+	#
+	# Before the squads, because `SquadSim.add_squad` resolves a unit's
+	# def through the owner's techs: grant afterwards and the scenario's
+	# own troops would be the only ones in the match without their
+	# upgrades. Granted through `ResearchState.grant` — the same call the
+	# server makes when research completes — per D-098's governing rule
+	# that a scenario goes through the game's own calls and never a
+	# faster path that builds the world its own way.
+	if sim.research != null:
+		for line in def.techs:
+			if TechRoster.for_civ_line(civ, line) == null:
+				out.skipped.append("tech line '%s' has no def for civ '%s'" % [line, civ])
+				continue
+			sim.research.grant(player, line)
+
 	# Buildings first: they occupy cells, and a squad placed afterwards
 	# should stand beside a town centre rather than inside it.
 	for entry in def.buildings:

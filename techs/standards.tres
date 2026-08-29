@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"morale"
+mode = "add"
+value = 10.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"morale_recovery_per_second"
+mode = "multiply"
+value = 1.25
+
+[resource]
+script = ExtResource("1")
+id = &"standards"
+display_name = "Standards"
+description = "Something to look for when the line bends, and something to be ashamed of leaving."
+line = &"standards"
+civ = &"neutral"
+epoch = 2
+defining = false
+research_at = &"barracks"
+requires = Array[StringName]([&"mustering"])
+cost_food = 180
+cost_wood = 120
+cost_gold = 60
+cost_stone = 0
+research_time = 35.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

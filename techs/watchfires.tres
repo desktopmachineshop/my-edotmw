@@ -1,0 +1,45 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"vision_range"
+mode = "add"
+value = 4.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"tower"
+field = &"attack_range"
+mode = "add"
+value = 1.0
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"town_centre"
+field = &"attack_range"
+mode = "add"
+value = 1.0
+
+[resource]
+script = ExtResource("1")
+id = &"watchfires"
+display_name = "Watchfires"
+description = "A chain of fires, and somebody awake at each. The oldest early-warning system there is."
+line = &"watchfires"
+civ = &"neutral"
+epoch = 3
+defining = false
+research_at = &"town_centre"
+requires = Array[StringName]([&"holding"])
+cost_food = 300
+cost_wood = 250
+cost_gold = 100
+cost_stone = 0
+research_time = 45.0
+unit_effects = Array[Resource]([])
+building_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2")])
+civ_effects = Array[Resource]([])
