@@ -1,0 +1,52 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"breaker"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.2
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"engine"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.2
+
+[sub_resource type="Resource" id="e2"]
+script = ExtResource("2")
+target = &"ram"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.2
+
+[sub_resource type="Resource" id="e3"]
+script = ExtResource("2")
+target = &"bombard"
+field = &"damage_vs_buildings"
+mode = "add"
+value = 0.2
+
+[resource]
+script = ExtResource("1")
+id = &"gravesworn_siegecraft"
+display_name = "Grave-tar Payloads"
+description = "What is left in a barrow after long enough burns, and does not stop."
+line = &"siegecraft"
+civ = &"gravesworn"
+epoch = 4
+defining = false
+research_at = &"forge"
+requires = Array[StringName]([&"breaking"])
+cost_food = 500
+cost_wood = 400
+cost_gold = 300
+cost_stone = 200
+research_time = 60.0
+unit_effects = Array[Resource]([SubResource("e0"), SubResource("e1"), SubResource("e2"), SubResource("e3")])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([])

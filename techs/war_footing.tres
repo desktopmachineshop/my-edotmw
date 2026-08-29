@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="TechDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tech_def.gd" id="1"]
+[ext_resource type="Script" path="res://tech_effect.gd" id="2"]
+
+[sub_resource type="Resource" id="e0"]
+script = ExtResource("2")
+target = &"*"
+field = &"squad_cap_bonus"
+mode = "add"
+value = 6.0
+
+[sub_resource type="Resource" id="e1"]
+script = ExtResource("2")
+target = &"*"
+field = &"production_speed"
+mode = "multiply"
+value = 1.15
+
+[resource]
+script = ExtResource("1")
+id = &"war_footing"
+display_name = "War Footing"
+description = "Everything the people own is now for this. It is not a decision anyone takes twice."
+line = &"war_footing"
+civ = &"neutral"
+epoch = 5
+defining = false
+research_at = &"town_centre"
+requires = Array[StringName]([&"reckoning"])
+cost_food = 600
+cost_wood = 400
+cost_gold = 500
+cost_stone = 200
+research_time = 80.0
+unit_effects = Array[Resource]([])
+building_effects = Array[Resource]([])
+civ_effects = Array[Resource]([SubResource("e0"), SubResource("e1")])

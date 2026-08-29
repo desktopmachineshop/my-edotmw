@@ -8,6 +8,7 @@ id = &"windmarch_cavalry"
 display_name = "Storm Lancers"
 civ = &"windmarch"
 archetype = &"cavalry"
+requires_tech = &"holding"
 squad_size = 16
 health = 85.0
 damage = 11.0

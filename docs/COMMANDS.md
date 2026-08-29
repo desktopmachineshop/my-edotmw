@@ -91,7 +91,7 @@ through docker compose or the native binary if you need a combination
 | Command | What it does |
 |---|---|
 | `just profile` | Scale sweep: simulation cost at 100/250/500/1000 squads. The shape of the curve is the deliverable — cost should stay flat per squad; a bend means something turned quadratic. Not a substitute for a live run — see `CLAUDE.md`'s note on the sweep missing defects a live match caught. |
-| `just bench-render [COUNTS] [FRAMES] [HEIGHT]` | Client render benchmark: frame time and draw calls at each squad count in `COUNTS`. **Native only, needs a real GPU** — prints which one it ran on, because a frame time with no hardware attached isn't a usable number. |
+| `just bench-render [COUNTS] [FRAMES] [HEIGHT] [HOST] [PRESET] [HULLS] [ARGS]` | Client render benchmark: frame time and draw calls at each squad count in `COUNTS`. **Native only, needs a real GPU** — prints which one it ran on, because a frame time with no hardware attached isn't a usable number. |
 | `just gen-terrain-preview [CHUNK_SIZE]` | Writes a terrain biome PNG to `artifacts/` and reports chunk-meshing cost at the given chunk size, without launching the full game. |
 | `just lobby-shot [SECONDS] [AI] [PRESET]` | Screenshots the lobby seat-list screen into `artifacts/lobby.png`, so its layout can actually be looked at. Docker only. |
 | `just replay-info [FILE]` | Reads a recorded replay curve log back and reconstructs world state from it — the primary desync-forensics tool. Defaults to `res://artifacts/replay-4433.edmw`. |
