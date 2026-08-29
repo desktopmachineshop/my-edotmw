@@ -90,7 +90,7 @@ static func groups() -> Array:
 		},
 		{
 			"title": "Building and training",
-			"rows": _build_rows() + _train_rows() + [
+			"rows": _build_rows() + _train_rows() + _gather_row() + [
 				["V", "While placing a building, turn it to the next of six sides"],
 				["Escape", "Cancel a placement — or open the menu when there is none"],
 			],
@@ -126,6 +126,55 @@ static func _train_rows() -> Array:
 		# civ (D-047), and a controls screen shared by six civs must not
 		# name one civ's units.
 		return "Train %s" % String(id).capitalize().to_lower())
+
+
+## The GATHER key, listed only when a player can actually press it.
+##
+## `client.gd` has a hand-written `KEY_G` branch that sends idle workers
+## at the node under the cursor — and that branch was UNREACHABLE, because
+## `G` was also in `BUILD_KEYS` and the build table is consulted first
+## (#302, found by writing this file). The screen therefore documented `G`
+## as a garrison wall: it says what pressing a key DOES, and a screen
+## documenting the intent would have made that bug the player's fault.
+##
+## #302 is resolved now — `garrison_wall` moved to `J` and `farm` took `O`
+## (#363) — so `G` gathers. Rather than swap one hard-coded answer for
+## another, the row is DERIVED FROM THE COLLISION ITSELF: if the gather
+## key is in `BUILD_KEYS` the build table wins and there is nothing to
+## list; if it is not, gather is reachable and gets a row.
+##
+## That is what makes this correct on both sides of the fix, on a branch
+## that has #363's re-allocation and on one that does not — and it is why
+## #363 needed no other edit here, the build rows being derived already.
+static func _gather_row() -> Array:
+	var key := gather_key()
+	if key == "" or _key_table("BUILD_KEYS").has(key):
+		return []
+	return [[key, "Gather: send idle workers to the node under the cursor"]]
+
+
+## The gather key, read off `client.gd` rather than guessed.
+##
+## Prefers a named constant if the client grows one, and otherwise reads
+## the letter out of the branch it is actually dispatched from — so this
+## reports the key that WORKS rather than the key somebody meant.
+static func gather_key() -> String:
+	var script := load("res://client.gd") as GDScript
+	if script == null:
+		return ""
+	var constants := script.get_script_constant_map()
+	if constants.has("GATHER_KEY"):
+		return String(constants["GATHER_KEY"])
+	var source := script.source_code
+	var marker := "if event.keycode == KEY_"
+	var at := source.find(marker)
+	while at >= 0:
+		var letter := source.substr(at + marker.length(), 1)
+		var rest := source.substr(at, 220)
+		if rest.contains("_gather_selected()"):
+			return letter
+		at = source.find(marker, at + 1)
+	return ""
 
 
 static func _rows_from(table: Dictionary, describe: Callable) -> Array:
