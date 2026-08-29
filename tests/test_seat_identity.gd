@@ -242,8 +242,13 @@ func test_the_same_identity_reclaims_its_seat() -> void:
 
 	var def: UnitDef = UnitRoster.for_civ_archetype(&"emberdeep", &"levy")
 	server._sim.add_squad(def, 1, Vector2i(5, 5))
-	# Again the deferred entry point rather than the disconnect path, for
-	# the same reason.
+	# The state D-090's handover runs in, assembled here rather than by
+	# calling `_on_disconnect` — which today performs #292/#318's wipe and
+	# would be asserting that policy instead of this machinery. The human
+	# is gone from the socket table and the seat knows it; everything
+	# after this line is repossession proper.
+	server._clients.erase(first)
+	server._match.mark_disconnected(1)
 	server._hand_seat_to_ai(1)
 
 	# A NEW connection, given a NEW provisional seat, as the real one is.

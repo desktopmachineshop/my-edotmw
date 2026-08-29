@@ -40,4 +40,4 @@ everybody else another twenty minutes.
 If you were HOSTING, the match ends for everybody. A hosted game runs inside
 the host's own client, so there is nothing left to play on."
 sources = Array[String](["res://match_state.gd", "res://decisions/D-027.md", "res://decisions/D-075-leaving-a-match-returns-to-the.md"])
-stamp = "d9bf92e0db708e3487add3a058dd21973ce44fafd04df4c52e90a22c91edd908"
+stamp = "c2f3d904461faa17202686ab88aa3f1c9b8b389191abcc8bff95cd05530920e8"
