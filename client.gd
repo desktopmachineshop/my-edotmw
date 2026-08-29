@@ -139,6 +139,13 @@ var _menu_layer: CanvasLayer = null
 ## them. Built once and shown/hidden, so the two entry points cannot
 ## drift into two screens.
 var _controls_layer: CanvasLayer = null
+## The manual (#305). `_manual_page` survives a close, so a player who
+## opens Help twice lands where they left off rather than back at page one.
+var _manual_layer: CanvasLayer = null
+var _manual_contents: VBoxContainer = null
+var _manual_scroll: ScrollContainer = null
+var _manual_body: VBoxContainer = null
+var _manual_page: StringName = &""
 var _menu_address: LineEdit = null
 var _menu_status: Label = null
 ## Where this client last pointed itself, remembered across launches, so
@@ -443,6 +450,7 @@ func _ready() -> void:
 	_build_connection_lost_screen()
 
 	_build_controls_screen()
+	_build_manual_screen()
 	_build_main_menu()
 	# `--controls=1` opens the controls screen at startup, for the one
 	# caller that has to photograph it (`just menu-shot CONTROLS=1`).
@@ -451,6 +459,28 @@ func _ready() -> void:
 	# been unable to photograph something four times over.
 	if int(args.get("controls", 0)) == 1:
 		_toggle_controls()
+	# `--manual=<page>` opens the manual at a named page, for the
+	# instrument that has to photograph it. A PAGE rather than a flag,
+	# because "the manual" is twelve different screens and a shot of the
+	# first one says nothing about the eleven with tables on them.
+	var manual_page := String(args.get("manual", ""))
+	if manual_page != "":
+		var known := false
+		for entry in Manual.pages():
+			if String(entry["id"]) == manual_page:
+				known = true
+		if known:
+			_manual_page = StringName(manual_page)
+			_toggle_manual()
+			# A marker the recipe reads, rather than a screenshot it
+			# trusts. `just menu-shot` fails without it.
+			print("client: MANUAL page=%s" % manual_page)
+		else:
+			# Loudly, because the alternative is a screenshot of a blank
+			# page that every automated check calls a success — the
+			# `--menu` bare-flag defect (#180) with a different argument.
+			push_error("--manual=%s is not a page; known pages: %s"
+				% [manual_page, ", ".join(Manual.page_ids())])
 	# `--host=1` starts the in-process server and joins it, exactly as the
 	# menu's Host button does (#182). It exists so hosting can be driven
 	# headlessly — by `just test-host`, which points real bots at a real
@@ -3076,6 +3106,23 @@ const RESERVED_KEYS := {
 	"G": "gather at the cursor's node",
 }
 
+# `RESERVED_FOR_IN_FLIGHT` stood here and is deliberately NOT carried
+# forward: #246 bound O to `farm` on `main` and retired the table in the
+# same commit, which is exactly the rule the table stated for itself — an
+# entry leaves when its real binding lands. Its two guards on `main`
+# already tolerate the absence; resurrecting it here would hold O against
+# the branch that has already taken it.
+
+## The manual's key (#305). ONE definition: `_handle_key` resolves it back
+## to a keycode, `controls_reference.gd` prints it, and the opening
+## objective points at it — so the three cannot disagree.
+##
+## A FUNCTION key rather than a letter, deliberately. Every letter this
+## game could plausibly want is in BUILD_KEYS or TRAIN_KEYS or one commit
+## away from being taken by one, and #302 is what that looks like when it
+## happens: H, the obvious key for Help, has built a storehouse since M3.
+const MANUAL_KEY := "F1"
+
 const BUILD_KEYS := {
 	"B": &"town_centre", "N": &"barracks", "H": &"storehouse", "Y": &"tower",
 	# D-20260828-food-is-grown-not-only-found. O, not J: `garrison_wall`
@@ -5423,7 +5470,16 @@ func _opening_objective() -> String:
 			_state.composition.get(squad, {}).get("def_id", ""))))
 		if def != null and not owned.has(def):
 			owned.append(def)
-	return OpeningBrief.first_objective(owned, _owns_a_founding_building())
+	var objective := OpeningBrief.first_objective(owned, _owns_a_founding_building())
+	if objective == "":
+		return ""
+	# The pointer that closes the onboarding loop (#305): the one moment
+	# this project KNOWS a player is new is while they still have no town,
+	# and it is already saying something to them. Appended here rather
+	# than inside `OpeningBrief`, which is about the opening and has no
+	# business naming a keybind — that is the #302 family, and this file
+	# owns the key.
+	return "%s  (%s: manual)" % [objective, MANUAL_KEY]
 
 
 ## Whether this player owns a LIVING building of the kind that founding
@@ -7418,6 +7474,19 @@ func _recall_control_group(group: int) -> void:
 
 
 func _handle_key(event: InputEventKey) -> void:
+	# F1 opens the manual, and closes it (#305). A function key rather
+	# than a letter deliberately: every letter this game could want is
+	# either in BUILD_KEYS, in TRAIN_KEYS, or one keystroke away from
+	# being stolen by one — which is exactly how #302 happened to G. H,
+	# the obvious choice for Help, already builds a storehouse.
+	#
+	# It is here rather than only on a menu button because the moment a
+	# player wants the counter table is mid-fight, and making them stop
+	# to open a menu first is making them not read it.
+	if event.keycode == OS.find_keycode_from_string(MANUAL_KEY):
+		_toggle_manual()
+		return
+
 	if event.keycode == KEY_X:
 		_stop_selected()
 		return
@@ -9002,6 +9071,14 @@ func _build_game_menu() -> void:
 	controls.pressed.connect(_toggle_controls)
 	column.add_child(controls)
 
+	# Beside Controls, same family, same reason (#305). Mid-match is when
+	# a player wants the counter table, not before they have met anything
+	# to counter.
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
+
 	var settings := _styled_button("Settings", HudTheme.NEUTRAL)
 	settings.pressed.connect(_toggle_settings)
 	column.add_child(settings)
@@ -9674,6 +9751,27 @@ func _build_controls_screen() -> void:
 	# Both were caught by looking, and the fit test in
 	# `tests/test_controls_reference.gd` is what makes looking optional
 	# next time.
+	#
+	# It fired on the very next change (#305 added a Reference group for
+	# the manual's key) at 731 px against 720, and the split was rebuilt
+	# to put the screen at 705.
+	#
+	# An earlier version of this comment then predicted that the NEXT row
+	# added would red it again, reasoning that 705 of 720 was the OPTIMUM:
+	# two contiguous columns over 31 rows cannot balance better than
+	# 15/16, and the tall column is one group dealt whole.
+	#
+	# That prediction is measured FALSE. #363 put `farm` on O and freed
+	# the gather key, adding two rows, and the screen went 705 -> 684.
+	# Adding a row can MOVE the split point, and the better balance on the
+	# far side of it more than pays for the row. The 15/16 bound was true
+	# of 31 rows and said nothing about 33.
+	#
+	# So the honest statement is narrower: it fits today with room, the
+	# TEST measures that rather than anyone predicting it, and the fix if
+	# it ever does red is to let a GROUP break across columns, repeating
+	# its title — how a printed reference does it. Roughly ten lines here;
+	# still not written, because nothing needs it.
 	var groups := ControlsReference.groups()
 	var total_rows := 0
 	for group in groups:
@@ -9730,6 +9828,213 @@ func _toggle_controls() -> void:
 	if _controls_layer == null:
 		return
 	_controls_layer.visible = not _controls_layer.visible
+
+
+# --- the manual (#305) ---------------------------------------------------
+#
+# `decisions/D-20260828-the-manual-is-generated-or-it-is-stamped.md`. The
+# CONTENT lives in `manual.gd` and `/manual/*.tres`, all-static and pure
+# for the D-061 reason; what is here is the drawing.
+#
+# The screen is a contents list on the left and one page on the right,
+# because a manual that is one long scroll is a manual nobody navigates.
+# Both halves scroll: the contents list because pages are added by
+# dropping a `.tres` in a folder and it must not be the thing that stops
+# working, and the page because a roster table is taller than any window
+# and there is no fitting it.
+#
+# The page body is drawn from `Manual.page()`'s sections and nothing else.
+# Two kinds — "text" and "table" — and no parser, which is what makes the
+# fit a property of the DATA rather than of this code, so
+# `tests/test_manual.gd` can measure it without a picture.
+
+
+func _build_manual_screen() -> void:
+	_manual_layer = CanvasLayer.new()
+	# Above the in-game menu (5), the main menu (20) and the controls
+	# screen (24) alike: it is opened FROM the first two and sits beside
+	# the third, so whichever asked, this is on top.
+	_manual_layer.layer = 25
+	_manual_layer.visible = false
+	add_child(_manual_layer)
+
+	# OPAQUE, for the reason the controls screen is (#282): at 0.94 the
+	# menu behind bled through hard enough to read under the text, which
+	# the rendered picture showed and no number could. A reference screen
+	# somebody is READING is not a place for atmosphere.
+	var backdrop := ColorRect.new()
+	backdrop.color = HudTheme.BG_VOID
+	backdrop.anchor_right = 1.0
+	backdrop.anchor_bottom = 1.0
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	_manual_layer.add_child(backdrop)
+
+	var frame := MarginContainer.new()
+	frame.anchor_right = 1.0
+	frame.anchor_bottom = 1.0
+	frame.add_theme_constant_override("margin_left", 28)
+	frame.add_theme_constant_override("margin_right", 28)
+	frame.add_theme_constant_override("margin_top", 18)
+	frame.add_theme_constant_override("margin_bottom", 18)
+	_manual_layer.add_child(frame)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	frame.add_child(column)
+
+	var headline := Label.new()
+	headline.text = "Manual"
+	headline.add_theme_font_size_override("font_size", HudTheme.DISPLAY_SIZE)
+	headline.modulate = HudTheme.TEXT_BRIGHT
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(headline)
+
+	var split := HBoxContainer.new()
+	split.add_theme_constant_override("separation", 24)
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(split)
+
+	# Contents. Scrolls, because pages arrive by dropping a file in a
+	# folder and the list is the thing that must keep working when the
+	# thirteenth one does.
+	var contents_scroll := ScrollContainer.new()
+	contents_scroll.custom_minimum_size = Vector2(230.0, 0.0)
+	contents_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	split.add_child(contents_scroll)
+	_manual_contents = VBoxContainer.new()
+	_manual_contents.add_theme_constant_override("separation", 2)
+	_manual_contents.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	contents_scroll.add_child(_manual_contents)
+
+	var rule := ColorRect.new()
+	rule.color = HudTheme.ACCENT_DIM
+	rule.custom_minimum_size = Vector2(1.0, 0.0)
+	split.add_child(rule)
+
+	_manual_scroll = ScrollContainer.new()
+	_manual_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(_manual_scroll)
+	_manual_body = VBoxContainer.new()
+	_manual_body.add_theme_constant_override("separation", 8)
+	_manual_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_manual_scroll.add_child(_manual_body)
+
+	var close_row := CenterContainer.new()
+	var close := _styled_button("Close", HudTheme.ACCENT)
+	close.pressed.connect(_toggle_manual)
+	close_row.add_child(close)
+	column.add_child(close_row)
+
+	_fill_manual_contents()
+
+
+## The contents list, rebuilt from the registry.
+##
+## Built once here rather than on every open: `Manual.pages()` reads the
+## `/manual` directory, and a player opening Help is not a reason to walk
+## a filesystem. The pages themselves ARE rebuilt on every open, which is
+## the point — a page is derived from the shipped data at the moment it is
+## read.
+func _fill_manual_contents() -> void:
+	for child in _manual_contents.get_children():
+		child.queue_free()
+	var first := true
+	for entry in Manual.pages():
+		var id: StringName = entry["id"]
+		var button := Button.new()
+		button.text = String(entry["title"])
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.tooltip_text = String(entry["summary"])
+		button.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		button.flat = true
+		button.pressed.connect(func(): _show_manual_page(id))
+		_manual_contents.add_child(button)
+		if first:
+			_manual_page = id
+			first = false
+
+
+func _show_manual_page(id: StringName) -> void:
+	_manual_page = id
+	for child in _manual_body.get_children():
+		child.queue_free()
+
+	var built := Manual.page(id)
+	var title := Label.new()
+	title.text = String(built["title"])
+	title.add_theme_font_size_override("font_size", HudTheme.TITLE_SIZE)
+	title.modulate = HudTheme.TEXT_BRIGHT
+	_manual_body.add_child(title)
+
+	if String(built["summary"]) != "":
+		var summary := Label.new()
+		summary.text = String(built["summary"])
+		summary.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		summary.modulate = HudTheme.ACCENT
+		summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_manual_body.add_child(summary)
+
+	for section in built["sections"]:
+		if String(section["heading"]) != "":
+			var heading := Label.new()
+			heading.text = String(section["heading"]).to_upper()
+			heading.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+			heading.modulate = HudTheme.ACCENT
+			_manual_body.add_child(heading)
+		if section["kind"] == "table":
+			_manual_body.add_child(_manual_table(section))
+			continue
+		var paragraph := Label.new()
+		paragraph.text = "\n".join(section["lines"])
+		paragraph.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+		paragraph.modulate = HudTheme.TEXT_DIM
+		paragraph.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		paragraph.custom_minimum_size = Vector2(520.0, 0.0)
+		_manual_body.add_child(paragraph)
+
+	_manual_scroll.scroll_vertical = 0
+
+
+func _manual_table(section: Dictionary) -> Control:
+	var columns: Array = section["columns"]
+	var grid := GridContainer.new()
+	grid.columns = columns.size()
+	grid.add_theme_constant_override("h_separation", 16)
+	grid.add_theme_constant_override("v_separation", 3)
+	for name in columns:
+		var head := Label.new()
+		head.text = String(name)
+		head.add_theme_font_size_override("font_size", HudTheme.CAPTION_SIZE)
+		head.modulate = HudTheme.TEXT_BRIGHT
+		grid.add_child(head)
+	for row in section["rows"]:
+		for i in range((row as Array).size()):
+			var cell := Label.new()
+			cell.text = String(row[i])
+			cell.add_theme_font_size_override("font_size", HudTheme.BODY_SIZE)
+			cell.modulate = HudTheme.TEXT_BRIGHT if i == 0 else HudTheme.TEXT_DIM
+			# The last column of the buildings and formations tables is a
+			# sentence, not a number, so it wraps and everything else does
+			# not. Deciding that per COLUMN INDEX rather than per page
+			# keeps the renderer's two cases at two.
+			if i == columns.size() - 1 and columns.size() > 2:
+				cell.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				# 400 rather than 240: at the narrower width the barracks
+				# row wrapped to six lines with ~380 px of the window
+				# unused beside it. The rendered frame is what showed
+				# that; no assertion here could have.
+				cell.custom_minimum_size = Vector2(400.0, 0.0)
+			grid.add_child(cell)
+	return grid
+
+
+func _toggle_manual() -> void:
+	if _manual_layer == null:
+		return
+	_manual_layer.visible = not _manual_layer.visible
+	if _manual_layer.visible:
+		_show_manual_page(_manual_page)
 
 
 # --- the pre-connection menu (#180) --------------------------------------
@@ -9840,6 +10145,11 @@ func _build_main_menu() -> void:
 	var controls := _styled_button("Controls", HudTheme.NEUTRAL)
 	controls.pressed.connect(_toggle_controls)
 	column.add_child(controls)
+
+	var help := _styled_button("Help", HudTheme.NEUTRAL)
+	help.tooltip_text = "The manual: civs, troops, counters, buildings, and how a fight works."
+	help.pressed.connect(_toggle_manual)
+	column.add_child(help)
 
 	# Here as well as in the in-match menu, and that is the placement that
 	# matters: the reports hardest to act on are the ones from somebody

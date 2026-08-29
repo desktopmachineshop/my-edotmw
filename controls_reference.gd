@@ -40,6 +40,25 @@ extends RefCounted
 ## `_unhandled_input` or `_pan_camera`; nothing is aspirational.
 static func groups() -> Array:
 	return [
+		# FIRST, and one row, and it stays first as it grows.
+		#
+		# Adding it LAST is where it went initially, and the controls
+		# screen's own fit test went red at 731 px against a 720-high
+		# window — the fifth group landed in the column that had already
+		# spent sixteen rows on buildings and units. That is precisely the
+		# revisit trigger `D-20260828-the-controls-are-written-down-once`
+		# named, firing on the very next change, which is what a measured
+		# guard is for.
+		#
+		# It also reads better here: somebody opening this screen because
+		# they are lost should be told there is a manual before being
+		# handed thirty keys.
+		{
+			"title": "Reference",
+			"rows": [
+				[manual_key(), "Open the manual"],
+			],
+		},
 		{
 			"title": "Camera",
 			"rows": [
@@ -165,6 +184,17 @@ static func _rows_from(table: Dictionary, describe: Callable) -> Array:
 	for key in keys:
 		out.append([String(key), String(describe.call(table[key]))])
 	return out
+
+
+## The manual's key, read off `client.gd`'s own constant (#305) — the
+## same discipline as the build and train rows below, for the same
+## reason: a screen that told a player the wrong key is worse than no
+## screen. Empty if the constant is renamed, which the tests catch.
+static func manual_key() -> String:
+	var script := load("res://client.gd") as GDScript
+	if script == null:
+		return ""
+	return String(script.get_script_constant_map().get("MANUAL_KEY", ""))
 
 
 ## One of `client.gd`'s key tables, read off the script rather than

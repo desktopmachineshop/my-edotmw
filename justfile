@@ -1120,7 +1120,7 @@ build-audio:
 #
 # LOOK at artifacts/main-menu.png.
 [doc("Render the pre-connection main menu to artifacts/main-menu.png")]
-menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
+menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0" MANUAL="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -1130,6 +1130,16 @@ menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
     # silently photograph the wrong screen
     # (D-20260817-recipe-args-are-positional).
     bash recipe-arg.sh enum CONTROLS "{{CONTROLS}}" 0 1
+    # MANUAL=<page> photographs that page of the MANUAL instead (#305),
+    # and wins over CONTROLS when both are given. A page id rather than a
+    # flag, because "the manual" is a dozen screens and a shot of the
+    # first one says nothing about the ones with tables on them.
+    #
+    # NOT validated against a list here: the pages are `manual.gd`'s
+    # registry plus whatever `.tres` sit in /manual, and a second copy of
+    # that list in a shell script is exactly the pair that comes to
+    # disagree. The client refuses an unknown page and this recipe reads
+    # the marker it prints, below.
     gate="$(bash host-gate.sh acquire medium 'menu-shot' $$)"
     export EDOTMW_GATE_HELD="$gate"
     if [ "{{runtime}}" != "docker" ]; then
@@ -1141,6 +1151,7 @@ menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
     mkdir -p "{{artifacts_dir}}"
     shot="{{artifacts_dir}}/main-menu.png"
     if [ "{{CONTROLS}}" = "1" ]; then shot="{{artifacts_dir}}/controls.png"; fi
+    if [ -n "{{MANUAL}}" ]; then shot="{{artifacts_dir}}/manual-{{MANUAL}}.png"; fi
     log="{{artifacts_dir}}/menu-shot.log"
     rm -f "$shot"
     trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
@@ -1157,7 +1168,8 @@ menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
         --resolution {{RESOLUTION}} \
-        -- --menu=1 --controls={{CONTROLS}} --run-seconds={{SECONDS}} \
+        -- --menu=1 --controls={{CONTROLS}} --manual={{MANUAL}} \
+        --run-seconds={{SECONDS}} \
         --screenshot="res://artifacts/$(basename "$shot")" \
         > "$log" 2>&1 || status=$?
 
@@ -1178,6 +1190,18 @@ menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
     # status with it: that verdict is about a MATCH — terrain, squads,
     # state hashes — and this recipe deliberately runs with no server at
     # all. Reported rather than hidden, so a real crash is still visible.
+    # Assert the page ASKED FOR is the page drawn, rather than trusting
+    # that a screenshot exists. `--controls=1` was written as a bare
+    # `--menu` flag once and silently photographed the failure path with
+    # every check green (#180); this is that lesson applied to an
+    # argument that can name a page which does not exist.
+    if [ -n "{{MANUAL}}" ]; then
+        if ! grep -q "client: MANUAL page={{MANUAL}}" "$log"; then
+            echo "menu-shot: the client did not open manual page '{{MANUAL}}' (see $log)" >&2
+            grep -E "is not a page" "$log" >&2 || true
+            exit 1
+        fi
+    fi
     echo "menu-shot: wrote $shot — $colours distinct colours, client exit $status (its match verdict does not apply here)"
     echo "menu-shot: LOOK AT IT"
 
@@ -1773,6 +1797,41 @@ test-scenario SCENARIO="siege" N="4" DURATION="30":
     grep -E "server: SCENARIO id=" "$server_log"
     grep -E "VERDICT" "$bots_log"
     grep -E "server: final" "$server_log" || true
+
+# Re-stamp the manual's prose pages against the rules they describe (#305).
+#
+# Only the PROSE needs this. The manual's roster, stat, counter, building
+# and formation pages are derived from the shipped .tres when a player
+# opens them, so there is nothing there to rebuild and nothing that can go
+# stale — `just build-manual` has no work to do for them at all.
+#
+# MODE=verify changes nothing and exits non-zero if anything is stale,
+# which is what you want before deciding whether you have prose to write.
+# `just test-unit manual` makes the same comparison and is the gate.
+[doc("Re-stamp the manual's prose pages against the rules they describe")]
+build-manual MODE="write": _import
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash recipe-arg.sh enum MODE "{{MODE}}" write verify
+    # Host admission gate (D-20260818). `medium`, the same class as the
+    # gen-* previews: the work is small but the Godot process this project
+    # starts is not, and classing it `free` would be claiming a measurement
+    # nobody took. `tests/test_host_budget.gd` is structural about the
+    # declaration existing at all — a recipe that runs Godot declares a
+    # class, or the machine is un-gated by one more thing nobody
+    # remembered.
+    gate="$(bash host-gate.sh acquire medium 'build-manual' $$)"
+    export EDOTMW_GATE_HELD="$gate"
+    trap 'bash host-gate.sh release "$gate"' EXIT INT TERM
+    args=""
+    if [ "{{MODE}}" = "verify" ]; then args="--verify"; fi
+    if [ "{{runtime}}" = "docker" ]; then
+        docker compose -p {{compose_project}} run --rm --no-deps test \
+            --headless --script manual_stamp.gd -- $args
+    else
+        godot="{{native_godot}}"; [ -x "$godot" ] || godot="{{native_godot}}.exe"
+        "$godot" --headless --script manual_stamp.gd -- $args
+    fi
 
 # Every shipped scenario and what it is for (D-098).
 [doc("List the mid-game scenarios test-scenario and --scenario can name")]
