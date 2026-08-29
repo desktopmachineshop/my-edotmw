@@ -516,6 +516,13 @@ func _refresh_squads() -> void:
 	_frame_soldiers = 0
 	var offsets := _space.lattice_offsets()
 	var viewport_size := get_viewport().get_visible_rect().size
+	# Hoisted out of the per-squad loop, which is #263's own change and
+	# was lost in the merge — the two `nearest_offset` call sites below
+	# read it, and without the declaration the file PARSES and does not
+	# COMPILE. `tests/test_scripts_parse.gd` is what found it, which is
+	# the guard 87 added for exactly this: GUT skips a script that fails
+	# to compile and reports success with its assertions gone.
+	var target := _camera_target
 
 	for squad_id in _state.live_squad_ids():
 		var entry: Dictionary = _state.composition.get(squad_id, {})
