@@ -1120,10 +1120,16 @@ build-audio:
 #
 # LOOK at artifacts/main-menu.png.
 [doc("Render the pre-connection main menu to artifacts/main-menu.png")]
-menu-shot SECONDS="4" RESOLUTION="1280x720": _import
+menu-shot SECONDS="4" RESOLUTION="1280x720" CONTROLS="0": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
+    # CONTROLS=1 photographs the CONTROLS screen instead of the menu
+    # behind it (#282). Validated like every other numeric argument,
+    # because `int()` strips non-digits and a mistyped value would
+    # silently photograph the wrong screen
+    # (D-20260817-recipe-args-are-positional).
+    bash recipe-arg.sh enum CONTROLS "{{CONTROLS}}" 0 1
     gate="$(bash host-gate.sh acquire medium 'menu-shot' $$)"
     export EDOTMW_GATE_HELD="$gate"
     if [ "{{runtime}}" != "docker" ]; then
@@ -1134,6 +1140,7 @@ menu-shot SECONDS="4" RESOLUTION="1280x720": _import
     fi
     mkdir -p "{{artifacts_dir}}"
     shot="{{artifacts_dir}}/main-menu.png"
+    if [ "{{CONTROLS}}" = "1" ]; then shot="{{artifacts_dir}}/controls.png"; fi
     log="{{artifacts_dir}}/menu-shot.log"
     rm -f "$shot"
     trap '"{{just_executable()}}" down; bash host-gate.sh release "$gate"' EXIT INT TERM
@@ -1150,8 +1157,8 @@ menu-shot SECONDS="4" RESOLUTION="1280x720": _import
         --rendering-method gl_compatibility \
         --audio-driver Dummy \
         --resolution {{RESOLUTION}} \
-        -- --menu=1 --run-seconds={{SECONDS}} \
-        --screenshot=res://artifacts/main-menu.png \
+        -- --menu=1 --controls={{CONTROLS}} --run-seconds={{SECONDS}} \
+        --screenshot="res://artifacts/$(basename "$shot")" \
         > "$log" 2>&1 || status=$?
 
     if [ ! -s "$shot" ]; then
