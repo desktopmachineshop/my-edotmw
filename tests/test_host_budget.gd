@@ -102,13 +102,54 @@ func test_a_dead_holder_cannot_wedge_the_machine() -> void:
 		"the gate must have a documented off switch — a wrong gate would otherwise stop all work")
 
 
+## Lines of a shell script with the comments taken out.
+##
+## The scans below are about what the gate DOES, and both of them read
+## words that legitimately appear in prose explaining why it does not do
+## them. A guard that goes red on its own rationale is a guard somebody
+## eventually relaxes rather than reads — which is the same failure
+## `test_multi_agent_isolation`'s `--name` scan hit on an art recipe.
+func _code_of(path: String) -> String:
+	var out := PackedStringArray()
+	for line in _read(path).split("\n"):
+		if line.strip_edges().begins_with("#"):
+			continue
+		out.append(line)
+	return "\n".join(out)
+
+
 func test_the_gate_does_not_touch_another_instances_containers() -> void:
 	# D-095's hard rule survives: the gate coordinates, it does not clean
 	# up after anybody. Its reaper deletes lock FILES and nothing else.
-	var gate := _read("res://host-gate.sh")
+	var gate := _code_of("res://host-gate.sh")
 	for forbidden in ["docker rm", "docker stop", "docker compose", "docker kill"]:
 		assert_false(gate.contains(forbidden),
 			"host-gate.sh must never run '%s' — that is D-095's line" % forbidden)
+
+
+func test_the_gate_only_ever_READS_the_container_list() -> void:
+	# #153 gave the gate a reason to ask docker anything at all: its
+	# accounting unit was a pid and the thing that occupies the host is a
+	# container, so the reaper has to look. The list is global by
+	# necessity — the holder whose launcher died may belong to any
+	# instance — which makes "read only" the entire safety argument rather
+	# than a nicety, and a denylist of four verbs is the wrong shape for
+	# that. Every docker verb in the file must be `ps`.
+	var gate := _code_of("res://host-gate.sh")
+	var verb := RegEx.new()
+	verb.compile("docker\\s+([a-z-]+)")
+	var found := PackedStringArray()
+	for m in verb.search_all(gate):
+		if m.get_string(1) != "ps":
+			found.append(m.get_string(1))
+	assert_eq(found.size(), 0,
+		"host-gate.sh runs docker verbs other than `ps`: %s. Reconciling requires "
+		% str(found) + "seeing EVERY instance's containers, and reading them is only "
+		+ "inside D-095 because it can never change one.")
+	assert_true(gate.contains("docker ps"),
+		"the scan found no `docker ps` at all, so it is matching nothing and would "
+		+ "pass however wrong the file was")
+
 
 
 func test_every_recipe_that_runs_real_work_declares_a_class() -> void:

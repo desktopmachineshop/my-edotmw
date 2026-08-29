@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"gildedreach_transport"
+display_name = "Merchant Hull"
+civ = &"gildedreach"
+archetype = &"transport"
+squad_size = 3
+health = 220.0
+damage = 0.0
+move_speed = 4.6
+attack_range = 0.0
+attack_interval = 1.0
+armour_class = "infantry"
+movement_domain = "water"
+transport_capacity = 3
+mesh_primitive = "hull"
+mesh_color = Color(0.7, 0.58, 0.3, 1)
+cost_food = 20
+cost_wood = 40
+cost_gold = 30
+cost_stone = 0
+build_time = 15.0
+cost = 90

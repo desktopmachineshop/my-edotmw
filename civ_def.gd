@@ -68,6 +68,21 @@ class_name CivDef
 ## is expansion rather than either army model.
 @export var gather_speed: float = 1.0
 
+## How fast this civ RAISES BUILDINGS, as a divisor on
+## `BuildingDef.build_time` (#270). `production_speed`'s sibling for the
+## other verb.
+@export var build_speed: float = 1.0
+
+## How fast this civ's squads MARCH, as a multiplier on each unit's own
+## `move_speed` (#270).
+@export var march_speed: float = 1.0
+
+## Per-resource gather multipliers, indexed by `Economy.ResourceKind`
+## (food, wood, gold, stone). EMPTY means `gather_speed` applies to all
+## four, which is what five of six civs want; a civ that is rich in one
+## resource and poor in another gives all four (#270).
+@export var gather_speed_by_kind: Array[float] = []
+
 
 # --- the knobs, APPLIED ------------------------------------------------
 #
@@ -92,8 +107,15 @@ class_name CivDef
 ##
 ## Additive, per the field's own reasoning: the map keeps the final say on
 ## scale, which is the axis the architecture is sensitive to (D-018).
+## How many squads this civ may field, from the map's `base`.
+##
+## FLOORED at one. `squad_cap_bonus` may now be negative -- a quality civ
+## is FEWER and better, and before #270 the knob only meaningfully went
+## up, so "strong from few well-held sites" was inexpressible and such a
+## civ simply paid more per squad for the same forty. A floor because a
+## cap of zero is a civ that cannot play, which is a data entry away.
 func squad_cap(base: int) -> int:
-	return base + squad_cap_bonus
+	return maxi(1, base + squad_cap_bonus)
 
 
 ## How long this civ takes to train a unit whose def says `base`.
@@ -105,9 +127,51 @@ func production_time(base: float) -> float:
 	return base / production_speed
 
 
-## How fast this civ's gatherers work a node whose def says `base`.
-func gather_rate(base: float) -> float:
+## How fast this civ's gatherers work a node of `kind` whose def says
+## `base`.
+##
+## Per RESOURCE since #270: "wood-rich, gold-poor" is not a smaller
+## number, it is four numbers, and one scalar over all four cannot say
+## it. An empty table means the scalar applies to everything, which is
+## what every civ did before and what five of six still do -- so the
+## default costs nothing and reads identically.
+##
+## `kind` is `Economy.ResourceKind`, passed by the one caller that has it
+## anyway. Negative or out of range falls back to the scalar rather than
+## erroring: a node kind this civ has no opinion about is the ordinary
+## case, not a fault.
+func gather_rate(base: float, kind: int = -1) -> float:
+	if kind >= 0 and kind < gather_speed_by_kind.size():
+		return base * float(gather_speed_by_kind[kind])
 	return base * gather_speed
+
+
+## How long this civ takes to RAISE a building whose def says `base`.
+##
+## The sibling of `production_time`, and separate from it because they are
+## different verbs: `production_speed` divides `UnitDef.build_time` and so
+## only ever touches units, which left a fortification civ unable to
+## fortify any faster than anybody else (#270).
+##
+## Resolved by the caller and stored as REAL SECONDS on the building, for
+## the same reason `BuildingSim.enqueue` takes its time as a parameter: a
+## multiplier applied per tick would make the progress a client draws
+## disagree with the progress the server keeps.
+func construction_time(base: float) -> float:
+	return base / build_speed
+
+
+## How fast this civ's squads MARCH, from a def's own `move_speed`.
+##
+## Army-wide, at the civ level, because a mobility identity that lives
+## only in four `.tres` files cannot say "this host redeploys faster than
+## it fights" (#270) -- it can only make individual units quick, which is
+## a different claim.
+##
+## Applied once when a squad is created, where `SquadSim` already latches
+## its cells-per-second, so it costs nothing per tick.
+func march_rate(base: float) -> float:
+	return base * march_speed
 
 
 ## Returns "" if valid, else the reason. Called at load so a broken civ
@@ -115,8 +179,14 @@ func gather_rate(base: float) -> float:
 func validate() -> String:
 	if id == &"":
 		return "civ has no id"
-	if production_speed <= 0.0 or gather_speed <= 0.0:
+	if production_speed <= 0.0 or gather_speed <= 0.0 \
+			or build_speed <= 0.0 or march_speed <= 0.0:
 		return "civ %s has a non-positive speed multiplier" % id
+	for rate in gather_speed_by_kind:
+		if float(rate) <= 0.0:
+			return "civ %s has a non-positive per-resource gather rate" % id
+	if gather_speed_by_kind.size() not in [0, 4]:
+		return "civ %s must give a gather rate for every resource or for none" % id
 	if starting_food < 0 or starting_wood < 0 or starting_gold < 0 or starting_stone < 0:
 		return "civ %s has a negative starting stockpile" % id
 	return ""

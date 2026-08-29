@@ -88,6 +88,25 @@ derivation path**, it is not a rounding error, and **a clean
 `bench-render` A/B on an idle machine is still owed** — the same status
 D-097 gave its own 1,000-squad numbers.
 
+**Amendment, 2026-08-28: that A/B is taken, and the shape held.**
+Measured through `just bench-render`'s new phase breakdown
+(`D-20260828-every-microsecond-of-a-frame-has-a-phase`, #229) at 1,000
+squads on the shipped map, native, Intel Iris Xe, 120 frames per run,
+two interleaved passes, 4,385 men drawn per frame:
+
+| | derivation ms/frame | us per drawn man |
+|---|---|---|
+| clamp on (shipped) | 82.53 / 78.51 | 18.82 / 17.90 |
+| clamp off | 57.87 / 53.09 | 13.20 / 12.11 |
+
+**24.7 / 25.4 ms — 30-32% of the derivation phase, about 5.7 us per drawn
+man.** "Tens of percent" was right; the +47%/+81% absolutes taken on a
+loaded host were not, and this lands at the bottom of that range. The
+per-SQUAD lever this entry names is filed as #244 with the numbers
+attached, and #245 is the cheaper half of it — the clamp and the ground
+sampler derive the SAME cell from the SAME point one line apart, and
+merging them moves nobody.
+
 **If M10 needs that back, the lever is a per-SQUAD test, not a faster
 per-soldier one.** The expensive part is `world_to_cell`, which D-008
 forbids anyone from reimplementing; the cheap version of this question is

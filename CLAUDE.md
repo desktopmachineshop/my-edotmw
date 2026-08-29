@@ -90,7 +90,11 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/m10-plan.md
 
+@docs/status/client-render.md
+
 @docs/status/server-memory.md
+
+@docs/status/audio.md
 
 ## What this project is
 
@@ -362,7 +366,23 @@ ground_cover.gd          Which decorative props dress a cell (D-100).
                         that fact rather than the module reading sim
                         state.
 replay_log.gd            Replays ARE the curve log (D-016), byte-
-                        identical to the wire format.
+                        identical to the wire format. Opens its file
+                        through ArtifactPath, so a shipped build records
+                        one at all.
+artifact_path.gd         WHERE this project writes what it produces
+                        (D-20260828). `res://` is a real directory in a
+                        checkout and a READ-ONLY virtual filesystem
+                        inside an exported build's .pck, so the first
+                        ever exported build played a complete match and
+                        recorded NO REPLAY, with the only notice a
+                        push_error nobody in a release build can see
+                        (#201). One base, decided once: `res://artifacts`
+                        from a checkout, `user://artifacts` from a build,
+                        and a path handed in from outside is REBASED
+                        rather than refused — so every recipe, every
+                        `--out=` and `just replay-info` keep finding
+                        files exactly where they look for them today.
+                        All-static.
 
 --- networking ---
 net_protocol.gd          The one definition of the wire protocol, shared
