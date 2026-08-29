@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="SoundDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://sound_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+event = &"building_complete"
+stream_path = "res://generated/audio/building_complete.wav"
+gain_db = -3.0
+audible_cells = 44
+min_interval = 0.4
+max_voices = 2
+pitch_jitter = 0.03
+fog_gated = true
