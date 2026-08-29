@@ -485,6 +485,27 @@ func is_passable_top(cell: Vector2i) -> bool:
 	return index < _passable_top.size() and _passable_top[index] != 0
 
 
+## The movement DOMAINS a squad can be in (naval plan §2.2).
+##
+## `_tier` holds one of these. The field keeps its name deliberately — the
+## naval plan says so — because renaming it would churn every D-076 call
+## site for no behavioural gain; the doc comment says "domain" and these
+## constants are what everything should compare against rather than bare
+## integers.
+##
+## Three values in one field is right because they are mutually exclusive
+## by construction: a ship is never on a wall, and a land squad is never
+## on open water except as cargo, which is not in the world at all.
+##
+## WATER is declared here and nothing puts a squad in it yet — that is
+## naval stage 2. It is declared NOW because stage 5 (combat across the
+## shoreline) needs to name the domain it refuses melee across, and a
+## bare `2` in `combat.gd` would be a second definition of the same fact.
+const DOMAIN_GROUND := 0
+const DOMAIN_WALL_TOP := 1
+const DOMAIN_WATER := 2
+
+
 func tier_of(squad: int) -> int:
 	return _tier[squad]
 
