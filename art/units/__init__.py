@@ -118,6 +118,32 @@ ROSTER: dict[str, SoldierParams] = {
         cloth=(0.45, 0.35, 0.25),
     ),
 
+    # The ships (naval stage 8's named upgrade path, D-20260830). Both are
+    # SUPPLIED models imported by art/import_glb_source.py, sized so the
+    # hull is 3.0 engine units long — PrimitiveUnit.HULL_SIZE's length, so
+    # the formation spacing and separation footprints tuned against the
+    # primitive stay true for the authored body. Same note as the general
+    # and the cannon: the authored source wins, and this fallback is a
+    # "soldier" nobody should ever see outside an unbuilt clone.
+    # `warship` is the two-masted sailer; `transport` is the viking rowing
+    # boat, which the warboat defs also wear until a third model arrives.
+    "warship": SoldierParams(
+        helmet="none",
+        weapon="none",
+        shield=False,
+        bulk=1.4,
+        scale=0.7,
+        cloth=(0.35, 0.30, 0.22),
+    ),
+    "transport": SoldierParams(
+        helmet="none",
+        weapon="none",
+        shield=False,
+        bulk=1.4,
+        scale=0.7,
+        cloth=(0.40, 0.32, 0.22),
+    ),
+
     # The founding party (D-031): better than line infantry and the only unit
     # that can raise a town hall. Cloak and crest mark them as the thing a
     # player cannot afford to lose in the first two minutes.

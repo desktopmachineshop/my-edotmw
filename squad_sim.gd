@@ -1379,11 +1379,21 @@ func _separate_arrivals() -> void:
 	for i in range(_cell.size()):
 		if _alive[i] <= 0:
 			continue
-		# Tier-1 squads are exempt (D-076): the wall-top network is small
-		# and stacking there is expected, not something to shove aside —
-		# see the plan's note that this is a visual concern to revisit
-		# after looking at test-client output, not a capacity system.
-		if _tier[i] != 0:
+		# WALL-TOP squads are exempt (D-076): the network is small and
+		# stacking there is expected, not something to shove aside — see
+		# the plan's note that this is a visual concern to revisit after
+		# looking at test-client output, not a capacity system.
+		#
+		# Only wall-top. This read `_tier[i] != 0` before, written when
+		# tier 1 was the only other tier — so when DOMAIN_WATER arrived
+		# it silently exempted every ship, and two squads of 3-unit
+		# hulls sent to one spot settled on ONE CELL (playtest
+		# 2026-08-30, D-20260830-a-ship-takes-up-its-own-water). Water
+		# squads take D-060's ordinary one-cell rule now; the domains
+		# are disjoint, so at clearance 1 a ship can never be crowded by
+		# a land squad or vice versa, and mixing them in one map is
+		# harmless by construction.
+		if _tier[i] == DOMAIN_WALL_TOP:
 			continue
 		# Only settled squads: one still walking is passing through, and
 		# shoving it aside mid-journey is the per-tick avoidance D-006
@@ -1560,7 +1570,9 @@ func _free_cell_near(cell: Vector2i, asking: int, held: Dictionary,
 
 	for offset in TorusSpace.disk_offsets(reach):
 		var candidate := space.normalize(cell + offset)
-		if not is_passable(candidate):
+		# The ASKING squad's own domain: a displaced ship is displaced
+		# onto water, never onto the beach beside it (D-20260830).
+		if not is_passable(candidate, _tier[asking]):
 			continue
 		var taken := false
 		for neighbour in neighbours:

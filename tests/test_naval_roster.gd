@@ -355,14 +355,25 @@ func test_the_fearless_civ_is_fearless_at_sea_too() -> void:
 			"%s loses morale, and its civ does not" % row["id"])
 
 
-func test_no_ship_needs_an_authored_model() -> void:
-	# #301's own constraint: nothing gates on the blocked bpy pipeline, so
-	# every hull draws at the primitive tier (D-064's designed degradation).
+func test_a_ship_names_a_model_the_build_actually_shipped() -> void:
+	# This asserted `model_id == ""` while the bpy pipeline was blocked
+	# (#301's own constraint at the time). The ships wear authored models
+	# now (D-20260830-a-ship-takes-up-its-own-water's amendment), so the
+	# honest guard is the inverse: a named model must RESOLVE in the
+	# shipped manifest — a def naming a model that was never baked falls
+	# back in silence, which is how the whole fleet would quietly revert
+	# to capsules. The primitive stays declared on every def, because an
+	# unbuilt clone still needs D-064's designed degradation.
 	for row in _ships():
-		assert_eq(String(row["def"].model_id), "",
-			"%s names an authored model; the art pipeline is blocked" % row["id"])
+		var model := String(row["def"].model_id)
+		assert_ne(model, "",
+			"%s wears no authored model — the ships have them now" % row["id"])
+		assert_true(UnitMesh.has_model(StringName(model)),
+			"%s names model '%s', which the generated manifest does not "
+			% [row["id"], model] + "carry — it would fall back to a capsule "
+			+ "with nothing failing")
 		assert_eq(String(row["def"].mesh_primitive), "hull",
-			"%s should draw as a hull" % row["id"])
+			"%s should keep the hull as its unbuilt-clone fallback" % row["id"])
 
 
 func test_the_screen_is_printed_so_a_reviewer_can_read_it() -> void:

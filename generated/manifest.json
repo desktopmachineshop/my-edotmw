@@ -461,7 +461,7 @@
       "vertices": 48
     }
   },
-  "source_hash": "e6344348eecbc824a510dc63b8cb06c2e4c91982f0dade80ca21bb189e643eb3",
+  "source_hash": "924d083e93a4bbca1e76de9c2146b7a5fa3cbf9d934ea00a61d0ad74c9dcf021",
   "terrain": {
     "biomes": [
       "deep_water",
@@ -694,6 +694,48 @@
       "vat": "generated/vat/spearmen.exr",
       "vertices": 14700,
       "width": 14700
+    },
+    "transport": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/transport.glb",
+      "mounted": false,
+      "placeholder": true,
+      "source": "authored",
+      "texture": "generated/textures/transport.jpg",
+      "total_frames": 64,
+      "triangles": 2500,
+      "vat": "generated/vat/transport.exr",
+      "vertices": 7500,
+      "width": 7500
+    },
+    "warship": {
+      "clips": [
+        "idle",
+        "walk",
+        "attack",
+        "rout"
+      ],
+      "colour_row": 128,
+      "frames_per_clip": 16,
+      "height": 129,
+      "model": "generated/models/warship.glb",
+      "mounted": false,
+      "placeholder": true,
+      "source": "authored",
+      "texture": "generated/textures/warship.jpg",
+      "total_frames": 64,
+      "triangles": 2500,
+      "vat": "generated/vat/warship.exr",
+      "vertices": 7500,
+      "width": 7500
     }
   }
 }

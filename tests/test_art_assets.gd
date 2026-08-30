@@ -32,7 +32,13 @@ const PLACEHOLDER_TRIANGLE_BUDGET := 6000
 ## the VAT width ceiling, which is the binding budget for these. Sorted,
 ## because the manifest comparison below is order-sensitive.
 const PLACEHOLDER_MODELS := [
-	"archers", "cannon", "gatherers", "general", "militia", "spearmen"]
+	"archers", "cannon", "gatherers", "general", "militia", "spearmen",
+	# The supplied ship models (D-20260830-a-ship-takes-up-its-own-water's
+	# amendment): whole imported objects like the cannon, 2,500 triangles
+	# each. A squad fields 3-8 hulls against 22-48 soldiers, so per-squad
+	# spend is comparable to a line squad — the bench-render measurement
+	# at a fleet scale is owed, per this assert's own rule.
+	"transport", "warship"]
 
 ## What the staleness hash covers. `.blend` is here because authored sources
 ## ARE the source of truth (D-20260821-game-assets-are-files): a model edited

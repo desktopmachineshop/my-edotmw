@@ -437,3 +437,51 @@ Four things to know:
 render at the primitive tier (`mesh_primitive = "hull"`), which is D-064's
 designed degradation — a `.blend` under `art/source/` is what upgrades
 them, with no code change.
+
+---
+
+**Ships stopped stacking on top of each other
+(`D-20260830-a-ship-takes-up-its-own-water`, 2026-08-30, from a
+playtest screenshot: "the boats are appearing on top of each other").**
+Two causes, and the report's own diagnosis — collision size not
+matching visual size — was essentially right:
+
+- **Every water def left `formation_spacing` at the schema default of
+  1.0** — a SOLDIER's shoulder spacing — while the hull primitive is a
+  1.5 × 3.0 box, so one squad's own hulls interpenetrated by
+  construction. Every def with `mesh_primitive = "hull"` carries
+  **3.4** now (the hull's horizontal diagonal, which covers every
+  facing), the land siege hulls included: ram, engine and bombard were
+  the same defect at 1.5–1.6. `tests/test_naval_separation.gd`
+  enumerates the class rather than the water files, so a new hull def
+  cannot ship at soldier spacing.
+- **The separation pass exempted every non-ground tier.** The comment
+  said wall-top (D-076); the condition said `_tier != 0`, written
+  before `DOMAIN_WATER` existed — so two ship squads sent to one spot
+  settled on ONE CELL, D-060's rule never having applied on water at
+  all. The exemption is `== DOMAIN_WALL_TOP` now, and a displaced ship
+  is displaced onto WATER (`_free_cell_near` asks passability in the
+  asking squad's own domain).
+
+Both guards were observed red before the fix. Clearance stays
+D-20260821's one cell on purpose — this restores the ground guarantee
+to ships, it does not re-litigate the owner's call on ally overlap.
+Worth knowing: no automated harness fields two ship squads at one
+destination, so nothing but a played match could have seen this — the
+standing naval-coverage gap, not a new one.
+
+**And the ships wear authored models now** (same entry's amendment,
+2026-08-30). Two supplied `.glb`s imported through
+`art/import_glb_source.py`: `warship` (a two-masted sailer) and
+`transport` (a viking rowing boat with cargo aboard), 2,500 triangles
+each, textures kept (D-20260824). All four warship defs wear the
+first; the transports AND the two warboats wear the second — a warboat
+borrowing the rowboat is D-064's designed degradation until a third
+model arrives. **Both are sized so the hull is 3.0 units long,
+`PrimitiveUnit.HULL_SIZE`'s length**, so the 3.4 spacing, the
+footprints and the guard test tuned against the primitive stay true
+for the authored bodies. The stage-8 note above ("authored ship models
+are what upgrades them, with no code change") is discharged: the only
+code that moved is the art registry (`art/units/__init__.py`,
+`PLACEHOLDER_ARCHETYPES`), and `mesh_primitive = "hull"` stays on
+every def as the unbuilt-clone fallback.
