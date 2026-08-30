@@ -26,4 +26,7 @@ mesh_primitive = "box"
 mesh_color = Color(0.72, 0.66, 0.52, 1)
 category = "civic"
 model_id = &"town_centre"
+model_overrides = {
+&"emberdeep": &"emberdeep_town_centre"
+}
 footprint_radius = 2

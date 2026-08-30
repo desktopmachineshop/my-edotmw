@@ -194,7 +194,34 @@ class_name BuildingDef
 ## for four milestones — the fifth instance of the declared-and-unread defect
 ## class after `UnitDef.cost`, `BuildingDef.cost` and `BuildingSim.damage()`.
 @export var model_id: StringName = &""
+
+## Per-civ model overrides: civ id -> model id. Schema addition 2026-08-30
+## (D-20260830-a-building-wears-a-civs-own-body), the shape #191's
+## ratification chose for units applied to a building: the model keys by
+## the DEF by default, and a civ with an authored body of its own names it
+## here — so the shipped fallback stays the rule rather than the exception
+## (D-064), and a civ without an entry resolves exactly as it always did.
+##
+## Data may name a civ; a script may not (D-046 criterion 3). The override
+## lives on the NEUTRAL def rather than as a second per-civ def, because a
+## neutral def SHADOWS nothing here — `defs_for_civ` returns neutral defs
+## AND the civ's own, so a second town_centre def would be OFFERED beside
+## the first, and it would also be a second def with `consumes_builder`,
+## which `tests/test_opening.gd` pins at exactly one by design.
+@export var model_overrides: Dictionary = {}
+
 @export var footprint_radius: int = 1
+
+
+## The model this building wears for OWNER's civ — the override when the
+## civ has one, `model_id` otherwise. Read this, never the raw fields, at
+## any site that turns a building def into a mesh: two callers each
+## implementing "override wins" is the D-058/D-065 pair that comes to
+## disagree. Purely presentational — nothing simulation-side reads a model
+## (D-064), so a wrong answer here costs a picture and never a desync.
+func model_for(civ: StringName) -> StringName:
+	var override: StringName = model_overrides.get(civ, &"")
+	return override if override != &"" else model_id
 
 # Walls, gates and the walkable wall-top tier (D-076). A wall is a chain of
 # single-cell segments (no edge/footprint geometry exists in TorusSpace, so

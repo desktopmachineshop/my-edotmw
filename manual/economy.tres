@@ -66,4 +66,4 @@ A crew gathers per LIVING soldier. Raiding gatherers is not only denial while
 you are standing there — it is a permanent cut to their rate until the men
 are replaced."
 sources = Array[String](["res://economy.gd", "res://decisions/D-027.md", "res://decisions/D-087-forests-are-made-of-trees-biome.md", "res://buildings/storehouse.tres", "res://buildings/farm.tres", "res://decisions/D-20260828-food-is-grown-not-only-found.md"])
-stamp = "3ef15c88bac7000913dc570c44a46849c4f6f217e994138b47b2587c1c1be9b6"
+stamp = "2f069255809dae080a51d13e4d1c52b3e600ffc51ee97b2bb9f2de10e81a49b5"

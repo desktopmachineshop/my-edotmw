@@ -136,6 +136,24 @@ presumably belongs to the sylvan civ and waits for a rig — is still the
 state of the art queue; what changed is that there is now an agreed way
 to attach a body to a civ when one exists.
 
+**The BUILDING half of that shape shipped on 2026-08-30 for emberdeep**
+(`D-20260830-a-building-wears-a-civs-own-body`, owner-directed): the
+supplied dwarf town hall and storehouse are authored sources now,
+imported like the ships (decimated to 2,500, textures into `COLOR_0`,
+scaled to the neutral originals' heights), and `buildings/
+town_centre.tres` / `buildings/storehouse.tres` name them in a new
+`BuildingDef.model_overrides` dictionary. Resolution is ONE applied
+function (`BuildingDef.model_for(civ)`, the civ-knobs rule) read at
+`client.gd`'s one building-mesh site, keyed by the owner's PUBLIC civ
+(D-102) — nothing on the wire, nothing simulation-side. A per-civ
+town-centre DEF was rejected: `defs_for_civ` shadows nothing, so it
+would be offered beside the neutral hall, and it would be a second
+`consumes_builder` def, which `test_opening.gd` pins at one by design.
+The units half of #413 is untouched. The imported bodies carry no
+owner-colour mask (the ships' trade) — the minimap and selection ring
+carry attribution until somebody paints vertex alpha into the
+`.blend`s.
+
 **Deliberately not done:** epochs (M9's ladder is still design);
 per-civ walls/buildings; any strength ordering between the six — that is
 `just ai-ladder`'s job now that they exist, and the first run of it on
