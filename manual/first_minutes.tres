@@ -25,7 +25,7 @@ names the squad to use until a town centre stands.
 ## In order
 
 - Select the crew and place a town centre. Choose ground with trees and food in reach — you cannot move it afterwards.
-- The crew is spent when the build COMMITS, not when it finishes, so you cannot found three towns off one crew while the first is going up.
+- The crew builds the hall and walks into it when the work is done. While it builds it takes no other orders — one crew, one town, so you cannot found a second while the first is going up.
 - The town centre trains more gatherer crews. Send them at nodes.
 - A barracks lets you train soldiers, and it costs wood. Wood first.
 - Scout with the general meanwhile. You cannot fight what you have not found, and you cannot plan around a neighbour you have not located.

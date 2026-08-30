@@ -35,11 +35,18 @@ Six things to know before touching any of it:
   four milestones. Every other rule in that function (ground, enemy
   claims, footprints, cost) is re-checked on arrival for the same
   reason: a builder walks, and the world moves while it does.
-- **The crew is spent when the build COMMITS, not when it completes.**
-  Kept from D-031 deliberately: consume-on-completion is a measured
-  exploit, not a hypothetical — D-027's first playtest founded three town
-  halls in about five seconds off one party while it stood waiting for
-  the first to finish. One crew, one town.
+- **The crew builds the hall, then joins it — spend-at-COMPLETION since
+  2026-08-30** (`D-20260830-the-crew-builds-the-hall-then-joins-it`,
+  owner's call, superseding this entry's spend-at-commit clause). The
+  crew stands its build through, BOUND — every order to it is refused at
+  `_validated_squad`, the one gate — and is consumed the tick the hall
+  completes; a razed site frees it. The exploit spend-at-commit existed
+  for (D-027's three halls in five seconds off one free-standing party)
+  is closed by the LOCK instead: a crew that takes no orders cannot
+  found a second hall. One crew, one town, still. Net economics are
+  unchanged — dead-during-construction and locked-during-construction
+  gather equally little — so timings tuned against the opening stay
+  put.
 - **The general builds nothing and is never spent**, and its death is a
   MORALE event (`combat.gd`'s chain shock,
   D-20260819-a-general-holds-the-line), never an elimination. Defeat

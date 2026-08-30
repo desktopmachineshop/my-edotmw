@@ -210,6 +210,63 @@ func test_income_scales_with_the_surviving_crew() -> void:
 	assert_lt(halved_take, full_take, "Half a crew must gather less than a whole one")
 
 
+func test_a_half_crew_fills_half_a_load_and_turns_home() -> void:
+	# Each worker carries his own share
+	# (D-20260830-each-worker-carries-his-own-load, owner's call): a crew
+	# at half strength fills half the def's squad capacity and turns for
+	# the drop-off, rather than standing at the node until it has
+	# gathered loads its dead cannot carry. Squad-level arithmetic in
+	# `alive` — the workers do not exist below squad granularity (D-005).
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	var squad: int = setup["squad"]
+	sim.set_alive(squad, 5)  # half of squad_size 10, capacity 20 -> 10
+
+	economy.order_gather(sim, squad, setup["node"])
+	var turned_at := -1
+	for i in range(200):
+		sim.tick()
+		if economy.phase_of(squad) == Economy.Phase.TO_DROP_OFF:
+			turned_at = i
+			break
+	assert_gt(turned_at, -1, "setup: the crew filled up and turned home")
+	assert_eq(economy.carrying(squad), 10,
+		"five workers of a ten-man def carry half its 20-unit capacity")
+
+
+func test_the_dead_drop_their_loads_on_the_walk_home() -> void:
+	# The other half of the same rule, and the one the owner asked for by
+	# name: a crew that filled up and then loses men between the node and
+	# the door banks the SURVIVORS' shares — the squad-total `carrying`
+	# must not outlive the men who carried it.
+	var setup := _haul_setup()
+	var sim: SquadSim = setup["sim"]
+	var economy: Economy = setup["economy"]
+	var squad: int = setup["squad"]
+
+	economy.order_gather(sim, squad, setup["node"])
+	var filled := false
+	for _i in range(200):
+		sim.tick()
+		if economy.phase_of(squad) == Economy.Phase.TO_DROP_OFF:
+			filled = true
+			break
+	assert_true(filled, "setup: the full crew filled up (20 of 20)")
+	assert_eq(economy.carrying(squad), 20, "setup: carrying a full load")
+
+	sim.set_alive(squad, 5)  # ambushed on the walk home
+	var delivered := -1
+	for _i in range(200):
+		sim.tick()
+		var banked := economy.amount(1, Economy.ResourceKind.WOOD)
+		if banked > 0:
+			delivered = banked
+			break
+	assert_eq(delivered, 10,
+		"five survivors deliver five men's shares; the dead dropped theirs")
+
+
 func test_a_worked_out_node_releases_the_squad() -> void:
 	var setup := _haul_setup()
 	var sim: SquadSim = setup["sim"]

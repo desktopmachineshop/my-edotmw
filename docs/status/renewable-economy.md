@@ -117,6 +117,17 @@ they can be priced against. The farm ships **ungated** by the tech tree
 (checked against that branch: it reserves no farm tech), so a player has a
 renewable economy from rung one.
 
+**And a crew's load is per-capita in `alive` since 2026-08-30**
+(`D-20260830-each-worker-carries-his-own-load`, owner's call): capacity
+while filling and delivery at the door are both capped at
+`ceil(carry_capacity × alive / squad_size)`, so a half crew fills half a
+load and turns home sooner, and a crew ambushed on the walk home banks
+only the survivors' shares — the squad-total `carrying` no longer
+outlives the men who carried it. Squad-level arithmetic on purpose
+(D-005: the workers do not exist below squad granularity); a
+full-strength crew is bit-for-bit unaffected, so haul timings only move
+where crews take casualties.
+
 **Two numbers worth knowing before tuning anything.** A shipped gatherer
 crew is 7 × 0.28 = **1.96 units/s** raw with `carry_capacity` 45; a levy
 squad is 48 food on a 10 s build, so **one barracks running flat out eats
