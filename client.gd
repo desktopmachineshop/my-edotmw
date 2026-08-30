@@ -189,6 +189,14 @@ var _manual_body: VBoxContainer = null
 var _manual_page: StringName = &""
 var _menu_address: LineEdit = null
 var _menu_status: Label = null
+## The update banner (D-20260830-releases-are-a-tag-and-a-nightly-channel):
+## a button on the main menu, hidden until GitHub's releases API names a
+## version newer than this build's. Asked ONCE per process, on the first
+## menu show — every failure path (offline, a private repo's 404, a
+## malformed body) is silence, because "could not check" is not something
+## a player can act on.
+var _update_button: Button = null
+var _update_checked := false
 ## Where this client last pointed itself, remembered across launches, so
 ## the second session with a friend's server is one click. Always
 ## `host:port`: an address without one reconnects somewhere else the day
@@ -10281,6 +10289,17 @@ func _build_main_menu() -> void:
 	_menu_status.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
 	column.add_child(_menu_status)
 
+	# The update banner (D-20260830). Hidden until the releases API names
+	# a newer version; the button opens the CONSTRUCTED release page,
+	# never a URL off the wire — game_browser.gd's rule, applied before
+	# it costs anything.
+	_update_button = _styled_button("", HudTheme.ACCENT)
+	_update_button.visible = false
+	_update_button.custom_minimum_size = Vector2(MENU_WIDTH, 0.0)
+	_update_button.pressed.connect(func() -> void:
+		OS.shell_open(UpdateCheck.page_url()))
+	column.add_child(_update_button)
+
 	# THE GAME LIST (#187). Above the address box on purpose: typing an
 	# address is the fallback a player reaches for when the list has not
 	# got what they want, and D-094 criterion 4's whole flow is "nobody
@@ -10502,6 +10521,47 @@ func _show_main_menu(message: String) -> void:
 	_menu_layer.visible = true
 	_set_title("")
 	_browser_begin()
+	_check_for_update()
+
+
+## Ask GitHub for the newest OFFICIAL release, once per process
+## (D-20260830-releases-are-a-tag-and-a-nightly-channel). Fired from the
+## menu rather than `_ready()` on purpose: an autoconnected launch —
+## which is every headless harness in the estate — never shows the menu,
+## so CI never knocks on GitHub's door. `releases/latest` excludes
+## prereleases, so the rolling nightly tag never triggers this.
+func _check_for_update() -> void:
+	if _update_checked:
+		return
+	# An HTTPRequest cannot fire outside a scene tree, and the client is
+	# deliberately instantiated WITHOUT one by every lifetime test
+	# (D-075's amendment) — requesting anyway pushes an engine error that
+	# GUT rightly counts as a failure. A real client is always in a tree.
+	if not is_inside_tree():
+		return
+	_update_checked = true
+	var request := HTTPRequest.new()
+	request.timeout = 5.0
+	add_child(request)
+	request.request_completed.connect(
+		func(result: int, code: int, _headers: PackedStringArray,
+				body: PackedByteArray) -> void:
+			request.queue_free()
+			if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+				return
+			var latest := UpdateCheck.latest_version(body.get_string_from_utf8())
+			if latest.is_empty() \
+					or not UpdateCheck.is_newer(latest, BuildVersion.string()):
+				return
+			print("client: update available — %s (running %s)"
+				% [latest, BuildVersion.string()])
+			if _update_button != null:
+				_update_button.text = UpdateCheck.banner_text(latest)
+				_update_button.visible = true)
+	# GitHub's API refuses requests with no User-Agent.
+	if request.request(UpdateCheck.api_url(),
+			["User-Agent: my-edotmw", "Accept: application/vnd.github+json"]) != OK:
+		request.queue_free()
 
 
 func _hide_main_menu() -> void:

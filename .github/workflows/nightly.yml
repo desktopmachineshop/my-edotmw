@@ -213,3 +213,103 @@ jobs:
           path: artifacts/*.png
           retention-days: 30
           if-no-files-found: error
+
+  # The NIGHTLY CHANNEL (D-20260830-releases-are-a-tag-and-a-nightly-
+  # channel): a rolling `nightly` prerelease holding the newest build of
+  # main that PASSED the wire gate. Gated on test-load on purpose — a
+  # nightly that ships a build the gate failed is worse than no nightly,
+  # and a red gate leaves yesterday's build standing on the channel.
+  #
+  # A PRERELEASE on purpose, too: GitHub's `releases/latest` API excludes
+  # prereleases, so the in-game update check (update_check.gd) tracks
+  # official tags only and the nightly stays opt-in.
+  #
+  # The BINARY's version string is unchanged night to night — D-081
+  # requires two clean clones of one commit to export identical bytes, so
+  # a sha or date in the build is forbidden (build_version.gd). Nightly
+  # identity lives in the release title and notes instead.
+  nightly-build:
+    needs: [should-run, test-load]
+    if: needs.should-run.outputs.run == 'true' && needs.test-load.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      EDOTMW_RUNTIME: native
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the pinned tool versions
+        id: pins
+        run: |
+          echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+          echo "godot=$(tr -d '[:space:]' < .godot-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch just and Godot
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C tools just
+          curl -fsSL -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/${{ steps.pins.outputs.godot }}-stable/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d tools
+          mv "tools/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64" tools/godot
+          chmod +x tools/just tools/godot
+          : > tools/.gdignore
+          # Self-contained marker: the export recipe reads templates from
+          # tools/editor_data, and `bootstrap-export-templates` early-exits
+          # on a cache hit BEFORE it would create this file.
+          : > tools/_sc_
+
+      - name: Cache export templates
+        uses: actions/cache@v4
+        with:
+          path: tools/editor_data/export_templates
+          key: export-templates-${{ steps.pins.outputs.godot }}
+
+      - name: Export templates
+        run: ./tools/just bootstrap-export-templates
+
+      - name: Export and package the nightly targets
+        run: |
+          set -euo pipefail
+          ./tools/just export windows-client
+          ./tools/just export linux-server
+          ./tools/just package windows-client
+          ./tools/just package linux-server
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd build/packages
+          sha256sum *.zip | tee SHA256SUMS
+
+      - name: Publish the rolling nightly prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          {
+            echo "Nightly build of \`main\` at ${GITHUB_SHA} — passed \`just test-load\` before publishing."
+            echo ""
+            echo "**Windows players:** download the windows-client zip, extract anywhere, run the exe."
+            echo "SmartScreen will warn once about an unknown publisher (unsigned build) — More info → Run anyway."
+            echo ""
+            echo '```'
+            cat build/packages/SHA256SUMS
+            echo '```'
+          } > "$notes"
+          # Rolling: one channel, always the newest green build. Delete
+          # and recreate rather than editing assets in place, so the tag
+          # moves to tonight's commit with the release.
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly \
+            build/packages/*.zip build/packages/SHA256SUMS \
+            --prerelease \
+            --target "${GITHUB_SHA}" \
+            --title "Nightly $(date -u +%Y-%m-%d)" \
+            --notes-file "$notes"

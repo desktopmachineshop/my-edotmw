@@ -136,3 +136,9 @@ address you connect from, exactly as any server does.
 **"Report a problem" does not change that.** It writes a file and stops;
 nothing is transmitted, and the file lists its own contents so you can
 see what you would be sending before you send it.
+
+**The main menu checks for updates.** Once per launch, from the menu
+only, it asks GitHub whether a newer release exists — an anonymous
+request that sends nothing about you (GitHub sees the request itself, as
+any website does). If there is one, a button appears; it opens the
+release page in your browser and nothing downloads by itself.
