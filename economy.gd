@@ -750,6 +750,18 @@ func is_gathering(squad: int) -> bool:
 	return _hauls.has(squad)
 
 
+## Take a squad out of the haul cycle deliberately. Until
+## D-20260830-the-crew-builds-the-hall-then-joins-it nothing needed this:
+## a haul ended by death, by a worked-out node, or not at all — and the
+## founding path relied on the FIRST, because spend-at-commit killed the
+## crew and the liveness sweep erased its haul. A crew that now stands
+## BOUND at its site for the whole build would otherwise still be worked
+## by this loop — gathered remotely, then force-marched to the drop-off
+## mid-founding by the phase machinery above.
+func release(squad: int) -> void:
+	_hauls.erase(squad)
+
+
 func carrying(squad: int) -> int:
 	return int(_hauls[squad]["carrying"]) if _hauls.has(squad) else 0
 
@@ -887,7 +899,7 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 	var farmed := has_farm(cell)
 	var available := farm_stock(cell) if farmed else remaining_at(cell)
 	var taken := mini(whole, available)
-	taken = mini(taken, def.carry_capacity - int(haul["carrying"]))
+	taken = mini(taken, _crew_capacity(sim, squad, def) - int(haul["carrying"]))
 	if taken <= 0:
 		# The crew did the work and there was nothing to take yet. Keep its
 		# part-done unit — spending it here is a silent yield cut, and on a
@@ -919,13 +931,27 @@ func _gather(sim: SquadSim, squad: int, haul: Dictionary, def: UnitDef,
 			# already draws it and already learns when it is razed.
 			_depleted.append(cell)
 
-	if int(haul["carrying"]) >= def.carry_capacity:
+	if int(haul["carrying"]) >= _crew_capacity(sim, squad, def):
 		var drop_off := _nearest_drop_off(sim, buildings, sim.owner_of(squad),
 			sim.cell_of(squad))
 		if drop_off.x < 0:
 			return  # nowhere to take it; keep standing on the node
 		haul["phase"] = Phase.TO_DROP_OFF
 		sim.force_move(squad, drop_off)
+
+
+## What THIS crew can carry right now: each worker carries his own share
+## of the def's squad capacity, so a crew at half strength fills half a
+## load and turns for home sooner
+## (D-20260830-each-worker-carries-his-own-load, owner's call). Squad-
+## level arithmetic in `alive`, deliberately — the workers do not exist
+## below squad granularity (D-005/D-006), and they do not need to for the
+## outcome that matters: a killed worker's share is not delivered.
+## Ceil, not floor, so one survivor still carries at least one unit and a
+## crew is never trapped unable to fill a zero-capacity load.
+func _crew_capacity(sim: SquadSim, squad: int, def: UnitDef) -> int:
+	return ceili(float(def.carry_capacity) * float(sim.alive_of(squad))
+			/ float(maxi(def.squad_size, 1)))
 
 
 func _try_unload(sim: SquadSim, squad: int, haul: Dictionary,
@@ -938,7 +964,17 @@ func _try_unload(sim: SquadSim, squad: int, haul: Dictionary,
 		return
 
 	var player := sim.owner_of(squad)
-	credit(player, int(haul["kind"]), int(haul["carrying"]))
+	# Only what the SURVIVORS carried arrives
+	# (D-20260830-each-worker-carries-his-own-load): a crew that filled up
+	# and then lost men on the walk home banks the survivors' shares, and
+	# the dead dropped theirs where they fell. Without this clamp a
+	# casualty between the node and the door cost nothing, because the
+	# squad-total `carrying` outlived the men who carried it.
+	var def := sim.def_of(squad)
+	var deliverable := int(haul["carrying"])
+	if def != null:
+		deliverable = mini(deliverable, _crew_capacity(sim, squad, def))
+	credit(player, int(haul["kind"]), deliverable)
 	changed[player] = true
 	haul["carrying"] = 0
 

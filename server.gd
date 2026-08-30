@@ -234,6 +234,19 @@ var _pending_events: Array = []
 ## moment the player orders that squad anywhere else, because a builder
 ## told to go somewhere has been told to stop building.
 var _pending_builds := {}
+
+## Building id -> the crew that founded it and is seeing it through
+## (D-20260830-the-crew-builds-the-hall-then-joins-it). A def whose
+## `consumes_builder` says founding costs the founder no longer spends the
+## crew at COMMIT — it stands at the site for the whole build and JOINS
+## the building the tick construction completes. While bound, the crew
+## takes no orders (`_validated_squad` refuses them), which is what closes
+## D-031's three-halls exploit now that early consumption no longer does:
+## a crew that cannot be ordered anywhere cannot be ordered to found a
+## second hall while its first one rises. A bond whose building is razed
+## mid-build frees the crew; a bond whose crew dies is cleared harmlessly
+## by `consume_squad`'s own liveness guard.
+var _founding_crews := {}
 var _reported_match_end := false
 
 var _accumulator := 0.0
@@ -917,6 +930,7 @@ func _process(delta: float) -> void:
 		# until some unrelated building change happened to touch it.
 		if not _sim.completed_buildings.is_empty():
 			_refresh_passability()
+		_settle_founding_crews()
 		_update_auto_gates()
 		_advance_pending_builds()
 		_advance_match()
@@ -1997,6 +2011,17 @@ func _validated_squad(peer, squad: int) -> int:
 		# it and the order arriving. Dropping it silently is correct —
 		# logging would make ordinary lag look like a fault.
 		return -1
+	# A founding crew is spoken for (D-20260830-the-crew-builds-the-hall-
+	# then-joins-it): it stands its build through and joins the building
+	# on completion, and refusing every order here — ONE gate, not a check
+	# per handler — is what closes D-031's three-halls exploit now that
+	# spend-at-commit no longer does. Said out loud per D-034: a silent
+	# drop is how the AI's lost founding order stayed lost.
+	for building in _founding_crews:
+		if int(_founding_crews[building]) == squad:
+			_notify(peer, "That crew is raising your %s — it joins it when the work is done"
+					% _buildings.def_of(building).display_name)
+			return -1
 	return squad
 
 
@@ -2448,6 +2473,24 @@ func _update_auto_gates() -> void:
 		_refresh_passability()
 
 
+## The founding crew joins its finished building, and a razed site frees
+## its crew (D-20260830-the-crew-builds-the-hall-then-joins-it). Runs once
+## per tick from `_process`, over dictionaries that are empty on almost
+## every tick. Split out so a headless test can drive it against a bare
+## server — `tests/test_opening.gd`'s caller scan asserts `_process`
+## still calls it, because a rule with no caller is this project's
+## most-repeated defect. `consume_squad` guards a crew that died waiting,
+## so a stale bond costs nothing but its dictionary entry.
+func _settle_founding_crews() -> void:
+	for done in _sim.completed_buildings:
+		var crew: int = _founding_crews.get(done, -1)
+		if crew >= 0:
+			_founding_crews.erase(done)
+			_pending_events.append_array(_sim.consume_squad(crew))
+	for razed in _sim.destroyed_buildings:
+		_founding_crews.erase(razed)
+
+
 ## Finish any build whose builder has now walked into reach.
 ##
 ## Runs once per tick, over a dictionary that is empty in the ordinary
@@ -2746,7 +2789,25 @@ func _finish_build(peer, squad: int, def: BuildingDef, cell: Vector2i,
 	# bug live for four milestones. One definition, two call sites.
 	if def.consumes_builder \
 			and BuildingSim.can_build(def, _sim.def_of(squad).archetype):
-		_pending_events.append_array(_sim.consume_squad(squad))
+		if _buildings.is_complete(built):
+			# Sandbox instant_build raises the site already complete, so
+			# the crew joins it in the same breath — there is no
+			# construction for it to see through.
+			_pending_events.append_array(_sim.consume_squad(squad))
+		else:
+			# The crew sees the build through and joins the building when
+			# it COMPLETES (D-20260830-the-crew-builds-the-hall-then-
+			# joins-it, owner's call, superseding D-20260823's
+			# spend-at-commit). It is BOUND from this moment: orders to it
+			# are refused, and whatever else its build queue held lapses —
+			# a crew that is becoming the settlement is not walking on to
+			# the next site.
+			_founding_crews[built] = squad
+			_pending_builds.erase(squad)
+			# ...and out of the haul cycle, or the economy force-marches
+			# the bound crew back to its drop-off mid-founding. The old
+			# spend-at-commit never needed this: the death erased the haul.
+			_economy.release(squad)
 
 	# Ground truth into the replay (D-016, D-027 criterion 18): the full
 	# unfiltered view, not any one client's, so a replay can explain what

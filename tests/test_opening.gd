@@ -203,10 +203,104 @@ func test_founding_a_town_hall_spends_the_crew() -> void:
 	server._finish_build(peer, crew, hall, Vector2i(12, 8))
 
 	assert_eq(server._buildings.building_count(), 1, "the hall went up")
+	# Spend-at-COMPLETION now, not at commit
+	# (D-20260830-the-crew-builds-the-hall-then-joins-it, superseding
+	# D-20260823's spend-at-commit): the crew stands its build through...
+	assert_gt(server._sim.alive_of(crew), 0,
+		"the crew sees the build through — it is not spent at commit")
+	assert_true(server._founding_crews.values().has(crew),
+		"...and is BOUND to the site while it does")
+
+	# ...and joins the building the tick construction completes.
+	var built: int = server._founding_crews.keys()[0]
+	server._buildings.advance_construction(hall.build_time)
+	assert_true(server._buildings.is_complete(built), "setup: it finished")
+	server._sim.completed_buildings = [built]
+	server._settle_founding_crews()
+
 	assert_eq(server._sim.alive_of(crew), 0,
 		"the crew becomes the settlement — one crew, one town")
 	assert_gt(server._pending_events.size(), 0,
 		"and says so on the wire, as an ordinary casualty event")
+	assert_false(server._founding_crews.has(built),
+		"a settled bond does not linger to consume a future squad id")
+
+	server.free()
+
+
+func test_the_tick_actually_settles_founding_crews() -> void:
+	# The caller-exists scan (D-106): everything the test above proves can
+	# hold while `_process` never calls the settle, and then every founded
+	# hall keeps its crew bound forever with nothing failing.
+	var source := FileAccess.get_file_as_string("res://server.gd")
+	var body := source.substr(source.find("func _process("))
+	body = body.substr(0, body.find("\nfunc ", 1))
+	# CODE lines only — a commented-out call still contains the string,
+	# and this scan's first version was fooled by exactly that (the
+	# steam-boundary guard learned the same lesson, #181).
+	var called := false
+	for line in body.split("\n"):
+		var code: String = line.get_slice("#", 0)
+		if code.contains("_settle_founding_crews()"):
+			called = true
+			break
+	assert_true(called,
+		"server._process must settle founding crews every tick")
+
+
+func test_a_bound_crew_takes_no_orders() -> void:
+	# The lock is what closes D-031's three-halls exploit now that
+	# spend-at-commit no longer does: a crew that cannot be ordered
+	# anywhere cannot be ordered to found a second hall while its first
+	# one rises. One gate (`_validated_squad`), not a check per handler.
+	var space := _space()
+	var server = _server(space)
+	var peer := FakePeer.new()
+	server._ai_clients[peer] = {"player": 1, "visible": {}}
+	server._match.add_player(1)
+	server._match.phase = MatchState.Phase.RUNNING
+	server._economy.credit(1, Economy.ResourceKind.WOOD, 9999)
+
+	var crew: int = server._sim.add_squad(_crew(), 1, Vector2i(12, 8))
+	assert_eq(server._validated_squad(peer, crew), crew,
+		"setup: before founding, the crew takes orders like anybody")
+
+	server._finish_build(peer, crew,
+		BuildingSim.def_by_id(&"town_centre"), Vector2i(12, 8))
+	assert_eq(server._validated_squad(peer, crew), -1,
+		"a founding crew is spoken for until the hall stands")
+
+	# The razed site frees it — the bond defers consumption, it is not a
+	# death sentence for a build an enemy tears down.
+	var built: int = server._founding_crews.keys()[0]
+	server._sim.destroyed_buildings = [built]
+	server._settle_founding_crews()
+	assert_eq(server._validated_squad(peer, crew), crew,
+		"a crew whose site was razed mid-build is free again")
+	assert_gt(server._sim.alive_of(crew), 0,
+		"and alive — freeing is not consuming")
+
+	server.free()
+
+
+func test_instant_build_still_spends_the_crew_in_the_same_breath() -> void:
+	# Sandbox instant_build raises the site already complete, so there is
+	# no construction for the crew to see through — deferring would leave
+	# it bound to a building that will never re-complete, locked forever.
+	var space := _space()
+	var server = _server(space)
+	var peer := FakePeer.new()
+	server._match.instant_build = true
+	server._economy.credit(1, Economy.ResourceKind.WOOD, 9999)
+
+	var crew: int = server._sim.add_squad(_crew(), 1, Vector2i(12, 8))
+	server._finish_build(peer, crew,
+		BuildingSim.def_by_id(&"town_centre"), Vector2i(12, 8))
+
+	assert_eq(server._sim.alive_of(crew), 0,
+		"an instantly-complete hall takes its crew immediately")
+	assert_eq(server._founding_crews.size(), 0,
+		"and leaves no bond behind")
 
 	server.free()
 
