@@ -4779,8 +4779,14 @@ func _refresh_buildings() -> void:
 			var material: Material = null
 
 			var authored := false
-			if def.model_id != &"":
-				mesh = UnitMesh.mesh_for(def.model_id)
+			# Resolved per OWNER's civ (D-20260830-a-building-wears-a-civs-
+			# own-body): the def is shared, the body may not be. Civ identity
+			# is public (D-102), so this is derivable for every building the
+			# client knows — and a civ with no override resolves to
+			# `model_id` exactly as before.
+			var model := def.model_for(_state.civ_of(int(info["owner"])))
+			if model != &"":
+				mesh = UnitMesh.mesh_for(model)
 			if mesh != null:
 				# Authored model (D-064). The owner-colour mask is baked into
 				# vertex alpha, so the shader mixes rather than tinting the

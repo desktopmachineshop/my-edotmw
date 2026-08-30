@@ -461,6 +461,20 @@ ROSTER: dict[str, BuildingParams] = {
         wall=(0.60, 0.54, 0.42), roof_colour=(0.42, 0.36, 0.28),
     ),
 
+    # Emberdeep's own bodies (D-20260830-a-building-wears-a-civs-own-body):
+    # supplied models imported whole via art/import_glb_source.py, like the
+    # ships. The params here are the NEUTRAL originals' — they are only the
+    # generated fallback for a clone whose art/source/*.blend is missing,
+    # and matching the original keeps that degradation honest (D-064).
+    "emberdeep_town_centre": BuildingParams(
+        footprint=4.6, height=3.6, roof="gable", banner=True,
+        roof_colour=(0.48, 0.30, 0.26),
+    ),
+    "emberdeep_storehouse": BuildingParams(
+        footprint=2.8, height=2.1, roof="spire",
+        wall=(0.60, 0.54, 0.42), roof_colour=(0.42, 0.36, 0.28),
+    ),
+
     # --- D-076: walls, gates and the walkable garrison tier ------------
     #
     # Cheap tier: a wooden stake fence — a pure blocker, no walkway.

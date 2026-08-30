@@ -96,6 +96,22 @@ PLACEHOLDER_ARCHETYPES = frozenset({
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400
 
+# Buildings imported from supplied models (art/import_glb_source.py), and
+# the ceiling they are allowed up to — the ships' rule (D-20260830) applied
+# to the static half of the pipeline: a named set rather than a raised
+# global. The ceiling is the OWNER's call (2026-08-30): "buildings can run
+# at 10k or maybe even 20k tris because they don't move and there is a lot
+# less of them" — no VAT column limit applies (a building bakes no VAT),
+# and a match holds a handful of each where a squad fields dozens of
+# soldiers. Both supplied models sit just under it (19,211 / 19,019) and
+# ship UNDECIMATED. Decimation was tried twice first and both numbers are
+# worth keeping: the ships' 2,500 SHREDS a Tripo building's separate thin
+# timber parts into holes, and even 6,000 nibbles its trim — seen in a
+# render each time, invisible to every count.
+IMPORTED_BUILDINGS = frozenset({
+    "emberdeep_town_centre", "emberdeep_storehouse"})
+IMPORTED_BUILDING_TRIANGLE_BUDGET = 20000
+
 ## The widest VAT this project will write, in pixels.
 ##
 ## A model's triangle count is a TEXTURE WIDTH: `art/lib/bake.py` gives every
@@ -268,10 +284,13 @@ def build_buildings() -> dict:
             flat = flatten(build_building(building, BUILDING_ROSTER[building]))
             source = "generated"
         tris = len(flat["triangles"])
-        if tris > BUILDING_TRIANGLE_BUDGET:
+        budget = (IMPORTED_BUILDING_TRIANGLE_BUDGET
+                  if building in IMPORTED_BUILDINGS
+                  else BUILDING_TRIANGLE_BUDGET)
+        if tris > budget:
             raise SystemExit(
                 f"{building}: {tris} triangles exceeds the "
-                f"{BUILDING_TRIANGLE_BUDGET} budget (D-064).")
+                f"{budget} budget (D-064).")
 
         glb_path = os.path.join(models_dir, f"{building}.glb")
         write_glb(building, flat, glb_path, uv1_override=door_hinge_uv(flat))
