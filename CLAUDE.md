@@ -118,6 +118,8 @@ and measurements belong in the decision entry that took them.
 
 @docs/status/game-browser.md
 
+@docs/status/releases.md
+
 ## What this project is
 
 A large-scale real-time strategy game, inspired by *Empires: Dawn of the

@@ -1,0 +1,124 @@
+# The OFFICIAL release: push a `v*` tag and this builds all three
+# shipping targets, packages them, and publishes a GitHub Release with
+# checksums (D-20260830-releases-are-a-tag-and-a-nightly-channel).
+#
+# Tagging is the deliberate human act — the same ethos as
+# `just bench-record`. The guard below refuses a tag that does not match
+# `project.godot`'s `application/config/version`, because that setting is
+# THE one source of the version (D-20260827, build_version.gd) and a
+# release named after anything else would be two writers of one fact.
+#
+# Every step calls the just recipes rather than reconstructing godot
+# invocations — the repo's own law, so local `just export` and this
+# workflow cannot drift.
+#
+# When Steam arrives (#185), the steamcmd depot push is one more publish
+# step BESIDE the release upload; nothing upstream changes. That is the
+# whole reason `just publish-itch` was built as the rehearsal.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# See nightly.yml: GitHub's default shell has `-e` but NOT `pipefail`,
+# and that difference has already produced one green job over a failing
+# suite in this repo.
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: write
+
+env:
+  EDOTMW_NO_GATE: "1"
+  EDOTMW_RUNTIME: native
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag must be the version project.godot names
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^config/version=' project.godot | cut -d'"' -f2)
+          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "FAIL: tag '${GITHUB_REF_NAME}' but project.godot says '$version'." >&2
+            echo "      The version lives in ONE place (D-20260827, build_version.gd):" >&2
+            echo "      bump application/config/version first, then tag v<that>." >&2
+            exit 1
+          fi
+
+      - name: Read the pinned tool versions
+        id: pins
+        run: |
+          echo "just=$(tr -d '[:space:]' < .just-version)" >> "$GITHUB_OUTPUT"
+          echo "godot=$(tr -d '[:space:]' < .godot-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch just and Godot
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${{ steps.pins.outputs.just }}/just-${{ steps.pins.outputs.just }}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C tools just
+          curl -fsSL -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/${{ steps.pins.outputs.godot }}-stable/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d tools
+          mv "tools/Godot_v${{ steps.pins.outputs.godot }}-stable_linux.x86_64" tools/godot
+          chmod +x tools/just tools/godot
+          : > tools/.gdignore
+          # Self-contained marker: the export recipe reads templates from
+          # tools/editor_data, and `bootstrap-export-templates` early-exits
+          # on a cache hit BEFORE it would create this file.
+          : > tools/_sc_
+
+      # ~1.3 GB, so cached across runs keyed on the engine pin. On a hit
+      # the recipe sees version.txt and exits without downloading.
+      - name: Cache export templates
+        uses: actions/cache@v4
+        with:
+          path: tools/editor_data/export_templates
+          key: export-templates-${{ steps.pins.outputs.godot }}
+
+      - name: Export templates
+        run: ./tools/just bootstrap-export-templates
+
+      - name: Export and package all three targets
+        run: |
+          set -euo pipefail
+          ./tools/just export all
+          ./tools/just package windows-client
+          ./tools/just package windows-server
+          ./tools/just package linux-server
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd build/packages
+          sha256sum *.zip | tee SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          {
+            echo "**Windows players:** download \`my-edotmw-windows-client-*.zip\`, extract it anywhere, run the exe."
+            echo "SmartScreen will warn once about an unknown publisher (the build is unsigned) — More info → Run anyway."
+            echo ""
+            echo "The other two zips are dedicated servers for whoever hosts a session (see docs/alpha/runbook.md)."
+            echo ""
+            echo '```'
+            cat build/packages/SHA256SUMS
+            echo '```'
+          } > "$notes"
+          gh release create "${GITHUB_REF_NAME}" \
+            build/packages/*.zip build/packages/SHA256SUMS \
+            --title "my-edotmw ${GITHUB_REF_NAME}" \
+            --notes-file "$notes"
