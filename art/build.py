@@ -86,7 +86,12 @@ PLACEHOLDER_TRIANGLE_BUDGET = 6000
 # triangles, so the real budget is the VAT check below. The bench-render
 # debt named above now covers five models instead of one.
 PLACEHOLDER_ARCHETYPES = frozenset({
-    "gatherers", "militia", "spearmen", "archers", "general", "cannon"})
+    "gatherers", "militia", "spearmen", "archers", "general", "cannon",
+    # The supplied ship models (D-20260830): imported whole objects like
+    # the cannon, decimated to 2,500 at import — a squad fields 3-8 hulls
+    # against 22-48 soldiers, so the per-squad triangle spend is
+    # comparable to a line squad at the soldier budget.
+    "warship", "transport"})
 # Buildings are few and never instanced in the thousands, so their budget is
 # about silhouette clarity rather than throughput.
 BUILDING_TRIANGLE_BUDGET = 400

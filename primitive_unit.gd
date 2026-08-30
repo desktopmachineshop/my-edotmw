@@ -32,6 +32,19 @@ class_name PrimitiveUnit
 
 @export var unit_def: UnitDef
 
+## The hull primitive's box, in world units (x = beam, z = length).
+## A CONSTANT rather than three literals in `_build_primitive_mesh`,
+## because `formation_spacing` on every def drawn as a hull must clear
+## this size or the squad's own hulls interpenetrate — which is exactly
+## what shipped (playtest 2026-08-30, "the boats are appearing on top of
+## each other"): every water def left spacing at the schema default of
+## 1.0, a SOLDIER's shoulder spacing, against a 3.0-long hull.
+## `tests/test_naval_separation.gd` reads this and asserts the
+## relationship over the whole roster, so a bigger hull or a new hull
+## def cannot silently reintroduce the overlap
+## (D-20260830-a-ship-takes-up-its-own-water).
+const HULL_SIZE := Vector3(1.5, 0.6, 3.0)
+
 ## The composite this squad draws: one MultiMeshInstance3D child per
 ## distinct model. Mirrors clone THIS node, so a rebuild that changes the
 ## group list only needs a resync.
@@ -571,7 +584,7 @@ func _build_primitive_mesh(def: UnitDef) -> Mesh:
 			return m
 		"hull":
 			var m := BoxMesh.new()
-			m.size = Vector3(1.5, 0.6, 3.0)
+			m.size = HULL_SIZE
 			return m
 		_:
 			push_error("Unknown mesh_primitive '%s' on UnitDef '%s'" % [def.mesh_primitive, def.id])
