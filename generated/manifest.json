@@ -27,14 +27,14 @@
     "emberdeep_storehouse": {
       "model": "generated/models/emberdeep_storehouse.glb",
       "source": "authored",
-      "triangles": 5999,
-      "vertices": 17997
+      "triangles": 19019,
+      "vertices": 57057
     },
     "emberdeep_town_centre": {
       "model": "generated/models/emberdeep_town_centre.glb",
       "source": "authored",
-      "triangles": 6000,
-      "vertices": 18000
+      "triangles": 19211,
+      "vertices": 57633
     },
     "garrison_gate": {
       "model": "generated/models/garrison_gate.glb",
@@ -473,7 +473,7 @@
       "vertices": 48
     }
   },
-  "source_hash": "4941d1f61c86ced66eb3368efe78c4fdd70e39538b2bb03674618545db8f477f",
+  "source_hash": "8b20078687c3e1354cb6aacbcda8aaa3f742a69abc870ea52cdeae89628f0a8b",
   "terrain": {
     "biomes": [
       "deep_water",

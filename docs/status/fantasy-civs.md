@@ -139,8 +139,11 @@ to attach a body to a civ when one exists.
 **The BUILDING half of that shape shipped on 2026-08-30 for emberdeep**
 (`D-20260830-a-building-wears-a-civs-own-body`, owner-directed): the
 supplied dwarf town hall and storehouse are authored sources now,
-imported like the ships (decimated to 2,500, textures into `COLOR_0`,
-scaled to the neutral originals' heights), and `buildings/
+imported like the ships (textures into `COLOR_0`, scaled to the neutral
+originals' heights) but UNDECIMATED at ~19k triangles under an
+owner-set 20,000 ceiling — a building bakes no VAT and a match holds a
+handful of them, and both decimation levels tried first (2,500, 6,000)
+visibly damaged the thin timber parts. `buildings/
 town_centre.tres` / `buildings/storehouse.tres` name them in a new
 `BuildingDef.model_overrides` dictionary. Resolution is ONE applied
 function (`BuildingDef.model_for(civ)`, the civ-knobs rule) read at

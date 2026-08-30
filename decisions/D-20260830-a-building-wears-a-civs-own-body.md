@@ -32,20 +32,24 @@ the ratified-but-deferred #413 direction.
    (D-064), so a wrong answer costs a picture, never a desync.
 
 3. **The bodies are imported like the ships** (D-20260830-a-ship-takes-
-   up-its-own-water): `art/import_glb_source.py`, decimated 19,211 →
-   6,000 and 19,019 → 5,999, textures transferred into `COLOR_0`,
-   scaled to the NEUTRAL originals' authored heights (3.6 and 2.1) so
-   footprints, `no_build_radius` and the minimap stay tuned. A named
-   budget set (`IMPORTED_BUILDINGS`, ceiling 6,000) rather than a
-   raised `BUILDING_TRIANGLE_BUDGET`, the `PLACEHOLDER_ARCHETYPES`
-   pattern — and still cheap, because a match holds a handful of
-   buildings where a squad fields dozens of men.
+   up-its-own-water) and ship **UNDECIMATED** — 19,211 and 19,019
+   triangles — under an owner-set ceiling of 20,000: *"buildings can
+   run at 10k or maybe even 20k tris because they don't move and there
+   is a lot less of them"* (2026-08-30). Both halves of that reasoning
+   are structural: a building bakes no VAT, so the 16,384-column limit
+   that binds every unit does not apply, and a match holds a handful of
+   buildings where a squad fields dozens of men. Textures transfer into
+   `COLOR_0`; scale is the NEUTRAL originals' authored heights (3.6 and
+   2.1) so footprints, `no_build_radius` and the minimap stay tuned. A
+   named budget set (`IMPORTED_BUILDINGS`, ceiling 20,000) rather than
+   a raised `BUILDING_TRIANGLE_BUDGET`, the `PLACEHOLDER_ARCHETYPES`
+   pattern.
 
-   **The ships' 2,500 was tried first and SHREDS these models**, and
-   only a picture could say so: a Tripo building is dozens of separate
-   thin timber parts, and collapse-decimation at 13% tears them into
-   holes while every count stays healthy — 2,500 triangles is 2,500
-   triangles whether or not they still form a roof. The render is
+   **Decimation was tried twice first, and only a picture could judge
+   either.** The ships' 2,500 SHREDS these models — a Tripo building is
+   dozens of separate thin timber parts, and collapse at 13% tears them
+   into holes while every count stays healthy; 6,000 leaves them whole
+   but nibbles the trim. The render is
    `docs/playtest/p42-emberdeep-buildings.png`; the same check per the
    standing "the check that catches this class is a picture" rule
    (M7's inside-out boxes, D-097's cliffs, D-108's forests).

@@ -99,15 +99,18 @@ BUILDING_TRIANGLE_BUDGET = 400
 # Buildings imported from supplied models (art/import_glb_source.py), and
 # the ceiling they are allowed up to — the ships' rule (D-20260830) applied
 # to the static half of the pipeline: a named set rather than a raised
-# global. Decimated to 6,000 at import, NOT the ships' 2,500: these Tripo
-# buildings are made of separate thin timber parts, and at 2,500 the
-# collapse tears them into holes — seen in a render, invisible to every
-# count. 6,000 is PLACEHOLDER_TRIANGLE_BUDGET's number, and still cheap
-# here: a match holds a handful of each where a squad fields dozens of
-# soldiers.
+# global. The ceiling is the OWNER's call (2026-08-30): "buildings can run
+# at 10k or maybe even 20k tris because they don't move and there is a lot
+# less of them" — no VAT column limit applies (a building bakes no VAT),
+# and a match holds a handful of each where a squad fields dozens of
+# soldiers. Both supplied models sit just under it (19,211 / 19,019) and
+# ship UNDECIMATED. Decimation was tried twice first and both numbers are
+# worth keeping: the ships' 2,500 SHREDS a Tripo building's separate thin
+# timber parts into holes, and even 6,000 nibbles its trim — seen in a
+# render each time, invisible to every count.
 IMPORTED_BUILDINGS = frozenset({
     "emberdeep_town_centre", "emberdeep_storehouse"})
-IMPORTED_BUILDING_TRIANGLE_BUDGET = 6000
+IMPORTED_BUILDING_TRIANGLE_BUDGET = 20000
 
 ## The widest VAT this project will write, in pixels.
 ##
