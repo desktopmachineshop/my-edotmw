@@ -78,9 +78,16 @@ in a different body, which is a model fact, not a def fact.
   mark, the selection ring and the scoreboard until someone paints a
   mask into the `.blend` (vertex alpha, roof and banner — the same
   contract the neutral models use).
-- **The placement ghost stays a translucent box** — it never resolved a
+- ~~**The placement ghost stays a translucent box** — it never resolved a
   model for any building, so there is nothing for the override to
-  change there.
+  change there.~~ **Superseded the next day**
+  (`D-20260831-a-placement-ghost-is-the-building-it-will-build`, owner's
+  call): the preview wears the model now, resolved through the same
+  `model_for` against the viewing player's civ, so an emberdeep player
+  previewing a town centre sees the dwarf hall. The sentence was true
+  when written and is kept struck through rather than deleted, because
+  "there is nothing for the override to change there" is exactly the
+  kind of claim this project keeps finding stale in its own entries.
 - **`_bastion_model_for` (wall-tower posts) still reads its own model
   derivation.** No wall-family override ships; the day one does, that
   site joins `model_for` or the new test's data guard catches the gap

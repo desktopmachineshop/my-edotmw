@@ -17,6 +17,14 @@ const CHANNELS := 2
 const DEFAULT_SERVER_ADDRESS := "127.0.0.1"
 const DEFAULT_SERVER_PORT := 4433
 
+## What a placement preview says about the ground under it: green will
+## take the building, red will not. RGB only — how transparent a ghost is
+## belongs to the ghost shader's own `opacity`, and to the fallback box's
+## albedo alpha, rather than being carried around in a colour that two
+## code paths then read differently.
+const GHOST_OK_TINT := Color(0.4, 0.95, 0.5, 1.0)
+const GHOST_BLOCKED_TINT := Color(0.95, 0.35, 0.3, 1.0)
+
 const CAMERA_PAN_SPEED := 18.0
 const CAMERA_ZOOM_STEP := 4.0
 const CAMERA_MIN_HEIGHT := 8.0
@@ -225,6 +233,21 @@ var _host_port := DEFAULT_SERVER_PORT
 ## show the state before a player has acted (#284). Never set by
 ## `run-client`; `just test-client HOLD=1` is the one caller.
 var _hold_opening := false
+
+## Capture-only: which building's placement PREVIEW to arm, so a rendered
+## frame contains a ghost (D-20260831). Empty in every ordinary launch —
+## `just test-client "" "" "" <def_id>` is the one caller. A preview
+## exists only while a player is mid-build-order, which is a state no
+## capture had ever been in.
+var _preview_building := &""
+
+## Whether the armed preview was actually drawn on the frame that was
+## captured, and whether it wore an authored model or fell back to the
+## box. Reported in the verdict rather than assumed: "the flag was
+## passed" and "a ghost is in the picture" are different claims, and the
+## recipe gates on the second.
+var _preview_drawn := false
+var _preview_authored := false
 
 var _host_ai_wanted := 0
 ## Whether `_drive_host_lobby` has already run. It is a ONE-SHOT: the
@@ -460,6 +483,13 @@ func _ready() -> void:
 	_run_seconds = float(args.get("run-seconds", -1.0))
 	# Capture-only, and only for photographing the opening hint (#284).
 	_hold_opening = int(args.get("hold-opening", 0)) == 1
+	# Capture-only: arm this building's PLACEMENT PREVIEW so a rendered
+	# frame contains a ghost (D-20260831). `--hold-opening`'s sibling and
+	# added for the same reason — a preview only exists while somebody is
+	# holding a build order, which no capture had ever done, so the one
+	# instrument that renders the real client structurally could not show
+	# it. Fifth time this framing has had to be aimed on purpose.
+	_preview_building = StringName(args.get("preview-building", ""))
 	_screenshot_path = String(args.get("screenshot", ""))
 	# Capture-only: seat this many AI so `just lobby-shot` photographs a
 	# lobby with something in it rather than one empty seat.
@@ -859,6 +889,14 @@ func _finish_capture() -> void:
 		# the two candidate causes of "the forests arrived late" apart.
 		_state.nodes.size(), _nodes_grown, _node_queue.pending_count(),
 		_node_place_worst_usec / 1000.0])
+
+	# Its own line rather than another key on the verdict: it is printed
+	# only by the runs that asked for a preview, and a marker that is
+	# absent on every ordinary run is easier for a recipe to gate on than
+	# a key that is always there and usually says nothing (D-20260831).
+	if _preview_building != &"":
+		print("client: GHOST def=%s drawn=%s authored=%s"
+			% [_preview_building, str(_preview_drawn), str(_preview_authored)])
 
 	get_tree().quit(0 if ok else 1)
 
@@ -1639,21 +1677,98 @@ func _squad_node(squad_id, def_id: String) -> PrimitiveUnit:
 ## than hoping idle squads happen to wander into contact. Each phase fires
 ## exactly once (guarded by the _rallied/_withdrawn/_re_rallied flags), on
 ## whichever frame first reaches its time.
+## Arm a placement preview for the capture, so a rendered frame contains a
+## ghost (D-20260831). Capture-only — `_preview_building` is empty in
+## every ordinary launch.
+##
+## The mouse is warped, because the ghost follows the CURSOR and a capture
+## never moves one: the default (0, 0) is the top-left corner, where
+## `_world_under` looks past the edge of the ground and the ghost is
+## hidden as unplaceable.
+##
+## Warped to the player's OWN HOME rather than to the middle of the
+## viewport, and that is the difference between a picture and a valid
+## PNG. The middle of the viewport is wherever the camera happens to
+## point — the first run of this put the ghost over open sea, where a
+## preview has no ground to sit on, nothing beside it to be compared
+## against, and only its own tint to say anything at all. On a player's
+## own ground it stands next to real buildings at the size it will be.
+## Same lesson as every other framing on this instrument: aim it.
+func _arm_capture_preview() -> void:
+	if _preview_building == &"" or _placing == _preview_building:
+		return
+	if _state.space == null or not _state.welcomed or _camera == null:
+		return
+	# AFTER the camera has been put over this player's ground
+	# (`_home_camera_once`), or the projection below is taken against a
+	# camera still sitting at the middle of the map and lands nowhere
+	# useful — which is exactly what the first aimed run did.
+	if not _camera_homed:
+		return
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var target := viewport.get_visible_rect().size * 0.5
+	# `_home_camera_once`'s own fallback, mirrored rather than
+	# re-invented: `spawn_cell_of` answers -1 on the paths that seat a
+	# player without a lobby, and the first aimed run fell all the way
+	# back to the viewport centre because this function did not know
+	# that.
+	var home := _state.spawn_cell_of(_state.player)
+	if home.x < 0 and not _state.squads.is_empty():
+		home = _state.squad_cell(_state.squads[0], _now)
+	var how := "viewport centre"
+	if home.x >= 0:
+		# Put the CAMERA on the player's own ground as well as the mouse.
+		# Homing happens once, early, and whatever has moved the view by
+		# now is not something this instrument should photograph — the
+		# aimed runs kept landing the ghost on open ground with nothing
+		# beside it to judge its size or colour against.
+		_camera_target = _state.space.to_world(home)
+		_update_camera()
+		# BESIDE the base, not on it: the hall's own footprint refuses a
+		# build, so aiming at home exactly photographs the red
+		# already-occupied state. A few cells off puts the ghost on free
+		# ground with the real building next to it, which is the
+		# comparison the picture exists to make.
+		var beside := _state.space.from_index(
+			_state.space.index(home + Vector2i(4, 0)))
+		var world := _state.space.to_world(beside)
+		world += _lattice_offset_for(world)
+		if not _camera.is_position_behind(world):
+			var on_screen := _camera.unproject_position(world)
+			if viewport.get_visible_rect().has_point(on_screen):
+				target = on_screen
+				how = "beside home"
+	# WHICH BRANCH, not just the number: the first version printed the
+	# resolved target, and "projected to the centre" and "fell back to
+	# the centre" are the same two numbers with opposite meanings — an
+	# ambiguity that cost a whole render run to notice.
+	print("client: GHOST_AIM home=%s via=%s screen=%s" % [home, how, target])
+	Input.warp_mouse(target)
+	_placing = _preview_building
+	_placing_facing = 0
+	_placing_free_facing = -1
+	_last_snap_cell = Vector2i(-1, -1)
+
+
 func _drive_m2_scenario() -> void:
 	if not _connected or not _state.welcomed:
 		return
 
 	# The opening move first: found the hall, then send scouts out.
 	_found_home_town()
+	_arm_capture_preview()
 
 	# Training needs a BUILDING, not a squad, so it runs before the "no
 	# squads" guard below — the identical fix bot_client.gd needed in M4,
 	# for the identical reason, in the other file that scripts a player.
 	#
-	# Founding a town hall CONSUMES the crew that founds it, the instant
-	# the order is given (D-20260823-the-opening-is-a-crew-and-a-general),
-	# so a client that makes the correct opening move can be left with
-	# almost nothing a moment later. This function used to
+	# Founding a town hall CONSUMES the crew that founds it — at
+	# COMPLETION since
+	# D-20260830-the-crew-builds-the-hall-then-joins-it, at commit before
+	# that — so a client that makes the correct opening move is left with
+	# almost nothing a build later. This function used to
 	# return early on `squads.is_empty()`, which meant the scenario went
 	# quiet forever the moment it did the one thing it was written to do,
 	# and `test-client` reported `soldiers=0` on a frame with a perfectly
@@ -3946,6 +4061,12 @@ var _placing: StringName = &""
 var _placing_cheat := false
 var _placement_ghost: MeshInstance3D = null
 
+## The primitive box every placement preview falls back to when the armed
+## def has no authored model for this player's civ (D-20260831). One mesh,
+## resized on demand and shared by the single ghost and every drag-line
+## segment, because a preview redraws every frame.
+var _ghost_box: BoxMesh = null
+
 ## Pool of ghost boxes previewing a drag-to-build-a-line's whole line
 ## (D-076 amendment), one per cell it will actually build. A pool rather
 ## than freeing/recreating each frame: the line's length changes every
@@ -4824,7 +4945,12 @@ func _refresh_buildings() -> void:
 			# in M7 every building was lifted 1.5 units into the air on top of
 			# already sitting on the ground — the floating-buildings bug.
 			var mesh_height := mesh.get_aabb().size.y
-			var lift := 0.0 if authored else mesh_height / 2.0
+			# Through `UnitMesh.ground_lift`, which the PLACEMENT PREVIEW
+			# reads too (D-20260831) — a ghost that sits on the ground
+			# differently from the building it commits is the drift D-096
+			# keeps naming, and the line ghosts were already 1.5 up for
+			# meshes half that tall.
+			var lift := UnitMesh.ground_lift(mesh_height, authored)
 			_building_ground_lift[wire_id] = lift
 			_building_top_offset[wire_id] = mesh_height - lift
 			add_child(instance)
@@ -8382,6 +8508,70 @@ func _cancel_placement() -> void:
 	_hide_drag_line_ghosts()
 
 
+## The MESH a placement preview should wear, and whether it is authored
+## (D-20260831-a-placement-ghost-is-the-building-it-will-build).
+##
+## Resolved through `BuildingDef.model_for` against THIS player's civ, so
+## a player whose people have a body of their own previews the building
+## they will actually get (D-20260830-a-building-wears-a-civs-own-body) —
+## naming no civ here, per D-046 criterion 3, which caught the first
+## draft of this comment doing it. The
+## same call `_refresh_buildings` makes for the real thing, because a
+## preview with its own idea of which model to draw is a preview that
+## eventually lies (D-096, and the drag preview's `slot_world_offset`
+## before it).
+##
+## Falls back to the primitive box the ghost has always used when no model
+## resolves, which is what keeps a fresh clone with no `generated/` — and
+## every wall-family def that has no authored body — previewing exactly as
+## it did (D-064's designed degradation).
+func _ghost_visual_for(def: BuildingDef, size: Vector3) -> Dictionary:
+	if def != null:
+		var model := def.model_for(_state.civ_of(_state.player))
+		if model != &"":
+			var mesh := UnitMesh.mesh_for(model)
+			if mesh != null:
+				return {"mesh": mesh, "authored": true}
+	# One box, resized — this runs every frame while a placement is armed,
+	# and a fresh BoxMesh per frame is a rendering-server allocation per
+	# frame for a shape that only ever changes when the armed def does.
+	if _ghost_box == null:
+		_ghost_box = BoxMesh.new()
+	_ghost_box.size = size
+	return {"mesh": _ghost_box, "authored": false}
+
+
+## Point one preview instance at a cell: mesh, pose, ground lift and the
+## validity tint. Shared by the single ghost and every segment of a
+## drag-line run, so the two cannot come to disagree about how a preview
+## sits on the ground — which they already had, the line ghosts using the
+## single ghost's hardcoded 1.5 lift for meshes half that tall.
+func _place_ghost(instance: MeshInstance3D, visual: Dictionary,
+		world: Vector3, angle: float, ok: bool) -> void:
+	var mesh: Mesh = visual["mesh"]
+	instance.mesh = mesh
+	var lift := UnitMesh.ground_lift(mesh.get_aabb().size.y, bool(visual["authored"]))
+	instance.visible = true
+	instance.position = world + Vector3(0.0, lift, 0.0) + _lattice_offset_for(world)
+	instance.rotation.y = angle
+	var tint := GHOST_OK_TINT if ok else GHOST_BLOCKED_TINT
+	if bool(visual["authored"]):
+		var shader_material := instance.material_override as ShaderMaterial
+		if shader_material == null:
+			shader_material = UnitMesh.ghost_material_for(tint)
+			instance.material_override = shader_material
+		else:
+			shader_material.set_shader_parameter("tint", tint)
+	else:
+		var standard := instance.material_override as StandardMaterial3D
+		if standard == null:
+			standard = StandardMaterial3D.new()
+			standard.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			standard.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			instance.material_override = standard
+		standard.albedo_color = Color(tint.r, tint.g, tint.b, 0.45)
+
+
 ## Move the ghost to the cell under the cursor, and colour it by whether
 ## the ground will take it.
 ##
@@ -8416,17 +8606,15 @@ func _update_placement_ghost() -> void:
 	_hide_drag_line_ghosts()
 
 	if _placement_ghost == null:
-		var mesh := BoxMesh.new()
-		mesh.size = size
-		var material := StandardMaterial3D.new()
-		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		_placement_ghost = MeshInstance3D.new()
-		_placement_ghost.mesh = mesh
-		_placement_ghost.material_override = material
 		add_child(_placement_ghost)
-	else:
-		(_placement_ghost.mesh as BoxMesh).size = size
+	# The AUTHORED model when this player's civ has one for this def
+	# (D-20260831), the primitive box when it does not. Resolved every
+	# frame rather than cached against `_placing`: `mesh_for` is itself
+	# cached, so this costs a dictionary lookup, and a cache keyed on the
+	# armed def would have to be invalidated on a civ change nothing here
+	# can see.
+	var visual := _ghost_visual_for(def, size)
 
 	# THE SAME `_armed_pose` the click will commit (D-096). Previously the
 	# ghost worked out its own position and angle and the build order
@@ -8445,13 +8633,14 @@ func _update_placement_ghost() -> void:
 	var world := _state.space.to_world(cell) + Vector3(offset.x, 0.0, offset.y)
 	if _state.terrain_sampler.is_valid():
 		world.y = _state.terrain_sampler.call(world.x, world.z)
-	_placement_ghost.visible = true
-	_placement_ghost.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
-	_placement_ghost.rotation.y = float(pose["angle"])
-
-	var ok := _can_place_at(cell)
-	var material := _placement_ghost.material_override as StandardMaterial3D
-	material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+	_place_ghost(_placement_ghost, visual, world, float(pose["angle"]),
+		_can_place_at(cell))
+	# What the capture VERDICT reports (D-20260831): a ghost was drawn,
+	# and whether it wore an authored body. Recorded where the drawing
+	# actually happens rather than where the flag was read — "the flag
+	# was passed" and "a ghost is in the picture" are different claims.
+	_preview_drawn = true
+	_preview_authored = bool(visual["authored"])
 
 	# D-076: a bright marker toward the chosen door side, so placing a
 	# wall_tower shows which cell will actually let a squad climb — the
@@ -8541,15 +8730,14 @@ func _update_drag_line_ghosts(size: Vector3) -> void:
 	var line := WallRun.segments(_state.space, def, _placing_drag_start_world, end_world)
 
 	while _drag_ghost_pool.size() < line.size():
-		var mesh := BoxMesh.new()
-		var material := StandardMaterial3D.new()
-		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		var instance := MeshInstance3D.new()
-		instance.mesh = mesh
-		instance.material_override = material
 		add_child(instance)
 		_drag_ghost_pool.append(instance)
+
+	# Resolved ONCE for the run: every segment of a wall drag is the same
+	# def, so this is one lookup rather than one per segment on a line
+	# that can be dozens long.
+	var visual := _ghost_visual_for(def, size)
 
 	for i in range(_drag_ghost_pool.size()):
 		var instance := _drag_ghost_pool[i]
@@ -8559,16 +8747,12 @@ func _update_drag_line_ghosts(size: Vector3) -> void:
 		var segment: Dictionary = line[i]
 		var cell: Vector2i = segment["cell"]
 		var offset: Vector2 = segment["offset"]
-		(instance.mesh as BoxMesh).size = size
 		var world := _state.space.to_world(cell) + Vector3(offset.x, 0.0, offset.y)
 		if _state.terrain_sampler.is_valid():
 			world.y = _state.terrain_sampler.call(world.x, world.z)
-		instance.position = world + Vector3(0.0, 1.5, 0.0) + _lattice_offset_for(world)
-		instance.rotation.y = PlacementJitter.radians_of_byte(int(segment["facing"]))
-		instance.visible = true
-		var ok := _can_place_at(cell)
-		var material := instance.material_override as StandardMaterial3D
-		material.albedo_color = Color(0.4, 0.95, 0.5, 0.45) if ok else Color(0.95, 0.35, 0.3, 0.45)
+		_place_ghost(instance, visual, world,
+			PlacementJitter.radians_of_byte(int(segment["facing"])),
+			_can_place_at(cell))
 
 
 func _hide_drag_line_ghosts() -> void:
