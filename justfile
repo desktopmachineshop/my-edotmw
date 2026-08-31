@@ -2068,7 +2068,7 @@ scenarios: _import
 # that reason. The default is unchanged, so every frame taken before this is
 # still comparable.
 [doc("Render the GUI client headlessly with bots as a second player and verify the frame (software GPU)")]
-test-client SECONDS="90" BOTS="3" HOLD="0" RESOLUTION="1280x720": _import
+test-client SECONDS="90" BOTS="3" HOLD="0" RESOLUTION="1280x720" PREVIEW="": _import
     #!/usr/bin/env bash
     set -euo pipefail
     bash recipe-arg.sh num SECONDS "{{SECONDS}}"
@@ -2122,6 +2122,7 @@ test-client SECONDS="90" BOTS="3" HOLD="0" RESOLUTION="1280x720": _import
         --resolution {{RESOLUTION}} \
         -- --address=server --run-seconds={{SECONDS}} \
         --hold-opening={{HOLD}} \
+        --preview-building={{PREVIEW}} \
         --screenshot=res://artifacts/client-frame.png \
         > "$log" 2>&1 || status=$?
 
@@ -2176,6 +2177,24 @@ test-client SECONDS="90" BOTS="3" HOLD="0" RESOLUTION="1280x720": _import
     if [ -z "${reveals:-}" ]; then
         echo "test-client: reveal_events missing from the verdict line — did the client report at all?" >&2
         exit 1
+    fi
+
+    # PREVIEW asked for a placement ghost in the frame, so the frame has
+    # to contain one (D-20260831). Gated on `drawn=true`, never on the
+    # flag having been passed: "the client was told to arm a preview" and
+    # "a ghost was rendered" are different claims, and a photograph of a
+    # feature not working is still a valid PNG (browser-shot's rule).
+    if [ -n "{{PREVIEW}}" ]; then
+        ghost="$(grep -E "^client: GHOST" "$log" | tail -1 || true)"
+        if [ -z "$ghost" ]; then
+            echo "test-client: PREVIEW={{PREVIEW}} was asked for and the client printed no GHOST marker" >&2
+            exit 1
+        fi
+        case "$ghost" in
+            *"drawn=true"*) : ;;
+            *) echo "test-client: the placement preview was armed and never drawn: $ghost" >&2; exit 1 ;;
+        esac
+        echo "test-client: $ghost"
     fi
 
     grep -E "^client: VERDICT" "$log"

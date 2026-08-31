@@ -157,6 +157,19 @@ owner-colour mask (the ships' trade) — the minimap and selection ring
 carry attribution until somebody paints vertex alpha into the
 `.blend`s.
 
+**And the BUILD PREVIEW wears that body too, since 2026-08-31**
+(`D-20260831-a-placement-ghost-is-the-building-it-will-build`, owner's
+call): the ghost is the model it will raise, semi-transparent and tinted
+by whether the ground will take it, resolved through the same
+`model_for` against the viewing player's civ. It is its own shader
+rather than a `StandardMaterial3D`, because COLOR_0's alpha is the
+owner-colour MASK (D-052) and the standard shader multiplies vertex
+alpha into ALBEDO — a ghost built that way loses its walls and keeps its
+roof, with nothing failing. `just test-client SECONDS BOTS HOLD
+RESOLUTION <def_id>` is the instrument, and it exists because a preview
+only lives while somebody holds a build order, which no capture had ever
+done — the fifth time that framing has had to be aimed on purpose.
+
 **Deliberately not done:** epochs (M9's ladder is still design);
 per-civ walls/buildings; any strength ordering between the six — that is
 `just ai-ladder`'s job now that they exist, and the first run of it on

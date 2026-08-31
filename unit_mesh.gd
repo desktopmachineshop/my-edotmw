@@ -28,6 +28,7 @@ const VAT_DIR := "res://generated/vat"
 
 const OPAQUE_SHADER := "res://shaders/unit_anim.gdshader"
 const STATIC_SHADER := "res://shaders/building_static.gdshader"
+const GHOST_SHADER := "res://shaders/building_ghost.gdshader"
 const CORPSE_SHADER := "res://shaders/unit_corpse.gdshader"
 
 static var _manifest := {}
@@ -327,6 +328,36 @@ static func static_material_for(team_colour: Color) -> ShaderMaterial:
 	material.shader = _shaders[STATIC_SHADER]
 	material.set_shader_parameter("team_colour", team_colour)
 	return material
+
+
+## The PLACEMENT PREVIEW material for an authored building
+## (D-20260831-a-placement-ghost-is-the-building-it-will-build) —
+## `static_material_for`'s sibling, and deliberately not a variant of it:
+## a ghost reads the mesh's COLOR.rgb and must IGNORE its alpha, which
+## that shader uses as the owner-colour mask (D-052). See
+## `shaders/building_ghost.gdshader` for what a StandardMaterial3D does
+## to a building whose walls carry alpha 0.
+static func ghost_material_for(tint: Color) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	if not _shaders.has(GHOST_SHADER):
+		_shaders[GHOST_SHADER] = load(GHOST_SHADER) as Shader
+	material.shader = _shaders[GHOST_SHADER]
+	material.set_shader_parameter("tint", tint)
+	return material
+
+
+## How far to lift a building's mesh so its BASE sits on the ground.
+##
+## THE one definition, because it has been wrong in three places at once.
+## An authored model is built with its origin already at the base
+## (`box(..., centre=(0, height/2, 0))` spans y=0 to y=height), so it needs
+## no lift; a primitive (BoxMesh, CylinderMesh, ...) is centred on its own
+## origin and rises by half its height. A single hardcoded 1.5 — half the
+## default box's 3.0 — used to stand in for all of it, which floated every
+## authored building when M7 landed, and still floated every wall-family
+## ghost by the difference between 1.5 and its own half-height.
+static func ground_lift(mesh_height: float, authored: bool) -> float:
+	return 0.0 if authored else mesh_height / 2.0
 
 
 static func _shader() -> Shader:
